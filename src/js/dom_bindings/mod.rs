@@ -4676,9 +4676,8 @@ mod tests {
       .call_function(create_event, document, &[iface])
       .expect_err("expected NotSupportedError");
 
-    let thrown = match err {
-      VmError::Throw(value) => value,
-      other => panic!("expected VmError::Throw, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected VmError::Throw, got {err:?}");
     };
     let name_key = pk(&mut realm.rt, "name");
     let name = realm.rt.get(thrown, name_key).unwrap();
