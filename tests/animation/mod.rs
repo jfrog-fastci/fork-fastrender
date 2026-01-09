@@ -11,3 +11,4 @@ mod range_strict_tests;
 mod shorthand_reset_tests;
 mod time_precision_test;
 mod timeline_supports_test;
+mod clip_path_reference_box_percentages;

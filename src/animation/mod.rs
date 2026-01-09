@@ -850,6 +850,108 @@ fn resolve_ellipse_radius(
   resolved.is_finite().then_some(resolved)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ClipPathReferenceBoxSizes {
+  border_box: Size,
+  padding_box: Size,
+  content_box: Size,
+  margin_box: Size,
+}
+
+impl ClipPathReferenceBoxSizes {
+  fn select(&self, reference: ReferenceBox) -> Size {
+    match reference {
+      ReferenceBox::BorderBox => self.border_box,
+      ReferenceBox::PaddingBox => self.padding_box,
+      ReferenceBox::ContentBox => self.content_box,
+      ReferenceBox::MarginBox => self.margin_box,
+      // SVG reference boxes need geometry bounds that aren't available to the animation sampler yet.
+      // Fall back to the border box to keep transition output deterministic.
+      ReferenceBox::FillBox | ReferenceBox::StrokeBox | ReferenceBox::ViewBox => self.border_box,
+    }
+  }
+}
+
+fn clip_path_reference_box_sizes(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> ClipPathReferenceBoxSizes {
+  let border_box = ctx.element_size;
+
+  let used_border_width = |width: &Length, line_style: BorderStyle| -> f32 {
+    if matches!(line_style, BorderStyle::None | BorderStyle::Hidden) {
+      0.0
+    } else {
+      resolve_length_px(width, None, style, ctx)
+    }
+  };
+
+  let border_top = used_border_width(&style.border_top_width, style.border_top_style);
+  let border_right = used_border_width(&style.border_right_width, style.border_right_style);
+  let border_bottom = used_border_width(&style.border_bottom_width, style.border_bottom_style);
+  let border_left = used_border_width(&style.border_left_width, style.border_left_style);
+
+  let padding_percent_base = border_box.width;
+  let padding_top = resolve_length_px(&style.padding_top, Some(padding_percent_base), style, ctx);
+  let padding_right =
+    resolve_length_px(&style.padding_right, Some(padding_percent_base), style, ctx);
+  let padding_bottom =
+    resolve_length_px(&style.padding_bottom, Some(padding_percent_base), style, ctx);
+  let padding_left =
+    resolve_length_px(&style.padding_left, Some(padding_percent_base), style, ctx);
+
+  let margin_percent_base = border_box.width;
+  let resolve_margin = |value: &Option<Length>| -> f32 {
+    value
+      .as_ref()
+      .map(|len| resolve_length_px(len, Some(margin_percent_base), style, ctx))
+      .unwrap_or(0.0)
+  };
+  let margin_top = resolve_margin(&style.margin_top);
+  let margin_right = resolve_margin(&style.margin_right);
+  let margin_bottom = resolve_margin(&style.margin_bottom);
+  let margin_left = resolve_margin(&style.margin_left);
+
+  let padding_box = Size::new(
+    (border_box.width - border_left - border_right).max(0.0),
+    (border_box.height - border_top - border_bottom).max(0.0),
+  );
+
+  let content_box = Size::new(
+    (padding_box.width - padding_left - padding_right).max(0.0),
+    (padding_box.height - padding_top - padding_bottom).max(0.0),
+  );
+
+  let margin_box = Size::new(
+    (border_box.width + margin_left + margin_right).max(0.0),
+    (border_box.height + margin_top + margin_bottom).max(0.0),
+  );
+
+  ClipPathReferenceBoxSizes {
+    border_box,
+    padding_box,
+    content_box,
+    margin_box,
+  }
+}
+
+fn resolve_background_positions_for_size(
+  list: &[BackgroundPosition],
+  size: Size,
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Vec<ResolvedBackgroundPosition> {
+  list
+    .iter()
+    .map(|pos| match pos {
+      BackgroundPosition::Position { x, y } => ResolvedBackgroundPosition {
+        x: resolve_background_position_component(x, size.width, style, ctx),
+        y: resolve_background_position_component(y, size.height, style, ctx),
+      },
+    })
+    .collect()
+}
+
 fn resolve_clip_path(
   path: &ClipPath,
   style: &ComputedStyle,
@@ -858,126 +960,119 @@ fn resolve_clip_path(
   match path {
     ClipPath::None => Some(ResolvedClipPath::None),
     ClipPath::Box(b) => Some(ResolvedClipPath::Box(*b)),
-    ClipPath::BasicShape(shape, reference) => match shape.as_ref() {
-      BasicShape::Inset {
-        top,
-        right,
-        bottom,
-        left,
-        border_radius,
-      } => {
-        let width = ctx.element_size.width;
-        let height = ctx.element_size.height;
-        let radii = border_radius.as_ref().and_then(|r| {
-          Some([
-            BorderCornerRadius {
-              x: Length::px(resolve_length_px(&r.top_left.x, Some(width), style, ctx)),
-              y: Length::px(resolve_length_px(&r.top_left.y, Some(height), style, ctx)),
-            },
-            BorderCornerRadius {
-              x: Length::px(resolve_length_px(&r.top_right.x, Some(width), style, ctx)),
-              y: Length::px(resolve_length_px(&r.top_right.y, Some(height), style, ctx)),
-            },
-            BorderCornerRadius {
-              x: Length::px(resolve_length_px(
-                &r.bottom_right.x,
-                Some(width),
-                style,
-                ctx,
-              )),
-              y: Length::px(resolve_length_px(
-                &r.bottom_right.y,
-                Some(height),
-                style,
-                ctx,
-              )),
-            },
-            BorderCornerRadius {
-              x: Length::px(resolve_length_px(&r.bottom_left.x, Some(width), style, ctx)),
-              y: Length::px(resolve_length_px(
-                &r.bottom_left.y,
-                Some(height),
-                style,
-                ctx,
-              )),
-            },
-          ])
-        });
-        Some(ResolvedClipPath::Inset {
-          top: resolve_length_px(top, Some(height), style, ctx),
-          right: resolve_length_px(right, Some(width), style, ctx),
-          bottom: resolve_length_px(bottom, Some(height), style, ctx),
-          left: resolve_length_px(left, Some(width), style, ctx),
-          radii,
-          reference: *reference,
-        })
-      }
-      BasicShape::Circle { radius, position } => {
-        let width = ctx.element_size.width;
-        let height = ctx.element_size.height;
-        let resolved_pos = resolve_background_positions(&[*position], style, ctx)
-          .into_iter()
-          .next()?;
-        let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
-        let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
-        if !(cx.is_finite() && cy.is_finite()) {
-          return None;
-        }
-        let radius_px = resolve_circle_radius(radius, cx, cy, width, height, style, ctx)?;
-        Some(ResolvedClipPath::Circle {
-          radius: radius_px,
-          position: resolved_pos,
-          reference: *reference,
-        })
-      }
-      BasicShape::Ellipse {
-        radius_x,
-        radius_y,
-        position,
-      } => {
-        let width = ctx.element_size.width;
-        let height = ctx.element_size.height;
-        let resolved_pos = resolve_background_positions(&[*position], style, ctx)
-          .into_iter()
-          .next()?;
-        let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
-        let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
-        if !(cx.is_finite() && cy.is_finite()) {
-          return None;
-        }
-        let rx = resolve_ellipse_radius(radius_x, true, cx, cy, width, height, style, ctx)?;
-        let ry = resolve_ellipse_radius(radius_y, false, cx, cy, width, height, style, ctx)?;
-        Some(ResolvedClipPath::Ellipse {
-          radius_x: rx,
-          radius_y: ry,
-          position: resolved_pos,
-          reference: *reference,
-        })
-      }
-      BasicShape::Polygon { fill, points } => {
-        let width = ctx.element_size.width;
-        let height = ctx.element_size.height;
-        let resolved_points = points
-          .iter()
-          .map(|(x, y)| {
-            (
-              resolve_length_px(x, Some(width), style, ctx),
-              resolve_length_px(y, Some(height), style, ctx),
-            )
+    ClipPath::BasicShape(shape, reference_override) => {
+      let boxes = clip_path_reference_box_sizes(style, ctx);
+      let canonical_reference = reference_override.unwrap_or(ReferenceBox::BorderBox);
+      let reference_size = boxes.select(canonical_reference);
+      // Canonicalize the default reference so `circle(...)` and `circle(...) border-box` interpolate.
+      let reference = Some(canonical_reference);
+
+      match shape.as_ref() {
+        BasicShape::Inset {
+          top,
+          right,
+          bottom,
+          left,
+          border_radius,
+        } => {
+          let width = reference_size.width;
+          let height = reference_size.height;
+          let radii = border_radius.as_ref().and_then(|r| {
+            Some([
+              BorderCornerRadius {
+                x: Length::px(resolve_length_px(&r.top_left.x, Some(width), style, ctx)),
+                y: Length::px(resolve_length_px(&r.top_left.y, Some(height), style, ctx)),
+              },
+              BorderCornerRadius {
+                x: Length::px(resolve_length_px(&r.top_right.x, Some(width), style, ctx)),
+                y: Length::px(resolve_length_px(&r.top_right.y, Some(height), style, ctx)),
+              },
+              BorderCornerRadius {
+                x: Length::px(resolve_length_px(&r.bottom_right.x, Some(width), style, ctx)),
+                y: Length::px(resolve_length_px(&r.bottom_right.y, Some(height), style, ctx)),
+              },
+              BorderCornerRadius {
+                x: Length::px(resolve_length_px(&r.bottom_left.x, Some(width), style, ctx)),
+                y: Length::px(resolve_length_px(&r.bottom_left.y, Some(height), style, ctx)),
+              },
+            ])
+          });
+          Some(ResolvedClipPath::Inset {
+            top: resolve_length_px(top, Some(height), style, ctx),
+            right: resolve_length_px(right, Some(width), style, ctx),
+            bottom: resolve_length_px(bottom, Some(height), style, ctx),
+            left: resolve_length_px(left, Some(width), style, ctx),
+            radii,
+            reference,
           })
-          .collect();
-        Some(ResolvedClipPath::Polygon {
+        }
+        BasicShape::Circle { radius, position } => {
+          let width = reference_size.width;
+          let height = reference_size.height;
+          let resolved_pos = resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
+            .into_iter()
+            .next()?;
+          let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
+          let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
+          if !(cx.is_finite() && cy.is_finite()) {
+            return None;
+          }
+          let radius_px = resolve_circle_radius(radius, cx, cy, width, height, style, ctx)?;
+          Some(ResolvedClipPath::Circle {
+            radius: radius_px,
+            position: resolved_pos,
+            reference,
+          })
+        }
+        BasicShape::Ellipse {
+          radius_x,
+          radius_y,
+          position,
+        } => {
+          let width = reference_size.width;
+          let height = reference_size.height;
+          let resolved_pos = resolve_background_positions_for_size(&[*position], reference_size, style, ctx)
+            .into_iter()
+            .next()?;
+          let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
+          let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
+          if !(cx.is_finite() && cy.is_finite()) {
+            return None;
+          }
+          let rx = resolve_ellipse_radius(radius_x, true, cx, cy, width, height, style, ctx)?;
+          let ry = resolve_ellipse_radius(radius_y, false, cx, cy, width, height, style, ctx)?;
+          Some(ResolvedClipPath::Ellipse {
+            radius_x: rx,
+            radius_y: ry,
+            position: resolved_pos,
+            reference,
+          })
+        }
+        BasicShape::Polygon { fill, points } => {
+          let width = reference_size.width;
+          let height = reference_size.height;
+          let resolved_points = points
+            .iter()
+            .map(|(x, y)| {
+              (
+                resolve_length_px(x, Some(width), style, ctx),
+                resolve_length_px(y, Some(height), style, ctx),
+              )
+            })
+            .collect();
+          Some(ResolvedClipPath::Polygon {
+            fill: *fill,
+            points: resolved_points,
+            reference,
+          })
+        }
+        BasicShape::Path { fill, data } => Some(ResolvedClipPath::Path {
           fill: *fill,
-          points: resolved_points,
-          reference: *reference,
-        })
+          reference,
+          data: Arc::clone(data),
+        }),
       }
-      BasicShape::Path { fill, data } => Some(ResolvedClipPath::Path {
-        fill: *fill,
-        reference: *reference,
-        data: Arc::clone(data),
-      }),
-    },
+    }
   }
 }
 
@@ -1695,7 +1790,7 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
             },
           ]
         }),
-        reference: *reference,
+        reference: Some(reference.unwrap_or(ReferenceBox::BorderBox)),
       }),
       BasicShape::Circle { radius, position } => match (radius, position) {
         (ShapeRadius::Length(len), BackgroundPosition::Position { x, y }) => {
@@ -1711,7 +1806,7 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
                 offset: y.offset.to_px(),
               },
             },
-            reference: *reference,
+            reference: Some(reference.unwrap_or(ReferenceBox::BorderBox)),
           })
         }
         _ => None,
@@ -1738,14 +1833,14 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
               offset: y.offset.to_px(),
             },
           },
-          reference: *reference,
+          reference: Some(reference.unwrap_or(ReferenceBox::BorderBox)),
         }),
         _ => None,
       },
       BasicShape::Polygon { fill, points } => Some(ResolvedClipPath::Polygon {
         fill: *fill,
         points: points.iter().map(|(x, y)| (x.to_px(), y.to_px())).collect(),
-        reference: *reference,
+        reference: Some(reference.unwrap_or(ReferenceBox::BorderBox)),
       }),
       BasicShape::Path { fill, data } => Some(ResolvedClipPath::Path {
         fill: *fill,
