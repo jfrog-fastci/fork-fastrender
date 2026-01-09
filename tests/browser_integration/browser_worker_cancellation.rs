@@ -3,37 +3,29 @@
 use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
 
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
 #[test]
 fn navigation_cancellation_drops_stale_frame_and_is_silent() {
   let _lock = super::stage_listener_test_lock();
-  let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "1");
+  let _delay = TestRenderDelayGuard::set(Some(1));
 
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
   let tab_id = TabId::new();
@@ -247,7 +239,7 @@ fn rapid_scroll_cancels_stale_paint() {
   // Enable an artificial render delay for the scroll paints only. This keeps the initial navigation
   // fast (so we don't flake on the first frame) while ensuring the scroll paint is slow enough that
   // we can deterministically cancel it after receiving a stage heartbeat.
-  let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "1");
+  let delay_guard = TestRenderDelayGuard::set(Some(1));
 
   worker
     .tx
@@ -302,6 +294,9 @@ fn rapid_scroll_cancels_stale_paint() {
 
   // Ensure a stale frame does not arrive after the latest scroll frame.
   captured.extend(support::drain_for(&worker.rx, Duration::from_secs(1)));
+
+  // Clear synthetic slowdown before shutting down the worker (which can be slow under CI load).
+  drop(delay_guard);
 
   drop(worker.tx);
   worker.join.join().expect("worker join");

@@ -4,7 +4,6 @@ use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::messages::{TabId, WorkerToUi};
-use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
 // Allow plenty of time for the heavy page to render under CI contention.
@@ -14,25 +13,18 @@ use std::time::{Duration, Instant};
 // stages, so keep this generous to avoid flakes while still bounding the test.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -41,7 +33,7 @@ fn paint_cancellation_during_navigation_does_not_surface_error_page() {
   let _lock = super::stage_listener_test_lock();
   // Keep renders fast enough to complete within CI timeouts. This test relies on the heavy DOM to
   // keep paints in-flight long enough for cancellation.
-  let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "0");
+  let _delay = TestRenderDelayGuard::set(Some(0));
 
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
 
