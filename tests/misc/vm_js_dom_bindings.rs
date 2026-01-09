@@ -637,3 +637,405 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn get_elements_by_tag_name_is_live_and_skips_inert_template_contents() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  let mut scope = heap.scope();
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should exist");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
+
+  let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
+  let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+  let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+    .expect("appendChild exists");
+
+  // Build a minimal tree:
+  // document
+  //   <body>
+  //     <div id=a></div>
+  //     <div id=b></div>
+  //     <template>
+  //       <div id=inside></div>  (inert, should be skipped)
+  //     </template>
+  let tag_body = Value::String(scope.alloc_string("body")?);
+  let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+
+  vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let d1_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  let d1_obj = match d1_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr = get_data_property_value(scope.heap(), d1_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_id = Value::String(scope.alloc_string("id")?);
+  let arg_a = Value::String(scope.alloc_string("a")?);
+  vm.call_without_host(&mut scope, set_attr, d1_val, &[arg_id, arg_a])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d1_val])?;
+
+  let tag_div2 = Value::String(scope.alloc_string("div")?);
+  let d2_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div2])?;
+  let d2_obj = match d2_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr2 = get_data_property_value(scope.heap(), d2_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_id2 = Value::String(scope.alloc_string("id")?);
+  let arg_b = Value::String(scope.alloc_string("b")?);
+  vm.call_without_host(&mut scope, set_attr2, d2_val, &[arg_id2, arg_b])?;
+
+  // Call getElementsByTagName before inserting d2 to exercise liveness.
+  let key_get_elements_by_tag_name = PropertyKey::from_string(scope.alloc_string("getElementsByTagName")?);
+  let get_elements_by_tag_name =
+    get_data_property_value(scope.heap(), document_obj, &key_get_elements_by_tag_name)
+      .expect("getElementsByTagName should exist");
+
+  let arg_div = Value::String(scope.alloc_string("div")?);
+  let coll_val = vm.call_without_host(&mut scope, get_elements_by_tag_name, document_val, &[arg_div])?;
+  let coll_obj = match coll_val {
+    Value::Object(o) => o,
+    _ => panic!("expected an object collection"),
+  };
+
+  let key_length = PropertyKey::from_string(scope.alloc_string("length")?);
+  let len1 = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len1, Value::Number(1.0));
+
+  let key_0 = PropertyKey::from_string(scope.alloc_string("0")?);
+  let v0 = get_data_property_value(scope.heap(), coll_obj, &key_0).expect("coll[0] exists");
+  assert_eq!(v0, d1_val);
+
+  let key_item = PropertyKey::from_string(scope.alloc_string("item")?);
+  let item = get_data_property_value(scope.heap(), coll_obj, &key_item).expect("item exists");
+  let item0 = vm.call_without_host(&mut scope, item, coll_val, &[Value::Number(0.0)])?;
+  assert_eq!(item0, d1_val);
+  let item_neg = vm.call_without_host(&mut scope, item, coll_val, &[Value::Number(-1.0)])?;
+  assert!(matches!(item_neg, Value::Null));
+
+  // Append d2 and ensure the same collection object updates.
+  vm.call_without_host(&mut scope, append_child, body_val, &[d2_val])?;
+  let len2 = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len2, Value::Number(2.0));
+  let key_1 = PropertyKey::from_string(scope.alloc_string("1")?);
+  let v1 = get_data_property_value(scope.heap(), coll_obj, &key_1).expect("coll[1] exists");
+  assert_eq!(v1, d2_val);
+
+  // Append a <template><div></div></template> and ensure inert contents are skipped.
+  let tag_template = Value::String(scope.alloc_string("template")?);
+  let tmpl_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_template])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[tmpl_val])?;
+
+  let inside_val = {
+    let tag_div3 = Value::String(scope.alloc_string("div")?);
+    let inside = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div3])?;
+    let inside_obj = match inside {
+      Value::Object(o) => o,
+      _ => panic!("expected div wrapper"),
+    };
+    let set_attr3 = get_data_property_value(scope.heap(), inside_obj, &key_set_attribute).expect("setAttribute exists");
+    let arg_id3 = Value::String(scope.alloc_string("id")?);
+    let arg_inside = Value::String(scope.alloc_string("inside")?);
+    vm.call_without_host(&mut scope, set_attr3, inside, &[arg_id3, arg_inside])?;
+    inside
+  };
+  vm.call_without_host(&mut scope, append_child, tmpl_val, &[inside_val])?;
+
+  let len3 = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len3, Value::Number(2.0));
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn get_elements_by_class_name_tokenizes_and_is_live() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  let mut scope = heap.scope();
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should exist");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
+
+  let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
+  let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+  let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+    .expect("appendChild exists");
+
+  let tag_body = Value::String(scope.alloc_string("body")?);
+  let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+  vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let d1_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  let d1_obj = match d1_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr = get_data_property_value(scope.heap(), d1_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_class = Value::String(scope.alloc_string("class")?);
+  let arg_foo_bar = Value::String(scope.alloc_string("foo bar")?);
+  vm.call_without_host(&mut scope, set_attr, d1_val, &[arg_class, arg_foo_bar])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d1_val])?;
+
+  let tag_div2 = Value::String(scope.alloc_string("div")?);
+  let d2_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div2])?;
+  let d2_obj = match d2_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr2 = get_data_property_value(scope.heap(), d2_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_class2 = Value::String(scope.alloc_string("class")?);
+  let arg_foo = Value::String(scope.alloc_string("foo")?);
+  vm.call_without_host(&mut scope, set_attr2, d2_val, &[arg_class2, arg_foo])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d2_val])?;
+
+  let key_get_elements_by_class_name = PropertyKey::from_string(scope.alloc_string("getElementsByClassName")?);
+  let get_elements_by_class_name =
+    get_data_property_value(scope.heap(), document_obj, &key_get_elements_by_class_name)
+      .expect("getElementsByClassName should exist");
+
+  let arg_query = Value::String(scope.alloc_string("foo  bar")?);
+  let coll_val =
+    vm.call_without_host(&mut scope, get_elements_by_class_name, document_val, &[arg_query])?;
+  let coll_obj = match coll_val {
+    Value::Object(o) => o,
+    _ => panic!("expected collection object"),
+  };
+
+  let key_length = PropertyKey::from_string(scope.alloc_string("length")?);
+  let len1 = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len1, Value::Number(1.0));
+
+  let key_0 = PropertyKey::from_string(scope.alloc_string("0")?);
+  let v0 = get_data_property_value(scope.heap(), coll_obj, &key_0).expect("coll[0] exists");
+  assert_eq!(v0, d1_val);
+
+  // Add a third element with both classes; the collection should update.
+  let tag_div3 = Value::String(scope.alloc_string("div")?);
+  let d3_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div3])?;
+  let d3_obj = match d3_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr3 = get_data_property_value(scope.heap(), d3_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_class3 = Value::String(scope.alloc_string("class")?);
+  let arg_bar_tab_foo = Value::String(scope.alloc_string("bar\tfoo baz")?);
+  vm.call_without_host(&mut scope, set_attr3, d3_val, &[arg_class3, arg_bar_tab_foo])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d3_val])?;
+
+  let len2 = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len2, Value::Number(2.0));
+  let key_1 = PropertyKey::from_string(scope.alloc_string("1")?);
+  let v1 = get_data_property_value(scope.heap(), coll_obj, &key_1).expect("coll[1] exists");
+  assert_eq!(v1, d3_val);
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn get_elements_by_name_matches_name_attribute() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  let mut scope = heap.scope();
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should exist");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
+
+  let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
+  let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+  let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+    .expect("appendChild exists");
+
+  let tag_body = Value::String(scope.alloc_string("body")?);
+  let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+  vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+  let tag_input = Value::String(scope.alloc_string("input")?);
+  let i1_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_input])?;
+  let i1_obj = match i1_val {
+    Value::Object(o) => o,
+    _ => panic!("expected input wrapper"),
+  };
+  let set_attr = get_data_property_value(scope.heap(), i1_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_name = Value::String(scope.alloc_string("name")?);
+  let arg_n = Value::String(scope.alloc_string("n")?);
+  vm.call_without_host(&mut scope, set_attr, i1_val, &[arg_name, arg_n])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[i1_val])?;
+
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let d_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  let d_obj = match d_val {
+    Value::Object(o) => o,
+    _ => panic!("expected div wrapper"),
+  };
+  let set_attr2 = get_data_property_value(scope.heap(), d_obj, &key_set_attribute).expect("setAttribute exists");
+  let arg_name2 = Value::String(scope.alloc_string("name")?);
+  let arg_n2 = Value::String(scope.alloc_string("n")?);
+  vm.call_without_host(&mut scope, set_attr2, d_val, &[arg_name2, arg_n2])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d_val])?;
+
+  let key_get_elements_by_name = PropertyKey::from_string(scope.alloc_string("getElementsByName")?);
+  let get_elements_by_name = get_data_property_value(scope.heap(), document_obj, &key_get_elements_by_name)
+    .expect("getElementsByName should exist");
+
+  let arg_q = Value::String(scope.alloc_string("n")?);
+  let coll_val = vm.call_without_host(&mut scope, get_elements_by_name, document_val, &[arg_q])?;
+  let coll_obj = match coll_val {
+    Value::Object(o) => o,
+    _ => panic!("expected collection object"),
+  };
+
+  let key_length = PropertyKey::from_string(scope.alloc_string("length")?);
+  let len = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len, Value::Number(2.0));
+
+  let key_0 = PropertyKey::from_string(scope.alloc_string("0")?);
+  let key_1 = PropertyKey::from_string(scope.alloc_string("1")?);
+  let v0 = get_data_property_value(scope.heap(), coll_obj, &key_0).expect("coll[0] exists");
+  let v1 = get_data_property_value(scope.heap(), coll_obj, &key_1).expect("coll[1] exists");
+  assert_eq!(v0, i1_val);
+  assert_eq!(v1, d_val);
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn get_elements_by_tag_name_ns_supports_html_namespace_and_wildcards() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  let mut scope = heap.scope();
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should exist");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
+
+  let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+  let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+    .expect("appendChild exists");
+
+  let tag_body = Value::String(scope.alloc_string("body")?);
+  let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+  vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let d_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  vm.call_without_host(&mut scope, append_child, body_val, &[d_val])?;
+
+  let key_get_elements_by_tag_name_ns =
+    PropertyKey::from_string(scope.alloc_string("getElementsByTagNameNS")?);
+  let get_elements_by_tag_name_ns =
+    get_data_property_value(scope.heap(), document_obj, &key_get_elements_by_tag_name_ns)
+      .expect("getElementsByTagNameNS should exist");
+
+  let arg_ns = Value::String(scope.alloc_string("http://www.w3.org/1999/xhtml")?);
+  let arg_div = Value::String(scope.alloc_string("DIV")?);
+  let coll_val = vm.call_without_host(
+    &mut scope,
+    get_elements_by_tag_name_ns,
+    document_val,
+    &[arg_ns, arg_div],
+  )?;
+  let coll_obj = match coll_val {
+    Value::Object(o) => o,
+    _ => panic!("expected collection object"),
+  };
+
+  let key_length = PropertyKey::from_string(scope.alloc_string("length")?);
+  let len = get_data_property_value(scope.heap(), coll_obj, &key_length).expect("length exists");
+  assert_eq!(len, Value::Number(1.0));
+
+  let arg_ns2 = Value::String(scope.alloc_string("*")?);
+  let arg_div2 = Value::String(scope.alloc_string("div")?);
+  let coll2_val = vm.call_without_host(
+    &mut scope,
+    get_elements_by_tag_name_ns,
+    document_val,
+    &[arg_ns2, arg_div2],
+  )?;
+  let coll2_obj = match coll2_val {
+    Value::Object(o) => o,
+    _ => panic!("expected collection object"),
+  };
+  let len2 = get_data_property_value(scope.heap(), coll2_obj, &key_length).expect("length exists");
+  assert_eq!(len2, Value::Number(1.0));
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}

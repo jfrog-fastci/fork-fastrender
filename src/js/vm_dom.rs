@@ -1,3 +1,4 @@
+use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use crate::js::CurrentScriptState;
 use crate::web::dom::DomException;
@@ -6,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
-  GcObject, GcSymbol, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  GcObject, GcString, GcSymbol, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
   Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
@@ -80,6 +81,151 @@ fn accessor_desc_get_set(get: Value, set: Value) -> PropertyDescriptor {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiveCollectionKind {
+  TagName { qualified_name: String },
+  TagNameNS {
+    namespace: Option<String>,
+    local_name: String,
+  },
+  ClassName { required: Vec<String> },
+  Name { name: String },
+}
+
+#[derive(Debug, Clone)]
+struct LiveCollection {
+  weak_array: WeakGcObject,
+  root: NodeId,
+  kind: LiveCollectionKind,
+  /// Cached property keys for numeric indices ("0", "1", ...).
+  ///
+  /// This avoids allocating new key strings every time we resync a live collection. We intentionally
+  /// keep previously-used index properties on the array (setting them to `undefined` when the
+  /// collection shrinks) so these key handles remain GC-reachable.
+  index_keys: Vec<GcString>,
+  last_len: usize,
+}
+
+#[inline]
+fn is_html_namespace(namespace: &str) -> bool {
+  namespace.is_empty() || namespace == HTML_NAMESPACE
+}
+
+#[inline]
+fn is_dom_ascii_whitespace(byte: u8) -> bool {
+  // DOM "ASCII whitespace" excludes U+000B (vertical tab).
+  matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+}
+
+fn split_dom_ascii_whitespace(input: &str) -> Vec<&str> {
+  let mut out: Vec<&str> = Vec::new();
+  let mut start: Option<usize> = None;
+  for (idx, byte) in input.bytes().enumerate() {
+    if is_dom_ascii_whitespace(byte) {
+      if let Some(start) = start.take() {
+        out.push(&input[start..idx]);
+      }
+    } else if start.is_none() {
+      start = Some(idx);
+    }
+  }
+  if let Some(start) = start {
+    out.push(&input[start..]);
+  }
+  out
+}
+
+fn element_kind_parts(kind: &NodeKind) -> Option<(&str, &str, &Vec<(String, String)>)> {
+  match kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => Some((tag_name.as_str(), namespace.as_str(), attributes)),
+    NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => Some(("slot", namespace.as_str(), attributes)),
+    _ => None,
+  }
+}
+
+fn live_collection_matches(kind: &LiveCollectionKind, tag: &str, namespace: &str, attrs: &[(String, String)]) -> bool {
+  match kind {
+    LiveCollectionKind::TagName { qualified_name } => {
+      if qualified_name.is_empty() {
+        return false;
+      }
+      if qualified_name == "*" {
+        return true;
+      }
+      if is_html_namespace(namespace) {
+        tag.eq_ignore_ascii_case(qualified_name)
+      } else {
+        tag == qualified_name
+      }
+    }
+    LiveCollectionKind::TagNameNS {
+      namespace: ns,
+      local_name,
+    } => {
+      if local_name.is_empty() {
+        return false;
+      }
+
+      if let Some(ns) = ns.as_deref() {
+        if ns != "*" && ns != "" && ns != HTML_NAMESPACE {
+          return false;
+        }
+        if (ns == "" || ns == HTML_NAMESPACE) && !is_html_namespace(namespace) {
+          return false;
+        }
+      }
+
+      if local_name == "*" {
+        return true;
+      }
+      if is_html_namespace(namespace) {
+        tag.eq_ignore_ascii_case(local_name)
+      } else {
+        tag == local_name
+      }
+    }
+    LiveCollectionKind::ClassName { required } => {
+      if required.is_empty() {
+        return false;
+      }
+
+      let class_attr = attrs
+        .iter()
+        .find(|(name, _)| {
+          if is_html_namespace(namespace) {
+            name.eq_ignore_ascii_case("class")
+          } else {
+            name == "class"
+          }
+        })
+        .map(|(_, value)| value.as_str());
+      let Some(class_attr) = class_attr else {
+        return false;
+      };
+
+      let have = split_dom_ascii_whitespace(class_attr);
+      required
+        .iter()
+        .all(|required| have.iter().any(|token| token == required))
+    }
+    LiveCollectionKind::Name { name } => attrs.iter().any(|(attr_name, value)| {
+      (if is_html_namespace(namespace) {
+        attr_name.eq_ignore_ascii_case("name")
+      } else {
+        attr_name == "name"
+      }) && value == name
+    }),
+  }
+}
+
 pub struct DomHost {
   dom: Rc<RefCell<Document>>,
   current_script: Rc<RefCell<CurrentScriptState>>,
@@ -94,6 +240,7 @@ pub struct DomHost {
   // Identity cache: preserve wrapper identity without keeping wrappers alive.
   node_wrappers: HashMap<NodeId, WeakGcObject>,
   class_list_wrappers: HashMap<NodeId, WeakGcObject>,
+  live_collections: Vec<LiveCollection>,
 
   // Hidden metadata keys stored on each wrapper.
   sym_dom_kind: GcSymbol,
@@ -105,6 +252,7 @@ pub struct DomHost {
   proto_element: GcObject,
   proto_document: GcObject,
   proto_dom_token_list: GcObject,
+  proto_html_collection: GcObject,
 
   // Cached prototypes for thrown objects.
   error_prototype: GcObject,
@@ -447,7 +595,484 @@ fn wrap_node<'a>(
   Ok(Value::Object(wrapper))
 }
 
+fn sync_one_live_collection<'a>(
+  host: &mut DomHost,
+  scope: &mut Scope<'a>,
+  dom: &Document,
+  array: GcObject,
+  coll: &mut LiveCollection,
+) -> Result<(), VmError> {
+  let nodes = dom.nodes();
+
+  let mut out_len: usize = 0;
+
+  let Some(root_node) = nodes.get(coll.root.index()) else {
+    return Ok(());
+  };
+
+  // Defensive bound to avoid infinite loops if the tree becomes corrupted.
+  let mut remaining = nodes.len() + 1;
+
+  let mut stack: Vec<(NodeId, NodeId)> = Vec::new();
+  stack
+    .try_reserve_exact(root_node.children.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &child in root_node.children.iter().rev() {
+    stack.push((coll.root, child));
+  }
+
+  while let Some((parent_id, node_id)) = stack.pop() {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    let Some(node) = nodes.get(node_id.index()) else {
+      continue;
+    };
+    if node.parent != Some(parent_id) {
+      continue;
+    }
+
+    if let Some((tag, namespace, attrs)) = element_kind_parts(&node.kind) {
+      if live_collection_matches(&coll.kind, tag, namespace, attrs) {
+        if out_len > u32::MAX as usize {
+          return Err(VmError::Unimplemented("live collection length exceeds u32"));
+        }
+
+        let key_handle = if let Some(existing) = coll.index_keys.get(out_len).copied() {
+          existing
+        } else {
+          let key_handle = scope.alloc_string(&out_len.to_string())?;
+          // Root the freshly allocated key string until it's stored on the array.
+          scope.push_root(Value::String(key_handle))?;
+          coll.index_keys.push(key_handle);
+          key_handle
+        };
+
+        let wrapper = wrap_node(host, scope, node_id, DomKind::Element)?;
+        scope.define_property(
+          array,
+          PropertyKey::from_string(key_handle),
+          data_desc(wrapper, /* writable */ true, /* enumerable */ true, /* configurable */ true),
+        )?;
+        out_len += 1;
+      }
+    }
+
+    if node.inert_subtree {
+      continue;
+    }
+    if matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+
+    for &child in node.children.iter().rev() {
+      let Some(child_node) = nodes.get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(node_id) {
+        continue;
+      }
+      if matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+      stack.push((node_id, child));
+    }
+  }
+
+  // Clear stale entries so `collection[i]` returns `undefined` for indices >= length.
+  for idx in out_len..coll.last_len {
+    if let Some(key_handle) = coll.index_keys.get(idx).copied() {
+      scope.define_property(
+        array,
+        PropertyKey::from_string(key_handle),
+        data_desc(
+          Value::Undefined,
+          /* writable */ true,
+          /* enumerable */ true,
+          /* configurable */ true,
+        ),
+      )?;
+    }
+  }
+
+  // Ensure the `length` slot reflects the number of live matches.
+  let length_key = PropertyKey::from_string(scope.alloc_string("length")?);
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(out_len as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  coll.last_len = out_len;
+  Ok(())
+}
+
+impl DomHost {
+  fn sync_live_collections(&mut self, scope: &mut Scope<'_>) -> Result<(), VmError> {
+    // Clone the `Rc` so we can hold a `Ref<Document>` while mutating other host state (wrapper
+    // caches, live collection registry) without borrowing `self` immutably for the duration of
+    // the sync.
+    let dom_rc = Rc::clone(&self.dom);
+    let dom = dom_rc.borrow();
+    let mut collections = std::mem::take(&mut self.live_collections);
+    let mut out: Vec<LiveCollection> = Vec::with_capacity(collections.len());
+
+    for mut coll in collections.drain(..) {
+      let Some(array) = coll.weak_array.upgrade(scope.heap()) else {
+        continue;
+      };
+
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(array))?;
+      sync_one_live_collection(self, &mut scope, &dom, array, &mut coll)?;
+      out.push(coll);
+    }
+
+    self.live_collections = out;
+    Ok(())
+  }
+}
+
 // === Native call handlers ===
+
+fn dom_html_collection_item(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let obj = match this {
+    Value::Object(o) => o,
+    _ => return throw_type_error(scope, host, "HTMLCollection.item called on incompatible receiver"),
+  };
+
+  let idx_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut idx = scope.heap_mut().to_number(idx_val)?;
+  if !idx.is_finite() {
+    idx = 0.0;
+  }
+  idx = idx.trunc();
+  if idx < 0.0 {
+    return Ok(Value::Null);
+  }
+  if idx > (usize::MAX as f64) {
+    return Ok(Value::Null);
+  }
+  let idx = idx as usize;
+
+  let length_key = PropertyKey::from_string(scope.alloc_string("length")?);
+  let length_desc = scope.heap().get_property(obj, &length_key)?;
+  let length_val = match length_desc.map(|d| d.kind) {
+    Some(PropertyKind::Data { value, .. }) => value,
+    Some(PropertyKind::Accessor { .. }) => Value::Number(0.0),
+    None => Value::Number(0.0),
+  };
+  let len = match length_val {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+  if idx >= len {
+    return Ok(Value::Null);
+  }
+
+  let idx_key = PropertyKey::from_string(scope.alloc_string(&idx.to_string())?);
+  let value = scope.heap().get(obj, &idx_key)?;
+  if matches!(value, Value::Undefined) {
+    Ok(Value::Null)
+  } else {
+    Ok(value)
+  }
+}
+
+fn dom_document_get_elements_by_tag_name(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_document(scope, host, this)?;
+
+  let Some(qname_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagName requires 1 argument");
+  };
+  let qualified_name = require_string(scope, host, qname_val, "qualifiedName")?;
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::TagName { qualified_name },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_element_get_elements_by_tag_name(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_element(scope, host, this)?;
+
+  let Some(qname_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagName requires 1 argument");
+  };
+  let qualified_name = require_string(scope, host, qname_val, "qualifiedName")?;
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::TagName { qualified_name },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_document_get_elements_by_tag_name_ns(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_document(scope, host, this)?;
+
+  let Some(namespace_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagNameNS requires 2 arguments");
+  };
+  let Some(local_name_val) = args.get(1).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagNameNS requires 2 arguments");
+  };
+
+  let namespace = match namespace_val {
+    Value::Null | Value::Undefined => None,
+    other => Some(require_string(scope, host, other, "namespace")?),
+  };
+  let local_name = require_string(scope, host, local_name_val, "localName")?;
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::TagNameNS {
+      namespace,
+      local_name,
+    },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_element_get_elements_by_tag_name_ns(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_element(scope, host, this)?;
+
+  let Some(namespace_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagNameNS requires 2 arguments");
+  };
+  let Some(local_name_val) = args.get(1).copied() else {
+    return throw_type_error(scope, host, "getElementsByTagNameNS requires 2 arguments");
+  };
+
+  let namespace = match namespace_val {
+    Value::Null | Value::Undefined => None,
+    other => Some(require_string(scope, host, other, "namespace")?),
+  };
+  let local_name = require_string(scope, host, local_name_val, "localName")?;
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::TagNameNS {
+      namespace,
+      local_name,
+    },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_document_get_elements_by_class_name(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_document(scope, host, this)?;
+
+  let Some(class_names_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByClassName requires 1 argument");
+  };
+  let class_names = require_string(scope, host, class_names_val, "classNames")?;
+
+  let required: Vec<String> = split_dom_ascii_whitespace(&class_names)
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect();
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::ClassName { required },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_element_get_elements_by_class_name(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_element(scope, host, this)?;
+
+  let Some(class_names_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByClassName requires 1 argument");
+  };
+  let class_names = require_string(scope, host, class_names_val, "classNames")?;
+
+  let required: Vec<String> = split_dom_ascii_whitespace(&class_names)
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect();
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::ClassName { required },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
+
+fn dom_document_get_elements_by_name(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let root = require_this_document(scope, host, this)?;
+
+  let Some(name_val) = args.get(0).copied() else {
+    return throw_type_error(scope, host, "getElementsByName requires 1 argument");
+  };
+  let name = require_string(scope, host, name_val, "name")?;
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(array, Some(host.proto_html_collection))?;
+
+  host.live_collections.push(LiveCollection {
+    weak_array: WeakGcObject::from(array),
+    root,
+    kind: LiveCollectionKind::Name { name },
+    index_keys: Vec::new(),
+    last_len: 0,
+  });
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Object(array))
+}
 
 fn dom_document_create_element(
   vm: &mut Vm,
@@ -540,8 +1165,12 @@ fn dom_node_append_child(
   };
   let child = require_node_arg(scope, host, child_val)?;
 
-  if let Err(err) = host.dom.borrow_mut().append_child(parent, child) {
-    return throw_dom_error(scope, host, err);
+  let changed = match host.dom.borrow_mut().append_child(parent, child) {
+    Ok(changed) => changed,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  if changed {
+    host.sync_live_collections(scope)?;
   }
   Ok(child_val)
 }
@@ -799,8 +1428,12 @@ fn dom_element_set_attribute(
   let name = require_string(scope, host, name_val, "name")?;
   let value = require_string(scope, host, value_val, "value")?;
 
-  if let Err(err) = host.dom.borrow_mut().set_attribute(node_id, &name, &value) {
-    return throw_dom_error(scope, host, err);
+  let changed = match host.dom.borrow_mut().set_attribute(node_id, &name, &value) {
+    Ok(changed) => changed,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  if changed {
+    host.sync_live_collections(scope)?;
   }
   Ok(Value::Undefined)
 }
@@ -918,6 +1551,8 @@ fn dom_node_text_content_setter(
     dom.node_mut(node_id).children.push(text_id);
   }
 
+  drop(dom);
+  host.sync_live_collections(scope)?;
   Ok(Value::Undefined)
 }
 
@@ -999,12 +1634,15 @@ fn dom_token_list_add(
   }
   let token_refs: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
 
-  match host
+  let result = host
     .dom
     .borrow_mut()
-    .class_list_add(element_id, token_refs.as_slice())
-  {
-    Ok(_) => Ok(Value::Undefined),
+    .class_list_add(element_id, token_refs.as_slice());
+  match result {
+    Ok(_) => {
+      host.sync_live_collections(scope)?;
+      Ok(Value::Undefined)
+    }
     Err(e) => throw_dom_error(scope, host, e),
   }
 }
@@ -1027,12 +1665,15 @@ fn dom_token_list_remove(
   }
   let token_refs: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
 
-  match host
+  let result = host
     .dom
     .borrow_mut()
-    .class_list_remove(element_id, token_refs.as_slice())
-  {
-    Ok(_) => Ok(Value::Undefined),
+    .class_list_remove(element_id, token_refs.as_slice());
+  match result {
+    Ok(_) => {
+      host.sync_live_collections(scope)?;
+      Ok(Value::Undefined)
+    }
     Err(e) => throw_dom_error(scope, host, e),
   }
 }
@@ -1057,12 +1698,15 @@ fn dom_token_list_toggle(
     Some(v) => Some(scope.heap().to_boolean(v)?),
   };
 
-  match host
+  let result = host
     .dom
     .borrow_mut()
-    .class_list_toggle(element_id, &token, force)
-  {
-    Ok(v) => Ok(Value::Bool(v)),
+    .class_list_toggle(element_id, &token, force);
+  match result {
+    Ok(v) => {
+      host.sync_live_collections(scope)?;
+      Ok(Value::Bool(v))
+    }
     Err(e) => throw_dom_error(scope, host, e),
   }
 }
@@ -1143,6 +1787,13 @@ pub fn install_dom_bindings_with_limits(
     Some(realm.intrinsics().object_prototype()),
   )?;
 
+  let proto_html_collection = scope.alloc_object()?;
+  scope.push_root(Value::Object(proto_html_collection))?;
+  scope.heap_mut().object_set_prototype(
+    proto_html_collection,
+    Some(realm.intrinsics().array_prototype()),
+  )?;
+
   // Ensure `proto_element` stays alive even before any Element wrappers exist. Without this, a GC
   // cycle between `install_dom_bindings` and the first `createElement` could collect `proto_element`
   // because `DomHost` is not traced by the GC.
@@ -1152,7 +1803,7 @@ pub fn install_dom_bindings_with_limits(
     proto_node,
     PropertyKey::from_symbol(sym_proto_element_root),
      hidden_desc(Value::Object(proto_element)),
-   )?;
+    )?;
 
   // Ensure `proto_dom_token_list` and `sym_token_list_element_id` survive even if no script has
   // accessed `Element.classList` yet.
@@ -1172,10 +1823,30 @@ pub fn install_dom_bindings_with_limits(
     hidden_desc(Value::Null),
   )?;
 
+  // Ensure the HTMLCollection-ish prototype survives even if no script has called a `getElementsBy*`
+  // method yet.
+  let sym_proto_html_collection_root =
+    scope.alloc_symbol(Some("fastrender.dom.proto_html_collection_root"))?;
+  scope.push_root(Value::Symbol(sym_proto_html_collection_root))?;
+  scope.define_property(
+    proto_node,
+    PropertyKey::from_symbol(sym_proto_html_collection_root),
+    hidden_desc(Value::Object(proto_html_collection)),
+  )?;
+
   // Register native call handlers.
+  let call_html_collection_item = vm.register_native_call(dom_html_collection_item)?;
   let call_create_element = vm.register_native_call(dom_document_create_element)?;
   let call_get_element_by_id = vm.register_native_call(dom_document_get_element_by_id)?;
   let call_query_selector = vm.register_native_call(dom_document_query_selector)?;
+  let call_get_elements_by_tag_name = vm.register_native_call(dom_document_get_elements_by_tag_name)?;
+  let call_get_elements_by_tag_name_ns = vm.register_native_call(dom_document_get_elements_by_tag_name_ns)?;
+  let call_get_elements_by_class_name = vm.register_native_call(dom_document_get_elements_by_class_name)?;
+  let call_get_elements_by_name = vm.register_native_call(dom_document_get_elements_by_name)?;
+  let call_element_get_elements_by_tag_name = vm.register_native_call(dom_element_get_elements_by_tag_name)?;
+  let call_element_get_elements_by_tag_name_ns =
+    vm.register_native_call(dom_element_get_elements_by_tag_name_ns)?;
+  let call_element_get_elements_by_class_name = vm.register_native_call(dom_element_get_elements_by_class_name)?;
   let call_append_child = vm.register_native_call(dom_node_append_child)?;
   let call_has_child_nodes = vm.register_native_call(dom_node_has_child_nodes)?;
   let call_parent_node = vm.register_native_call(dom_node_parent_node_getter)?;
@@ -1199,6 +1870,34 @@ pub fn install_dom_bindings_with_limits(
   install_method(&mut scope, proto_document, "createElement", call_create_element, 1)?;
   install_method(&mut scope, proto_document, "getElementById", call_get_element_by_id, 1)?;
   install_method(&mut scope, proto_document, "querySelector", call_query_selector, 1)?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "getElementsByTagName",
+    call_get_elements_by_tag_name,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "getElementsByTagNameNS",
+    call_get_elements_by_tag_name_ns,
+    2,
+  )?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "getElementsByClassName",
+    call_get_elements_by_class_name,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_document,
+    "getElementsByName",
+    call_get_elements_by_name,
+    1,
+  )?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
   install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
   install_getter(&mut scope, proto_node, "parentNode", call_parent_node)?;
@@ -1209,6 +1908,27 @@ pub fn install_dom_bindings_with_limits(
   install_getter(&mut scope, proto_node, "nextSibling", call_next_sibling)?;
   install_getter(&mut scope, proto_node, "nodeType", call_node_type)?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "getElementsByTagName",
+    call_element_get_elements_by_tag_name,
+    1,
+  )?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "getElementsByTagNameNS",
+    call_element_get_elements_by_tag_name_ns,
+    2,
+  )?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "getElementsByClassName",
+    call_element_get_elements_by_class_name,
+    1,
+  )?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
   install_accessor(
     &mut scope,
@@ -1223,6 +1943,7 @@ pub fn install_dom_bindings_with_limits(
   install_method(&mut scope, proto_dom_token_list, "add", call_token_list_add, 0)?;
   install_method(&mut scope, proto_dom_token_list, "remove", call_token_list_remove, 0)?;
   install_method(&mut scope, proto_dom_token_list, "toggle", call_token_list_toggle, 1)?;
+  install_method(&mut scope, proto_html_collection, "item", call_html_collection_item, 1)?;
 
   let mut host = DomHost {
     dom: dom.clone(),
@@ -1230,6 +1951,7 @@ pub fn install_dom_bindings_with_limits(
     max_string_bytes,
     node_wrappers: HashMap::new(),
     class_list_wrappers: HashMap::new(),
+    live_collections: Vec::new(),
     sym_dom_kind,
     sym_node_id,
     sym_token_list_element_id,
@@ -1237,6 +1959,7 @@ pub fn install_dom_bindings_with_limits(
     proto_element,
     proto_document,
     proto_dom_token_list,
+    proto_html_collection,
     error_prototype: realm.intrinsics().error_prototype(),
     type_error_prototype: realm.intrinsics().type_error_prototype(),
   };
