@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use vm_js::{PropertyKey, Value, VmError};
+use vm_js::{JsBigInt, PropertyKey, Value, VmError};
 use webidl_ir::{
   parse_default_value, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType, TypeAnnotation, TypeContext,
@@ -217,6 +217,40 @@ fn object_conversion_uses_to_object() {
     panic!("expected object, got {converted:?}");
   };
   assert!(rt.is_object(obj));
+}
+
+#[test]
+fn bigint_conversion_uses_to_bigint() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+  let ty = IdlType::BigInt;
+
+  let bigint = Value::BigInt(JsBigInt::from_u128(42));
+  let converted = convert_to_idl(&mut rt, bigint, &ty, &ctx).unwrap();
+  assert_eq!(converted, ConvertedValue::Any(bigint));
+
+  let converted = convert_to_idl(&mut rt, Value::Number(5.0), &ty, &ctx).unwrap();
+  assert_eq!(
+    converted,
+    ConvertedValue::Any(Value::BigInt(JsBigInt::from_u128(5)))
+  );
+}
+
+#[test]
+fn symbol_conversion_requires_symbol() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let sym = {
+    let mut scope = rt.heap_mut().scope();
+    scope.alloc_symbol(Some("s")).unwrap()
+  };
+  let value = Value::Symbol(sym);
+  let converted = convert_to_idl(&mut rt, value, &IdlType::Symbol, &ctx).unwrap();
+  assert_eq!(converted, ConvertedValue::Any(value));
+
+  let err = convert_to_idl(&mut rt, Value::Number(0.0), &IdlType::Symbol, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
 }
 
 #[test]

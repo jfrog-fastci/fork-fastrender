@@ -255,9 +255,27 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
       Ok(ConvertedValue::Object(obj))
     }
 
-    IdlType::Symbol => Err(rt.throw_type_error("`symbol` conversions are not supported yet")),
+    IdlType::Symbol => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to `symbol`",
+        ));
+      }
+      if !rt.is_symbol(v) {
+        return Err(rt.throw_type_error("value is not a symbol"));
+      }
+      Ok(ConvertedValue::Any(v))
+    }
 
-    IdlType::BigInt => Err(rt.throw_type_error("`bigint` conversions are not supported yet")),
+    IdlType::BigInt => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to `bigint`",
+        ));
+      }
+      let bigint = if rt.is_bigint(v) { v } else { rt.to_bigint(v)? };
+      Ok(ConvertedValue::Any(bigint))
+    }
 
     IdlType::Named(named) => convert_to_named_type(rt, v, named, ctx, typedef_stack, state),
 
