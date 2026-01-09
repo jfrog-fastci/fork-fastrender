@@ -5,7 +5,23 @@
 //! embedded JS engine.
 
 pub use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
-pub use webidl::{JsOwnPropertyDescriptor, JsPropertyKind};
+
+/// The kind of property described by a [`JsOwnPropertyDescriptor`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JsPropertyKind<V> {
+  Data { value: V },
+  Accessor { get: V, set: V },
+}
+
+/// Subset of ECMAScript property descriptor data returned by `[[GetOwnProperty]]`.
+///
+/// This crate's legacy runtime interface only needs enumerability and the ability to distinguish
+/// data vs accessor descriptors. (The full attribute surface is handled by `vm-js`.)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JsOwnPropertyDescriptor<V> {
+  pub enumerable: bool,
+  pub kind: JsPropertyKind<V>,
+}
 
 /// Derive a stable [`InterfaceId`] from an interface name.
 ///

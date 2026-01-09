@@ -14,15 +14,15 @@
     "layout": 310.982243871334,
     "paint": 57.99668856764428
   },
-  "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing, avoiding replaced-form-control sizing for icon <button> elements (with element children), and hiding scrollbars in the Chrome-baseline fixture patch (match Chrome `--hide-scrollbars`) so the layout viewport stays at the full 1200×800. Also fixed `color: currentColor` on the `color` property to inherit the parent color (as used by CSS resets like `a { color: currentColor; }`), eliminating incorrect UA blue link coloring. Remaining diffs are mostly text rasterization/antialiasing (subpixel AA/hinting) plus occasional 1px hairline/border rounding differences.",
+  "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing, avoiding replaced-form-control sizing for icon <button> elements (with element children), and hiding scrollbars in the Chrome-baseline fixture patch (match Chrome `--hide-scrollbars`) so the layout viewport stays at the full 1200×800. Also fixed `color: currentColor` on the `color` property to inherit the parent color (as used by CSS resets like `a { color: currentColor; }`), eliminating incorrect UA blue link coloring. Fixed flex measurement cache snapping for medium widths (>=512px) to avoid quantizing a 550px-wide 16:9 embed to 552px, which created a visible 2px black strip under the hero video placeholder. Remaining diffs are mostly text rasterization/antialiasing (subpixel AA/hinting) plus occasional 1px hairline/border rounding differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 44216,
-    "diff_percent": 4.6058,
-    "perceptual": 0.0228,
+    "diff_pixels": 47633,
+    "diff_percent": 4.9618,
+    "perceptual": 0.0294,
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9a6733ec006f6dcc6843cfaefd3f2834c73f556b"
+    "computed_at_commit": "d8dc1b187308d9d652e2861d17ef75a7d259ae9e"
   },
   "hotspot": "cascade",
   "failure_stage": null,

@@ -367,7 +367,10 @@ impl MeasureKey {
     } else if abs > 1024.0 {
       16.0
     } else if abs > 512.0 {
-      8.0
+      // Keep medium-sized measurements (e.g. responsive media at ~550px wide) more precise. Grid
+      // items frequently use percentage padding to establish aspect ratios; snapping widths to 8px
+      // steps can visibly shift those boxes by a couple of pixels.
+      2.0
     } else if abs > 256.0 {
       4.0
     } else {
@@ -4192,11 +4195,11 @@ impl GridFormattingContext {
               CrateAvailableSpace::Definite(bounds.width()),
               CrateAvailableSpace::Definite(available_height),
             )
-            .with_inline_percentage_base(
-              constraints
-                .inline_percentage_base
-                .or_else(|| Some(bounds.width())),
-            );
+            // Percentage padding/margins on grid items (and their descendants) must resolve against
+            // the grid area's definite inline size. Inheriting the parent `inline_percentage_base`
+            // can be wrong when the grid container itself is a flex item (where the container's
+            // percentage base is the flex container's width).
+            .with_inline_percentage_base(Some(bounds.width().max(0.0)));
 
             let supports_used_border_box = matches!(
               fc_type,
@@ -4310,11 +4313,11 @@ impl GridFormattingContext {
               CrateAvailableSpace::Definite(bounds.width()),
               CrateAvailableSpace::Definite(available_height),
             )
-            .with_inline_percentage_base(
-              constraints
-                .inline_percentage_base
-                .or_else(|| Some(bounds.width())),
-            );
+            // Percentage padding/margins on grid items (and their descendants) must resolve against
+            // the grid area's definite inline size. Inheriting the parent `inline_percentage_base`
+            // can be wrong when the grid container itself is a flex item (where the container's
+            // percentage base is the flex container's width).
+            .with_inline_percentage_base(Some(bounds.width().max(0.0)));
 
             let supports_used_border_box = matches!(
               fc_type,
@@ -4761,11 +4764,9 @@ impl GridFormattingContext {
         CrateAvailableSpace::Definite(bounds.width()),
         CrateAvailableSpace::Definite(available_height),
       )
-      .with_inline_percentage_base(
-        constraints
-          .inline_percentage_base
-          .or_else(|| Some(bounds.width())),
-      );
+      // Keep percentage resolution anchored to the grid area width for the laid-out item. See
+      // comment in the parallel in-flow path.
+      .with_inline_percentage_base(Some(bounds.width().max(0.0)));
 
       let force_height = continuation_available
         .map(|available| available + 0.01 >= bounds.height())
@@ -12764,6 +12765,34 @@ mod tests {
   }
 
   #[test]
+  fn measure_key_does_not_snap_medium_known_widths_to_coarse_steps() {
+    use taffy::style::AvailableSpace;
+
+    let node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    let viewport = Size::new(800.0, 600.0);
+    let known = taffy::geometry::Size {
+      width: Some(550.0),
+      height: None,
+    };
+    let avail = taffy::geometry::Size {
+      width: AvailableSpace::Definite(550.0),
+      height: AvailableSpace::MaxContent,
+    };
+
+    let (_key, snapped_known, snapped_avail) =
+      MeasureKey::new_with_snapped_sizes(&node, known, avail, viewport, false);
+    assert_eq!(
+      snapped_known.width,
+      Some(550.0),
+      "550px-wide grid items should not be snapped up to 552px (8px quantization)"
+    );
+    match snapped_avail.width {
+      AvailableSpace::Definite(w) => assert_eq!(w, 550.0),
+      other => panic!("expected snapped width to remain definite, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn grid_measurement_is_deterministic_within_quantized_measure_key() {
     use taffy::style::AvailableSpace;
 
@@ -13625,8 +13654,21 @@ mod tests {
     style.overflow_y = Overflow::Clip;
     style.scrollbar_width = ScrollbarWidth::Thin;
 
-    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
     let gc = GridFormattingContext::new();
+    // Model overlay scrollbars by default: no gutter reservation unless `scrollbar-gutter: stable`
+    // is requested.
+    let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Grid, vec![]);
+    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+
+    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
+    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
+    assert_eq!(taffy_style.scrollbar_width, 0.0);
+
+    // Stable gutter requests should propagate the scrollbar width into Taffy so it can reserve
+    // space for scroll containers.
+    let mut stable = style;
+    stable.scrollbar_gutter.stable = true;
+    let node = BoxNode::new_block(Arc::new(stable), FormattingContextType::Grid, vec![]);
     let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
 
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);

@@ -5354,7 +5354,11 @@ fn measure_cache_key_and_snap(
     } else if abs > 1024.0 {
       16.0
     } else if abs > 512.0 {
-      8.0
+      // Responsive media embeds frequently use percentage padding to establish aspect ratios (e.g.
+      // 56.25% for 16:9). Snapping a ~550px-wide probe to an 8px grid can shift the resulting
+      // height by a couple of pixels, which is visually obvious. Keep this range at 2px
+      // granularity while still allowing coarser snapping at very large sizes.
+      2.0
     } else if abs > 256.0 {
       4.0
     } else {
@@ -13752,20 +13756,24 @@ mod tests {
     style.overflow_y = Overflow::Hidden;
     style.scrollbar_width = ScrollbarWidth::Thin;
 
-    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, vec![]);
     let fc = FlexFormattingContext::new();
     let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
+
+    // Model overlay scrollbars by default: no gutter reservation unless explicitly requested via
+    // `scrollbar-gutter: stable`.
+    let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Flex, vec![]);
     let taffy_style = fc
       .computed_style_to_taffy(&node, true, None, &auto_unskipped_empty)
       .expect("taffy style");
-
     assert_eq!(taffy_style.scrollbar_width, 0.0);
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
     assert_eq!(taffy_style.overflow.y, TaffyOverflow::Hidden);
 
-    let mut style = node.style.as_ref().clone();
-    style.scrollbar_gutter.stable = true;
-    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, vec![]);
+    // When stable gutters are requested, propagate the configured scrollbar width into Taffy so it
+    // can reserve layout space for scroll containers.
+    let mut stable = node.style.as_ref().clone();
+    stable.scrollbar_gutter.stable = true;
+    let node = BoxNode::new_block(Arc::new(stable), FormattingContextType::Flex, vec![]);
     let taffy_style = fc
       .computed_style_to_taffy(&node, true, None, &auto_unskipped_empty)
       .expect("taffy style");
@@ -14763,6 +14771,40 @@ mod tests {
     assert_ne!(key_known_wider, key_known_viewport);
     assert!(snapped_known_wider.width.unwrap() > viewport.width);
     assert!(snapped_known_viewport.width.unwrap() <= viewport.width);
+  }
+
+  #[test]
+  fn measure_cache_key_does_not_snap_medium_known_widths_to_coarse_steps() {
+    use crate::geometry::Size as GeoSize;
+    use taffy::style::AvailableSpace;
+
+    let viewport = GeoSize::new(1200.0, 800.0);
+
+    let (key, snapped_known, snapped_avail) = super::measure_cache_key_and_snap(
+      &taffy::geometry::Size {
+        width: Some(550.0),
+        height: None,
+      },
+      &taffy::geometry::Size {
+        width: AvailableSpace::Definite(550.0),
+        height: AvailableSpace::Definite(100.0),
+      },
+      viewport,
+      false,
+    );
+
+    assert_eq!(
+      snapped_known.width,
+      Some(550.0),
+      "550px-wide flex item probes should not be snapped up to 552px (8px quantization)"
+    );
+    match snapped_avail.width {
+      AvailableSpace::Definite(w) => assert_eq!(w, 550.0),
+      other => panic!("expected snapped available width to remain definite, got {other:?}"),
+    }
+
+    // Ensure the key itself reflects the preserved width.
+    assert_eq!(key.0, Some(super::f32_to_canonical_bits(550.0)));
   }
 
   #[test]

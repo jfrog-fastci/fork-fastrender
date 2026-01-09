@@ -2,9 +2,7 @@ use super::VmJsRuntime;
 use crate::runtime::{JsRuntime as LegacyJsRuntime, WebIdlJsRuntime as LegacyWebIdlJsRuntime};
 use vm_js::{GcObject, GcString, GcSymbol, PropertyKey as VmPropertyKey, Value, VmError};
 
-use webidl::{
-  IteratorResult, JsOwnPropertyDescriptor, PropertyKey as WebIdlPropertyKey, WellKnownSymbol,
-};
+use webidl::{IteratorResult, PropertyKey as WebIdlPropertyKey, WellKnownSymbol};
 
 fn to_vm_property_key(key: WebIdlPropertyKey<GcString, GcSymbol>) -> VmPropertyKey {
   match key {
@@ -342,53 +340,5 @@ impl webidl::JsRuntime for VmJsRuntime {
   }
 }
 
-impl webidl::WebIdlJsRuntime for VmJsRuntime {
-  fn is_callable(&self, value: Self::Value) -> bool {
-    <Self as LegacyJsRuntime>::is_callable(self, value)
-  }
-
-  fn is_bigint(&self, value: Self::Value) -> bool {
-    <Self as LegacyJsRuntime>::is_bigint(self, value)
-  }
-
-  fn to_bigint(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error> {
-    <Self as LegacyJsRuntime>::to_bigint(self, value)
-  }
-
-  fn to_numeric(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error> {
-    <Self as LegacyJsRuntime>::to_numeric(self, value)
-  }
-
-  fn get_own_property(
-    &mut self,
-    object: Self::Object,
-    key: WebIdlPropertyKey<Self::String, Self::Symbol>,
-  ) -> Result<Option<JsOwnPropertyDescriptor<Self::Value>>, Self::Error> {
-    let key = to_vm_property_key(key);
-    <Self as LegacyJsRuntime>::get_own_property(self, Value::Object(object), key)
-  }
-
-  fn throw_type_error(&mut self, message: &str) -> Self::Error {
-    <Self as LegacyWebIdlJsRuntime>::throw_type_error(self, message)
-  }
-
-  fn throw_range_error(&mut self, message: &str) -> Self::Error {
-    <Self as LegacyWebIdlJsRuntime>::throw_range_error(self, message)
-  }
-
-  fn is_array_buffer(&self, value: Self::Value) -> bool {
-    <Self as LegacyWebIdlJsRuntime>::is_array_buffer(self, value)
-  }
-
-  fn is_shared_array_buffer(&self, value: Self::Value) -> bool {
-    <Self as LegacyWebIdlJsRuntime>::is_shared_array_buffer(self, value)
-  }
-
-  fn is_data_view(&self, value: Self::Value) -> bool {
-    <Self as LegacyWebIdlJsRuntime>::is_data_view(self, value)
-  }
-
-  fn typed_array_name(&self, value: Self::Value) -> Option<&'static str> {
-    <Self as LegacyWebIdlJsRuntime>::typed_array_name(self, value)
-  }
-}
+// Note: older versions of the `webidl` crate exposed an additional `WebIdlJsRuntime` trait. The
+// current WebIDL scaffolding only requires `webidl::JsRuntime`, so keep this adapter minimal.
