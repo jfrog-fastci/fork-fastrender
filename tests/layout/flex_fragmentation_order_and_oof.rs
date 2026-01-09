@@ -213,20 +213,20 @@ fn abspos_child_does_not_affect_flex_line_boundaries() {
   );
 
   let abs_child = {
-    let mut style = ComputedStyle::default();
-    style.display = Display::Block;
+    // Make the abspos child *wide* enough that if it's accidentally treated as an in-flow flex
+    // item, it will create an extra flex line between B and C (and therefore an extra page with the
+    // chosen page height below).
+    let mut style = fixed_flex_item_style(80.0, 20.0);
     style.position = Position::Absolute;
     style.top = InsetValue::Length(Length::px(0.0));
     style.left = InsetValue::Length(Length::px(0.0));
-    style.width = Some(Length::px(1.0));
-    style.height = Some(Length::px(10_000.0));
     BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
   };
 
   let flex = BoxNode::new_block(
     Arc::new(flex_container_style()),
     FormattingContextType::Flex,
-    vec![a, b, c, d, abs_child],
+    vec![a, b, abs_child, c, d],
   );
 
   let root_style = Arc::new({
@@ -240,16 +240,17 @@ fn abspos_child_does_not_affect_flex_line_boundaries() {
   let flex_items = &box_tree.root.children[1].children;
   let a_id = flex_items[0].id;
   let b_id = flex_items[1].id;
-  let c_id = flex_items[2].id;
-  let d_id = flex_items[3].id;
+  let c_id = flex_items[3].id;
+  let d_id = flex_items[4].id;
 
   // Small page height: should break cleanly between the two flex lines (header=10, line1=20).
   let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 35.0), 0.0));
   let tree = engine.layout_tree(&box_tree).expect("layout");
 
-  assert!(
-    tree.additional_fragments.len() >= 1,
-    "expected at least two pages when splitting between flex lines"
+  assert_eq!(
+    tree.additional_fragments.len(),
+    1,
+    "expected exactly two pages; out-of-flow abspos children must not create extra flex lines"
   );
   let first_page = &tree.root;
   let second_page = &tree.additional_fragments[0];
