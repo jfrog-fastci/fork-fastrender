@@ -9564,60 +9564,59 @@ fn apply_declaration_with_base_internal_with_order(
 
       let mut parsed: Vec<String> = Vec::new();
 
-      loop {
+      let parse_tactic = |name: &str| -> Option<&'static str> {
+        if name.eq_ignore_ascii_case("flip-inline") {
+          Some("flip-inline")
+        } else if name.eq_ignore_ascii_case("flip-block") {
+          Some("flip-block")
+        } else if name.eq_ignore_ascii_case("flip-x") {
+          Some("flip-x")
+        } else if name.eq_ignore_ascii_case("flip-y") {
+          Some("flip-y")
+        } else if name.eq_ignore_ascii_case("flip-start") {
+          Some("flip-start")
+        } else {
+          None
+        }
+      };
+
+      'outer: loop {
         parser.skip_whitespace();
         if parser.is_exhausted() {
           break;
         }
 
-        let ident = match parser.expect_ident() {
-          Ok(ident) => ident,
-          Err(_) => return,
-        };
-        let name = ident.as_ref();
-
-        if name.starts_with("--") && name.len() > 2 {
-          // A named `@position-try` set reference. Must consume the full item.
-          let item = name.to_string();
-          parser.skip_whitespace();
-          if parser.is_exhausted() {
-            parsed.push(item);
-            break;
-          }
-          if parser.try_parse(|p| p.expect_comma()).is_ok() {
-            parser.skip_whitespace();
-            if parser.is_exhausted() {
-              return;
-            }
-            parsed.push(item);
-            continue;
-          }
-          return;
-        }
-
+        let mut try_name: Option<String> = None;
         let mut tactics: Vec<&'static str> = Vec::new();
-        if name.eq_ignore_ascii_case("flip-inline") {
-          tactics.push("flip-inline");
-        } else if name.eq_ignore_ascii_case("flip-block") {
-          tactics.push("flip-block");
-        } else {
-          return;
-        }
 
         loop {
           parser.skip_whitespace();
+
           if parser.is_exhausted() {
-            parsed.push(tactics.join(" "));
             break;
           }
 
           if parser.try_parse(|p| p.expect_comma()).is_ok() {
-            parser.skip_whitespace();
-            if parser.is_exhausted() {
+            if try_name.is_none() && tactics.is_empty() {
               return;
             }
-            parsed.push(tactics.join(" "));
-            break;
+            let item = if let Some(name) = try_name.take() {
+              if tactics.is_empty() {
+                name
+              } else {
+                format!("{name} {}", tactics.join(" "))
+              }
+            } else {
+              tactics.join(" ")
+            };
+            parsed.push(item);
+
+            parser.skip_whitespace();
+            if parser.is_exhausted() {
+              // Trailing comma.
+              return;
+            }
+            continue 'outer;
           }
 
           let ident = match parser.expect_ident() {
@@ -9625,14 +9624,36 @@ fn apply_declaration_with_base_internal_with_order(
             Err(_) => return,
           };
           let name = ident.as_ref();
-          if name.eq_ignore_ascii_case("flip-inline") {
-            tactics.push("flip-inline");
-          } else if name.eq_ignore_ascii_case("flip-block") {
-            tactics.push("flip-block");
-          } else {
-            return;
+
+          if name.starts_with("--") && name.len() > 2 {
+            if try_name.is_some() {
+              return;
+            }
+            try_name = Some(name.to_string());
+            continue;
           }
+
+          let Some(tactic) = parse_tactic(name) else {
+            return;
+          };
+          tactics.push(tactic);
         }
+
+        if try_name.is_none() && tactics.is_empty() {
+          return;
+        }
+
+        let item = if let Some(name) = try_name.take() {
+          if tactics.is_empty() {
+            name
+          } else {
+            format!("{name} {}", tactics.join(" "))
+          }
+        } else {
+          tactics.join(" ")
+        };
+        parsed.push(item);
+        break;
       }
 
       if parsed.is_empty() {

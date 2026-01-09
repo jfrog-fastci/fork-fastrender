@@ -2258,68 +2258,70 @@ fn supports_position_try_fallbacks_value(raw_value: &str) -> bool {
     return false;
   }
 
+  let parse_tactic = |name: &str| -> bool {
+    name.eq_ignore_ascii_case("flip-inline")
+      || name.eq_ignore_ascii_case("flip-block")
+      || name.eq_ignore_ascii_case("flip-x")
+      || name.eq_ignore_ascii_case("flip-y")
+      || name.eq_ignore_ascii_case("flip-start")
+  };
+
   let mut count: usize = 0;
 
-  loop {
+  'outer: loop {
     parser.skip_whitespace();
     if parser.is_exhausted() {
       break;
     }
 
-    let first = match parser.expect_ident() {
-      Ok(ident) => ident,
-      Err(_) => return false,
-    };
-    let name = first.as_ref();
-
-    // Named `@position-try` references are `<dashed-ident>` and must consume the full item.
-    if name.starts_with("--") && name.len() > 2 {
-      parser.skip_whitespace();
-      if parser.is_exhausted() {
-        count += 1;
-        break;
-      }
-      if parser.try_parse(|p| p.expect_comma()).is_ok() {
-        parser.skip_whitespace();
-        if parser.is_exhausted() {
-          return false;
-        }
-        count += 1;
-        continue;
-      }
-      return false;
-    }
-
-    let is_builtin = |name: &str| {
-      name.eq_ignore_ascii_case("flip-inline") || name.eq_ignore_ascii_case("flip-block")
-    };
-    if !is_builtin(name) {
-      return false;
-    }
+    let mut saw_token = false;
+    let mut saw_name = false;
 
     loop {
       parser.skip_whitespace();
       if parser.is_exhausted() {
-        count += 1;
         break;
       }
+
       if parser.try_parse(|p| p.expect_comma()).is_ok() {
-        parser.skip_whitespace();
-        if parser.is_exhausted() {
+        if !saw_token {
           return false;
         }
         count += 1;
-        break;
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          // Trailing comma.
+          return false;
+        }
+        continue 'outer;
       }
 
       let ident = match parser.expect_ident() {
         Ok(ident) => ident,
         Err(_) => return false,
       };
-      if !is_builtin(ident.as_ref()) {
+      let name = ident.as_ref();
+
+      if name.starts_with("--") && name.len() > 2 {
+        if saw_name {
+          return false;
+        }
+        saw_name = true;
+        saw_token = true;
+        continue;
+      }
+
+      if !parse_tactic(name) {
         return false;
       }
+      saw_token = true;
     }
+
+    if !saw_token {
+      return false;
+    }
+    count += 1;
+    break;
   }
 
   count > 0

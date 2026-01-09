@@ -2716,25 +2716,53 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   enum BuiltinTryKeyword {
     FlipInline,
     FlipBlock,
+    FlipX,
+    FlipY,
+    FlipStart,
   }
 
-  fn parse_builtin_try_tactics(name: &str) -> Option<Vec<BuiltinTryKeyword>> {
-    let name = name.trim();
-    if name.is_empty() || name.starts_with("--") {
+  fn parse_try_tactic(token: &str) -> Option<BuiltinTryKeyword> {
+    if token.eq_ignore_ascii_case("flip-inline") {
+      Some(BuiltinTryKeyword::FlipInline)
+    } else if token.eq_ignore_ascii_case("flip-block") {
+      Some(BuiltinTryKeyword::FlipBlock)
+    } else if token.eq_ignore_ascii_case("flip-x") {
+      Some(BuiltinTryKeyword::FlipX)
+    } else if token.eq_ignore_ascii_case("flip-y") {
+      Some(BuiltinTryKeyword::FlipY)
+    } else if token.eq_ignore_ascii_case("flip-start") {
+      Some(BuiltinTryKeyword::FlipStart)
+    } else {
+      None
+    }
+  }
+
+  fn parse_fallback_item(value: &str) -> Option<(Option<&str>, Vec<BuiltinTryKeyword>)> {
+    let value = value.trim();
+    if value.is_empty() {
       return None;
     }
 
-    let mut tactics = Vec::new();
-    for token in name.split_ascii_whitespace() {
-      if token.eq_ignore_ascii_case("flip-inline") {
-        tactics.push(BuiltinTryKeyword::FlipInline);
-      } else if token.eq_ignore_ascii_case("flip-block") {
-        tactics.push(BuiltinTryKeyword::FlipBlock);
-      } else {
-        return None;
+    let mut try_name: Option<&str> = None;
+    let mut tactics: Vec<BuiltinTryKeyword> = Vec::new();
+
+    for token in value.split_ascii_whitespace() {
+      if token.starts_with("--") && token.len() > 2 {
+        if try_name.is_some() {
+          return None;
+        }
+        try_name = Some(token);
+        continue;
       }
+
+      tactics.push(parse_try_tactic(token)?);
     }
-    (!tactics.is_empty()).then_some(tactics)
+
+    if try_name.is_none() && tactics.is_empty() {
+      return None;
+    }
+
+    Some((try_name, tactics))
   }
 
   fn border_box_rect(result: &AbsoluteLayoutResult, style: &PositionedStyle) -> Rect {
@@ -2861,28 +2889,191 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     }
   }
 
-  fn apply_builtin_try(style: &mut ComputedStyle, keyword: BuiltinTryKeyword) {
-    let axis = match keyword {
-      BuiltinTryKeyword::FlipInline => crate::style::LogicalAxis::Inline,
-      BuiltinTryKeyword::FlipBlock => crate::style::LogicalAxis::Block,
-    };
-    let physical_sides = axis_physical_sides(style, axis);
+  #[derive(Clone, Copy)]
+  enum LogicalEdge {
+    InlineStart,
+    InlineEnd,
+    BlockStart,
+    BlockEnd,
+  }
 
-    match physical_sides {
-      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
-      | (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left) => {
-        std::mem::swap(&mut style.left, &mut style.right);
-        flip_inset_value(&mut style.left, axis, physical_sides);
-        flip_inset_value(&mut style.right, axis, physical_sides);
+  fn logical_edge_for_physical_side(
+    side: crate::style::PhysicalSide,
+    inline_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    block_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) -> Option<LogicalEdge> {
+    if side == inline_sides.0 {
+      Some(LogicalEdge::InlineStart)
+    } else if side == inline_sides.1 {
+      Some(LogicalEdge::InlineEnd)
+    } else if side == block_sides.0 {
+      Some(LogicalEdge::BlockStart)
+    } else if side == block_sides.1 {
+      Some(LogicalEdge::BlockEnd)
+    } else {
+      None
+    }
+  }
+
+  fn flip_start_edge(edge: LogicalEdge) -> LogicalEdge {
+    match edge {
+      LogicalEdge::InlineStart => LogicalEdge::BlockStart,
+      LogicalEdge::BlockStart => LogicalEdge::InlineStart,
+      LogicalEdge::InlineEnd => LogicalEdge::BlockEnd,
+      LogicalEdge::BlockEnd => LogicalEdge::InlineEnd,
+    }
+  }
+
+  fn anchor_side_from_physical_side(side: crate::style::PhysicalSide) -> crate::style::types::AnchorSide {
+    use crate::style::PhysicalSide;
+    use crate::style::types::AnchorSide;
+    match side {
+      PhysicalSide::Left => AnchorSide::Left,
+      PhysicalSide::Right => AnchorSide::Right,
+      PhysicalSide::Top => AnchorSide::Top,
+      PhysicalSide::Bottom => AnchorSide::Bottom,
+    }
+  }
+
+  fn physical_side_from_anchor_side(
+    side: crate::style::types::AnchorSide,
+  ) -> Option<crate::style::PhysicalSide> {
+    use crate::style::PhysicalSide;
+    use crate::style::types::AnchorSide;
+    match side {
+      AnchorSide::Left => Some(PhysicalSide::Left),
+      AnchorSide::Right => Some(PhysicalSide::Right),
+      AnchorSide::Top => Some(PhysicalSide::Top),
+      AnchorSide::Bottom => Some(PhysicalSide::Bottom),
+      _ => None,
+    }
+  }
+
+  fn flip_start_anchor_side(
+    side: crate::style::types::AnchorSide,
+    inline_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    block_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) -> crate::style::types::AnchorSide {
+    use crate::style::types::AnchorSide;
+    let side = match side {
+      AnchorSide::InlineStart => AnchorSide::BlockStart,
+      AnchorSide::BlockStart => AnchorSide::InlineStart,
+      AnchorSide::InlineEnd => AnchorSide::BlockEnd,
+      AnchorSide::BlockEnd => AnchorSide::InlineEnd,
+      other => other,
+    };
+
+    let Some(physical) = physical_side_from_anchor_side(side) else {
+      return side;
+    };
+    let Some(edge) = logical_edge_for_physical_side(physical, inline_sides, block_sides) else {
+      return side;
+    };
+    let edge = flip_start_edge(edge);
+    let physical = match edge {
+      LogicalEdge::InlineStart => inline_sides.0,
+      LogicalEdge::InlineEnd => inline_sides.1,
+      LogicalEdge::BlockStart => block_sides.0,
+      LogicalEdge::BlockEnd => block_sides.1,
+    };
+    anchor_side_from_physical_side(physical)
+  }
+
+  fn flip_start_inset_value(
+    value: &mut crate::style::types::InsetValue,
+    inline_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    block_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) {
+    if let crate::style::types::InsetValue::Anchor(func) = value {
+      func.side = flip_start_anchor_side(func.side, inline_sides, block_sides);
+    }
+  }
+
+  fn swap_insets(style: &mut ComputedStyle, a: crate::style::PhysicalSide, b: crate::style::PhysicalSide) {
+    use crate::style::PhysicalSide::*;
+    match (a, b) {
+      (Top, Right) | (Right, Top) => std::mem::swap(&mut style.top, &mut style.right),
+      (Top, Bottom) | (Bottom, Top) => std::mem::swap(&mut style.top, &mut style.bottom),
+      (Top, Left) | (Left, Top) => std::mem::swap(&mut style.top, &mut style.left),
+      (Right, Bottom) | (Bottom, Right) => std::mem::swap(&mut style.right, &mut style.bottom),
+      (Right, Left) | (Left, Right) => std::mem::swap(&mut style.right, &mut style.left),
+      (Bottom, Left) | (Left, Bottom) => std::mem::swap(&mut style.bottom, &mut style.left),
+      _ => {}
+    }
+  }
+
+  fn swap_margins(
+    style: &mut ComputedStyle,
+    a: crate::style::PhysicalSide,
+    b: crate::style::PhysicalSide,
+  ) {
+    use crate::style::PhysicalSide::*;
+    match (a, b) {
+      (Top, Right) | (Right, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_right),
+      (Top, Bottom) | (Bottom, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_bottom),
+      (Top, Left) | (Left, Top) => std::mem::swap(&mut style.margin_top, &mut style.margin_left),
+      (Right, Bottom) | (Bottom, Right) => {
+        std::mem::swap(&mut style.margin_right, &mut style.margin_bottom)
       }
-      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
-      | (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top) => {
-        std::mem::swap(&mut style.top, &mut style.bottom);
-        flip_inset_value(&mut style.top, axis, physical_sides);
-        flip_inset_value(&mut style.bottom, axis, physical_sides);
+      (Right, Left) | (Left, Right) => std::mem::swap(&mut style.margin_right, &mut style.margin_left),
+      (Bottom, Left) | (Left, Bottom) => {
+        std::mem::swap(&mut style.margin_bottom, &mut style.margin_left)
       }
       _ => {}
     }
+  }
+
+  fn apply_builtin_try(style: &mut ComputedStyle, keyword: BuiltinTryKeyword) {
+    let axis = match keyword {
+      BuiltinTryKeyword::FlipInline => Some(crate::style::LogicalAxis::Inline),
+      BuiltinTryKeyword::FlipBlock => Some(crate::style::LogicalAxis::Block),
+      BuiltinTryKeyword::FlipX => Some(if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        crate::style::LogicalAxis::Inline
+      } else {
+        crate::style::LogicalAxis::Block
+      }),
+      BuiltinTryKeyword::FlipY => Some(if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        crate::style::LogicalAxis::Block
+      } else {
+        crate::style::LogicalAxis::Inline
+      }),
+      BuiltinTryKeyword::FlipStart => None,
+    };
+
+    if let Some(axis) = axis {
+      let physical_sides = axis_physical_sides(style, axis);
+      match physical_sides {
+        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        | (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left) => {
+          std::mem::swap(&mut style.left, &mut style.right);
+          std::mem::swap(&mut style.margin_left, &mut style.margin_right);
+          flip_inset_value(&mut style.left, axis, physical_sides);
+          flip_inset_value(&mut style.right, axis, physical_sides);
+        }
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+        | (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top) => {
+          std::mem::swap(&mut style.top, &mut style.bottom);
+          std::mem::swap(&mut style.margin_top, &mut style.margin_bottom);
+          flip_inset_value(&mut style.top, axis, physical_sides);
+          flip_inset_value(&mut style.bottom, axis, physical_sides);
+        }
+        _ => {}
+      }
+      return;
+    }
+
+    let inline_sides = axis_physical_sides(style, crate::style::LogicalAxis::Inline);
+    let block_sides = axis_physical_sides(style, crate::style::LogicalAxis::Block);
+
+    swap_insets(style, inline_sides.0, block_sides.0);
+    swap_insets(style, inline_sides.1, block_sides.1);
+    swap_margins(style, inline_sides.0, block_sides.0);
+    swap_margins(style, inline_sides.1, block_sides.1);
+
+    flip_start_inset_value(&mut style.top, inline_sides, block_sides);
+    flip_start_inset_value(&mut style.right, inline_sides, block_sides);
+    flip_start_inset_value(&mut style.bottom, inline_sides, block_sides);
+    flip_start_inset_value(&mut style.left, inline_sides, block_sides);
   }
 
   let base_result = abs.layout_absolute(base_input, containing_block)?;
@@ -2901,12 +3092,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
 
   for name in base_style.position_try_fallbacks.iter() {
     let mut trial_style = base_style.clone();
-    if let Some(tactics) = parse_builtin_try_tactics(name.as_str()) {
-      for keyword in tactics {
-        apply_builtin_try(&mut trial_style, keyword);
-      }
-    } else {
-      let Some(decls) = base_style.position_try_registry.get(name.as_str()) else {
+    let (try_name, tactics) =
+      parse_fallback_item(name.as_str()).unwrap_or((Some(name.as_str()), Vec::new()));
+
+    if let Some(try_name) = try_name {
+      let Some(decls) = base_style.position_try_registry.get(try_name) else {
         continue;
       };
       for decl in decls {
@@ -2922,7 +3112,15 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
           base_style.used_dark_color_scheme,
         );
       }
+      // Resolve any logical properties authored in the `@position-try` set so try-tactics (which
+      // operate on the box's computed physical sides) see the correct values.
+      crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
     }
+
+    for tactic in tactics {
+      apply_builtin_try(&mut trial_style, tactic);
+    }
+
     crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
 
     let trial_positioned = resolve_positioned_style_with_anchors(
