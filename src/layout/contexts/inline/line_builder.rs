@@ -5572,6 +5572,7 @@ mod tests {
   ) -> Vec<BreakOpportunity> {
     crate::layout::contexts::inline::apply_break_properties(
       text,
+      "en",
       find_break_opportunities(text),
       crate::style::types::LineBreak::Auto,
       word_break,

@@ -3830,6 +3830,7 @@ impl InlineFormattingContext {
       merged.extend(hyphen_breaks);
       apply_break_properties(
         &hyphen_free,
+        style.language.as_ref(),
         merged,
         style.line_break,
         style.word_break,
@@ -7999,6 +8000,11 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FE56}' // ﹖
       | '\u{FE57}' // ﹗
       // Common dash-like marks used in Japanese text.
+      // Note: CSS Text also tailors breaks before some hyphen characters; include them in the
+      // strict set so `line-break: normal|strict` can downgrade those breaks, while
+      // `line-break: loose` may re-allow them in specific contexts.
+      | '\u{2010}' // ‐
+      | '\u{2013}' // –
       | '\u{2014}' // —
       | '\u{2015}' // ―
       | '\u{301C}' // 〜
@@ -8009,6 +8015,11 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FF1B}' // ；
       | '\u{FF01}' // ！
       | '\u{FF1F}' // ？
+      // Additional centered punctuation marks required by CSS Text line-break tailoring.
+      | '\u{203C}' // ‼
+      | '\u{2047}' // ⁇
+      | '\u{2048}' // ⁈
+      | '\u{2049}' // ⁉
       // ASCII punctuation often used alongside Japanese text.
       | ',' // ,
       | '.' // .
@@ -8122,8 +8133,170 @@ fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WritingSystem {
+  Chinese,
+  Japanese,
+  Other,
+}
+
+fn writing_system_from_language(language: &str) -> WritingSystem {
+  // `ComputedStyle::language` is normalized to lowercase, hyphen-separated BCP47 by the cascade
+  // layer. Keep this helper defensive so unit tests can pass any language tag.
+  let primary = language.split(|c| c == '-' || c == '_').next().unwrap_or("");
+  if primary.eq_ignore_ascii_case("ja") {
+    WritingSystem::Japanese
+  } else if primary.eq_ignore_ascii_case("zh") {
+    WritingSystem::Chinese
+  } else {
+    WritingSystem::Other
+  }
+}
+
+fn is_chinese_or_japanese_writing_system(ws: WritingSystem) -> bool {
+  matches!(ws, WritingSystem::Chinese | WritingSystem::Japanese)
+}
+
+fn effective_line_break_for_language(line_break: LineBreak, language: &str) -> LineBreak {
+  if !matches!(line_break, LineBreak::Auto) {
+    return line_break;
+  }
+
+  match writing_system_from_language(language) {
+    // Browsers typically apply Japanese kinsoku restrictions by default when the language is
+    // tagged as Japanese. Model that by mapping `auto` to `strict` for Japanese.
+    WritingSystem::Japanese => LineBreak::Strict,
+    // Chinese has no CJ small-kana class, but still benefits from CJK-tailored punctuation rules.
+    // Map `auto` to `normal` so we can apply the non-strict tailoring required by CSS Text.
+    WritingSystem::Chinese => LineBreak::Normal,
+    // For all other languages, keep the existing UAX#14 behavior (no additional tailoring).
+    WritingSystem::Other => LineBreak::Auto,
+  }
+}
+
+fn is_line_break_cj(ch: char) -> bool {
+  // UAX#14 line breaking class CJ: Japanese small kana and the Katakana-Hiragana prolonged sound
+  // mark. CSS Text requires that breaks before CJ are forbidden in `line-break: strict` and
+  // allowed in `normal` and `loose`.
+  map_small_kana(ch).is_some() || matches!(ch, '\u{30FC}' | '\u{FF70}')
+}
+
+fn is_line_break_iteration_mark(ch: char) -> bool {
+  matches!(
+    ch,
+    '\u{3005}' // 々
+      | '\u{303B}' // 〻
+      | '\u{309D}' // ゝ
+      | '\u{309E}' // ゞ
+      | '\u{30FD}' // ヽ
+      | '\u{30FE}' // ヾ
+  )
+}
+
+fn is_line_break_inseparable(ch: char) -> bool {
+  // Subset of the UAX#14 line breaking class IN ("inseparable") referenced by CSS Text. This is
+  // enough to cover the CSS Text requirements and our internal fixtures/tests.
+  matches!(
+    ch,
+    '\u{2025}' // ‥
+      | '\u{2026}' // …
+      | '\u{22EF}' // ⋯
+      | '\u{FE19}' // ︙
+  )
+}
+
+fn is_line_break_cjk_hyphen_like(ch: char) -> bool {
+  matches!(
+    ch,
+    '\u{301C}' // 〜
+      | '\u{30A0}' // ゠
+  )
+}
+
+fn is_line_break_centered_punctuation_mark(ch: char) -> bool {
+  matches!(
+    ch,
+    '\u{30FB}' // ・
+      | '\u{FF1A}' // ：
+      | '\u{FF1B}' // ；
+      | '\u{FF65}' // ･
+      | '\u{203C}' // ‼
+      | '\u{2047}' // ⁇
+      | '\u{2048}' // ⁈
+      | '\u{2049}' // ⁉
+      | '\u{FF01}' // ！
+      | '\u{FF1F}' // ？
+  )
+}
+
+fn is_kinsoku_normal_prohibited_line_start(ch: char, writing_system: WritingSystem) -> bool {
+  // CSS Text requires that breaks before CJ are allowed in `line-break: normal`.
+  if is_line_break_cj(ch) {
+    return false;
+  }
+
+  // CSS Text: breaks before certain CJK hyphen-like characters are allowed in normal if the
+  // writing system is Chinese/Japanese, and otherwise forbidden.
+  if is_line_break_cjk_hyphen_like(ch) && is_chinese_or_japanese_writing_system(writing_system) {
+    return false;
+  }
+
+  // CSS Text: centered punctuation marks are only allowed in `line-break: loose` for Chinese /
+  // Japanese; in normal they are forbidden.
+  if is_line_break_centered_punctuation_mark(ch) {
+    return true;
+  }
+
+  // CSS Text: breaks before hyphens (U+2010/U+2013) are only allowed in `line-break: loose`.
+  if matches!(ch, '\u{2010}' | '\u{2013}') {
+    return true;
+  }
+
+  // CSS Text: breaks before iteration marks are forbidden in normal and strict.
+  if is_line_break_iteration_mark(ch) {
+    return true;
+  }
+
+  // Otherwise fall back to the strict kinsoku set (UA-defined strictness), which includes common
+  // Japanese punctuation and brackets. We already carved out the CSS-required exceptions above.
+  is_kinsoku_strict_prohibited_line_start(ch)
+}
+
+fn is_kinsoku_loose_prohibited_line_start(ch: char, writing_system: WritingSystem) -> bool {
+  // CSS Text requires that breaks before CJ are allowed in `line-break: loose`.
+  if is_line_break_cj(ch) {
+    return false;
+  }
+
+  // CSS Text: breaks before iteration marks are allowed in loose.
+  if is_line_break_iteration_mark(ch) {
+    return false;
+  }
+
+  // CSS Text: breaks before certain CJK hyphen-like characters are allowed in loose if the
+  // writing system is Chinese/Japanese, and otherwise forbidden.
+  if is_line_break_cjk_hyphen_like(ch) && is_chinese_or_japanese_writing_system(writing_system) {
+    return false;
+  }
+
+  // CSS Text: centered punctuation marks are allowed in loose for Chinese/Japanese, and otherwise
+  // forbidden.
+  if is_line_break_centered_punctuation_mark(ch) {
+    return !is_chinese_or_japanese_writing_system(writing_system);
+  }
+
+  // CSS Text: breaks before hyphens (U+2010/U+2013) are conditionally allowed in loose, handled
+  // at the break opportunity site because it depends on the preceding character.
+  if matches!(ch, '\u{2010}' | '\u{2013}') {
+    return true;
+  }
+
+  is_kinsoku_strict_prohibited_line_start(ch)
+}
+
 fn apply_break_properties(
   text: &str,
+  language: &str,
   breaks: Vec<crate::text::line_break::BreakOpportunity>,
   line_break: LineBreak,
   word_break: WordBreak,
@@ -8136,6 +8309,9 @@ fn apply_break_properties(
   if !allow_soft_wrap {
     return breaks;
   }
+
+  let writing_system = writing_system_from_language(language);
+  let effective_line_break = effective_line_break_for_language(line_break, language);
 
   let mut result = breaks;
 
@@ -8198,11 +8374,10 @@ fn apply_break_properties(
     }
   }
 
-  match line_break {
-    LineBreak::Strict => {
-      // CSS Text: breaks before Japanese small kana / prolonged sound marks are forbidden in
-      // strict line breaking. Apply this *after* adding `word-break`/`overflow-wrap` synthesized
-      // opportunities so they can't re-introduce forbidden normal breaks.
+  match effective_line_break {
+    LineBreak::Strict | LineBreak::Normal | LineBreak::Loose => {
+      // Apply this *after* adding `word-break`/`overflow-wrap` synthesized opportunities so they
+      // can't re-introduce forbidden normal breaks.
       for brk in &mut result {
         if brk.break_type == BreakType::Mandatory {
           continue;
@@ -8216,9 +8391,45 @@ fn apply_break_properties(
         }
         let next = text[pos..].chars().next();
         let prev = text[..pos].chars().next_back();
-        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch))
-          || matches!(prev, Some(ch) if is_kinsoku_strict_prohibited_line_end(ch))
-        {
+
+        // CSS Text: breaks between inseparable (IN-class) characters are allowed in loose and
+        // forbidden in normal/strict.
+        if matches!(
+          (prev, next),
+          (Some(a), Some(b)) if is_line_break_inseparable(a) && is_line_break_inseparable(b)
+        ) {
+          if matches!(effective_line_break, LineBreak::Loose) {
+            continue;
+          }
+          brk.kind = BreakOpportunityKind::Emergency;
+          continue;
+        }
+
+        // CSS Text: breaks before hyphens (U+2010/U+2013) are only allowed in loose if the
+        // preceding character is ideographic (ID) or treated as such by `word-break: break-all`.
+        if matches!(next, Some('\u{2010}' | '\u{2013}')) {
+          let prev_is_id = matches!(prev, Some(ch) if is_cjk_character(ch));
+          let treated_as_id = matches!(word_break, WordBreak::BreakAll);
+          if matches!(effective_line_break, LineBreak::Loose) && (prev_is_id || treated_as_id) {
+            continue;
+          }
+          brk.kind = BreakOpportunityKind::Emergency;
+          continue;
+        }
+
+        let prohibited_line_start = match next {
+          Some(ch) => match effective_line_break {
+            LineBreak::Strict => is_kinsoku_strict_prohibited_line_start(ch),
+            LineBreak::Normal => is_kinsoku_normal_prohibited_line_start(ch, writing_system),
+            LineBreak::Loose => is_kinsoku_loose_prohibited_line_start(ch, writing_system),
+            _ => false,
+          },
+          None => false,
+        };
+        let prohibited_line_end =
+          matches!(prev, Some(ch) if is_kinsoku_strict_prohibited_line_end(ch));
+
+        if prohibited_line_start || prohibited_line_end {
           brk.kind = BreakOpportunityKind::Emergency;
         }
       }
@@ -18795,6 +19006,7 @@ mod tests {
     ];
     let result = apply_break_properties(
       "abc",
+      "en",
       breaks,
       LineBreak::Auto,
       WordBreak::Normal,
@@ -18827,6 +19039,7 @@ mod tests {
     let base = find_break_opportunities(text);
     let result = apply_break_properties(
       text,
+      "en",
       base,
       LineBreak::Auto,
       WordBreak::BreakWord,
@@ -18871,6 +19084,7 @@ mod tests {
 
     let result = apply_break_properties(
       text,
+      "en",
       breaks,
       LineBreak::Auto,
       WordBreak::KeepAll,
@@ -18906,6 +19120,159 @@ mod tests {
   }
 
   #[test]
+  fn line_break_tailoring_differs_between_loose_normal_and_strict_for_japanese() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // A small sample that contains both an iteration mark (forbidden in normal/strict, allowed in
+    // loose) and a small kana (forbidden only in strict).
+    let text = "あゝぁい";
+    let breaks = vec![
+      BreakOpportunity::allowed(3),  // あ|ゝ (iteration mark)
+      BreakOpportunity::allowed(6),  // ゝ|ぁ (small kana)
+      BreakOpportunity::allowed(9),  // ぁ|い
+      BreakOpportunity::allowed(12), // end
+    ];
+
+    let strict = apply_break_properties(
+      text,
+      "ja",
+      breaks.clone(),
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      strict
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3")
+        .kind,
+      BreakOpportunityKind::Emergency,
+      "strict should forbid breaks before iteration marks"
+    );
+    assert_eq!(
+      strict
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6")
+        .kind,
+      BreakOpportunityKind::Emergency,
+      "strict should forbid breaks before small kana (CJ)"
+    );
+
+    let normal = apply_break_properties(
+      text,
+      "ja",
+      breaks.clone(),
+      LineBreak::Normal,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      normal
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3")
+        .kind,
+      BreakOpportunityKind::Emergency,
+      "normal should forbid breaks before iteration marks"
+    );
+    assert_eq!(
+      normal
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "normal should allow breaks before small kana (CJ)"
+    );
+
+    let loose = apply_break_properties(
+      text,
+      "ja",
+      breaks,
+      LineBreak::Loose,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      loose
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "loose should allow breaks before iteration marks"
+    );
+    assert_eq!(
+      loose
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "loose should allow breaks before small kana (CJ)"
+    );
+  }
+
+  #[test]
+  fn line_break_auto_is_language_sensitive_for_japanese() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    let text = "あゝぁい";
+    let breaks = vec![
+      BreakOpportunity::allowed(3),  // あ|ゝ
+      BreakOpportunity::allowed(6),  // ゝ|ぁ
+      BreakOpportunity::allowed(12), // end
+    ];
+
+    let auto_ja = apply_break_properties(
+      text,
+      "ja",
+      breaks.clone(),
+      LineBreak::Auto,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    let strict = apply_break_properties(
+      text,
+      "ja",
+      breaks.clone(),
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      auto_ja, strict,
+      "line-break:auto should map to strict for Japanese text"
+    );
+
+    let auto_en = apply_break_properties(
+      text,
+      "en",
+      breaks,
+      LineBreak::Auto,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      auto_en
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "non-CJK languages should keep UAX#14 break behavior under line-break:auto"
+    );
+  }
+
+  #[test]
   fn line_break_strict_downgrades_breaks_before_small_kana_to_emergency() {
     use crate::text::line_break::BreakOpportunityKind;
 
@@ -18918,6 +19285,7 @@ mod tests {
 
     let result = apply_break_properties(
       text,
+      "ja",
       breaks,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -18959,6 +19327,7 @@ mod tests {
 
     let result = apply_break_properties(
       text,
+      "ja",
       breaks,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -19000,6 +19369,7 @@ mod tests {
 
     let result = apply_break_properties(
       text,
+      "ja",
       breaks,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -19041,6 +19411,7 @@ mod tests {
 
     let result = apply_break_properties(
       text,
+      "ja",
       breaks,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -19084,6 +19455,7 @@ mod tests {
 
       let result = apply_break_properties(
         text.as_str(),
+        "ja",
         breaks,
         LineBreak::Strict,
         WordBreak::Normal,
@@ -19155,6 +19527,7 @@ mod tests {
 
       let result = apply_break_properties(
         text.as_str(),
+        "ja",
         breaks,
         LineBreak::Strict,
         WordBreak::Normal,
@@ -19227,6 +19600,7 @@ mod tests {
 
       let result = apply_break_properties(
         text.as_str(),
+        "ja",
         breaks,
         LineBreak::Strict,
         WordBreak::Normal,
@@ -19270,6 +19644,7 @@ mod tests {
     ];
     let result_close = apply_break_properties(
       text_close,
+      "en",
       breaks_close,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -19303,6 +19678,7 @@ mod tests {
     ];
     let result_open = apply_break_properties(
       text_open,
+      "en",
       breaks_open,
       LineBreak::Strict,
       WordBreak::Normal,
@@ -19343,6 +19719,7 @@ mod tests {
       ];
       let result = apply_break_properties(
         text.as_str(),
+        "en",
         breaks,
         LineBreak::Strict,
         WordBreak::Normal,
@@ -19415,6 +19792,7 @@ mod tests {
 
       let result = apply_break_properties(
         text.as_str(),
+        "ja",
         breaks,
         LineBreak::Strict,
         WordBreak::Normal,
@@ -19458,6 +19836,7 @@ mod tests {
     ];
     let result = apply_break_properties(
       text,
+      "ja",
       breaks,
       LineBreak::Strict,
       WordBreak::BreakAll,
