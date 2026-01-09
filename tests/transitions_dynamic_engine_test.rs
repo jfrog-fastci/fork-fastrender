@@ -3,6 +3,7 @@ use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::BorderStyle;
+use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, PreparedDocument, RenderOptions, Result};
@@ -720,6 +721,99 @@ fn transition_parameters_are_frozen_while_running() -> Result<()> {
     (opacity - 0.5).abs() < 1e-3,
     "expected opacity ~0.5 at 1000ms of 2000ms transition, got {opacity}"
   );
+
+  Ok(())
+}
+
+#[test]
+fn class_flip_triggers_transition_registered_custom_property_opacity_var() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      @property --x { syntax: "<number>"; inherits: false; initial-value: 0; }
+      #box { width: 100px; height: 100px; opacity: var(--x); transition: --x 1000ms linear; }
+      .a { --x: 0; }
+      .b { --x: 1; }
+    </style>
+    <div id="box" class="a"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let cases = [(0.0, 0.0), (500.0, 0.5), (1000.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < 1e-3,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
+fn transition_all_includes_registered_custom_properties_on_class_change() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      @property --x { syntax: "<number>"; inherits: false; initial-value: 0; }
+      #box { width: 100px; height: 100px; opacity: var(--x); transition: all 1000ms linear; }
+      .a { --x: 0; }
+      .b { --x: 1; }
+    </style>
+    <div id="box" class="a"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let mut sampled = base_tree.clone();
+  let viewport = sampled.viewport_size();
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let frag = find_fragment(&sampled.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  match value.typed.as_ref() {
+    Some(CustomPropertyTypedValue::Number(v)) => assert!((v - 0.5).abs() < 1e-3, "v={v}"),
+    other => panic!("expected typed number, got {other:?}"),
+  }
+  assert!((style.opacity - 0.5).abs() < 1e-3, "opacity={}", style.opacity);
 
   Ok(())
 }
