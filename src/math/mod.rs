@@ -4,6 +4,8 @@
 //! and produces a renderable math layout with glyph fragments and simple
 //! vector primitives (rules for fraction bars/radicals).
 
+mod operator_dict;
+
 use crate::dom::{DomNode, DomNodeType, MATHML_NAMESPACE};
 use crate::geometry::{Point, Rect, Size};
 use crate::style::types::FontStyle as CssFontStyle;
@@ -1275,11 +1277,23 @@ impl MathLayoutContext {
   }
 
   fn is_open_fence(text: &str) -> bool {
-    matches!(text, "(" | "[" | "{" | "⟨" | "⌈" | "⌊")
+    let prefix = operator_dict::lookup(text, OperatorForm::Prefix)
+      .map(|p| p.fence)
+      .unwrap_or(false);
+    let postfix = operator_dict::lookup(text, OperatorForm::Postfix)
+      .map(|p| p.fence)
+      .unwrap_or(false);
+    prefix && !postfix
   }
 
   fn is_close_fence(text: &str) -> bool {
-    matches!(text, ")" | "]" | "}" | "⟩" | "⌉" | "⌋")
+    let prefix = operator_dict::lookup(text, OperatorForm::Prefix)
+      .map(|p| p.fence)
+      .unwrap_or(false);
+    let postfix = operator_dict::lookup(text, OperatorForm::Postfix)
+      .map(|p| p.fence)
+      .unwrap_or(false);
+    postfix && !prefix
   }
 
   fn is_always_postfix_operator(text: &str) -> bool {
@@ -1287,78 +1301,24 @@ impl MathLayoutContext {
   }
 
   fn operator_default_properties(text: &str, form: OperatorForm) -> OperatorProperties {
-    match text {
-      // Fences/delimiters.
-      "(" | ")" | "[" | "]" | "{" | "}" | "⟨" | "⟩" | "⌈" | "⌉" | "⌊" | "⌋" => {
-        OperatorProperties {
-          fence: true,
-          separator: false,
-          stretchy: true,
-          large_op: false,
-          movable_limits: false,
-          lspace: MathLengthOrKeyword::Zero,
-          rspace: MathLengthOrKeyword::Zero,
+    operator_dict::lookup(text, form)
+      .or_else(|| {
+        if form != OperatorForm::Infix {
+          operator_dict::lookup(text, OperatorForm::Infix)
+        } else {
+          None
         }
-      }
-      // Separators / punctuation.
-      "," | ";" => OperatorProperties {
-        fence: false,
-        separator: true,
-        stretchy: false,
-        large_op: false,
-        movable_limits: false,
-        lspace: MathLengthOrKeyword::Zero,
-        rspace: MathLengthOrKeyword::Thin,
-      },
-      // Relation operators.
-      "=" | "≠" | "<" | ">" | "≤" | "≥" => OperatorProperties {
-        fence: false,
-        separator: false,
-        stretchy: false,
-        large_op: false,
-        movable_limits: false,
-        lspace: MathLengthOrKeyword::Thick,
-        rspace: MathLengthOrKeyword::Thick,
-      },
-      // Binary/unary operators.
-      "+" | "-" | "−" | "±" => {
-        let (lspace, rspace) = match form {
-          OperatorForm::Infix => (MathLengthOrKeyword::Medium, MathLengthOrKeyword::Medium),
-          _ => (MathLengthOrKeyword::Zero, MathLengthOrKeyword::Zero),
-        };
-        OperatorProperties {
-          fence: false,
-          separator: false,
-          stretchy: false,
-          large_op: false,
-          movable_limits: false,
-          lspace,
-          rspace,
-        }
-      }
-      "×" | "·" | "÷" => OperatorProperties {
-        fence: false,
-        separator: false,
-        stretchy: false,
-        large_op: false,
-        movable_limits: false,
-        lspace: MathLengthOrKeyword::Medium,
-        rspace: MathLengthOrKeyword::Medium,
-      },
-      // Large operators.
-      "∑" | "∏" | "∐" | "⋀" | "⋁" | "⋂" | "⋃" | "⨀" | "⨁" | "⨂" | "⨃" | "⨄" | "⨅" | "⨆"
-      | "⨉" | "⫿" | "∫" | "∬" | "∭" | "∮" | "∯" | "∰" => OperatorProperties {
-        fence: false,
-        separator: false,
-        stretchy: false,
-        large_op: true,
-        movable_limits: true,
-        lspace: MathLengthOrKeyword::Thin,
-        rspace: MathLengthOrKeyword::Thin,
-      },
-      // Fallback.
-      _ => OperatorProperties::empty(),
-    }
+      })
+      .map(|props| OperatorProperties {
+        fence: props.fence,
+        separator: props.separator,
+        stretchy: props.stretchy,
+        large_op: props.large_op,
+        movable_limits: props.movable_limits,
+        lspace: props.lspace,
+        rspace: props.rspace,
+      })
+      .unwrap_or_else(OperatorProperties::empty)
   }
 
   fn operator_like<'a>(node: &'a MathNode) -> Option<OperatorLike<'a>> {
@@ -4250,6 +4210,37 @@ mod tests {
       MathLength::Em(0.0),
       "NBSP must not be treated as HTML/MathML whitespace when parsing length attributes"
     );
+  }
+
+  #[test]
+  fn operator_dict_pipe_defaults_match_mathml_core() {
+    let props = MathLayoutContext::operator_default_properties("|", OperatorForm::Infix);
+    assert!(props.fence, "`|` should default to a fence");
+    assert!(props.stretchy, "`|` should default to stretchy");
+    assert_eq!(
+      props.lspace,
+      MathLengthOrKeyword::Zero,
+      "`|` should default to lspace=0"
+    );
+    assert_eq!(
+      props.rspace,
+      MathLengthOrKeyword::Zero,
+      "`|` should default to rspace=0"
+    );
+  }
+
+  #[test]
+  fn operator_dict_integral_is_largeop_and_stretchy() {
+    let props = MathLayoutContext::operator_default_properties("∫", OperatorForm::Prefix);
+    assert!(props.large_op, "integral should default to largeop");
+    assert!(props.stretchy, "integral should default to stretchy");
+  }
+
+  #[test]
+  fn operator_dict_sum_is_largeop_with_movable_limits() {
+    let props = MathLayoutContext::operator_default_properties("∑", OperatorForm::Prefix);
+    assert!(props.large_op, "sum should default to largeop");
+    assert!(props.movable_limits, "sum should default to movablelimits");
   }
 
   fn bundled_font_context() -> FontContext {

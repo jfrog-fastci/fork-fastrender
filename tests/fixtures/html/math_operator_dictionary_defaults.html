@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<style>
+  @font-face {
+    font-family: "STIX Two Math";
+    src: url("../fonts/STIXTwoMath-Regular.otf") format("opentype");
+  }
+  body {
+    margin: 0;
+    font-size: 22px;
+    color: rgb(15, 15, 15);
+  }
+  math {
+    display: block;
+    margin: 8px 12px;
+    font-family: "STIX Two Math", "STIXTwoMath", "DejaVu Serif", serif;
+  }
+</style>
+<body>
+  <!--
+    This fixture intentionally omits explicit <mo stretchy/lspace/rspace> attributes and relies
+    on the MathML Core operator dictionary defaults.
+  -->
+  <math display="block">
+    <mrow>
+      <mo>|</mo>
+      <mfrac>
+        <mrow>
+          <msup><mi>a</mi><mn>2</mn></msup>
+          <mo>+</mo>
+          <mfrac><mn>1</mn><mi>x</mi></mfrac>
+        </mrow>
+        <mrow>
+          <msqrt>
+            <mrow>
+              <msup><mi>y</mi><mn>2</mn></msup>
+              <mo>+</mo>
+              <mfrac><mn>1</mn><mi>z</mi></mfrac>
+            </mrow>
+          </msqrt>
+        </mrow>
+      </mfrac>
+      <mo>|</mo>
+    </mrow>
+  </math>
+
+  <math display="block">
+    <mrow>
+      <mo>&#8747;</mo>
+      <mfrac><mn>1</mn><msqrt><mi>x</mi></msqrt></mfrac>
+      <mi>d</mi>
+      <mi>x</mi>
+    </mrow>
+  </math>
+</body>
+</html>
+

@@ -326,6 +326,23 @@ fn math_operator_spacing_matches_golden() {
 }
 
 #[test]
+fn math_operator_dictionary_defaults_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_operator_dictionary_defaults"))
+      .expect("load math_operator_dictionary_defaults");
+    let png = renderer
+      .render_to_png(&html, 560, 320)
+      .expect("render math operator dictionary defaults");
+    compare_golden(
+      "math_operator_dictionary_defaults",
+      &png,
+      &CompareConfig::lenient(),
+    );
+  });
+}
+
+#[test]
 fn math_scriptlevel_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
