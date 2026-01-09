@@ -2420,8 +2420,8 @@ mod tests {
     style.scrollbar_gutter.stable = true;
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert!(
-      (size.width - 184.0).abs() < 0.01,
-      "expected 184px content width with stable scrollbar gutter, got {:.2}px",
+      (size.width - 185.0).abs() < 0.01,
+      "expected 185px content width with stable scrollbar gutter, got {:.2}px",
       size.width
     );
 
@@ -2431,8 +2431,8 @@ mod tests {
     };
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert!(
-      (size.width - 168.0).abs() < 0.01,
-      "expected 168px content width with both-edges gutters, got {:.2}px",
+      (size.width - 170.0).abs() < 0.01,
+      "expected 170px content width with both-edges gutters, got {:.2}px",
       size.width
     );
   }

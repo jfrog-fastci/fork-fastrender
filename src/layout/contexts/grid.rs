@@ -13511,6 +13511,14 @@ mod tests {
 
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
     assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
+    assert_eq!(taffy_style.scrollbar_width, 0.0);
+
+    let mut style = node.style.as_ref().clone();
+    style.scrollbar_gutter.stable = true;
+    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
+    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
+    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
     assert_eq!(
       taffy_style.scrollbar_width,
       resolve_scrollbar_width(&node.style)

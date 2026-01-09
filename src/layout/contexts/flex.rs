@@ -13678,12 +13678,22 @@ mod tests {
       .computed_style_to_taffy(&node, true, None, &auto_unskipped_empty)
       .expect("taffy style");
 
+    assert_eq!(taffy_style.scrollbar_width, 0.0);
+    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
+    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Hidden);
+
+    let mut style = node.style.as_ref().clone();
+    style.scrollbar_gutter.stable = true;
+    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, vec![]);
+    let taffy_style = fc
+      .computed_style_to_taffy(&node, true, None, &auto_unskipped_empty)
+      .expect("taffy style");
     assert_eq!(
       taffy_style.scrollbar_width,
       resolve_scrollbar_width(&node.style)
     );
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
-    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Hidden);
+    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Scroll);
   }
 
   #[test]

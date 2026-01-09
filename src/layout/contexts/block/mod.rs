@@ -9936,7 +9936,6 @@ mod tests {
     style.overflow_x = Overflow::Scroll;
     style.scrollbar_width = ScrollbarWidth::Thin;
 
-    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
     let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
       FontContext::new(),
       Size::new(200.0, 200.0),
@@ -9944,8 +9943,14 @@ mod tests {
     );
     let constraints =
       LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
-    let fragment = fc.layout(&node, &constraints).unwrap();
 
+    let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Block, vec![]);
+    let fragment = fc.layout(&node, &constraints).unwrap();
+    assert!((fragment.bounds.height() - 0.0).abs() < 0.01);
+
+    style.scrollbar_gutter.stable = true;
+    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    let fragment = fc.layout(&node, &constraints).unwrap();
     assert!((fragment.bounds.height() - 8.0).abs() < 0.01);
   }
 
