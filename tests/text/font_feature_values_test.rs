@@ -111,11 +111,19 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
   let dom = dom::parse_html(r#"<div id="t">A</div>"#).expect("parse html");
   let css = format!(
     r#"
-      @font-feature-values "{family}" {{ @styleset {{ disambiguation: 2; }} }}
+      @font-feature-values "{family}" {{
+        @stylistic {{ Fancy: 3; }}
+        @styleset {{ disambiguation: 2; }}
+        @character-variant {{ Var: 4; }}
+        @swash {{ Swishy: 7; }}
+        @ornaments {{ Flourish: 2; }}
+        @annotation {{ Note: 1; }}
+      }}
       #t {{
         font-family: "{family}";
         font-size: 16px;
-        font-variant-alternates: styleset(disambiguation);
+        font-variant-alternates: stylistic(Fancy) styleset(disambiguation) character-variant(Var)
+          swash(Swishy) ornaments(Flourish) annotation(Note);
       }}
     "#
   );
@@ -130,6 +138,12 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
       FontFeatureValueType::Styleset,
       "disambiguation"
     ),
+    Some([2u32].as_slice())
+  );
+  assert_eq!(
+    node.styles
+      .font_feature_values
+      .lookup(&family, FontFeatureValueType::Ornaments, "Flourish"),
     Some([2u32].as_slice())
   );
 
@@ -154,6 +168,36 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
     seen.get(b"ss02"),
     Some(&1),
     "styleset(disambiguation) should enable ss02 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"salt"),
+    Some(&3),
+    "stylistic(Fancy) should map to OpenType salt 3 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"cv04"),
+    Some(&1),
+    "character-variant(Var) should map to OpenType cv04 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"swsh"),
+    Some(&7),
+    "swash(Swishy) should map to OpenType swsh 7 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"cswh"),
+    Some(&7),
+    "swash(Swishy) should map to OpenType cswh 7 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"ornm"),
+    Some(&2),
+    "ornaments(Flourish) should map to OpenType ornm 2 via @font-feature-values"
+  );
+  assert_eq!(
+    seen.get(b"nalt"),
+    Some(&1),
+    "annotation(Note) should map to OpenType nalt 1 via @font-feature-values"
   );
 }
 
