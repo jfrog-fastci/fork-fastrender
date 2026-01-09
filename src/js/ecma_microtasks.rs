@@ -24,6 +24,12 @@ use std::rc::Rc;
 /// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
+
+  fn vm_js_heap(&self) -> &vm_js::Heap;
+
+  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+    self.vm_js_vm_and_heap_mut().1
+  }
 }
 
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
@@ -42,6 +48,14 @@ pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {
 }
 
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
+  fn heap(&self) -> &vm_js::Heap {
+    self.host.vm_js_heap()
+  }
+
+  fn heap_mut(&mut self) -> &mut vm_js::Heap {
+    self.host.vm_js_heap_mut()
+  }
+
   fn call(
     &mut self,
     callee: vm_js::Value,
@@ -216,6 +230,10 @@ mod tests {
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
+
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
     }
 
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
@@ -279,6 +297,10 @@ mod tests {
     impl VmJsEngineHost for Host {
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
+      }
+
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
       }
     }
 
@@ -373,6 +395,10 @@ mod tests {
     impl VmJsEngineHost for Host {
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
+      }
+
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
       }
     }
 
