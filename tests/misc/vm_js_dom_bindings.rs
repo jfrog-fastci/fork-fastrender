@@ -430,3 +430,4 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
   realm.teardown(&mut heap);
   Ok(())
 }
+

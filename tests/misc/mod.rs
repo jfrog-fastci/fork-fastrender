@@ -58,6 +58,7 @@ mod js_timers;
 mod js_trace_spans_test;
 mod js_time_determinism;
 mod vm_js_define_own_property_smoke;
+mod vm_js_dom_bindings;
 mod vm_js_function_call_apply_bind_smoke;
 mod vm_js_module_graph_loader_smoke;
 mod vm_js_new_target_smoke;
