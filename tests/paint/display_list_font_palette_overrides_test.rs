@@ -551,6 +551,7 @@ fn display_list_preserves_font_palette_overrides_for_list_markers() {
     FragmentContent::Text {
       text: "A".to_string().into(),
       box_id: None,
+      source_range: None,
       baseline_offset: baseline,
       shaped: Some(Arc::new(vec![run.clone()])),
       is_marker: true,

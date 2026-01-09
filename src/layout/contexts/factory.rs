@@ -28,7 +28,7 @@ use crate::layout::contexts::flex_cache::ShardedFlexCache;
 use crate::layout::contexts::grid::GridFormattingContext;
 use crate::layout::contexts::inline::InlineFormattingContext;
 use crate::layout::contexts::positioned::ContainingBlock;
-use crate::layout::engine::LayoutParallelism;
+use crate::layout::engine::{LayoutParallelDebugCollector, LayoutParallelism};
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::table::TableFormattingContext;
@@ -44,12 +44,18 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 #[cfg(any(test, debug_assertions))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 #[cfg(any(test, debug_assertions))]
-static FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(any(test, debug_assertions))]
-static FACTORY_DETACHED_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+  // These counters are used by unit/integration tests as guardrails against excessive churn.
+  //
+  // They are thread-local so tests can run in parallel without racing on global state. Layout tests
+  // frequently run in parallel (default `cargo test` behavior), and using a process-wide counter
+  // makes "reset + assert" patterns flaky.
+  static FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = Cell::new(0);
+  static FACTORY_DETACHED_CALLS: Cell<usize> = Cell::new(0);
+}
 
 #[derive(Default)]
 struct CachedFormattingContexts {
@@ -110,6 +116,7 @@ pub struct FormattingContextFactory {
   grid_taffy_cache: std::sync::Arc<TaffyNodeCache>,
   shaping_pipeline: crate::text::pipeline::ShapingPipeline,
   parallelism: LayoutParallelism,
+  layout_parallel_debug: Option<std::sync::Arc<LayoutParallelDebugCollector>>,
   cached_contexts: Arc<CachedFormattingContexts>,
 }
 
@@ -135,7 +142,7 @@ impl FormattingContextFactory {
   /// `cached_contexts -> Arc<dyn FormattingContext> -> FormattingContextFactory -> cached_contexts`
   pub(crate) fn detached(&self) -> Self {
     #[cfg(any(test, debug_assertions))]
-    FACTORY_DETACHED_CALLS.fetch_add(1, Ordering::Relaxed);
+    FACTORY_DETACHED_CALLS.with(|calls| calls.set(calls.get() + 1));
     let mut clone = self.clone();
     clone.reset_cached_contexts();
     clone
@@ -210,7 +217,7 @@ impl FormattingContextFactory {
     nearest_positioned_cb: ContainingBlock,
   ) -> Self {
     #[cfg(any(test, debug_assertions))]
-    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.fetch_add(1, Ordering::Relaxed);
+    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.set(calls.get() + 1));
     let flex_cache_limit = taffy_template_cache_limit(TaffyAdapterKind::Flex);
     let grid_cache_limit = taffy_template_cache_limit(TaffyAdapterKind::Grid);
     Self::with_font_context_viewport_cb_and_cache(
@@ -246,6 +253,7 @@ impl FormattingContextFactory {
       grid_taffy_cache,
       shaping_pipeline: ShapingPipeline::new(),
       parallelism: LayoutParallelism::default(),
+      layout_parallel_debug: None,
       cached_contexts: CachedFormattingContexts::fresh(),
     }
   }
@@ -342,6 +350,29 @@ impl FormattingContextFactory {
     self.parallelism = parallelism;
     self.reset_cached_contexts();
     self
+  }
+
+  pub(crate) fn with_layout_parallel_debug(
+    mut self,
+    debug: Option<std::sync::Arc<LayoutParallelDebugCollector>>,
+  ) -> Self {
+    let unchanged = match (&self.layout_parallel_debug, &debug) {
+      (None, None) => true,
+      (Some(existing), Some(next)) => std::sync::Arc::ptr_eq(existing, next),
+      _ => false,
+    };
+    if unchanged {
+      return self;
+    }
+    self.layout_parallel_debug = debug;
+    self.reset_cached_contexts();
+    self
+  }
+
+  pub(crate) fn debug_record_parallel_work(&self) {
+    if let Some(collector) = self.layout_parallel_debug.as_ref() {
+      collector.record_work_item();
+    }
   }
 
   /// Returns the active layout parallelism configuration.
@@ -583,22 +614,22 @@ impl FormattingContextFactory {
 impl FormattingContextFactory {
   #[doc(hidden)]
   pub fn debug_with_font_context_viewport_and_cb_call_count() -> usize {
-    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.load(Ordering::Relaxed)
+    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.get())
   }
 
   #[doc(hidden)]
   pub fn debug_reset_with_font_context_viewport_and_cb_call_count() {
-    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.store(0, Ordering::Relaxed);
+    FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.set(0));
   }
 
   #[doc(hidden)]
   pub fn debug_detached_call_count() -> usize {
-    FACTORY_DETACHED_CALLS.load(Ordering::Relaxed)
+    FACTORY_DETACHED_CALLS.with(|calls| calls.get())
   }
 
   #[doc(hidden)]
   pub fn debug_reset_detached_call_count() {
-    FACTORY_DETACHED_CALLS.store(0, Ordering::Relaxed);
+    FACTORY_DETACHED_CALLS.with(|calls| calls.set(0));
   }
 }
 

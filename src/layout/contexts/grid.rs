@@ -4076,7 +4076,7 @@ impl GridFormattingContext {
       .map(|&idx| {
         with_deadline(deadline.as_ref(), || {
           let _stage_guard = StageGuard::install(stage);
-          crate::layout::engine::debug_record_parallel_work();
+          factory.debug_record_parallel_work();
 
           let child = in_flow_children[idx];
           let bounds = child_bounds[idx];

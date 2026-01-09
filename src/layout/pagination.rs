@@ -35,7 +35,7 @@ use crate::style::values::Length;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::{BoxNode, BoxTree, CrossOriginAttribute, ReplacedType};
-use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode, TextSourceRange};
 
 /// Controls how paginated pages are positioned in the fragment tree.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -139,6 +139,458 @@ fn page_has_in_flow_content(page: &FragmentNode) -> bool {
 
   false
 }
+
+/// Stable continuation token for paginated layout.
+///
+/// This intentionally encodes *content position* (DOM order) rather than any geometry derived from
+/// a particular layout. It is used to continue pagination across varying @page sizes/margins
+/// without skipping or duplicating in-flow content.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum BreakToken {
+  Start,
+  End,
+  /// Block-level continuation within the box identified by `box_id`.
+  ///
+  /// `offset_bits` stores a canonicalized `f32` offset in fragmentation-axis coordinates relative
+  /// to the block's own start edge.
+  Block { box_id: usize, offset_bits: u32 },
+  /// Byte offset into the source text node identified by `box_id`.
+  Text { box_id: usize, offset: usize },
+  /// Replaced-element continuation within the box identified by `box_id`.
+  Replaced { box_id: usize, offset_bits: u32 },
+}
+
+fn inline_start_for_axis(axis: &FragmentAxis, rect: &Rect) -> f32 {
+  if axis.block_is_horizontal {
+    rect.y()
+  } else {
+    rect.x()
+  }
+}
+
+fn translate_inline_for_axis(node: &mut FragmentNode, axis: &FragmentAxis, delta: f32) {
+  if delta.abs() <= EPSILON {
+    return;
+  }
+  if axis.block_is_horizontal {
+    translate_fragment(node, 0.0, delta);
+  } else {
+    translate_fragment(node, delta, 0.0);
+  }
+}
+
+fn token_from_text_fragment(box_id: usize, source_range: &TextSourceRange) -> BreakToken {
+  BreakToken::Text {
+    box_id,
+    offset: source_range.start(),
+  }
+}
+
+fn token_from_line_start(line: &FragmentNode) -> Option<BreakToken> {
+  fn walk(node: &FragmentNode) -> Option<BreakToken> {
+    match &node.content {
+      FragmentContent::Text {
+        box_id: Some(box_id),
+        source_range: Some(range),
+        is_marker: false,
+        ..
+      } => Some(token_from_text_fragment(*box_id, range)),
+      FragmentContent::Replaced {
+        box_id: Some(box_id),
+        ..
+      } => Some(BreakToken::Replaced {
+        box_id: *box_id,
+        offset_bits: f32_to_canonical_bits(0.0),
+      }),
+      _ => {
+        for child in node.children.iter() {
+          if let Some(found) = walk(child) {
+            return Some(found);
+          }
+        }
+        None
+      }
+    }
+  }
+
+  walk(line)
+}
+
+fn line_contains_text_offset(line: &FragmentNode, box_id: usize, offset: usize) -> bool {
+  fn walk(node: &FragmentNode, box_id: usize, offset: usize) -> bool {
+    match &node.content {
+      FragmentContent::Text {
+        box_id: Some(id),
+        source_range: Some(range),
+        ..
+      } if *id == box_id => offset >= range.start() && offset < range.end(),
+      _ => node.children.iter().any(|child| walk(child, box_id, offset)),
+    }
+  }
+
+  walk(line, box_id, offset)
+}
+
+fn line_contains_replaced(line: &FragmentNode, box_id: usize) -> bool {
+  fn walk(node: &FragmentNode, box_id: usize) -> bool {
+    match &node.content {
+      FragmentContent::Replaced { box_id: Some(id), .. } if *id == box_id => true,
+      _ => node.children.iter().any(|child| walk(child, box_id)),
+    }
+  }
+
+  walk(line, box_id)
+}
+
+fn flow_start_for_token_in_layout(
+  node: &FragmentNode,
+  token: &BreakToken,
+  abs_start: f32,
+  parent_block_size: f32,
+  axis: &FragmentAxis,
+) -> Option<f32> {
+  let node_block_size = axis.block_size(&node.bounds);
+  let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+
+  match token {
+    BreakToken::Start => return Some(0.0),
+    BreakToken::End => return None,
+    BreakToken::Block { box_id, offset_bits } => {
+      if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == *box_id) {
+        let mut offset = f32::from_bits(*offset_bits);
+        if !offset.is_finite() {
+          offset = 0.0;
+        }
+        offset = offset.max(0.0);
+        offset = offset.min((node_abs_end - node_abs_start).max(0.0));
+        return Some(node_abs_start + offset);
+      }
+    }
+    BreakToken::Text { box_id, offset } => {
+      if matches!(node.content, FragmentContent::Line { .. })
+        && line_contains_text_offset(node, *box_id, *offset)
+      {
+        return Some(node_abs_start);
+      }
+    }
+    BreakToken::Replaced { box_id, offset_bits } => {
+      let zero_bits = 0.0f32.to_bits();
+      if *offset_bits == zero_bits
+        && matches!(node.content, FragmentContent::Line { .. })
+        && line_contains_replaced(node, *box_id)
+      {
+        return Some(node_abs_start);
+      }
+      if matches!(node.content, FragmentContent::Replaced { box_id: Some(id), .. } if id == *box_id)
+      {
+        let mut offset = f32::from_bits(*offset_bits);
+        if !offset.is_finite() {
+          offset = 0.0;
+        }
+        offset = offset.max(0.0);
+        offset = offset.min((node_abs_end - node_abs_start).max(0.0));
+        return Some(node_abs_start + offset);
+      }
+    }
+  }
+
+  for child in node.children.iter() {
+    if let Some(found) = flow_start_for_token_in_layout(
+      child,
+      token,
+      node_abs_start,
+      node_block_size,
+      axis,
+    ) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn next_break_token_after_pos(
+  node: &FragmentNode,
+  pos: f32,
+  abs_start: f32,
+  parent_block_size: f32,
+  axis: &FragmentAxis,
+  best: &mut Option<(f32, BreakToken)>,
+) {
+  let node_block_size = axis.block_size(&node.bounds);
+  let (node_abs_start, _node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+
+  let consider = |best: &mut Option<(f32, BreakToken)>, start: f32, token: BreakToken| {
+    if start + EPSILON < pos {
+      return;
+    }
+    match best {
+      Some((best_start, _)) if *best_start <= start + EPSILON => {}
+      _ => *best = Some((start, token)),
+    }
+  };
+
+  match &node.content {
+    FragmentContent::Line { .. } => {
+      if let Some(token) = token_from_line_start(node) {
+        consider(best, node_abs_start, token);
+      }
+    }
+    FragmentContent::Block { box_id: Some(id) } => {
+      consider(
+        best,
+        node_abs_start,
+        BreakToken::Block {
+          box_id: *id,
+          offset_bits: f32_to_canonical_bits(0.0),
+        },
+      );
+    }
+    FragmentContent::Replaced { box_id: Some(id), .. } => {
+      consider(
+        best,
+        node_abs_start,
+        BreakToken::Replaced {
+          box_id: *id,
+          offset_bits: f32_to_canonical_bits(0.0),
+        },
+      );
+    }
+    _ => {}
+  }
+
+  for child in node.children.iter() {
+    next_break_token_after_pos(child, pos, node_abs_start, node_block_size, axis, best);
+  }
+}
+
+fn line_start_containing_pos(
+  node: &FragmentNode,
+  pos: f32,
+  abs_start: f32,
+  parent_block_size: f32,
+  axis: &FragmentAxis,
+  best: &mut Option<f32>,
+) {
+  let node_block_size = axis.block_size(&node.bounds);
+  let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+
+  if matches!(node.content, FragmentContent::Line { .. })
+    && pos > node_abs_start + EPSILON
+    && pos < node_abs_end - EPSILON
+    && node_abs_end > node_abs_start + EPSILON
+  {
+    *best = Some(best.map_or(node_abs_start, |prev| prev.max(node_abs_start)));
+  }
+
+  for child in node.children.iter() {
+    line_start_containing_pos(child, pos, node_abs_start, node_block_size, axis, best);
+  }
+}
+
+fn continuation_token_for_pos(
+  node: &FragmentNode,
+  pos: f32,
+  abs_start: f32,
+  parent_block_size: f32,
+  axis: &FragmentAxis,
+) -> Option<BreakToken> {
+  // Prefer the deepest fragment (max depth) that spans the page boundary. If multiple candidates are
+  // at the same depth, prefer the one with the smallest block-size range, and then prefer replaced
+  // elements over generic blocks.
+  fn walk(
+    node: &FragmentNode,
+    pos: f32,
+    abs_start: f32,
+    parent_block_size: f32,
+    axis: &FragmentAxis,
+    depth: usize,
+    best: &mut Option<(usize, f32, bool, BreakToken)>,
+  ) {
+    let node_block_size = axis.block_size(&node.bounds);
+    let (node_abs_start, node_abs_end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+
+    if pos > node_abs_start + EPSILON
+      && pos < node_abs_end - EPSILON
+      && node_abs_end > node_abs_start + EPSILON
+    {
+      let span = node_abs_end - node_abs_start;
+      let mut consider = |is_replaced: bool, token: BreakToken| {
+        match best {
+          Some((best_depth, best_span, best_is_replaced, _))
+            if *best_depth > depth
+              || (*best_depth == depth
+                && (*best_span < span - EPSILON
+                  || ((*best_span - span).abs() <= EPSILON && *best_is_replaced >= is_replaced))) => {}
+          _ => *best = Some((depth, span, is_replaced, token)),
+        }
+      };
+
+      match &node.content {
+        FragmentContent::Block { box_id: Some(id) } => {
+          let offset = (pos - node_abs_start).max(0.0);
+          consider(
+            false,
+            BreakToken::Block {
+              box_id: *id,
+              offset_bits: f32_to_canonical_bits(offset),
+            },
+          );
+        }
+        FragmentContent::Replaced { box_id: Some(id), .. } => {
+          let offset = (pos - node_abs_start).max(0.0);
+          consider(
+            true,
+            BreakToken::Replaced {
+              box_id: *id,
+              offset_bits: f32_to_canonical_bits(offset),
+            },
+          );
+        }
+        _ => {}
+      }
+    }
+
+    for child in node.children.iter() {
+      walk(child, pos, node_abs_start, node_block_size, axis, depth + 1, best);
+    }
+  }
+
+  let mut best: Option<(usize, f32, bool, BreakToken)> = None;
+  walk(node, pos, abs_start, parent_block_size, axis, 0, &mut best);
+  best.map(|(_, _, _, token)| token)
+}
+
+fn trim_line_children_to_text_offset(node: &mut FragmentNode, box_id: usize, offset: usize) -> bool {
+  if let FragmentContent::Text {
+    box_id: Some(id),
+    source_range,
+    text,
+    shaped,
+    ..
+  } = &mut node.content
+  {
+    if *id == box_id {
+      if let Some(range) = source_range.as_mut() {
+        let start = range.start();
+        let end = range.end();
+        if offset >= start && offset < end {
+          let rel = offset.saturating_sub(start);
+          let full = text.as_ref();
+          if rel >= full.len() {
+            text.clone_from(&Arc::from(""));
+            *shaped = None;
+            *source_range = TextSourceRange::new(offset.min(end)..end);
+            return true;
+          }
+          let slice_start = if full.is_char_boundary(rel) {
+            rel
+          } else {
+            full
+              .char_indices()
+              .map(|(idx, _)| idx)
+              .find(|idx| *idx >= rel)
+              .unwrap_or(full.len())
+          };
+          let new_start = start.saturating_add(slice_start).min(end);
+          let sliced = &full[slice_start..];
+          text.clone_from(&Arc::from(sliced));
+          *shaped = None;
+          *source_range = TextSourceRange::new(new_start..end);
+          return true;
+        }
+      }
+    }
+  }
+
+  let children = node.children_mut();
+  for idx in 0..children.len() {
+    if trim_line_children_to_text_offset(&mut children[idx], box_id, offset) {
+      if idx > 0 {
+        children.drain(0..idx);
+      }
+      return true;
+    }
+  }
+  false
+}
+
+fn trim_line_children_to_replaced(node: &mut FragmentNode, box_id: usize) -> bool {
+  match &node.content {
+    FragmentContent::Replaced { box_id: Some(id), .. } if *id == box_id => return true,
+    _ => {}
+  }
+
+  let children = node.children_mut();
+  for idx in 0..children.len() {
+    if trim_line_children_to_replaced(&mut children[idx], box_id) {
+      if idx > 0 {
+        children.drain(0..idx);
+      }
+      return true;
+    }
+  }
+  false
+}
+
+fn trim_clipped_content_start(content: &mut FragmentNode, axis: &FragmentAxis, token: &BreakToken) {
+  let zero_bits = 0.0f32.to_bits();
+  let mut target: Option<BreakToken> = match token {
+    BreakToken::Text { .. } => Some(token.clone()),
+    BreakToken::Replaced { offset_bits, .. } if *offset_bits == zero_bits => Some(token.clone()),
+    _ => None,
+  };
+  if target.is_none() {
+    return;
+  }
+
+  fn walk(node: &mut FragmentNode, axis: &FragmentAxis, token: &BreakToken, done: &mut bool) {
+    if *done {
+      return;
+    }
+    if matches!(node.content, FragmentContent::Line { .. }) {
+      let matched = match token {
+        BreakToken::Text { box_id, offset } => line_contains_text_offset(node, *box_id, *offset),
+        BreakToken::Replaced { box_id, .. } => line_contains_replaced(node, *box_id),
+        _ => false,
+      };
+      if matched {
+        match token {
+          BreakToken::Text { box_id, offset } => {
+            let _ = trim_line_children_to_text_offset(node, *box_id, *offset);
+          }
+          BreakToken::Replaced { box_id, .. } => {
+            let _ = trim_line_children_to_replaced(node, *box_id);
+          }
+          _ => {}
+        }
+
+        let children = node.children_mut();
+        let min_inline = children
+          .iter()
+          .map(|c| inline_start_for_axis(axis, &c.bounds))
+          .fold(f32::INFINITY, f32::min);
+        if min_inline.is_finite() && min_inline.abs() > EPSILON {
+          for child in children.iter_mut() {
+            translate_inline_for_axis(child, axis, -min_inline);
+          }
+        }
+
+        *done = true;
+        return;
+      }
+    }
+    for child in node.children_mut().iter_mut() {
+      walk(child, axis, token, done);
+      if *done {
+        return;
+      }
+    }
+  }
+
+  let token = target.take().unwrap();
+  let mut done = false;
+  walk(content, axis, &token, &mut done);
+}
 fn opposite_page_side(side: PageSide) -> PageSide {
   match side {
     PageSide::Left => PageSide::Right,
@@ -192,58 +644,12 @@ fn dedup_forced_boundaries(mut boundaries: Vec<ForcedBoundary>) -> Vec<ForcedBou
   deduped
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BoxAxisRange {
-  start: f32,
-  end: f32,
-}
-
-fn fragment_box_id_for_axis_range(node: &FragmentNode) -> Option<usize> {
-  match &node.content {
-    FragmentContent::Block { box_id } => *box_id,
-    FragmentContent::Inline { box_id, .. } => *box_id,
-    FragmentContent::Text { box_id, .. } => *box_id,
-    FragmentContent::Replaced { box_id, .. } => *box_id,
-    _ => None,
-  }
-}
-
-fn collect_box_axis_ranges(
-  node: &FragmentNode,
-  abs_start: f32,
-  parent_block_size: f32,
-  axes: FragmentAxes,
-  out: &mut HashMap<usize, BoxAxisRange>,
-) {
-  let logical = node.logical_bounds();
-  let start = axes.abs_block_start(&logical, abs_start, parent_block_size);
-  let block_size = axes.block_size(&logical).max(0.0);
-  let end = start + block_size;
-
-  if let Some(box_id) = fragment_box_id_for_axis_range(node) {
-    if box_id != 0 {
-      out
-        .entry(box_id)
-        .and_modify(|range| {
-          range.start = range.start.min(start);
-          range.end = range.end.max(end);
-        })
-        .or_insert(BoxAxisRange { start, end });
-    }
-  }
-
-  for child in node.children.iter() {
-    collect_box_axis_ranges(child, start, block_size, axes, out);
-  }
-}
-
 #[derive(Debug, Clone)]
 struct CachedLayout {
   root: FragmentNode,
   total_height: f32,
   forced_boundaries: Vec<ForcedBoundary>,
   page_name_transitions: Vec<PageNameTransition>,
-  box_axis_ranges: HashMap<usize, BoxAxisRange>,
   string_set_events: Vec<StringSetEvent>,
 }
 
@@ -295,14 +701,6 @@ impl CachedLayout {
     };
     let forced = dedup_forced_boundaries(forced);
 
-    let mut box_axis_ranges = HashMap::new();
-    collect_box_axis_ranges(
-      &root,
-      0.0,
-      axes.block_size(&root.logical_bounds()),
-      axes,
-      &mut box_axis_ranges,
-    );
     let mut string_set_events = string_set_collector.collect(&root, axes);
     string_set_events.sort_by(|a, b| {
       a.abs_block
@@ -315,7 +713,6 @@ impl CachedLayout {
       total_height,
       forced_boundaries: forced,
       page_name_transitions,
-      box_axis_ranges,
       string_set_events,
     }
   }
@@ -393,161 +790,6 @@ impl PageLayoutKey {
   }
 }
 
-#[derive(Debug, Clone)]
-struct BlockAxisMapping {
-  base_total: f32,
-  target_total: f32,
-  /// Anchor points sorted by base position (monotonic in both base + target coordinates).
-  base_to_target: Vec<(f32, f32)>,
-  /// Anchor points sorted by target position (monotonic in both target + base coordinates).
-  target_to_base: Vec<(f32, f32)>,
-}
-
-impl BlockAxisMapping {
-  fn identity(total: f32) -> Self {
-    Self {
-      base_total: total,
-      target_total: total,
-      base_to_target: vec![(0.0, 0.0), (total, total)],
-      target_to_base: vec![(0.0, 0.0), (total, total)],
-    }
-  }
-
-  fn new(
-    base_total: f32,
-    target_total: f32,
-    base_ranges: &HashMap<usize, BoxAxisRange>,
-    target_ranges: &HashMap<usize, BoxAxisRange>,
-  ) -> Self {
-    let mut anchors: Vec<(f32, f32)> = Vec::new();
-    anchors.push((0.0, 0.0));
-    anchors.push((base_total, target_total));
-
-    for (box_id, base) in base_ranges {
-      if let Some(target) = target_ranges.get(box_id) {
-        anchors.push((base.start, target.start));
-        anchors.push((base.end, target.end));
-      }
-    }
-
-    let base_to_target = build_monotonic_mapping(anchors, base_total, target_total);
-    let target_to_base = build_monotonic_mapping(
-      base_to_target.iter().map(|(b, t)| (*t, *b)).collect(),
-      target_total,
-      base_total,
-    );
-
-    Self {
-      base_total,
-      target_total,
-      base_to_target,
-      target_to_base,
-    }
-  }
-
-  fn map_base_to_target(&self, pos: f32) -> f32 {
-    map_piecewise(&self.base_to_target, pos, self.target_total)
-  }
-
-  fn map_target_to_base(&self, pos: f32) -> f32 {
-    map_piecewise(&self.target_to_base, pos, self.base_total)
-  }
-}
-
-fn build_monotonic_mapping(
-  mut points: Vec<(f32, f32)>,
-  max_x: f32,
-  max_y: f32,
-) -> Vec<(f32, f32)> {
-  points.retain(|(x, y)| x.is_finite() && y.is_finite());
-  for (x, y) in points.iter_mut() {
-    *x = x.clamp(0.0, max_x);
-    *y = y.clamp(0.0, max_y);
-  }
-
-  points.sort_by(|a, b| {
-    a.0
-      .partial_cmp(&b.0)
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-
-  // Deduplicate by x, keeping the maximum y for each x to preserve monotonicity.
-  let mut deduped: Vec<(f32, f32)> = Vec::new();
-  for (x, y) in points {
-    if let Some(last) = deduped.last_mut() {
-      if (x - last.0).abs() < EPSILON {
-        last.1 = last.1.max(y);
-        continue;
-      }
-    }
-    deduped.push((x, y));
-  }
-
-  if deduped.is_empty() {
-    return vec![(0.0, 0.0), (max_x, max_y)];
-  }
-
-  // Ensure there is a 0 -> 0 anchor.
-  if deduped[0].0 > EPSILON {
-    deduped.insert(0, (0.0, 0.0));
-  } else {
-    deduped[0] = (0.0, deduped[0].1);
-  }
-
-  // Ensure there is an end anchor.
-  if (deduped.last().unwrap().0 - max_x).abs() > EPSILON {
-    deduped.push((max_x, max_y));
-  } else if let Some(last) = deduped.last_mut() {
-    last.0 = max_x;
-    last.1 = max_y;
-  }
-
-  // Enforce monotonicity in y.
-  let mut out: Vec<(f32, f32)> = Vec::with_capacity(deduped.len());
-  let mut last_y = 0.0f32;
-  for (x, y) in deduped {
-    last_y = last_y.max(y);
-    out.push((x, last_y));
-  }
-
-  // Ensure final anchor reaches max_y.
-  if let Some(last) = out.last_mut() {
-    last.0 = max_x;
-    last.1 = max_y;
-  }
-  out
-}
-
-fn map_piecewise(points: &[(f32, f32)], x: f32, max_y: f32) -> f32 {
-  if !x.is_finite() {
-    return 0.0;
-  }
-  if points.is_empty() {
-    return x.clamp(0.0, max_y);
-  }
-  if points.len() == 1 {
-    return points[0].1.clamp(0.0, max_y);
-  }
-
-  if x <= points[0].0 + EPSILON {
-    return points[0].1.clamp(0.0, max_y);
-  }
-  let last = points.len() - 1;
-  if x >= points[last].0 - EPSILON {
-    return points[last].1.clamp(0.0, max_y);
-  }
-
-  let idx = points
-    .partition_point(|(px, _)| *px < x)
-    .saturating_sub(1)
-    .min(points.len().saturating_sub(2));
-  let (x0, y0) = points[idx];
-  let (x1, y1) = points[idx + 1];
-  let dx = (x1 - x0).max(EPSILON);
-  let t = ((x - x0) / dx).clamp(0.0, 1.0);
-  (y0 + t * (y1 - y0)).clamp(0.0, max_y)
-}
-
 /// Split a laid out fragment tree into pages using the provided @page rules.
 ///
 /// When @page rules change the content size between pages (e.g., :left/:right or named pages),
@@ -617,7 +859,7 @@ pub fn paginate_fragment_tree(
     PageSide::Left
   };
 
-  let (base_key, base_total_height, base_page_names, base_forced, base_root, base_box_axis_ranges) = loop {
+  let (base_total_height, base_page_names, base_forced, base_root) = loop {
     let base_style = resolve_page_style(
       rules,
       0,
@@ -652,12 +894,10 @@ pub fn paginate_fragment_tree(
     }
 
     break (
-      base_key,
       base_layout.total_height.max(EPSILON),
       base_layout.page_name_transitions.clone(),
       base_layout.forced_boundaries.clone(),
       base_layout.root.clone(),
-      base_layout.box_axis_ranges.clone(),
     );
   };
 
@@ -666,9 +906,6 @@ pub fn paginate_fragment_tree(
   let mut string_set_seen_boxes: HashSet<usize> = HashSet::new();
   let mut string_event_indices: HashMap<PageLayoutKey, usize> = HashMap::new();
 
-  let mut block_axis_mappings: HashMap<PageLayoutKey, BlockAxisMapping> = HashMap::new();
-  block_axis_mappings.insert(base_key, BlockAxisMapping::identity(base_total_height));
-
   let mut pages: Vec<(
     FragmentNode,
     ResolvedPageStyle,
@@ -676,16 +913,30 @@ pub fn paginate_fragment_tree(
     HashMap<String, RunningElementValues>,
     bool,
   )> = Vec::new();
-  let mut consumed_base = 0.0f32;
+  let base_root_block_size = root_axis.block_size(&base_root.bounds);
+  let mut token = BreakToken::Start;
   let mut page_index = 0usize;
   let mut pending_footnotes: VecDeque<PendingFootnote> = VecDeque::new();
 
   loop {
-    let start_in_base = consumed_base;
+    let start_in_base = match &token {
+      BreakToken::Start => 0.0,
+      BreakToken::End => base_total_height,
+      _ => flow_start_for_token_in_layout(&base_root, &token, 0.0, base_root_block_size, &root_axis)
+        .ok_or_else(|| {
+          LayoutError::MissingContext(
+            "pagination break token could not be resolved in base layout".into(),
+          )
+        })?,
+    };
     let mut page_name = page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
     let side = page_side_for_index(page_index, first_page_side);
     let required_side = required_page_side(&base_forced, start_in_base);
     let is_blank_page = required_side.map_or(false, |required| required != side);
+
+    if matches!(token, BreakToken::End) && pending_footnotes.is_empty() && !is_blank_page {
+      break;
+    }
 
     let mut page_style = resolve_page_style(
       rules,
@@ -715,7 +966,65 @@ pub fn paginate_fragment_tree(
     if total_height <= EPSILON {
       break;
     }
-    let root_block_size = axis.block_size(&layout.root.bounds);
+    let mut root_block_size = axis.block_size(&layout.root.bounds);
+
+    // Determine where the current continuation token maps into this page's layout. This must be
+    // done *before* building the page root, because resolving the effective page name may require
+    // re-laying out with a different @page style.
+    let mut start = 0.0f32;
+    if !is_blank_page && pending_footnotes.is_empty() {
+      start = match &token {
+        BreakToken::Start => 0.0,
+        BreakToken::End => total_height,
+        _ => flow_start_for_token_in_layout(&layout.root, &token, 0.0, root_block_size, &axis)
+          .ok_or_else(|| {
+            LayoutError::MissingContext("pagination break token could not be resolved".into())
+          })?,
+      };
+      let actual_page_name =
+        page_name_for_position(&layout.page_name_transitions, start, fallback_page_name);
+      if actual_page_name != page_name {
+        page_name = actual_page_name;
+        page_style = resolve_page_style(
+          rules,
+          page_index,
+          page_name.as_deref(),
+          side,
+          is_blank_page,
+          fallback_page_size,
+          root_font_size,
+          base_style_for_margins,
+        );
+        key = PageLayoutKey::new(&page_style, style_hash, font_generation);
+        layout = layout_for_style(
+          &page_style,
+          key,
+          &mut layouts,
+          box_tree,
+          font_ctx,
+          fallback_page_name,
+          root_axes,
+          &string_set_collector,
+          enable_layout_cache,
+        )?;
+        total_height = layout.total_height;
+        if total_height <= EPSILON {
+          break;
+        }
+        root_block_size = axis.block_size(&layout.root.bounds);
+        start = match &token {
+          BreakToken::Start => 0.0,
+          BreakToken::End => total_height,
+          _ => flow_start_for_token_in_layout(&layout.root, &token, 0.0, root_block_size, &axis)
+            .ok_or_else(|| {
+              LayoutError::MissingContext("pagination break token could not be resolved".into())
+            })?,
+        };
+      }
+      if start >= total_height - EPSILON {
+        break;
+      }
+    }
 
     let mut fixed_fragments = Vec::new();
     collect_fixed_fragments(&layout.root, Point::ZERO, &mut fixed_fragments);
@@ -758,9 +1067,10 @@ pub fn paginate_fragment_tree(
     document_wrapper.force_stacking_context_with_z_index(0);
     let mut page_running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
-    let mut end_in_base = start_in_base;
     let mut string_slice_start = 0.0f32;
     let mut string_slice_end = 0.0f32;
+
+    let mut next_token = token.clone();
 
     if !is_blank_page {
       if !pending_footnotes.is_empty() {
@@ -847,61 +1157,6 @@ pub fn paginate_fragment_tree(
           document_wrapper.children_mut().push(footnote_area);
         }
       } else {
-        let mut start = {
-          let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
-            BlockAxisMapping::new(
-              base_total_height,
-              total_height,
-              &base_box_axis_ranges,
-              &layout.box_axis_ranges,
-            )
-          });
-          mapping.map_base_to_target(consumed_base).min(total_height)
-        };
-      let actual_page_name =
-        page_name_for_position(&layout.page_name_transitions, start, fallback_page_name);
-      if actual_page_name != page_name {
-        page_name = actual_page_name;
-        page_style = resolve_page_style(
-          rules,
-          page_index,
-          page_name.as_deref(),
-          side,
-          is_blank_page,
-          fallback_page_size,
-          root_font_size,
-          base_style_for_margins,
-        );
-        key = PageLayoutKey::new(&page_style, style_hash, font_generation);
-        layout = layout_for_style(
-          &page_style,
-          key,
-          &mut layouts,
-          box_tree,
-          font_ctx,
-          fallback_page_name,
-          root_axes,
-          &string_set_collector,
-          enable_layout_cache,
-        )?;
-        total_height = layout.total_height;
-        start = {
-          let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
-            BlockAxisMapping::new(
-              base_total_height,
-              total_height,
-              &base_box_axis_ranges,
-              &layout.box_axis_ranges,
-            )
-          });
-          mapping.map_base_to_target(consumed_base).min(total_height)
-        };
-      }
-
-      if start >= total_height - EPSILON {
-        break;
-      }
-
       let page_block = if axis.block_is_horizontal {
         page_style.content_size.width
       } else {
@@ -1008,6 +1263,7 @@ pub fn paginate_fragment_tree(
           end >= total_height - 0.01,
           &axis,
         );
+        trim_clipped_content_start(&mut content, &axis, &token);
         if page_footnotes.is_empty() {
           page_footnotes = collect_footnotes_for_page(&content, &axis);
         }
@@ -1181,26 +1437,43 @@ pub fn paginate_fragment_tree(
       string_slice_start = start;
       string_slice_end = end;
 
-      let mut mapped_end_in_base = {
-        let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
-          BlockAxisMapping::new(
-            base_total_height,
-            total_height,
-            &base_box_axis_ranges,
-            &layout.box_axis_ranges,
-          )
-        });
-        mapping.map_target_to_base(end).min(base_total_height)
-      };
-
-      // Fall back to proportional mapping if the anchor map cannot make forward progress.
-      if mapped_end_in_base <= consumed_base + EPSILON {
-        let base_advance = ((end - start).max(0.0) / total_height) * base_total_height;
-        mapped_end_in_base = (consumed_base + base_advance).min(base_total_height);
+      let mut token_pos = end;
+      let mut containing_line = None;
+      line_start_containing_pos(
+        &layout.root,
+        end,
+        0.0,
+        root_block_size,
+        &axis,
+        &mut containing_line,
+      );
+      if let Some(line_start) = containing_line {
+        token_pos = line_start;
       }
 
-      end_in_base = mapped_end_in_base;
-    }
+      let mut best_next: Option<(f32, BreakToken)> = None;
+      next_break_token_after_pos(
+        &layout.root,
+        token_pos,
+        0.0,
+        root_block_size,
+        &axis,
+        &mut best_next,
+      );
+      let continuation = if token_pos >= total_height - EPSILON {
+        None
+      } else {
+        continuation_token_for_pos(&layout.root, token_pos, 0.0, root_block_size, &axis)
+      };
+      next_token = match best_next {
+        // If the next break token begins at the current boundary, prefer it over continuation
+        // offsets. (This is especially important for line/text tokens, which enable stable trimming
+        // when rewrapping causes the token offset to land mid-line.)
+        Some((next_start, tok)) if (next_start - token_pos).abs() < EPSILON => tok,
+        Some((_next_start, tok)) => continuation.unwrap_or(tok),
+        None => continuation.unwrap_or(BreakToken::End),
+      };
+      }
     }
 
     for mut fixed in fixed_fragments {
@@ -1249,13 +1522,9 @@ pub fn paginate_fragment_tree(
       is_blank_page,
     ));
     if !is_blank_page {
-      consumed_base = end_in_base;
+      token = next_token;
     }
     page_index += 1;
-
-    if consumed_base >= base_total_height - EPSILON && pending_footnotes.is_empty() {
-      break;
-    }
   }
 
   // Suppress trailing pages that contain no in-flow content beyond the root HTML/body wrappers (and

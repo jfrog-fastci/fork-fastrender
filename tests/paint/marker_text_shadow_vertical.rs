@@ -28,6 +28,7 @@ fn marker_text_shadow_in_vertical_writing() {
     FragmentContent::Text {
       text: "•".to_string().into(),
       box_id: None,
+      source_range: None,
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,

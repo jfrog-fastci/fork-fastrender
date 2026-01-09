@@ -116,8 +116,7 @@ use crate::tree::box_tree::InlineBox;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
-use crate::tree::fragment_tree::FragmentContent;
-use crate::tree::fragment_tree::FragmentNode;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode, TextSourceRange};
 use baseline::compute_line_height_with_metrics_viewport;
 use baseline::BaselineMetrics;
 use baseline::LineBaselineAccumulator;
@@ -139,6 +138,8 @@ use line_builder::TextItem;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
+#[cfg(any(test, debug_assertions))]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
@@ -149,9 +150,15 @@ use unicode_general_category::get_general_category;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(any(test, debug_assertions))]
-static INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(any(test, debug_assertions))]
-static INLINE_FC_WITH_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+  // These counters are used by unit/integration tests as guardrails against excessive churn.
+  //
+  // They are thread-local so tests can run in parallel without racing on global state. Layout tests
+  // frequently run in parallel (default `cargo test` behavior), and using a process-wide counter
+  // makes "reset + assert" patterns flaky.
+  static INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = Cell::new(0);
+  static INLINE_FC_WITH_FACTORY_CALLS: Cell<usize> = Cell::new(0);
+}
 
 /// Inline Formatting Context implementation
 ///
@@ -242,7 +249,7 @@ impl InlineFormattingContext {
 
   pub(crate) fn with_factory(factory: FormattingContextFactory) -> Self {
     #[cfg(any(test, debug_assertions))]
-    INLINE_FC_WITH_FACTORY_CALLS.fetch_add(1, Ordering::Relaxed);
+    INLINE_FC_WITH_FACTORY_CALLS.with(|calls| calls.set(calls.get() + 1));
     let pipeline = factory.shaping_pipeline();
     let font_context = factory.font_context().clone();
     let viewport_size = factory.viewport_size();
@@ -281,7 +288,7 @@ impl InlineFormattingContext {
     nearest_positioned_cb: crate::layout::contexts::positioned::ContainingBlock,
   ) -> Self {
     #[cfg(any(test, debug_assertions))]
-    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.fetch_add(1, Ordering::Relaxed);
+    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.set(calls.get() + 1));
     let factory =
       FormattingContextFactory::with_font_context_and_viewport(font_context, viewport_size)
         .with_positioned_cb(nearest_positioned_cb);
@@ -312,25 +319,25 @@ impl InlineFormattingContext {
   #[cfg(any(test, debug_assertions))]
   #[doc(hidden)]
   pub fn debug_with_font_context_viewport_and_cb_call_count() -> usize {
-    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.load(Ordering::Relaxed)
+    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.get())
   }
 
   #[cfg(any(test, debug_assertions))]
   #[doc(hidden)]
   pub fn debug_reset_with_font_context_viewport_and_cb_call_count() {
-    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.store(0, Ordering::Relaxed);
+    INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.set(0));
   }
 
   #[cfg(any(test, debug_assertions))]
   #[doc(hidden)]
   pub fn debug_with_factory_call_count() -> usize {
-    INLINE_FC_WITH_FACTORY_CALLS.load(Ordering::Relaxed)
+    INLINE_FC_WITH_FACTORY_CALLS.with(|calls| calls.get())
   }
 
   #[cfg(any(test, debug_assertions))]
   #[doc(hidden)]
   pub fn debug_reset_with_factory_call_count() {
-    INLINE_FC_WITH_FACTORY_CALLS.store(0, Ordering::Relaxed);
+    INLINE_FC_WITH_FACTORY_CALLS.with(|calls| calls.set(0));
   }
 
   fn hyphenator_for(&self, language: &str) -> Option<Hyphenator> {
@@ -6075,19 +6082,20 @@ impl InlineFormattingContext {
           let width = text_item.metrics.height;
           let height = text_item.advance + paint_offset.abs();
           let bounds = Rect::from_xywh(block_pos, inline_pos + paint_offset, width, height);
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Text {
-              text: Arc::from(text_item.text.clone()),
-              box_id,
-              baseline_offset: text_item.metrics.baseline_offset,
-              shaped: Some(Arc::from(text_item.runs.clone())),
-              is_marker: text_item.is_marker,
-              emphasis_offset: text_item.emphasis_offset,
-            },
-            vec![],
-            text_item.style.clone(),
-          )
+            FragmentNode::new_with_style(
+              bounds,
+              FragmentContent::Text {
+                text: Arc::from(text_item.text.clone()),
+                box_id,
+                source_range: TextSourceRange::new(text_item.source_range()),
+                baseline_offset: text_item.metrics.baseline_offset,
+                shaped: Some(Arc::from(text_item.runs.clone())),
+                is_marker: text_item.is_marker,
+                emphasis_offset: text_item.emphasis_offset,
+              },
+              vec![],
+              text_item.style.clone(),
+            )
         } else {
           let bounds = Rect::from_xywh(
             inline_pos + paint_offset,
@@ -6100,6 +6108,7 @@ impl InlineFormattingContext {
             FragmentContent::Text {
               text: Arc::from(text_item.text.clone()),
               box_id,
+              source_range: TextSourceRange::new(text_item.source_range()),
               baseline_offset: text_item.metrics.baseline_offset,
               shaped: Some(Arc::from(text_item.runs.clone())),
               is_marker: text_item.is_marker,
@@ -6410,6 +6419,7 @@ impl InlineFormattingContext {
           FragmentContent::Text {
             text: Arc::from(text_item.text.clone()),
             box_id,
+            source_range: TextSourceRange::new(text_item.source_range()),
             baseline_offset: text_item.metrics.baseline_offset,
             shaped: Some(Arc::from(text_item.runs.clone())),
             is_marker: text_item.is_marker,
@@ -11584,7 +11594,7 @@ impl InlineFormattingContext {
           .map(|child| {
             with_deadline(deadline.as_ref(), || {
               let _stage_guard = StageGuard::install(stage);
-              crate::layout::engine::debug_record_parallel_work();
+              self.factory.debug_record_parallel_work();
               layout_positioned_child(child)
             })
           })

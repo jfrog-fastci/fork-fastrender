@@ -9,6 +9,11 @@ xtask = "run -p xtask --"
 # This keeps `cargo build` working out-of-the-box while still supporting AVIF decode.
 AOM_TARGET_CPU = "generic"
 
+# The Rust test harness runs each `#[test]` in its own thread with a small default stack (often
+# ~2MiB). Some of our layout tests exercise deeply-recursive layout paths and can overflow that
+# default. Bump the minimum stack size for spawned threads so `cargo test` is reliable.
+RUST_MIN_STACK = "4194304"
+
 # Some sys crates (notably `libaom-sys`, used for AVIF decoding) use CMake and attempt to enable
 # x86_64 assembly optimizations. Our CI/container images do not ship with `yasm`/`nasm`, so force
 # libaom to fall back to the generic (no-asm) CPU target.

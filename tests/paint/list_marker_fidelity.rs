@@ -181,6 +181,7 @@ fn list_marker_builder_preserves_run_metadata() {
     fastrender::tree::fragment_tree::FragmentContent::Text {
       text: "F".to_string().into(),
       box_id: None,
+      source_range: None,
       baseline_offset: 50.0,
       shaped: Some(Arc::new(vec![run.clone()])),
       is_marker: true,

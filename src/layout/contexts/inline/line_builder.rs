@@ -658,6 +658,10 @@ struct HyphenAdvanceCacheKey {
 }
 
 impl TextItem {
+  pub(crate) fn source_range(&self) -> Range<usize> {
+    self.source_range.clone()
+  }
+
   /// Creates a new text item
   pub fn new(
     runs: Vec<ShapedRun>,

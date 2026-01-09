@@ -29,6 +29,7 @@ fn marker_shadow_paints_after_background() {
     FragmentContent::Text {
       text: "•".to_string().into(),
       box_id: None,
+      source_range: None,
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,

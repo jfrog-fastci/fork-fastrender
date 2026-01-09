@@ -114,6 +114,22 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(is_ascii_whitespace_char)
 }
 
+fn is_ignorable_whitespace(node: &BoxNode) -> bool {
+  matches!(&node.box_type, BoxType::Text(text_box)
+    if trim_ascii_whitespace(&text_box.text).is_empty()
+      && !matches!(
+        node.style.white_space,
+        crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
+      ))
+}
+
+fn subtree_contains_float(node: &BoxNode) -> bool {
+  if node.style.float.is_floating() {
+    return true;
+  }
+  node.children.iter().any(subtree_contains_float)
+}
+
 #[derive(Clone)]
 struct PositionedCandidate {
   node: BoxNode,
@@ -2369,18 +2385,26 @@ impl BlockFormattingContext {
   }
 
   fn can_parallelize_block_children(parent: &BoxNode) -> bool {
-    !parent.children.is_empty()
-      && parent.children.iter().all(|child| {
-        child.is_block_level()
-          && !child.style.float.is_floating()
-          && child.style.clear == Clear::None
-          && child.style.running_position.is_none()
-          && matches!(
-            child.style.content_visibility,
-            crate::style::types::ContentVisibility::Visible
-          )
-          && matches!(child.style.position, Position::Static | Position::Relative)
-      })
+    let mut has_any = false;
+    for child in &parent.children {
+      if is_ignorable_whitespace(child) {
+        continue;
+      }
+      has_any = true;
+      if !child.is_block_level()
+        || child.style.float.is_floating()
+        || child.style.clear != Clear::None
+        || child.style.running_position.is_some()
+        || !matches!(
+          child.style.content_visibility,
+          crate::style::types::ContentVisibility::Visible
+        )
+        || !matches!(child.style.position, Position::Static | Position::Relative)
+      {
+        return false;
+      }
+    }
+    has_any
   }
 
   fn subtree_contains_floats(node: &BoxNode) -> bool {
@@ -2433,11 +2457,24 @@ impl BlockFormattingContext {
     float_ctx_empty: bool,
     paint_viewport: Rect,
   ) -> Option<Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError>> {
-    if !self.parallelism.should_parallelize(parent.children.len())
+    let layout_children = parent
+      .children
+      .iter()
+      .filter(|child| !is_ignorable_whitespace(child))
+      .count();
+    if !self.parallelism.should_parallelize(layout_children)
       || !float_ctx_empty
       || !Self::can_parallelize_block_children(parent)
       || Self::subtree_contains_floats(parent)
       || Self::is_multicol_container(&parent.style)
+    {
+      return None;
+    }
+    if parent
+      .children
+      .iter()
+      .filter(|child| !is_ignorable_whitespace(child))
+      .any(subtree_contains_float)
     {
       return None;
     }
@@ -2448,16 +2485,17 @@ impl BlockFormattingContext {
       .children
       .par_iter()
       .enumerate()
-      .map(|(idx, child)| {
-        with_deadline(deadline.as_ref(), || {
-          let _stage_guard = StageGuard::install(stage);
-          crate::layout::engine::debug_record_parallel_work();
-          let fragment = child_layout_ctx.layout_block_child(
-            parent,
-            child,
-            containing_width,
-            constraints,
-            0.0,
+      .filter(|(_, child)| !is_ignorable_whitespace(child))
+        .map(|(idx, child)| {
+          with_deadline(deadline.as_ref(), || {
+            let _stage_guard = StageGuard::install(stage);
+            child_layout_ctx.factory.debug_record_parallel_work();
+            let fragment = child_layout_ctx.layout_block_child(
+              parent,
+              child,
+              containing_width,
+              constraints,
+              0.0,
             nearest_positioned_cb,
             nearest_fixed_cb,
             None,
@@ -2766,15 +2804,6 @@ impl BlockFormattingContext {
     // Root element margins never collapse with children (CSS 2.1 §8.3.1).
     let mut collapse_first = !is_root && should_collapse_with_first_child(style);
     let mut collapse_last = !is_root && should_collapse_with_last_child(style);
-
-    let is_ignorable_whitespace = |child: &BoxNode| -> bool {
-      matches!(&child.box_type, BoxType::Text(text_box)
-        if trim_ascii_whitespace(&text_box.text).is_empty()
-          && !matches!(
-            child.style.white_space,
-            crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
-          ))
-    };
 
     let is_out_of_flow_or_float = |child: &BoxNode| -> bool {
       child.style.running_position.is_some()

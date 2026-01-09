@@ -19292,6 +19292,7 @@ mod tests {
       FragmentContent::Text {
         text: Arc::from("Hello"),
         box_id: Some(text_id),
+        source_range: None,
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,
@@ -19365,6 +19366,7 @@ mod tests {
       FragmentContent::Text {
         text: Arc::from("H"),
         box_id: Some(text_box_id),
+        source_range: None,
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,
@@ -19444,6 +19446,7 @@ mod tests {
       FragmentContent::Text {
         text: Arc::from("…"),
         box_id: None,
+        source_range: None,
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,

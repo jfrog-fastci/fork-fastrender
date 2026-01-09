@@ -311,11 +311,12 @@ mod tests {
     let string_set_box = &box_tree.root.children[0];
     let string_set_text_box = &string_set_box.children[0];
 
-    let text_fragment = FragmentNode::new(
+      let text_fragment = FragmentNode::new(
       Rect::from_xywh(0.0, 0.0, 10.0, 5.0),
       FragmentContent::Text {
         text: "Box Value".into(),
         box_id: Some(string_set_text_box.id),
+        source_range: None,
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,

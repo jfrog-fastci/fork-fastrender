@@ -7027,7 +7027,7 @@ impl FormattingContext for TableFormattingContext {
           .map(|cell| {
             with_deadline(deadline.as_ref(), || {
               let _stage_guard = StageGuard::install(stage);
-              crate::layout::engine::debug_record_parallel_work();
+              self.factory.debug_record_parallel_work();
               layout_single_cell(cell)
             })
           })

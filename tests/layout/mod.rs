@@ -202,6 +202,8 @@ mod text_combine_upright;
 mod text_emphasis_line_height;
 mod text_emphasis_line_height_vertical;
 
+mod test_locks;
+
 // Consolidated from tests/layout_*.rs
 mod parallel_api;
 mod parallel_stats;

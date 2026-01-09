@@ -9,15 +9,7 @@ use fastrender::{
   RenderArtifactRequest, Size,
 };
 use std::fmt::Write;
-use std::sync::{Mutex, OnceLock};
-
-fn layout_parallel_debug_lock() -> std::sync::MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .expect("layout parallel debug lock poisoned")
-}
+use super::test_locks::layout_parallel_debug_lock;
 
 #[test]
 fn parallel_layout_matches_serial_and_uses_threads() {

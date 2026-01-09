@@ -25,6 +25,7 @@ fn marker_underline_paints_with_text() {
     FragmentContent::Text {
       text: "•".to_string().into(),
       box_id: None,
+      source_range: None,
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,

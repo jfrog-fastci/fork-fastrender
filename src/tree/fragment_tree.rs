@@ -70,7 +70,9 @@ use crate::tree::box_tree::{BoxNode, BoxTree, ReplacedType};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut};
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -290,6 +292,52 @@ pub struct TextEmphasisOffset {
   pub under: f32,
 }
 
+/// Byte range in the original source text represented by a text fragment.
+///
+/// Pagination uses this to build stable continuation tokens that can resume inside a text node even
+/// when line wrapping changes between pages.
+///
+/// This is stored in a compact packed representation so it can be carried on every text fragment
+/// without bloating the fragment tree (important for large tables).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct TextSourceRange(NonZeroU64);
+
+impl TextSourceRange {
+  /// Convert a byte range into a packed range.
+  ///
+  /// Returns `None` when the offsets don't fit into the packed representation (extremely large
+  /// source strings).
+  pub fn new(range: Range<usize>) -> Option<Self> {
+    let start = u32::try_from(range.start).ok()?;
+    let end = u32::try_from(range.end).ok()?;
+
+    // Store +1 so (0..0) is representable and 0 can remain the `Option` sentinel.
+    let start = start.checked_add(1)?;
+    let end = end.checked_add(1)?;
+
+    let encoded = ((start as u64) << 32) | end as u64;
+    NonZeroU64::new(encoded).map(TextSourceRange)
+  }
+
+  #[inline]
+  pub fn start(self) -> usize {
+    let encoded = self.0.get();
+    (((encoded >> 32) as u32) - 1) as usize
+  }
+
+  #[inline]
+  pub fn end(self) -> usize {
+    let encoded = self.0.get();
+    (((encoded & 0xffff_ffff) as u32) - 1) as usize
+  }
+
+  #[inline]
+  pub fn to_range(self) -> Range<usize> {
+    self.start()..self.end()
+  }
+}
+
 /// Content type of a fragment
 ///
 /// Fragments can contain different types of content, each requiring
@@ -327,6 +375,14 @@ pub enum FragmentContent {
 
     /// Index or ID of source BoxNode (TextBox)
     box_id: Option<usize>,
+
+    /// Byte range in the original source text represented by this fragment.
+    ///
+    /// This is used by pagination to build stable break tokens that can resume within a text node
+    /// even when line wrapping changes between pages.
+    ///
+    /// When `None`, the fragment has no stable source mapping (e.g. synthesized text in tests).
+    source_range: Option<TextSourceRange>,
 
     /// Baseline offset from fragment top
     /// Used for text alignment within line
@@ -1015,6 +1071,7 @@ impl FragmentNode {
       FragmentContent::Text {
         text: text.into(),
         box_id: None,
+        source_range: None,
         baseline_offset,
         shaped: None,
         is_marker: false,
@@ -1036,6 +1093,7 @@ impl FragmentNode {
       FragmentContent::Text {
         text: text.into(),
         box_id: None,
+        source_range: None,
         baseline_offset,
         shaped: None,
         is_marker: false,
@@ -1059,6 +1117,7 @@ impl FragmentNode {
       FragmentContent::Text {
         text: text.into(),
         box_id: None,
+        source_range: None,
         baseline_offset,
         shaped: Some(shaped.into()),
         is_marker: false,
@@ -2621,6 +2680,7 @@ mod tests {
     let text = FragmentContent::Text {
       text: "test".into(),
       box_id: None,
+      source_range: None,
       baseline_offset: 0.0,
       shaped: None,
       is_marker: false,

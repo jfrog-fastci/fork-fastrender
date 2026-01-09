@@ -4460,13 +4460,13 @@ impl FormattingContext for FlexFormattingContext {
         .map_init(
           || 0usize,
           |deadline_counter, (idx, child)| {
-            with_deadline(deadline.as_ref(), || {
-              let _stage_guard = StageGuard::install(stage);
-              crate::layout::engine::debug_record_parallel_work();
-              check_layout_deadline(deadline_counter)?;
-              compute_child_contribution(child).map(|value| (idx, value))
-            })
-          },
+              with_deadline(deadline.as_ref(), || {
+                let _stage_guard = StageGuard::install(stage);
+                self.factory.debug_record_parallel_work();
+                check_layout_deadline(deadline_counter)?;
+                compute_child_contribution(child).map(|value| (idx, value))
+              })
+            },
         )
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -8150,7 +8150,7 @@ impl FlexFormattingContext {
             |thread_deadline_counter, work| {
               with_deadline(deadline.as_ref(), || {
                 let _stage_guard = StageGuard::install(stage);
-                crate::layout::engine::debug_record_parallel_work();
+                self.factory.debug_record_parallel_work();
                 run_layout(thread_deadline_counter, work)
               })
             },

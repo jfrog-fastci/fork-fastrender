@@ -1797,6 +1797,7 @@ fn marker_text_shadow_is_rendered_in_display_list() {
   marker.content = fastrender::tree::fragment_tree::FragmentContent::Text {
     text: "•".to_string().into(),
     box_id: None,
+    source_range: None,
     baseline_offset: 16.0,
     shaped: None,
     is_marker: true,

@@ -49,8 +49,9 @@ use lru::LruCache;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Default minimum sibling fan-out before spawning layout tasks.
@@ -374,51 +375,92 @@ pub struct LayoutParallelDebugCounters {
   pub worker_threads: usize,
 }
 
-static LAYOUT_PARALLEL_DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
-static LAYOUT_PARALLEL_DEBUG_WORK_ITEMS: AtomicUsize = AtomicUsize::new(0);
-static LAYOUT_PARALLEL_DEBUG_THREADS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+/// Per-layout collector for parallel fan-out debug counters.
+///
+/// This is intentionally per-session (rather than process-global) so diagnostics and tests can run
+/// concurrently without racing to reset/disable a global counter.
+#[derive(Debug, Default)]
+pub(crate) struct LayoutParallelDebugCollector {
+  work_items: AtomicUsize,
+  threads: Mutex<HashSet<usize>>,
+}
+
+impl LayoutParallelDebugCollector {
+  fn reset(&self) {
+    self.work_items.store(0, Ordering::Relaxed);
+    if let Ok(mut guard) = self.threads.lock() {
+      guard.clear();
+    }
+  }
+
+  fn snapshot(&self) -> LayoutParallelDebugCounters {
+    let worker_threads = self
+      .threads
+      .lock()
+      .ok()
+      .map(|threads| threads.len())
+      .unwrap_or(0);
+    LayoutParallelDebugCounters {
+      work_items: self.work_items.load(Ordering::Relaxed),
+      worker_threads,
+    }
+  }
+
+  pub(crate) fn record_work_item(&self) {
+    self.work_items.fetch_add(1, Ordering::Relaxed);
+    if let Some(idx) = rayon::current_thread_index() {
+      if let Ok(mut guard) = self.threads.lock() {
+        guard.insert(idx);
+      }
+    }
+  }
+}
+
+thread_local! {
+  static LAYOUT_PARALLEL_DEBUG_COLLECTOR: RefCell<Option<Arc<LayoutParallelDebugCollector>>> =
+    const { RefCell::new(None) };
+}
+
+pub(crate) fn current_layout_parallel_debug_collector(
+) -> Option<Arc<LayoutParallelDebugCollector>> {
+  LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| cell.borrow().clone())
+}
 
 /// Enable or disable debug counters for layout parallelism.
 ///
 /// Counters are reset whenever this is called.
 pub fn enable_layout_parallel_debug_counters(enable: bool) {
-  LAYOUT_PARALLEL_DEBUG_ENABLED.store(enable, Ordering::Relaxed);
-  reset_layout_parallel_debug_counters();
+  if enable {
+    let collector = Arc::new(LayoutParallelDebugCollector::default());
+    collector.reset();
+    LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+      *cell.borrow_mut() = Some(collector);
+    });
+  } else {
+    LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+      *cell.borrow_mut() = None;
+    });
+  }
 }
 
 /// Reset parallel layout debug counters without changing enablement.
 pub fn reset_layout_parallel_debug_counters() {
-  LAYOUT_PARALLEL_DEBUG_WORK_ITEMS.store(0, Ordering::Relaxed);
-  if let Some(lock) = LAYOUT_PARALLEL_DEBUG_THREADS.get() {
-    if let Ok(mut threads) = lock.lock() {
-      threads.clear();
+  LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+    if let Some(collector) = cell.borrow().as_ref() {
+      collector.reset();
     }
-  }
+  });
 }
 
 /// Snapshot current debug counters for layout fan-out.
 pub fn layout_parallel_debug_counters() -> LayoutParallelDebugCounters {
-  let worker_threads = LAYOUT_PARALLEL_DEBUG_THREADS
-    .get()
-    .and_then(|lock| lock.lock().ok().map(|threads| threads.len()))
-    .unwrap_or(0);
-  LayoutParallelDebugCounters {
-    work_items: LAYOUT_PARALLEL_DEBUG_WORK_ITEMS.load(Ordering::Relaxed),
-    worker_threads,
-  }
-}
-
-pub(crate) fn debug_record_parallel_work() {
-  if !LAYOUT_PARALLEL_DEBUG_ENABLED.load(Ordering::Relaxed) {
-    return;
-  }
-  LAYOUT_PARALLEL_DEBUG_WORK_ITEMS.fetch_add(1, Ordering::Relaxed);
-  if let Some(idx) = rayon::current_thread_index() {
-    let threads = LAYOUT_PARALLEL_DEBUG_THREADS.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut set) = threads.lock() {
-      set.insert(idx);
-    }
-  }
+  LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+    cell
+      .borrow()
+      .as_ref()
+      .map(|collector| collector.snapshot())
+      .unwrap_or_default()
+  })
 }
 
 /// Configuration for layout engine
@@ -1159,7 +1201,11 @@ impl LayoutEngine {
   ) {
     let workload = layout_parallelism_workload(box_tree, self.config.parallelism.min_fanout);
     let parallelism = self.config.parallelism.resolve_for_workload(workload);
-    let factory = self.factory.clone().with_parallelism(parallelism);
+    let factory = self
+      .factory
+      .clone()
+      .with_parallelism(parallelism)
+      .with_layout_parallel_debug(current_layout_parallel_debug_collector());
     factory.tune_taffy_template_cache_for_box_tree(workload.nodes);
     // Only query Rayon thread counts when fan-out is actually active. `default_layout_thread_budget`
     // consults `rayon::current_num_threads()`, which will initialize the global Rayon pool on first
@@ -1238,7 +1284,11 @@ impl LayoutEngine {
     if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
       return Err(LayoutError::Timeout { elapsed });
     }
-    self.layout_subtree_internal(&self.factory, box_node, constraints, None)
+    let factory = self
+      .factory
+      .clone()
+      .with_layout_parallel_debug(current_layout_parallel_debug_collector());
+    self.layout_subtree_internal(&factory, box_node, constraints, None)
   }
 
   fn layout_subtree_internal(

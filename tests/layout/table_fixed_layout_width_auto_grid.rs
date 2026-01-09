@@ -4,39 +4,55 @@ use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::FragmentNode;
 
 fn find_table<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
-  if matches!(node.style.as_ref().map(|s| s.display), Some(Display::Table)) {
-    return Some(node);
+  // Avoid recursive traversal: fragment trees can be deep enough to overflow the default Rust test
+  // thread stack on some platforms.
+  let mut stack = vec![node];
+  while let Some(node) = stack.pop() {
+    if matches!(node.style.as_ref().map(|s| s.display), Some(Display::Table)) {
+      return Some(node);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
   }
-  node.children.iter().find_map(find_table)
+  None
 }
 
 fn collect_cells<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>) {
-  if matches!(
-    node.style.as_ref().map(|s| s.display),
-    Some(Display::TableCell)
-  ) {
-    out.push(node);
-  }
-  for child in node.children.iter() {
-    collect_cells(child, out);
+  // Avoid recursion for the same reason as `find_table`.
+  let mut stack = vec![node];
+  while let Some(node) = stack.pop() {
+    if matches!(
+      node.style.as_ref().map(|s| s.display),
+      Some(Display::TableCell)
+    ) {
+      out.push(node);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
   }
 }
 
 fn collect_cell_rects(node: &FragmentNode, origin: (f32, f32), out: &mut Vec<Rect>) {
-  let pos = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
-  if matches!(
-    node.style.as_ref().map(|s| s.display),
-    Some(Display::TableCell)
-  ) {
-    out.push(Rect::from_xywh(
-      pos.0,
-      pos.1,
-      node.bounds.width(),
-      node.bounds.height(),
-    ));
-  }
-  for child in node.children.iter() {
-    collect_cell_rects(child, pos, out);
+  // Avoid recursion for the same reason as `find_table`.
+  let mut stack = vec![(node, origin)];
+  while let Some((node, origin)) = stack.pop() {
+    let pos = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+    if matches!(
+      node.style.as_ref().map(|s| s.display),
+      Some(Display::TableCell)
+    ) {
+      out.push(Rect::from_xywh(
+        pos.0,
+        pos.1,
+        node.bounds.width(),
+        node.bounds.height(),
+      ));
+    }
+    for child in node.children.iter() {
+      stack.push((child, pos));
+    }
   }
 }
 

@@ -16,6 +16,7 @@ use fastrender::{
   BoxNode, BoxTree, FormattingContextType, FragmentNodeSnapshot, FragmentTreeSnapshot,
   LayoutConfig, LayoutEngine, LayoutParallelism, Size,
 };
+use super::test_locks::layout_parallel_debug_lock;
 use std::sync::Arc;
 
 fn available_threads() -> usize {
@@ -535,6 +536,7 @@ fn parallel_layout_respects_deadline() {
 
 #[test]
 fn parallel_layout_propagates_active_stage_into_workers() {
+  let _guard = layout_parallel_debug_lock();
   let viewport = Size::new(800.0, 600.0);
   // A moderately sized tree so block-child layout work is parallelized across multiple workers.
   let box_tree = build_block_stack(256);
@@ -578,6 +580,7 @@ fn parallel_layout_propagates_active_stage_into_workers() {
 
 #[test]
 fn auto_parallel_layout_spawns_workers() {
+  let _guard = layout_parallel_debug_lock();
   let box_tree = build_block_stack(1024);
   let viewport = Size::new(1200.0, 900.0);
   let threads = available_threads();

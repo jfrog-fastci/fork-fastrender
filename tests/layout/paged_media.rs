@@ -132,6 +132,44 @@ fn collect_label_sequence(page_roots: &[&FragmentNode], re: &Regex) -> Vec<Strin
   labels
 }
 
+fn token_words(prefix: &str, count: usize) -> Vec<String> {
+  (0..count).map(|idx| format!("{prefix}{idx:03}")).collect()
+}
+
+fn collect_words_in_content(node: &FragmentNode) -> Vec<String> {
+  let mut texts = Vec::new();
+  collect_text_fragments(node, (0.0, 0.0), &mut texts);
+  texts.sort_by(|a, b| {
+    a.y
+      .partial_cmp(&b.y)
+      .unwrap_or(std::cmp::Ordering::Equal)
+      .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+  });
+  let mut buf = String::new();
+  for frag in texts {
+    buf.push_str(&frag.text);
+    buf.push(' ');
+  }
+  buf
+    .split_whitespace()
+    .filter(|word| {
+      word.len() == 4
+        && word.as_bytes()[0] == b'w'
+        && word[1..].bytes().all(|b| b.is_ascii_digit())
+    })
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn collect_words_across_pages(pages: &[&FragmentNode]) -> Vec<String> {
+  pages
+    .iter()
+    .flat_map(|page| {
+      let content = page.children.first().expect("page content");
+      collect_words_in_content(content)
+    })
+    .collect()
+}
 fn count_text_fragments_by_column(page: &FragmentNode, needle: &str) -> (usize, usize) {
   let content = page_content(page);
   let mut texts = Vec::new();
@@ -520,7 +558,9 @@ fn left_right_page_relayout_does_not_skip_or_duplicate_text() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(&html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 800, 600, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 800, 600, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -544,6 +584,103 @@ fn left_right_page_relayout_does_not_skip_or_duplicate_text() {
     expected,
     "pagination must not skip/duplicate or reorder labels; page_texts={:?}",
     collected_page_content_texts_compacted(&page_roots)
+  );
+}
+
+#[test]
+fn pagination_does_not_skip_or_duplicate_when_left_right_widths_alternate() {
+  let words = token_words("w", 300);
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 140px; margin-top: 10px; margin-bottom: 10px; }}
+          @page :left {{ margin-left: 10px; margin-right: 50px; }}
+          @page :right {{ margin-left: 50px; margin-right: 10px; }}
+          body {{ margin: 0; }}
+          p {{ margin: 0; font-size: 16px; line-height: 16px; }}
+        </style>
+      </head>
+      <body>
+        <p>{}</p>
+      </body>
+    </html>
+  "#,
+    words.join(" ")
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 2,
+    "expected content to paginate across multiple pages"
+  );
+
+  let actual = collect_words_across_pages(&page_roots);
+  assert_eq!(
+    actual,
+    words,
+    "expected token stream to be preserved across pages; got_len={} pages={}",
+    actual.len(),
+    page_roots.len()
+  );
+}
+
+#[test]
+fn pagination_does_not_skip_or_duplicate_across_named_page_size_transition() {
+  let words = token_words("w", 300);
+  let split = 150usize;
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page a {{ size: 200px 200px; margin: 0; }}
+          @page b {{ size: 240px 200px; margin: 0; }}
+          body {{ margin: 0; }}
+          p {{ margin: 0; font-size: 16px; line-height: 16px; }}
+          .a {{ page: a; }}
+          .b {{ page: b; }}
+        </style>
+      </head>
+      <body>
+        <div class="a"><p>{}</p></div>
+        <div class="b"><p>{}</p></div>
+      </body>
+    </html>
+  "#,
+    words[..split].join(" "),
+    words[split..].join(" ")
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 2,
+    "expected content to paginate across multiple pages"
+  );
+
+  assert!(
+    page_roots.iter().any(|page| (page.bounds.width() - 240.0).abs() < 0.1),
+    "expected at least one page with the 'b' size"
+  );
+
+  let actual = collect_words_across_pages(&page_roots);
+  assert_eq!(
+    actual,
+    words,
+    "expected token stream to be preserved across named page transition; got_len={} pages={}",
+    actual.len(),
+    page_roots.len()
   );
 }
 
