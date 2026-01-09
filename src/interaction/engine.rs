@@ -1108,12 +1108,36 @@ fn form_control_value(node: &DomNode) -> Option<(String, String)> {
     {
       return None;
     }
-    let value = node.get_attribute_ref("value").unwrap_or("");
-    return Some((name.to_string(), value.to_string()));
+
+    // Match HTML value sanitization rules for specific input types.
+    let value = if t.eq_ignore_ascii_case("range") {
+      crate::dom::input_range_value(node)
+        .map(crate::dom::format_number)
+        .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
+    } else if t.eq_ignore_ascii_case("color") {
+      crate::dom::input_color_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("number") {
+      crate::dom::input_number_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("date") {
+      crate::dom::input_date_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("time") {
+      crate::dom::input_time_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("datetime-local") {
+      crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("month") {
+      crate::dom::input_month_value_string(node).unwrap_or_default()
+    } else if t.eq_ignore_ascii_case("week") {
+      crate::dom::input_week_value_string(node).unwrap_or_default()
+    } else {
+      crate::dom::input_text_like_value_string(node)
+        .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
+    };
+
+    return Some((name.to_string(), value));
   }
 
   if is_textarea(node) {
-    let value = collect_text_children_value(node);
+    let value = crate::dom::textarea_current_value(node);
     return Some((name.to_string(), value));
   }
 
