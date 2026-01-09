@@ -117,6 +117,7 @@ mod user_validity_pseudo_test;
 mod supports_rule_test;
 mod supports_selector_test;
 mod supports_selector_forgiving_list_test;
+mod supports_selector_namespace_test;
 mod supports_writing_mode_test;
 mod position_try_supports_test;
 mod svg_tag_selector_indexing_test;

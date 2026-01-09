@@ -2571,6 +2571,12 @@ fn collect_position_try_rules_recursive<'a>(
 }
 
 impl SupportsCondition {
+  pub(crate) fn selector(raw: impl Into<String>) -> Self {
+    let raw = raw.into();
+    let supported = supports_selector_is_valid(&raw);
+    SupportsCondition::Selector { raw, supported }
+  }
+
   /// Evaluate the @supports condition according to the features we implement.
   ///
   /// The declaration form is considered supported when the property is known and the value parses.
@@ -2579,7 +2585,7 @@ impl SupportsCondition {
       SupportsCondition::Declaration { property, value } => {
         supports::supports_declaration(property, value)
       }
-      SupportsCondition::Selector(selector_list) => supports_selector_is_valid(selector_list),
+      SupportsCondition::Selector { supported, .. } => *supported,
       SupportsCondition::AtRule(rule) => supports::supports_at_rule(rule),
       SupportsCondition::FontTech(techs) => {
         !techs.is_empty() && techs.iter().all(supports_font_tech_keyword)
@@ -2935,13 +2941,13 @@ mod tests {
 
   #[test]
   fn supports_selector_matches_for_basic_selector() {
-    let cond = SupportsCondition::Selector("div > span".into());
+    let cond = SupportsCondition::selector("div > span");
     assert!(cond.matches(), "simple selector list should be supported");
   }
 
   #[test]
   fn supports_selector_rejects_unsupported_pseudo() {
-    let cond = SupportsCondition::Selector("div:unknown-pseudo".into());
+    let cond = SupportsCondition::selector("div:unknown-pseudo");
     assert!(
       !cond.matches(),
       "unsupported pseudo should fail selector() queries"
@@ -2950,19 +2956,19 @@ mod tests {
 
   #[test]
   fn supports_selector_handles_invalid_selector_list() {
-    let cond = SupportsCondition::Selector("div:unknown-pseudo, span".into());
+    let cond = SupportsCondition::selector("div:unknown-pseudo, span");
     assert!(
       cond.matches(),
       "selector() should match when at least one selector in the list is supported"
     );
 
-    let cond = SupportsCondition::Selector("div + span".into());
+    let cond = SupportsCondition::selector("div + span");
     assert!(cond.matches(), "supported selector list should be accepted");
   }
 
   #[test]
   fn supports_selector_fails_when_no_selectors_supported() {
-    let cond = SupportsCondition::Selector(":unknown-pseudo, :also-unknown".into());
+    let cond = SupportsCondition::selector(":unknown-pseudo, :also-unknown");
     assert!(
       !cond.matches(),
       "selector() should fail when no selectors in the list are supported"
@@ -2971,7 +2977,7 @@ mod tests {
 
   #[test]
   fn supports_selector_respects_nested_commas() {
-    let cond = SupportsCondition::Selector(":is(.ok, .also-ok), :unknown-pseudo".into());
+    let cond = SupportsCondition::selector(":is(.ok, .also-ok), :unknown-pseudo");
     assert!(
       cond.matches(),
       "commas inside functional pseudos should not split the selector list for selector()"
@@ -2980,13 +2986,13 @@ mod tests {
 
   #[test]
   fn supports_selector_accepts_has_and_supported_selectors() {
-    let with_has = SupportsCondition::Selector("div:has(span)".into());
+    let with_has = SupportsCondition::selector("div:has(span)");
     assert!(
       with_has.matches(),
       ":has() should be supported in selector() queries"
     );
 
-    let supported = SupportsCondition::Selector(".foo:nth-child(2n+1)".into());
+    let supported = SupportsCondition::selector(".foo:nth-child(2n+1)");
     assert!(
       supported.matches(),
       "nth-child selector should be supported in selector()"
@@ -2995,19 +3001,19 @@ mod tests {
 
   #[test]
   fn supports_selector_rejects_unmodelled_vendor_pseudo_elements() {
-    let cond = SupportsCondition::Selector("::-webkit-scrollbar".into());
+    let cond = SupportsCondition::selector("::-webkit-scrollbar");
     assert!(
       !cond.matches(),
       "unmodelled vendor pseudo-elements should not be treated as supported in selector() queries"
     );
 
-    let mixed = SupportsCondition::Selector("::-webkit-scrollbar, div".into());
+    let mixed = SupportsCondition::selector("::-webkit-scrollbar, div");
     assert!(
       mixed.matches(),
       "selector() queries should still succeed when other selectors in the list are supported"
     );
 
-    let aliased = SupportsCondition::Selector("::-webkit-file-upload-button".into());
+    let aliased = SupportsCondition::selector("::-webkit-file-upload-button");
     assert!(
       aliased.matches(),
       "vendor aliases that map to supported pseudo-elements should still count as supported"
@@ -3815,7 +3821,7 @@ pub enum SupportsCondition {
   /// `(property: value)` feature query
   Declaration { property: String, value: String },
   /// `selector(<selector-list>)` feature query
-  Selector(String),
+  Selector { raw: String, supported: bool },
   /// `at-rule(<at-rule>)` feature query (CSS Conditional Rules Level 5)
   ///
   /// Stores the raw at-rule text inside the function, e.g. `"@position-try"`.

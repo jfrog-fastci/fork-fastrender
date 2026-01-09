@@ -2520,7 +2520,7 @@ fn parse_supports_selector_arguments<'i, 't>(
     return Err(parser.new_custom_error(()));
   }
 
-  Ok(SupportsCondition::Selector(selector_list))
+  Ok(SupportsCondition::selector(selector_list))
 }
 
 fn parse_supports_at_rule_function<'i, 't>(
@@ -7400,7 +7400,10 @@ mod tests {
   #[test]
   fn supports_selector_prelude_parses_function() {
     match parse_supports_prelude("selector(div > span)") {
-      SupportsCondition::Selector(sel) => assert_eq!(sel, "div > span"),
+      SupportsCondition::Selector { raw, supported } => {
+        assert_eq!(raw, "div > span");
+        assert!(supported);
+      }
       other => panic!("expected selector condition, got {:?}", other),
     }
   }
