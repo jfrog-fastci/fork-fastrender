@@ -675,6 +675,10 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
     inner_html_initial: String,
     inner_html_round_trip: String,
     outer_html_round_trip: String,
+    span_collection_len_initial: f64,
+    span_collection_len_after_insert: f64,
+    span_collection_0_identity_preserved: bool,
+    span_collection_len_after_script: f64,
     span_node_type: f64,
     tail_node_type: f64,
     span_text: String,
@@ -735,6 +739,31 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
 
     vm.call_without_host(&mut scope, append_child, body_val, &[div_val])?;
 
+    // Create a live HTMLCollection before inserting any matching elements so we can ensure updates
+    // occur when `innerHTML` mutates the DOM.
+    let key_get_elements_by_tag_name =
+      PropertyKey::from_string(scope.alloc_string("getElementsByTagName")?);
+    let get_elements_by_tag_name =
+      get_data_property_value(scope.heap(), document_obj, &key_get_elements_by_tag_name).ok_or(
+        VmError::InvariantViolation("document.getElementsByTagName should exist"),
+      )?;
+    let arg_span = Value::String(scope.alloc_string("span")?);
+    let span_coll_val =
+      vm.call_without_host(&mut scope, get_elements_by_tag_name, document_val, &[arg_span])?;
+    let Value::Object(span_coll_obj) = span_coll_val else {
+      return Err(VmError::InvariantViolation("expected an HTMLCollection object"));
+    };
+    let key_length = PropertyKey::from_string(scope.alloc_string("length")?);
+    let span_collection_len_initial = get_data_property_value(scope.heap(), span_coll_obj, &key_length)
+      .ok_or(VmError::InvariantViolation(
+        "HTMLCollection.length should exist",
+      ))?;
+    let Value::Number(span_collection_len_initial) = span_collection_len_initial else {
+      return Err(VmError::InvariantViolation(
+        "HTMLCollection.length should be a number",
+      ));
+    };
+
     let (body_id, target_id) = {
       let dom_ref = dom.borrow();
       let body_id = dom_ref
@@ -760,6 +789,16 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
 
     let arg_html = Value::String(scope.alloc_string("<span id=child>hi</span>tail")?);
     vm.call_without_host(&mut scope, inner_html_set, div_val, &[arg_html])?;
+
+    let span_collection_len_after_insert =
+      get_data_property_value(scope.heap(), span_coll_obj, &key_length).ok_or(
+        VmError::InvariantViolation("HTMLCollection.length should exist after innerHTML set"),
+      )?;
+    let Value::Number(span_collection_len_after_insert) = span_collection_len_after_insert else {
+      return Err(VmError::InvariantViolation(
+        "HTMLCollection.length should be a number after innerHTML set",
+      ));
+    };
 
     let inner_html_round_trip = vm.call_without_host(&mut scope, inner_html_get, div_val, &[])?;
     let Value::String(inner_html_round_trip) = inner_html_round_trip else {
@@ -789,6 +828,14 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
     let Value::Object(_span_obj) = span_val else {
       return Err(VmError::InvariantViolation("firstChild should return an object"));
     };
+
+    let span_collection_0_identity_preserved = {
+      let key_0 = PropertyKey::from_string(scope.alloc_string("0")?);
+      let v0 = get_data_property_value(scope.heap(), span_coll_obj, &key_0)
+        .ok_or(VmError::InvariantViolation("HTMLCollection[0] should exist"))?;
+      v0 == span_val
+    };
+
     let tail_val = vm.call_without_host(&mut scope, next_sibling_get, span_val, &[])?;
     let Value::Object(_tail_obj) = tail_val else {
       return Err(VmError::InvariantViolation("nextSibling should return an object"));
@@ -851,6 +898,16 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
     let arg_script = Value::String(scope.alloc_string("<script id=s>console.log(1)</script>")?);
     vm.call_without_host(&mut scope, inner_html_set, div_val, &[arg_script])?;
 
+    let span_collection_len_after_script =
+      get_data_property_value(scope.heap(), span_coll_obj, &key_length).ok_or(
+        VmError::InvariantViolation("HTMLCollection.length should exist after script innerHTML"),
+      )?;
+    let Value::Number(span_collection_len_after_script) = span_collection_len_after_script else {
+      return Err(VmError::InvariantViolation(
+        "HTMLCollection.length should be a number after script innerHTML",
+      ));
+    };
+
     let script_already_started = {
       let dom_ref = dom.borrow();
       let script_id = dom_ref
@@ -912,6 +969,10 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
       inner_html_initial,
       inner_html_round_trip,
       outer_html_round_trip,
+      span_collection_len_initial,
+      span_collection_len_after_insert,
+      span_collection_0_identity_preserved,
+      span_collection_len_after_script,
       span_node_type,
       tail_node_type,
       span_text,
@@ -936,6 +997,10 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
     recorded.inner_html_round_trip,
     "<span id=\"child\">hi</span>tail"
   );
+  assert_eq!(recorded.span_collection_len_initial, 0.0);
+  assert_eq!(recorded.span_collection_len_after_insert, 1.0);
+  assert!(recorded.span_collection_0_identity_preserved);
+  assert_eq!(recorded.span_collection_len_after_script, 0.0);
   assert_eq!(recorded.span_node_type, 1.0);
   assert_eq!(recorded.tail_node_type, 3.0);
   assert_eq!(recorded.span_text, "hi");

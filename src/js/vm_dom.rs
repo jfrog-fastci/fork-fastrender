@@ -1765,10 +1765,12 @@ fn dom_element_inner_html_setter(
   let html_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let html = to_dom_string(scope, host, html_val)?;
 
-  match host.dom.borrow_mut().set_inner_html(element_id, &html) {
-    Ok(()) => Ok(Value::Undefined),
-    Err(err) => throw_dom_error(scope, host, err),
+  if let Err(err) = host.dom.borrow_mut().set_inner_html(element_id, &html) {
+    return throw_dom_error(scope, host, err);
   }
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Undefined)
 }
 
 fn dom_element_outer_html_getter(
@@ -1804,10 +1806,12 @@ fn dom_element_outer_html_setter(
   let html_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let html = to_dom_string(scope, host, html_val)?;
 
-  match host.dom.borrow_mut().set_outer_html(element_id, &html) {
-    Ok(()) => Ok(Value::Undefined),
-    Err(err) => throw_dom_error(scope, host, err),
+  if let Err(err) = host.dom.borrow_mut().set_outer_html(element_id, &html) {
+    return throw_dom_error(scope, host, err);
   }
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Undefined)
 }
 
 fn dom_node_text_content_getter(
