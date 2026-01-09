@@ -33,7 +33,9 @@ pub(crate) fn is_3d_flattening_boundary(style: &ComputedStyle) -> bool {
   if matches!(style.position, Position::Absolute | Position::Fixed) && style.clip.is_some() {
     return true;
   }
-  if overflow_axis_clips(style.overflow_x) || overflow_axis_clips(style.overflow_y) {
+  if overflow_axis_forces_3d_flattening(style.overflow_x)
+    || overflow_axis_forces_3d_flattening(style.overflow_y)
+  {
     return true;
   }
   if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
@@ -51,9 +53,6 @@ pub(crate) fn is_3d_flattening_boundary(style: &ComputedStyle) -> bool {
   false
 }
 
-fn overflow_axis_clips(overflow: Overflow) -> bool {
-  matches!(
-    overflow,
-    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-  )
+fn overflow_axis_forces_3d_flattening(overflow: Overflow) -> bool {
+  matches!(overflow, Overflow::Hidden | Overflow::Scroll | Overflow::Auto)
 }

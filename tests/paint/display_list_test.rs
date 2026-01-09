@@ -27,6 +27,7 @@ use fastrender::style::types::BorderStyle;
 use fastrender::style::types::ClipPath;
 use fastrender::style::types::Containment;
 use fastrender::style::types::FilterFunction;
+use fastrender::style::types::Overflow;
 use fastrender::style::types::ReferenceBox;
 use fastrender::style::types::TextDecorationLine;
 use fastrender::style::types::TextDecorationSkipInk;
@@ -1864,6 +1865,41 @@ fn preserve_3d_flattens_with_opacity() {
     stacking_context_transform_style(style),
     TransformStyle::Flat
   );
+}
+
+#[test]
+fn preserve_3d_not_flattened_by_overflow_clip() {
+  let mut style = ComputedStyle::default();
+  style.overflow_x = Overflow::Clip;
+  style.overflow_y = Overflow::Clip;
+  assert_eq!(
+    stacking_context_transform_style(style),
+    TransformStyle::Preserve3d
+  );
+}
+
+#[test]
+fn preserve_3d_flattened_by_overflow_hidden_scroll_auto() {
+  let mut hidden_style = ComputedStyle::default();
+  hidden_style.overflow_x = Overflow::Hidden;
+  hidden_style.overflow_y = Overflow::Hidden;
+  assert_eq!(
+    stacking_context_transform_style(hidden_style),
+    TransformStyle::Flat
+  );
+
+  let mut scroll_style = ComputedStyle::default();
+  scroll_style.overflow_x = Overflow::Scroll;
+  scroll_style.overflow_y = Overflow::Scroll;
+  assert_eq!(
+    stacking_context_transform_style(scroll_style),
+    TransformStyle::Flat
+  );
+
+  let mut auto_style = ComputedStyle::default();
+  auto_style.overflow_x = Overflow::Auto;
+  auto_style.overflow_y = Overflow::Auto;
+  assert_eq!(stacking_context_transform_style(auto_style), TransformStyle::Flat);
 }
 
 #[test]
