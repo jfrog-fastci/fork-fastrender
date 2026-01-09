@@ -57,7 +57,6 @@ struct TabState {
   viewport_css: (u32, u32),
   dpr: f32,
   url: Option<String>,
-  base_url: Option<String>,
   scroll: ScrollState,
   interaction: InteractionEngine,
 }
@@ -79,8 +78,8 @@ fn page_point_for(tab: &TabState, pos_css: (f32, f32)) -> Point {
 
 fn effective_base_url(tab: &TabState) -> &str {
   tab
-    .base_url
-    .as_deref()
+    .document
+    .base_url()
     .or_else(|| tab.url.as_deref())
     .unwrap_or("")
 }
@@ -147,7 +146,6 @@ fn render_navigation_error_page(tab_id: TabId, tab: &mut TabState, ui_tx: &Sende
   let html = about_pages::error_page_html("Navigation failed", message);
 
   tab.url = Some(about_pages::ABOUT_ERROR.to_string());
-  tab.base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
   tab.document.set_navigation_urls(
     Some(about_pages::ABOUT_ERROR.to_string()),
     Some(about_pages::ABOUT_BASE_URL.to_string()),
@@ -187,7 +185,7 @@ fn navigate_tab(
 
   let options = render_options_for_navigation(tab);
 
-  let (committed_url, base_url) = if about_pages::is_about_url(&url) {
+  let committed_url = if about_pages::is_about_url(&url) {
     let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
       about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
     });
@@ -209,10 +207,10 @@ fn navigate_tab(
       });
       return;
     }
-    (url.clone(), about_pages::ABOUT_BASE_URL.to_string())
+    url.clone()
   } else {
     match tab.document.navigate_url_with_options(&url, options) {
-      Ok((committed, base)) => (committed, base),
+      Ok((committed, _base)) => committed,
       Err(err) => {
         let err = err.to_string();
         let _ = ui_tx.send(WorkerToUi::NavigationFailed {
@@ -231,7 +229,6 @@ fn navigate_tab(
   };
 
   tab.url = Some(committed_url.clone());
-  tab.base_url = Some(base_url);
   tab.document.set_scroll_state(tab.scroll.clone());
 
   let painted = match tab.document.render_frame_with_scroll_state() {
@@ -329,7 +326,6 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           viewport_css: (800, 600),
           dpr: 1.0,
           url: None,
-          base_url: None,
           scroll: ScrollState::default(),
           interaction: InteractionEngine::new(),
         };

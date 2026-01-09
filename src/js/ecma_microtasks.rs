@@ -20,14 +20,13 @@ use std::rc::Rc;
 
 /// Trait for event-loop hosts that embed a `vm-js` VM + heap.
 ///
-/// `vm-js` Promise jobs require the ability to:
-/// - call/construct JS values (via [`vm_js::Vm`]),
-/// - and keep GC handles alive while queued (persistent roots on [`vm_js::Heap`]).
+/// `vm-js` jobs need access to a [`vm_js::Vm`] + [`vm_js::Heap`] so they can call/construct
+/// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
 }
 
-/// Execution context passed to `vm-js` job closures.
+/// Execution context passed to `vm-js` [`vm_js::Job`]s.
 ///
 /// FastRender stores the realm that a job was enqueued with so the eventual evaluator integration
 /// can re-establish the correct realm/settings object when running the job.
@@ -46,7 +45,17 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.call(vm, callee, this, args)
+    // `vm-js` jobs are executed as host work; if a realm is provided, run the call under an
+    // execution context bound to that realm.
+    if let Some(realm) = self.realm {
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm,
+        script_or_module: None,
+      });
+      heap.call(&mut vm, callee, this, args)
+    } else {
+      heap.call(vm, callee, this, args)
+    }
   }
 
   fn construct(
@@ -57,7 +66,15 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
     let mut scope = heap.scope();
-    vm.construct(&mut scope, callee, args, new_target)
+    if let Some(realm) = self.realm {
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm,
+        script_or_module: None,
+      });
+      vm.construct(&mut scope, callee, args, new_target)
+    } else {
+      vm.construct(&mut scope, callee, args, new_target)
+    }
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> vm_js::RootId {
@@ -67,7 +84,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
 
   fn remove_root(&mut self, id: vm_js::RootId) {
     let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.remove_root(id)
+    heap.remove_root(id);
   }
 }
 
