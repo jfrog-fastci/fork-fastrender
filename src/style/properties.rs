@@ -7489,6 +7489,7 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   let mut alt = FontVariantAlternates::default();
   let mut seen_historical_forms = false;
   let mut seen_stylistic = false;
+  let mut seen_historical_forms = false;
   let mut seen_stylesets = false;
   let mut seen_character_variants = false;
   let mut seen_swash = false;
@@ -34305,6 +34306,24 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.stylesets,
       vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_duplicate_historical_forms_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.swash = Some(FontVariantAlternateValue::Name("Keep".to_string()));
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("historical-forms historical-forms".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Name("Keep".to_string()))
     );
   }
 
