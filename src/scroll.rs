@@ -917,7 +917,7 @@ fn apply_element_scroll_offsets(node: &mut FragmentNode, scroll: &ScrollState) {
   if offset != Point::ZERO {
     let delta = Point::new(-offset.x, -offset.y);
     for child in node.children_mut() {
-      *child = child.translate_subtree_absolute(delta);
+      child.translate_root_in_place(delta);
     }
   }
 
