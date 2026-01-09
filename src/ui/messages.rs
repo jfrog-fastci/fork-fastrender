@@ -18,12 +18,17 @@ impl TabId {
   ///
   /// Intended for UI thread use when creating new tabs.
   pub fn new() -> Self {
-    let id = NEXT_TAB_ID
-      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-        cur.checked_add(1)
-      })
-      .unwrap_or_else(|_| panic!("tab id counter overflowed"));
-    Self(id)
+    // `fetch_add` returns the previous value.
+    //
+    // `0` is reserved as an "invalid" `TabId` value, so the counter starts at 1. In the
+    // astronomically unlikely event that we wrap around `u64::MAX` (requiring ~1.8e19 allocations
+    // in a single process), skip over 0 and keep going rather than panicking.
+    loop {
+      let id = NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed);
+      if id != 0 {
+        return Self(id);
+      }
+    }
   }
 }
 
@@ -180,13 +185,36 @@ pub enum WorkerToUi {
 mod tests {
   use super::*;
   use std::collections::HashSet;
+  use std::sync::Mutex;
+
+  static TEST_TAB_ID_LOCK: Mutex<()> = Mutex::new(());
 
   #[test]
   fn tab_id_new_generates_unique_ids() {
+    let _lock = TEST_TAB_ID_LOCK.lock().unwrap();
     let mut ids = HashSet::new();
     for _ in 0..1024 {
       assert!(ids.insert(TabId::new()));
     }
+  }
+
+  #[test]
+  fn tab_id_new_does_not_panic_on_counter_wraparound() {
+    let _lock = TEST_TAB_ID_LOCK.lock().unwrap();
+
+    let prev = NEXT_TAB_ID.swap(u64::MAX - 1, Ordering::Relaxed);
+
+    // This will allocate ids at the end of the range and then wrap. The allocator must not panic,
+    // and must never return 0.
+    let a = TabId::new().0;
+    let b = TabId::new().0;
+    let c = TabId::new().0;
+
+    assert_eq!(a, u64::MAX - 1);
+    assert_eq!(b, u64::MAX);
+    assert_ne!(c, 0);
+
+    NEXT_TAB_ID.store(prev, Ordering::Relaxed);
   }
 
   #[test]
