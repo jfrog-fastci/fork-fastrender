@@ -227,3 +227,58 @@ fn fieldset_without_legend_does_not_introduce_extra_offset() {
     actual
   );
 }
+
+#[test]
+fn fieldset_without_legend_does_not_introduce_extra_offset_vertical_rl() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      fieldset#fs {
+        margin: 0;
+        width: 120px;
+        height: 200px;
+        writing-mode: vertical-rl;
+        padding: 0;
+        border: 0;
+        border-top: 2px solid black;
+        border-right: 8px solid black;
+        padding-top: 3px;
+        padding-right: 7px;
+      }
+      #c { display: block; margin: 0; width: 10px; height: 10px; }
+    </style>
+    <fieldset id="fs">
+      <div id="c"></div>
+    </fieldset>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let intermediates = layout_intermediates(&mut renderer, html, 200, 240);
+  let fs = inspect_id(&intermediates, "fs");
+  let c = inspect_id(&intermediates, "c");
+
+  let fs_bounds = block_bounds(&fs);
+  let c_bounds = block_bounds(&c);
+
+  // Inline-start in vertical-rl is the physical top edge.
+  let expected_inline = 2.0 + 3.0;
+  let actual_inline = c_bounds.y - fs_bounds.y;
+  assert!(
+    (actual_inline - expected_inline).abs() < 0.5,
+    "content inline-start should offset by border-top+padding-top (expected={} actual={})",
+    expected_inline,
+    actual_inline
+  );
+
+  // Block-start in vertical-rl is the physical right edge.
+  let expected_block = 8.0 + 7.0;
+  let fs_right = fs_bounds.x + fs_bounds.width;
+  let c_right = c_bounds.x + c_bounds.width;
+  let actual_block = fs_right - c_right;
+  assert!(
+    (actual_block - expected_block).abs() < 0.5,
+    "content block-start should offset by border-right+padding-right (expected={} actual={})",
+    expected_block,
+    actual_block
+  );
+}
