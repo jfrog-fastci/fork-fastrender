@@ -5958,6 +5958,9 @@ struct RuleScopes<'a> {
   slot_maps: HashMap<usize, SlotAssignmentMap<'a>>,
   fallback_document_rules_in_shadow_scopes: bool,
   quirks_mode: QuirksMode,
+  custom_property_registry_ua: Arc<CustomPropertyRegistry>,
+  custom_property_registry_document: Arc<CustomPropertyRegistry>,
+  custom_property_registry_shadows: HashMap<usize, Arc<CustomPropertyRegistry>>,
 }
 
 struct MatchIndex {
@@ -10412,14 +10415,77 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     }
   }
 
+  let fallback_document_rules_in_shadow_scopes = true;
+
+  let (custom_property_registry_ua, custom_property_registry_document, custom_property_registry_shadows) =
+    {
+      let register_collected = |registry: &mut CustomPropertyRegistry,
+                                    mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
+        collected.sort_by(|a, b| {
+          a.layer_order
+            .as_ref()
+            .cmp(b.layer_order.as_ref())
+            .then(a.order.cmp(&b.order))
+        });
+        for rule in collected {
+          let converted = crate::style::custom_properties::PropertyRule {
+            name: rule.rule.name.clone(),
+            syntax: rule.rule.syntax,
+            inherits: rule.rule.inherits,
+            initial_value: rule.rule.initial_value.clone(),
+          };
+          registry.register(converted);
+        }
+      };
+
+      let mut ua_registry = CustomPropertyRegistry::default();
+      let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
+        ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        ua_stylesheet.collect_property_rules(media_ctx)
+      };
+      register_collected(&mut ua_registry, ua_properties);
+      let ua_registry = Arc::new(ua_registry);
+
+      let mut document_registry = ua_registry.as_ref().clone();
+      let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
+        author_sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        author_sheet.collect_property_rules(media_ctx)
+      };
+      register_collected(&mut document_registry, document_properties);
+      let document_registry = Arc::new(document_registry);
+
+      let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
+      for (host, _shadow_root_id, sheet) in &shadow_sheets {
+        let mut registry = if fallback_document_rules_in_shadow_scopes {
+          document_registry.as_ref().clone()
+        } else {
+          ua_registry.as_ref().clone()
+        };
+        let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
+          sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          sheet.collect_property_rules(media_ctx)
+        };
+        register_collected(&mut registry, shadow_properties);
+        shadow_registries.insert(*host, Arc::new(registry));
+      }
+
+      (ua_registry, document_registry, shadow_registries)
+    };
+
   let rule_scopes = RuleScopes {
     ua: ua_index,
     document: document_author_index,
     shadows: shadow_indices,
     host_rules: shadow_host_indices,
     slot_maps,
-    fallback_document_rules_in_shadow_scopes: true,
+    fallback_document_rules_in_shadow_scopes,
     quirks_mode,
+    custom_property_registry_ua,
+    custom_property_registry_document: custom_property_registry_document.clone(),
+    custom_property_registry_shadows,
   };
 
   let needs_selector_blooms = rule_scopes_needs_selector_bloom_summaries(&rule_scopes);
@@ -10516,65 +10582,16 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     std::sync::Arc::new(registry)
   };
 
-  let property_registry = {
-    let mut registry = CustomPropertyRegistry::default();
-
-    fn register_collected(
-      registry: &mut CustomPropertyRegistry,
-      mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>,
-    ) {
-      collected.sort_by(|a, b| {
-        a.layer_order
-          .as_ref()
-          .cmp(b.layer_order.as_ref())
-          .then(a.order.cmp(&b.order))
-      });
-      for rule in collected {
-        let converted = crate::style::custom_properties::PropertyRule {
-          name: rule.rule.name.clone(),
-          syntax: rule.rule.syntax,
-          inherits: rule.rule.inherits,
-          initial_value: rule.rule.initial_value.clone(),
-        };
-        registry.register(converted);
-      }
-    }
-
-    let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
-      ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-    } else {
-      ua_stylesheet.collect_property_rules(media_ctx)
-    };
-    register_collected(&mut registry, ua_properties);
-
-    let author_properties = if let Some(cache) = media_cache.as_deref_mut() {
-      author_sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-    } else {
-      author_sheet.collect_property_rules(media_ctx)
-    };
-    register_collected(&mut registry, author_properties);
-
-    for (_host, _shadow_root_id, sheet) in &shadow_sheets {
-      let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
-        sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-      } else {
-        sheet.collect_property_rules(media_ctx)
-      };
-      register_collected(&mut registry, shadow_properties);
-    }
-
-    std::sync::Arc::new(registry)
-  };
-  let initial_custom_properties = property_registry.initial_values();
+  let initial_custom_properties = custom_property_registry_document.initial_values();
   let mut base_styles = ComputedStyle::default();
   base_styles.counter_styles = counter_styles.clone();
   base_styles.font_palettes = font_palettes.clone();
-  base_styles.custom_property_registry = property_registry.clone();
+  base_styles.custom_property_registry = custom_property_registry_document.clone();
   base_styles.custom_properties = initial_custom_properties.clone();
   let mut base_ua_styles = ComputedStyle::default();
   base_ua_styles.counter_styles = counter_styles;
   base_ua_styles.font_palettes = font_palettes;
-  base_ua_styles.custom_property_registry = property_registry.clone();
+  base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
   base_ua_styles.custom_properties = initial_custom_properties;
   let has_starting_styles = include_starting_style
     && (ua_stylesheet.has_starting_style_rules()
@@ -10891,14 +10908,80 @@ impl<'a> PreparedCascade<'a> {
       }
     }
 
+    let fallback_document_rules_in_shadow_scopes = false;
+
+    let (custom_property_registry_ua, custom_property_registry_document, custom_property_registry_shadows) =
+      {
+        let register_collected =
+          |registry: &mut CustomPropertyRegistry,
+           mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
+            collected.sort_by(|a, b| {
+              a.layer_order
+                .as_ref()
+                .cmp(b.layer_order.as_ref())
+                .then(a.order.cmp(&b.order))
+            });
+            for rule in collected {
+              let converted = crate::style::custom_properties::PropertyRule {
+                name: rule.rule.name.clone(),
+                syntax: rule.rule.syntax,
+                inherits: rule.rule.inherits,
+                initial_value: rule.rule.initial_value.clone(),
+              };
+              registry.register(converted);
+            }
+          };
+
+        let mut ua_registry = CustomPropertyRegistry::default();
+        let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
+          ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          ua_stylesheet.collect_property_rules(media_ctx)
+        };
+        register_collected(&mut ua_registry, ua_properties);
+        let ua_registry = Arc::new(ua_registry);
+
+        let mut document_registry = ua_registry.as_ref().clone();
+        let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
+          document_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          document_ref.collect_property_rules(media_ctx)
+        };
+        register_collected(&mut document_registry, document_properties);
+        let document_registry = Arc::new(document_registry);
+
+        let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
+        for (host, sheet) in &shadow_sheets {
+          // Safety: shadow sheets are boxed and kept alive by this struct.
+          let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
+          let mut registry = if fallback_document_rules_in_shadow_scopes {
+            document_registry.as_ref().clone()
+          } else {
+            ua_registry.as_ref().clone()
+          };
+          let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
+            sheet_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
+          } else {
+            sheet_ref.collect_property_rules(media_ctx)
+          };
+          register_collected(&mut registry, shadow_properties);
+          shadow_registries.insert(*host, Arc::new(registry));
+        }
+
+        (ua_registry, document_registry, shadow_registries)
+      };
+
     let rule_scopes = RuleScopes {
       ua: ua_index,
       document: document_author_index,
       shadows: shadow_indices,
       host_rules: shadow_host_indices,
       slot_maps,
-      fallback_document_rules_in_shadow_scopes: false,
+      fallback_document_rules_in_shadow_scopes,
       quirks_mode,
+      custom_property_registry_ua,
+      custom_property_registry_document: custom_property_registry_document.clone(),
+      custom_property_registry_shadows,
     };
 
     let needs_selector_bloom_summaries = rule_scopes_needs_selector_bloom_summaries(&rule_scopes)
@@ -10994,67 +11077,16 @@ impl<'a> PreparedCascade<'a> {
       std::sync::Arc::new(registry)
     };
 
-    let property_registry = {
-      let mut registry = CustomPropertyRegistry::default();
-
-      fn register_collected(
-        registry: &mut CustomPropertyRegistry,
-        mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>,
-      ) {
-        collected.sort_by(|a, b| {
-          a.layer_order
-            .as_ref()
-            .cmp(b.layer_order.as_ref())
-            .then(a.order.cmp(&b.order))
-        });
-        for rule in collected {
-          let converted = crate::style::custom_properties::PropertyRule {
-            name: rule.rule.name.clone(),
-            syntax: rule.rule.syntax,
-            inherits: rule.rule.inherits,
-            initial_value: rule.rule.initial_value.clone(),
-          };
-          registry.register(converted);
-        }
-      }
-
-      let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
-        ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-      } else {
-        ua_stylesheet.collect_property_rules(media_ctx)
-      };
-      register_collected(&mut registry, ua_properties);
-
-      let author_properties = if let Some(cache) = media_cache.as_deref_mut() {
-        document_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
-      } else {
-        document_ref.collect_property_rules(media_ctx)
-      };
-      register_collected(&mut registry, author_properties);
-
-      for (_host, sheet) in &shadow_sheets {
-        let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
-        let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
-          sheet_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
-        } else {
-          sheet_ref.collect_property_rules(media_ctx)
-        };
-        register_collected(&mut registry, shadow_properties);
-      }
-
-      std::sync::Arc::new(registry)
-    };
-
-    let initial_custom_properties = property_registry.initial_values();
+    let initial_custom_properties = custom_property_registry_document.initial_values();
     let mut base_styles = ComputedStyle::default();
     base_styles.counter_styles = counter_styles.clone();
     base_styles.font_palettes = font_palettes.clone();
-    base_styles.custom_property_registry = property_registry.clone();
+    base_styles.custom_property_registry = custom_property_registry_document.clone();
     base_styles.custom_properties = initial_custom_properties.clone();
     let mut base_ua_styles = ComputedStyle::default();
     base_ua_styles.counter_styles = counter_styles;
     base_ua_styles.font_palettes = font_palettes;
-    base_ua_styles.custom_property_registry = property_registry.clone();
+    base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
     base_ua_styles.custom_properties = initial_custom_properties;
 
     let has_starting_styles = include_starting_style
@@ -11723,6 +11755,23 @@ fn scope_rule_index<'a>(
   }
 }
 
+fn scope_custom_property_registry(scopes: &RuleScopes<'_>, scope_host: Option<usize>) -> Arc<CustomPropertyRegistry> {
+  match scope_host {
+    Some(host) => scopes
+      .custom_property_registry_shadows
+      .get(&host)
+      .cloned()
+      .unwrap_or_else(|| {
+        if scopes.fallback_document_rules_in_shadow_scopes {
+          scopes.custom_property_registry_document.clone()
+        } else {
+          scopes.custom_property_registry_ua.clone()
+        }
+      }),
+    None => scopes.custom_property_registry_document.clone(),
+  }
+}
+
 // Return the rule index for the current scope along with whether shadow-host context
 // should be provided during selector matching.
 fn scope_rule_index_with_shadow_host<'a>(
@@ -12374,13 +12423,28 @@ fn compute_base_styles<'a>(
   } else {
     Cow::Borrowed(ancestor_ids)
   };
+  let tree_scoped_custom_property_registry = scope_custom_property_registry(rule_scopes, scope_host);
   if !node.is_element() {
     let mut ua_styles = get_default_styles_for_element(node);
     inherit_styles(&mut ua_styles, parent_ua_styles);
+    if !Arc::ptr_eq(
+      &ua_styles.custom_property_registry,
+      &tree_scoped_custom_property_registry,
+    ) {
+      ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
+      ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+    }
     propagate_text_decorations(node, &mut ua_styles, parent_ua_styles);
 
     let mut styles = get_default_styles_for_element(node);
     inherit_styles(&mut styles, parent_styles);
+    if !Arc::ptr_eq(
+      &styles.custom_property_registry,
+      &tree_scoped_custom_property_registry,
+    ) {
+      styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
+      styles.recompute_inherited_custom_properties(parent_styles);
+    }
     propagate_text_decorations(node, &mut styles, parent_styles);
 
     resolve_container_query_font_size(
@@ -12467,6 +12531,13 @@ fn compute_base_styles<'a>(
 
   let mut ua_styles = get_default_styles_for_element(node);
   inherit_styles(&mut ua_styles, parent_ua_styles);
+  if !Arc::ptr_eq(
+    &ua_styles.custom_property_registry,
+    &tree_scoped_custom_property_registry,
+  ) {
+    ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
+    ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+  }
   let mut matching_rules = collect_matching_rules(
     node,
     rule_scopes,
@@ -12568,6 +12639,13 @@ fn compute_base_styles<'a>(
 
   // Inherit styles from parent
   inherit_styles(&mut styles, parent_styles);
+  if !Arc::ptr_eq(
+    &styles.custom_property_registry,
+    &tree_scoped_custom_property_registry,
+  ) {
+    styles.custom_property_registry = tree_scoped_custom_property_registry;
+    styles.recompute_inherited_custom_properties(parent_styles);
+  }
 
   // Apply matching CSS rules and inline styles with full cascade ordering
   append_presentational_hints(

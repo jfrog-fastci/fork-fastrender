@@ -168,6 +168,24 @@ fn property_rule_missing_syntax_descriptor_is_rejected() {
 }
 
 #[test]
+fn property_rule_missing_inherits_descriptor_is_rejected() {
+  let css = r#"
+    @property --missing-inherits {
+      syntax: "<length>";
+      initial-value: 1px;
+    }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = simple_div_dom();
+  let styled = apply_styles(&dom, &sheet);
+  assert!(styled
+    .styles
+    .custom_property_registry
+    .get("--missing-inherits")
+    .is_none());
+}
+
+#[test]
 fn property_rule_with_invalid_syntax_descriptor_is_rejected() {
   let css = r#"
     @property --bad-syntax {
@@ -248,4 +266,24 @@ fn length_percentage_property_registration_parses_initial_value() {
     value.typed,
     Some(CustomPropertyTypedValue::Length(Length::px(10.0)))
   );
+}
+
+#[test]
+fn invalid_registered_custom_property_value_falls_back_to_initial_value() {
+  let css = r#"
+    @property --size {
+      syntax: "<length>";
+      inherits: true;
+      initial-value: 10px;
+    }
+    #root { --size: 5px; }
+    #child { --size: not-a-length; padding-left: var(--size); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+
+  assert_eq!(child.styles.padding_left.value, 10.0);
+  assert_eq!(child.styles.padding_left.unit, LengthUnit::Px);
 }

@@ -21,6 +21,31 @@ fn dom_with_child() -> DomNode {
   }
 }
 
+fn dom_with_grandchild() -> DomNode {
+  DomNode {
+    node_type: DomNodeType::Element {
+      tag_name: "div".to_string(),
+      namespace: HTML_NAMESPACE.to_string(),
+      attributes: vec![("id".to_string(), "root".to_string())],
+    },
+    children: vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "child".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "grandchild".to_string())],
+        },
+        children: vec![],
+      }],
+    }],
+  }
+}
+
 #[test]
 fn registered_custom_property_inherits_false_does_not_inherit_parent_value() {
   let css = r#"
@@ -59,6 +84,28 @@ fn registered_custom_property_inherits_true_inherits_parent_value() {
 
   assert_eq!(child.styles.padding_left.value, 10.0);
   assert_eq!(child.styles.padding_left.unit, LengthUnit::Px);
+}
+
+#[test]
+fn registered_custom_property_inherits_false_breaks_inheritance_chain() {
+  let css = r#"
+    @property --x {
+      syntax: "<length>";
+      inherits: false;
+      initial-value: 5px;
+    }
+    #root { --x: 10px; }
+    #child { --x: 7px; }
+    #grandchild { padding-left: var(--x); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_grandchild();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+  let grandchild = child.children.first().expect("grandchild");
+
+  assert_eq!(grandchild.styles.padding_left.value, 5.0);
+  assert_eq!(grandchild.styles.padding_left.unit, LengthUnit::Px);
 }
 
 #[test]

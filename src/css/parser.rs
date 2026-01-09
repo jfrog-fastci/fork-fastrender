@@ -3242,7 +3242,7 @@ fn parse_property_descriptors<'i, 't>(
   name: &str,
 ) -> std::result::Result<Option<PropertyRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let mut syntax: Option<CustomPropertySyntax> = None;
-  let mut inherits = true;
+  let mut inherits: Option<bool> = None;
   let mut initial_value_raw: Option<String> = None;
 
   while !parser.is_exhausted() {
@@ -3291,8 +3291,8 @@ fn parse_property_descriptors<'i, 't>(
       "inherits" => {
         let lower = value.to_ascii_lowercase();
         match lower.as_str() {
-          "true" => inherits = true,
-          "false" => inherits = false,
+          "true" => inherits = Some(true),
+          "false" => inherits = Some(false),
           _ => return Ok(None),
         }
       }
@@ -3304,6 +3304,9 @@ fn parse_property_descriptors<'i, 't>(
   }
 
   let Some(syntax) = syntax else {
+    return Ok(None);
+  };
+  let Some(inherits) = inherits else {
     return Ok(None);
   };
 

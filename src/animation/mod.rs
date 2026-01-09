@@ -66,7 +66,8 @@ use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
 use crate::style::values::{
-  CalcLength, CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit,
+  CalcLength, CustomPropertySyntax, CustomPropertyTypedValue, CustomPropertyValue, Length,
+  LengthUnit,
 };
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
@@ -3777,11 +3778,28 @@ fn sample_keyframes_with_default_timing(
       let from = from_style.custom_properties.get(prop);
       let to = to_style.custom_properties.get(prop);
 
-      let interpolated = match (from, to) {
-        (Some(from), Some(to)) => {
-          interpolate_custom_property(from, to, eased_t, from_style, to_style, &ctx)
+      let can_interpolate = match (
+        from_style.custom_property_registry.get(prop),
+        to_style.custom_property_registry.get(prop),
+      ) {
+        (Some(from_rule), Some(to_rule))
+          if from_rule.syntax == to_rule.syntax
+            && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
+        {
+          true
         }
-        _ => None,
+        _ => false,
+      };
+
+      let interpolated = if can_interpolate {
+        match (from, to) {
+          (Some(from), Some(to)) => {
+            interpolate_custom_property(from, to, eased_t, from_style, to_style, &ctx)
+          }
+          _ => None,
+        }
+      } else {
+        None
       };
       let sampled = interpolated.or_else(|| {
         let chosen = if eased_t >= 0.5 { to } else { from };
@@ -6125,7 +6143,22 @@ fn transition_value_for_custom_property(
   let from_val = start_style.custom_properties.get(name)?.clone();
   let to_val = style.custom_properties.get(name)?.clone();
 
-  let sampled = interpolate_custom_property(&from_val, &to_val, progress, start_style, style, ctx)
+  let can_interpolate = match (
+    start_style.custom_property_registry.get(name),
+    style.custom_property_registry.get(name),
+  ) {
+    (Some(from_rule), Some(to_rule))
+      if from_rule.syntax == to_rule.syntax
+        && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
+    {
+      true
+    }
+    _ => false,
+  };
+
+  let sampled = (can_interpolate
+    .then(|| interpolate_custom_property(&from_val, &to_val, progress, start_style, style, ctx))
+    .flatten())
     .or_else(|| {
       if allow_discrete {
         if progress >= 0.5 {

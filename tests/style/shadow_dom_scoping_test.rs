@@ -6,6 +6,7 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
 use fastrender::style::style_set::StyleSet;
+use fastrender::style::values::{CustomPropertySyntax, CustomPropertyTypedValue};
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
   let mut combined = Vec::new();
@@ -104,4 +105,77 @@ fn shadow_styles_are_scoped() {
   let host_two = find_styled_by_id(&styled, "host2").expect("host2");
   assert_eq!(host_two.styles.background_color, Rgba::rgb(10, 20, 30));
   assert!((host_two.styles.opacity - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn property_registrations_are_tree_scoped() {
+  let html = r#"
+    <style>
+      #outside { --x: not-a-number; }
+    </style>
+    <div id="outside"></div>
+    <div id="host">
+      <template shadowroot="open">
+        <style>
+          @property --x {
+            syntax: "<number>";
+            inherits: true;
+            initial-value: 1;
+          }
+          #inside { --x: not-a-number; }
+        </style>
+        <div id="inside"></div>
+      </template>
+    </div>
+  "#;
+
+  let dom = dom::parse_html(html).expect("parse html");
+  let scoped_sources = extract_scoped_css_sources(&dom);
+  let mut shadows = std::collections::HashMap::new();
+  for (host, sources) in scoped_sources.shadows {
+    shadows.insert(host, stylesheet_from_sources(&sources));
+  }
+  let style_set = StyleSet {
+    document: stylesheet_from_sources(&scoped_sources.document),
+    shadows,
+  };
+
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+
+  let outside = find_styled_by_id(&styled, "outside").expect("outside");
+  assert!(
+    outside
+      .styles
+      .custom_property_registry
+      .get("--x")
+      .is_none(),
+    "shadow-root registrations must not leak into the document scope"
+  );
+  let outside_value = outside
+    .styles
+    .custom_properties
+    .get("--x")
+    .expect("outside custom property");
+  assert!(outside_value.typed.is_none());
+  assert_eq!(outside_value.value.trim(), "not-a-number");
+
+  let inside = find_styled_by_id(&styled, "inside").expect("inside");
+  let rule = inside
+    .styles
+    .custom_property_registry
+    .get("--x")
+    .expect("inside registration");
+  assert_eq!(rule.syntax, CustomPropertySyntax::Number);
+  let inside_value = inside
+    .styles
+    .custom_properties
+    .get("--x")
+    .expect("inside custom property");
+  assert_eq!(
+    inside_value.typed,
+    Some(CustomPropertyTypedValue::Number(1.0))
+  );
 }

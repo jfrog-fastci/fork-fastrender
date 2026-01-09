@@ -2423,6 +2423,35 @@ fn registered_custom_property_interpolates_and_recomputes_var_dependent_values()
 }
 
 #[test]
+fn registered_custom_property_length_interpolates() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: black; }
+      @property --tx { syntax: "<length>"; inherits: false; initial-value: 0px; }
+      #box {
+        width: 20px;
+        height: 20px;
+        background: rgb(255, 0, 0);
+        transform: translateX(var(--tx));
+        animation: move 1000ms linear both;
+      }
+      @keyframes move { from { --tx: 0px; } to { --tx: 100px; } }
+    </style>
+    <div id="box"></div>
+  "#;
+  let options = RenderOptions::new()
+    .with_viewport(140, 40)
+    .with_animation_time(600.0);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 70, 10), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 110, 10), (0, 0, 0, 255));
+}
+
+#[test]
 fn inherited_custom_property_animation_updates_descendant_var_consumers() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"

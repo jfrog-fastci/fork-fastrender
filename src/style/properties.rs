@@ -7454,6 +7454,37 @@ impl ComputedStyle {
   pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle) {
     // Start from the current parent store (animations may have mutated it).
     let mut store = parent_styles.custom_properties.clone();
+    let registry_changed =
+      !Arc::ptr_eq(&self.custom_property_registry, &parent_styles.custom_property_registry);
+
+    // When a node inherits from a parent in a different tree scope (e.g. slotted light-DOM nodes
+    // inheriting from <slot> inside a shadow root), the inherited store may contain typed values
+    // for registrations that are not present in this node's registry. Strip those typed values so
+    // they behave like unregistered custom properties in this scope.
+    if registry_changed {
+      for (name, rule) in parent_styles.custom_property_registry.iter() {
+        if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+          continue;
+        }
+        let Some(value) = store.get(name.as_str()) else {
+          continue;
+        };
+        if value.typed.is_none() {
+          continue;
+        }
+        let keep_typed = self
+          .custom_property_registry
+          .get(name.as_str())
+          .is_some_and(|rule| !matches!(rule.syntax, CustomPropertySyntax::Universal));
+        if keep_typed {
+          continue;
+        }
+        store.insert(
+          name.as_str().into(),
+          CustomPropertyValue::new(value.value.clone(), None),
+        );
+      }
+    }
 
     // Mirror `inherit_styles()` custom-property behavior for registered properties.
     for (name, rule) in self.custom_property_registry.iter() {
@@ -7476,6 +7507,59 @@ impl ComputedStyle {
         }
       } else {
         store.remove(name.as_str());
+      }
+    }
+
+    // If the registry changed across a tree-scope boundary, validate inherited values against the
+    // registered syntax (including resolving any var() calls that may have been preserved as token
+    // streams in the parent scope).
+    if registry_changed {
+      for (name, rule) in self.custom_property_registry.iter() {
+        if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+          if let Some(value) = store.get(name.as_str()) {
+            if value.typed.is_some() {
+              store.insert(
+                name.as_str().into(),
+                CustomPropertyValue::new(value.value.clone(), None),
+              );
+            }
+          }
+          continue;
+        }
+
+        let Some(existing) = store.get(name.as_str()).cloned() else {
+          continue;
+        };
+
+        let resolved = match resolve_var_for_property(
+          &PropertyValue::Custom(existing.value.clone()),
+          &store,
+          "",
+        ) {
+          VarResolutionResult::Resolved { value, css_text } => match value {
+            ResolvedPropertyValue::Borrowed(_) => existing.value.clone(),
+            ResolvedPropertyValue::Owned(_) => css_text.into_owned(),
+          },
+          _ => {
+            if let Some(initial) = &rule.initial_value {
+              store.insert(name.as_str().into(), initial.clone());
+            } else {
+              store.remove(name.as_str());
+            }
+            continue;
+          }
+        };
+
+        if let Some(typed) = rule.syntax.parse_value(trim_ascii_whitespace(&resolved)) {
+          store.insert(
+            name.as_str().into(),
+            CustomPropertyValue::new(resolved, Some(typed)),
+          );
+        } else if let Some(initial) = &rule.initial_value {
+          store.insert(name.as_str().into(), initial.clone());
+        } else {
+          store.remove(name.as_str());
+        }
       }
     }
 
@@ -7683,34 +7767,51 @@ fn apply_custom_property_declaration(
   };
   let raw_text = decl_raw_text(decl);
   let raw_trimmed = trim_ascii_whitespace(&raw_text);
-  let registration = styles.custom_property_registry.get(decl.property.as_str());
 
   // Unregistered custom properties behave like token streams: keep the authored value verbatim and
   // do not interpret CSS-wide keywords at computed-value time.
-  let Some(rule) = registration else {
-    if styles
-      .custom_properties
-      .get(custom_name.as_ref())
-      .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
-    {
+  let rule = match styles.custom_property_registry.get(decl.property.as_str()).cloned() {
+    Some(rule) => rule,
+    None => {
+      if styles
+        .custom_properties
+        .get(custom_name.as_ref())
+        .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
+      {
+        return true;
+      }
+      styles.custom_properties.insert(
+        Arc::clone(custom_name),
+        CustomPropertyValue::new(raw_text, None),
+      );
       return true;
     }
-    styles.custom_properties.insert(
-      Arc::clone(custom_name),
-      CustomPropertyValue::new(raw_text, None),
-    );
-    return true;
   };
 
   // Registered custom properties resolve var() at computed-value time (even for `syntax: *`) and
   // support CSS-wide keywords.
+  let apply_invalid_at_computed_value_time = |styles: &mut ComputedStyle| {
+    if let Some(initial) = rule.initial_value.as_ref() {
+      styles
+        .custom_properties
+        .insert(Arc::clone(custom_name), initial.clone());
+    } else {
+      // Treat as the guaranteed-invalid value when no initial value was registered.
+      styles.custom_properties.remove(custom_name.as_ref());
+    }
+  };
   if decl.contains_var {
     let resolved = match resolve_var_for_property(&decl.value, &styles.custom_properties, "") {
       VarResolutionResult::Resolved { value, css_text } => match value {
         ResolvedPropertyValue::Borrowed(_) => raw_trimmed.to_string(),
         ResolvedPropertyValue::Owned(_) => css_text.into_owned(),
       },
-      _ => return false,
+      // Failed var() resolution makes the computed value invalid, so fall back to the registered
+      // initial value (or the guaranteed-invalid value when omitted).
+      _ => {
+        apply_invalid_at_computed_value_time(styles);
+        return true;
+      }
     };
 
     if let Some(global) = global_keyword_text(&resolved) {
@@ -7720,7 +7821,7 @@ fn apply_custom_property_declaration(
         revert_base_custom_properties,
         revert_layer_custom_properties,
         custom_name,
-        rule,
+        &rule,
         global,
       );
       return true;
@@ -7735,7 +7836,8 @@ fn apply_custom_property_declaration(
     }
 
     let Some(typed) = rule.syntax.parse_value(trim_ascii_whitespace(&resolved)) else {
-      return false;
+      apply_invalid_at_computed_value_time(styles);
+      return true;
     };
     styles.custom_properties.insert(
       Arc::clone(custom_name),
@@ -7751,7 +7853,7 @@ fn apply_custom_property_declaration(
       revert_base_custom_properties,
       revert_layer_custom_properties,
       custom_name,
-      rule,
+      &rule,
       global,
     );
     return true;
@@ -7782,7 +7884,8 @@ fn apply_custom_property_declaration(
     return true;
   }
   let Some(typed) = rule.syntax.parse_value(raw_trimmed) else {
-    return false;
+    apply_invalid_at_computed_value_time(styles);
+    return true;
   };
   styles.custom_properties.insert(
     Arc::clone(custom_name),
