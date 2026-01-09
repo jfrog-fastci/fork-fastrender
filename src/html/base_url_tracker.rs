@@ -90,7 +90,32 @@ impl BaseUrlTracker {
 
   /// Resolve a `<script src>` value against the current base URL.
   pub fn resolve_script_src(&self, raw_src: &str) -> Option<String> {
-    resolve_href_with_base(self.current_base_url.as_deref(), raw_src)
+    match self.current_base_url.as_deref() {
+      Some(base) => resolve_href_with_base(Some(base), raw_src),
+      None => {
+        let trimmed = trim_ascii_whitespace(raw_src);
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+          return None;
+        }
+
+        fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+          haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
+        }
+
+        let bytes = trimmed.as_bytes();
+        if starts_with_ignore_ascii_case(bytes, b"javascript:")
+          || starts_with_ignore_ascii_case(bytes, b"vbscript:")
+          || starts_with_ignore_ascii_case(bytes, b"mailto:")
+        {
+          return None;
+        }
+
+        // `resolve_href` rejects `javascript:`/`vbscript:`/`mailto:` URLs and returns `None` for
+        // relative URLs without a base. For the base-less case, keep relative URLs as-is so callers
+        // can defer resolution until a document URL becomes available.
+        resolve_href("", trimmed).or_else(|| Some(trimmed.to_string()))
+      }
+    }
   }
 }
 
@@ -115,7 +140,33 @@ mod tests {
       false,
     );
 
-    assert_eq!(tracker.current_base_url().as_deref(), Some("https://ex/base/"));
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://ex/base/")
+    );
+  }
+
+  #[test]
+  fn script_before_base_without_document_url_remains_relative() {
+    let mut tracker = BaseUrlTracker::new(None);
+
+    let resolved = tracker.resolve_script_src("a.js");
+    assert_eq!(resolved.as_deref(), Some("a.js"));
+
+    tracker.on_element_inserted(
+      "base",
+      HTML_NAMESPACE,
+      &[("href".to_string(), "https://ex/base/".to_string())],
+      true,
+      false,
+      false,
+    );
+
+    // Base applies after it is parsed, so the earlier relative script resolution stays relative.
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://ex/base/")
+    );
   }
 
   #[test]
@@ -178,4 +229,3 @@ mod tests {
     );
   }
 }
-

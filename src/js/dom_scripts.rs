@@ -1,6 +1,5 @@
-use crate::css::loader::resolve_href_with_base;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
-use crate::html::document_base_url;
+use crate::html::base_url_tracker::BaseUrlTracker;
 
 use super::{determine_script_type, ScriptElementSpec};
 
@@ -11,29 +10,43 @@ use super::{determine_script_type, ScriptElementSpec};
 ///
 /// - `<template>` contents (`DomNode::traversal_children`)
 /// - Shadow roots (`DomNodeType::ShadowRoot`) (conservative initial behavior)
-pub fn extract_script_elements(dom: &DomNode, document_url: Option<&str>) -> Vec<ScriptElementSpec> {
-  let base_url = document_base_url(dom, document_url);
+pub fn extract_script_elements(
+  dom: &DomNode,
+  document_url: Option<&str>,
+) -> Vec<ScriptElementSpec> {
+  let mut base_url_tracker = BaseUrlTracker::new(document_url);
 
   let mut out: Vec<ScriptElementSpec> = Vec::new();
-  let mut stack: Vec<&DomNode> = Vec::new();
-  stack.push(dom);
+  let mut stack: Vec<(&DomNode, bool, bool, bool)> = Vec::new();
+  stack.push((dom, false, false, false));
 
-  while let Some(node) = stack.pop() {
+  while let Some((node, in_head, in_foreign_namespace, in_template)) = stack.pop() {
     if let DomNodeType::Element {
       tag_name,
       namespace,
+      attributes,
       ..
     } = &node.node_type
     {
+      base_url_tracker.on_element_inserted(
+        tag_name,
+        namespace,
+        attributes,
+        in_head,
+        in_foreign_namespace,
+        in_template,
+      );
+
       if tag_name.eq_ignore_ascii_case("script")
         && (namespace.is_empty() || namespace == HTML_NAMESPACE)
       {
+        let base_url = base_url_tracker.current_base_url();
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
 
         let src = node
           .get_attribute_ref("src")
-          .and_then(|value| resolve_href_with_base(base_url.as_deref(), value));
+          .and_then(|value| base_url_tracker.resolve_script_src(value));
 
         let mut inline_text = String::new();
         for child in &node.children {
@@ -43,7 +56,7 @@ pub fn extract_script_elements(dom: &DomNode, document_url: Option<&str>) -> Vec
         }
 
         out.push(ScriptElementSpec {
-          base_url: base_url.clone(),
+          base_url,
           src,
           inline_text,
           async_attr,
@@ -58,9 +71,26 @@ pub fn extract_script_elements(dom: &DomNode, document_url: Option<&str>) -> Vec
       continue;
     }
 
+    let is_head = node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE);
+    let next_in_head = in_head || is_head;
+    let next_in_template = in_template || node.is_template_element();
+    let next_in_foreign_namespace = in_foreign_namespace
+      || matches!(
+        node.namespace(),
+        Some(ns) if !(ns.is_empty() || ns == HTML_NAMESPACE)
+      );
+
     // Push children in reverse so we traverse left-to-right in document order.
     for child in node.traversal_children().iter().rev() {
-      stack.push(child);
+      stack.push((
+        child,
+        next_in_head,
+        next_in_foreign_namespace,
+        next_in_template,
+      ));
     }
   }
 
@@ -102,7 +132,10 @@ mod tests {
       scripts[0].src.as_deref(),
       Some("https://example.com/base/app.js")
     );
-    assert_eq!(scripts[0].base_url.as_deref(), Some("https://example.com/base/"));
+    assert_eq!(
+      scripts[0].base_url.as_deref(),
+      Some("https://example.com/base/")
+    );
   }
 
   #[test]
@@ -113,6 +146,30 @@ mod tests {
     assert_eq!(
       scripts[0].src.as_deref(),
       Some("https://example.com/dir/app.js")
+    );
+    assert_eq!(
+      scripts[0].base_url.as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+  }
+
+  #[test]
+  fn script_before_base_uses_document_url_for_resolution() {
+    // The `<base>` element affects URL resolution only after it has been parsed and inserted.
+    // This document has a `<script>` that appears before the `<base href>` in tree order.
+    let dom = parse_html(
+      r#"<!doctype html>
+      <html>
+        <script src="a.js"></script>
+        <head><base href="https://ex/base/"></head>
+      </html>"#,
+    )
+    .unwrap();
+    let scripts = extract_script_elements(&dom, Some("https://example.com/dir/page.html"));
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(
+      scripts[0].src.as_deref(),
+      Some("https://example.com/dir/a.js")
     );
     assert_eq!(
       scripts[0].base_url.as_deref(),
@@ -136,7 +193,10 @@ mod tests {
     .unwrap();
     let scripts = extract_script_elements(&dom, None);
     assert_eq!(scripts.len(), 1);
-    assert_eq!(scripts[0].src.as_deref(), Some("https://example.com/base/app.js"));
+    assert_eq!(
+      scripts[0].src.as_deref(),
+      Some("https://example.com/base/app.js")
+    );
   }
 
   #[test]
