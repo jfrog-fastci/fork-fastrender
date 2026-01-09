@@ -4,13 +4,6 @@ use super::DomError;
 use super::{Document, NodeId, NodeKind};
 
 impl Document {
-  fn node_checked(&self, id: NodeId) -> Result<&super::Node, DomError> {
-    self
-      .nodes
-      .get(id.index())
-      .ok_or(DomError::NotFoundError)
-  }
-
   fn validate_insert_hierarchy(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
     // NodeId validation is performed by callers, but keep this self-contained for internal use.
     let parent_kind = &self.node_checked(parent)?.kind;

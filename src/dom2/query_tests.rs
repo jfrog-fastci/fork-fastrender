@@ -388,3 +388,53 @@ fn selector_apis_work_for_inert_template_subtrees() {
   assert_eq!(doc.query_selector(".hit", Some(scope)).unwrap(), Some(target));
   assert!(doc.matches_selector(target, "div span.hit").unwrap());
 }
+
+#[test]
+fn get_element_by_id_ignores_shadow_root_subtrees() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow></span></template>",
+    "<span id=light></span>",
+    "</div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  assert_eq!(doc.get_element_by_id("shadow"), None);
+  let light = doc.get_element_by_id("light").unwrap();
+  assert_eq!(tag_name(&doc, light), Some("span"));
+}
+
+#[test]
+fn query_selector_skips_inert_templates_and_shadow_roots_by_default_but_can_scope_into_shadow_root() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<template><span id=inert></span></template>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow></span></template>",
+    "<span id=light></span>",
+    "</div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  assert_eq!(doc.query_selector("#inert", None).unwrap(), None);
+  assert_eq!(doc.query_selector("#shadow", None).unwrap(), None);
+  let light = doc.query_selector("#light", None).unwrap().unwrap();
+  assert_eq!(tag_name(&doc, light), Some("span"));
+
+  let shadow_root = doc
+    .nodes()
+    .iter()
+    .enumerate()
+    .find_map(|(idx, node)| matches!(&node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx)))
+    .expect("shadow root not found");
+
+  let shadow_el = doc.query_selector("#shadow", Some(shadow_root)).unwrap().unwrap();
+  assert_eq!(tag_name(&doc, shadow_el), Some("span"));
+}

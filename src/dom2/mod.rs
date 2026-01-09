@@ -3,7 +3,6 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::events;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
-use crate::web::events;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
@@ -21,11 +20,6 @@ mod shadow_dom;
 mod style_attr;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
-
-#[cfg(test)]
-mod class_list_tests;
-#[cfg(test)]
-mod wbr_tests;
 
 /// Convenience helper mirroring `Document.getElementById`.
 ///
@@ -246,6 +240,17 @@ impl Document {
     self.nodes.len()
   }
 
+  fn node_checked(&self, id: NodeId) -> Result<&Node, DomError> {
+    self.nodes.get(id.index()).ok_or(DomError::NotFoundError)
+  }
+
+  fn node_checked_mut(&mut self, id: NodeId) -> Result<&mut Node, DomError> {
+    self
+      .nodes
+      .get_mut(id.index())
+      .ok_or(DomError::NotFoundError)
+  }
+
   /// Returns the document element.
   ///
   /// This is the first child of the document root that is an element (including `<slot>`),
@@ -276,33 +281,60 @@ impl Document {
       return None;
     }
 
-    for node_id in self.dom_connected_preorder() {
+    // Document.getElementById does not traverse into shadow roots.
+    let mut remaining = self.nodes.len() + 1;
+    let mut stack: Vec<NodeId> = vec![self.root()];
+    while let Some(node_id) = stack.pop() {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
       let Some(node) = self.nodes.get(node_id.index()) else {
         continue;
       };
-      let (namespace, attributes) = match &node.kind {
-        NodeKind::Element {
-          namespace,
-          attributes,
-          ..
-        }
-        | NodeKind::Slot {
-          namespace,
-          attributes,
-          ..
-        } => (namespace.as_str(), attributes.as_slice()),
-        _ => continue,
-      };
 
-      let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
-      if attributes.iter().any(|(name, value)| {
-        (if is_html {
-          name.eq_ignore_ascii_case("id")
-        } else {
-          name == "id"
-        }) && value == id
-      }) {
-        return Some(node_id);
+      if let NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } = &node.kind
+      {
+        let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
+        if attributes.iter().any(|(name, value)| {
+          (if is_html {
+            name.eq_ignore_ascii_case("id")
+          } else {
+            name == "id"
+          }) && value == id
+        }) {
+          return Some(node_id);
+        }
+      }
+
+      if node.inert_subtree {
+        continue;
+      }
+      if matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+
+      for &child in node.children.iter().rev() {
+        let Some(child_node) = self.nodes.get(child.index()) else {
+          continue;
+        };
+        if child_node.parent != Some(node_id) {
+          continue;
+        }
+        if matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
+          continue;
+        }
+        stack.push(child);
       }
     }
 
@@ -739,6 +771,14 @@ impl Document {
       }
     }
 
+    // `document.querySelector` (and `Element.querySelector`) do not pierce shadow roots by default.
+    // If a scope is provided inside a shadow tree, allow matching only inside that same shadow root.
+    let allowed_shadow_root = scope.and_then(|scope_id| {
+      self
+        .ancestors(scope_id)
+        .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
+    });
+
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
@@ -746,6 +786,7 @@ impl Document {
     }
 
     let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut shadow_root_stack: Vec<NodeId> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
       node: &snapshot_dom,
@@ -760,6 +801,13 @@ impl Document {
 
     while let Some(item) = stack.pop() {
       if item.exiting {
+        if matches!(&item.node.node_type, DomNodeType::ShadowRoot { .. }) {
+          if let Some(id) = item.node_id {
+            if shadow_root_stack.last() == Some(&id) {
+              shadow_root_stack.pop();
+            }
+          }
+        }
         ancestors.pop();
         if let Some(scope_id) = scope {
           if item.node_id == Some(scope_id) {
@@ -773,6 +821,12 @@ impl Document {
       next_preorder_id += 1;
       let dom2_id = mapping.node_id_for_preorder(preorder_id);
 
+      if matches!(&item.node.node_type, DomNodeType::ShadowRoot { .. }) {
+        if let Some(id) = dom2_id {
+          shadow_root_stack.push(id);
+        }
+      }
+
       if let Some(dom2_id) = dom2_id {
         if scope == Some(dom2_id) {
           scope_active = true;
@@ -781,7 +835,11 @@ impl Document {
           }
         }
 
-        if scope_active && item.node.is_element() {
+        let current_shadow_root = shadow_root_stack.last().copied();
+        let shadow_ok = allowed_shadow_root
+          .map_or(current_shadow_root.is_none(), |allowed| current_shadow_root == Some(allowed));
+
+        if scope_active && item.node.is_element() && shadow_ok {
           if node_matches_selector_list(
             item.node,
             &ancestors,
@@ -860,6 +918,12 @@ impl Document {
       }
     }
 
+    let allowed_shadow_root = scope.and_then(|scope_id| {
+      self
+        .ancestors(scope_id)
+        .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
+    });
+
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
@@ -868,6 +932,7 @@ impl Document {
 
     let mut results: Vec<NodeId> = Vec::new();
     let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut shadow_root_stack: Vec<NodeId> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
       node: &snapshot_dom,
@@ -882,6 +947,13 @@ impl Document {
 
     while let Some(item) = stack.pop() {
       if item.exiting {
+        if matches!(&item.node.node_type, DomNodeType::ShadowRoot { .. }) {
+          if let Some(id) = item.node_id {
+            if shadow_root_stack.last() == Some(&id) {
+              shadow_root_stack.pop();
+            }
+          }
+        }
         ancestors.pop();
         if let Some(scope_id) = scope {
           if item.node_id == Some(scope_id) {
@@ -895,6 +967,12 @@ impl Document {
       next_preorder_id += 1;
       let dom2_id = mapping.node_id_for_preorder(preorder_id);
 
+      if matches!(&item.node.node_type, DomNodeType::ShadowRoot { .. }) {
+        if let Some(id) = dom2_id {
+          shadow_root_stack.push(id);
+        }
+      }
+
       if let Some(dom2_id) = dom2_id {
         if scope == Some(dom2_id) {
           scope_active = true;
@@ -903,7 +981,11 @@ impl Document {
           }
         }
 
-        if scope_active && item.node.is_element() {
+        let current_shadow_root = shadow_root_stack.last().copied();
+        let shadow_ok = allowed_shadow_root
+          .map_or(current_shadow_root.is_none(), |allowed| current_shadow_root == Some(allowed));
+
+        if scope_active && item.node.is_element() && shadow_ok {
           if node_matches_selector_list(
             item.node,
             &ancestors,
@@ -1072,6 +1154,8 @@ impl Document {
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]
+mod class_list_tests;
+#[cfg(test)]
 mod mapping_tests;
 #[cfg(test)]
 mod mutation_tests;
@@ -1079,6 +1163,8 @@ mod mutation_tests;
 mod query_tests;
 #[cfg(test)]
 mod selector_query_tests;
+#[cfg(test)]
+mod wbr_tests;
 
 #[cfg(test)]
 mod helper_tests {

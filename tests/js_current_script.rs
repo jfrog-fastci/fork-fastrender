@@ -1,4 +1,4 @@
-use fastrender::dom2::{Document, NodeId, NodeKind};
+use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{
   CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, ScriptBlockExecutor,
   ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
@@ -7,37 +7,17 @@ use fastrender::{Error, Result};
 use rquickjs::{Context, Ctx, Object, Runtime, Value};
 use std::collections::HashMap;
 
-fn find_element_by_id(dom: &Document, tag: &str, id: &str) -> NodeId {
+fn find_element_by_id(dom: &Document, id: &str) -> NodeId {
   for node_id in dom.subtree_preorder(dom.root()) {
-    let node = dom.node(node_id);
-    let NodeKind::Element {
-      tag_name,
-      attributes,
-      ..
-    } = &node.kind
-    else {
-      continue;
-    };
-    if !tag_name.eq_ignore_ascii_case(tag) {
-      continue;
-    }
-    if attributes.iter().any(|(name, value)| {
-      name.eq_ignore_ascii_case("id") && value.as_str() == id
-    }) {
+    if dom.get_attribute(node_id, "id").ok().flatten() == Some(id) {
       return node_id;
     }
   }
-  panic!("element <{tag} id={id}> not found");
+  panic!("element id={id} not found");
 }
 
 fn element_id_attr(dom: &Document, node_id: NodeId) -> Option<&str> {
-  let NodeKind::Element { attributes, .. } = &dom.node(node_id).kind else {
-    return None;
-  };
-  attributes
-    .iter()
-    .find(|(name, _)| name.eq_ignore_ascii_case("id"))
-    .map(|(_, value)| value.as_str())
+  dom.get_attribute(node_id, "id").unwrap_or(None)
 }
 
 fn init_js_realm(dom: &Document, script_nodes: &[NodeId]) -> Result<(Runtime, Context)> {
@@ -308,8 +288,8 @@ fn document_current_script_restores_for_nested_execution() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><script id=a></script><script id=b></script>")?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let script_a = find_element_by_id(&dom, "script", "a");
-  let script_b = find_element_by_id(&dom, "script", "b");
+  let script_a = find_element_by_id(&dom, "a");
+  let script_b = find_element_by_id(&dom, "b");
 
   let mut host = JsHost::new(dom, &[script_a, script_b])?;
   host.set_script_segments(
@@ -341,10 +321,10 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
   )?;
   let dom = Document::from_renderer_dom(&renderer_dom);
 
-  let a = find_element_by_id(&dom, "script", "a");
-  let b = find_element_by_id(&dom, "script", "b");
-  let c = find_element_by_id(&dom, "script", "c");
-  let d = find_element_by_id(&dom, "script", "d");
+  let a = find_element_by_id(&dom, "a");
+  let b = find_element_by_id(&dom, "b");
+  let c = find_element_by_id(&dom, "c");
+  let d = find_element_by_id(&dom, "d");
 
   let mut host = JsHost::new(dom, &[a, b, c, d])?;
   let mut event_loop = EventLoop::<JsHost>::new();
@@ -505,7 +485,7 @@ fn document_current_script_is_null_for_shadow_root_scripts() -> Result<()> {
     "#,
   )?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let shadow_script = find_element_by_id(&dom, "script", "shadow");
+  let shadow_script = find_element_by_id(&dom, "shadow");
 
   let mut host = JsHost::new(dom, &[shadow_script])?;
   host.set_script_source(shadow_script, "globalThis.shadowObserved = document.currentScript;");
@@ -519,7 +499,7 @@ fn document_current_script_is_null_for_shadow_root_scripts() -> Result<()> {
 fn document_current_script_is_null_for_module_scripts() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html("<!doctype html><script id=mod></script>")?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let module_script = find_element_by_id(&dom, "script", "mod");
+  let module_script = find_element_by_id(&dom, "mod");
 
   let mut host = JsHost::new(dom, &[module_script])?;
   host.set_script_source(module_script, "globalThis.modObserved = document.currentScript;");
@@ -535,7 +515,7 @@ fn current_script_is_restored_on_js_exception() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><script id=boom></script>")?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let boom = find_element_by_id(&dom, "script", "boom");
+  let boom = find_element_by_id(&dom, "boom");
 
   let mut host = JsHost::new(dom, &[boom])?;
   host.set_script_source(boom, "throw new Error('boom');");
@@ -554,8 +534,8 @@ fn disconnected_scripts_do_not_execute_and_do_not_affect_current_script() -> Res
     "<!doctype html><template><script id=inert></script></template><script id=live></script>",
   )?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let inert = find_element_by_id(&dom, "script", "inert");
-  let live = find_element_by_id(&dom, "script", "live");
+  let inert = find_element_by_id(&dom, "inert");
+  let live = find_element_by_id(&dom, "live");
 
   let mut host = JsHost::new(dom, &[inert, live])?;
   host.set_script_source(inert, "globalThis.inertRan = true;");
@@ -582,8 +562,8 @@ fn disconnected_scripts_do_not_modify_current_script_when_already_set() -> Resul
     "<!doctype html><template><script id=inert></script></template><script id=live></script>",
   )?;
   let dom = Document::from_renderer_dom(&renderer_dom);
-  let inert = find_element_by_id(&dom, "script", "inert");
-  let live = find_element_by_id(&dom, "script", "live");
+  let inert = find_element_by_id(&dom, "inert");
+  let live = find_element_by_id(&dom, "live");
 
   let mut host = JsHost::new(dom, &[inert, live])?;
 

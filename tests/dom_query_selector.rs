@@ -1,5 +1,5 @@
 use fastrender::dom::parse_html;
-use fastrender::dom2::{Document, NodeKind};
+use fastrender::dom2::Document;
 use fastrender::web::dom::DomException;
 
 fn node_id_attribute<'a>(
@@ -7,13 +7,9 @@ fn node_id_attribute<'a>(
   id: fastrender::dom2::NodeId,
   name: &str,
 ) -> Option<&'a str> {
-  match &doc.node(id).kind {
-    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-      .iter()
-      .find(|(k, _)| k.eq_ignore_ascii_case(name))
-      .map(|(_, v)| v.as_str()),
-    _ => None,
-  }
+  doc
+    .get_attribute(id, name)
+    .expect("get_attribute should succeed for element nodes")
 }
 
 #[test]
