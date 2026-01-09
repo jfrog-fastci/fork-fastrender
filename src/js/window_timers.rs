@@ -488,8 +488,6 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
           call_result
         });
 
-        vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
-
         if let Some(err) = hooks.finish(heap) {
           return Err(err);
         }
@@ -628,8 +626,6 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
           call_result
         });
 
-        vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
-
         if let Some(err) = hooks.finish(heap) {
           return Err(err);
         }
@@ -745,8 +741,6 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
           })();
           call_result
         });
-
-        vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
 
         if let Some(err) = hooks.finish(heap) {
           return Err(err);
@@ -1171,6 +1165,17 @@ mod tests {
     if let Some(v) = args.get(1).copied() {
       set_prop(scope, global, "__arg1", v);
     }
+    Ok(Value::Undefined)
+  }
+
+  fn cb_noop(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
     Ok(Value::Undefined)
   }
 
@@ -1900,7 +1905,7 @@ mod tests {
           Value::Object(global),
           &[Value::Object(cb)],
         )
-        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+          .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
       })
     })?;
@@ -1957,6 +1962,53 @@ mod tests {
       }
       other => panic!("expected TypeError, got {other:?}"),
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn timer_callback_does_not_reset_vm_budget_to_unlimited() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(&mut event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_noop);
+        let _ = vm
+          .call(
+            &mut scope,
+            set_timeout,
+            Value::Object(global),
+            &[Value::Object(timeout_cb), Value::Number(0.0)],
+          )
+          .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+      })?;
+    }
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    // Timer callbacks set a fresh budget based on the renderer deadline. We intentionally keep that
+    // budget active after the callback returns so Promise jobs (queued via `then`) run under the
+    // same budget during the subsequent microtask checkpoint.
+    let budget = host.window.vm().budget();
+    assert!(
+      budget.fuel.is_some() || budget.deadline.is_some(),
+      "expected timer callback budget to remain set"
+    );
 
     Ok(())
   }
