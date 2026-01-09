@@ -100,9 +100,12 @@ where
   globals.set("__fastrender_get_current_script", getter)?;
   ctx.eval::<(), _>(concat!(
     "Object.defineProperty(document, 'currentScript', {",
-    "  get: globalThis.__fastrender_get_current_script,",
+    // rquickjs maps `Option<T>` return values to JS `undefined`. The HTML spec requires
+    // `Document.currentScript` to return `null` when no script is currently executing, so wrap the
+    // host getter to normalize `undefined` to `null`.
+    "  get: function () { return globalThis.__fastrender_get_current_script() ?? null; },",
      "});"
-   ))?;
+    ))?;
 
   install_dom_exceptions_and_minimal_dom(ctx.clone(), globals, Rc::clone(&dom))?;
 
@@ -1469,6 +1472,31 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
   }
 
+  struct JsNullnessExecutor {
+    ctx: Context,
+  }
+
+  impl ScriptBlockExecutor<Host> for JsNullnessExecutor {
+    fn execute_script(
+      &mut self,
+      _host: &mut Host,
+      _orchestrator: &mut ScriptOrchestrator,
+      _script: NodeId,
+      _script_type: ScriptType,
+    ) -> Result<()> {
+      self
+        .ctx
+        .with(|ctx| {
+          ctx.eval::<(), _>(concat!(
+            "globalThis.obs.push(document.currentScript === null);",
+            "globalThis.obs.push(document.currentScript === undefined);",
+          ))
+        })
+        .map_err(|e| Error::Other(e.to_string()))?;
+      Ok(())
+    }
+  }
+
   struct JsCurrentScriptShapeExecutor {
     ctx: Context,
   }
@@ -1497,6 +1525,11 @@ const DOM_BINDINGS_SHIM: &str = r##"
   fn read_obs(ctx: &Context) -> Vec<Option<String>> {
     ctx
       .with(|ctx| ctx.eval::<Vec<Option<String>>, _>("globalThis.obs"))
+      .expect("read obs")
+  }
+
+  fn read_obs_bool(ctx: &Context) -> Vec<bool> {
+    ctx.with(|ctx| ctx.eval::<Vec<bool>, _>("globalThis.obs"))
       .expect("read obs")
   }
 
@@ -1675,7 +1708,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
     let (_rt, ctx) = init_ctx(Rc::clone(&dom_for_bindings), script_state);
     let mut orchestrator = ScriptOrchestrator::new();
-    let mut executor = JsObservingExecutor { ctx };
+    let mut executor = JsNullnessExecutor { ctx };
 
     orchestrator.execute_script_element(
       &mut host,
@@ -1690,7 +1723,10 @@ const DOM_BINDINGS_SHIM: &str = r##"
       &mut executor,
     )?;
 
-    assert_eq!(read_obs(&executor.ctx), vec![None, None]);
+    // Each script execution records two booleans:
+    //   - `document.currentScript === null` (must be true)
+    //   - `document.currentScript === undefined` (must be false)
+    assert_eq!(read_obs_bool(&executor.ctx), vec![true, false, true, false]);
     Ok(())
   }
 
