@@ -593,6 +593,87 @@ fn anchor_positioning_supports_builtin_flip_inline_try() {
 }
 
 #[test]
+fn anchor_positioning_flip_inline_respects_writing_mode_axis() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let spacer_id = 1usize;
+  let anchor_id = 2usize;
+  let overlay_id = 3usize;
+
+  let mut spacer_style = ComputedStyle::default();
+  spacer_style.display = Display::Block;
+  spacer_style.height = Some(Length::px(80.0));
+  spacer_style.height_keyword = None;
+  let mut spacer = BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+  spacer.id = spacer_id;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(10.0));
+  anchor_style.height = Some(Length::px(10.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  // In vertical writing modes the inline axis is vertical, so `flip-inline` should swap top/bottom.
+  overlay_style.writing_mode = WritingMode::VerticalRl;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(30.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  overlay_style.position_try_fallbacks = vec!["flip-inline".to_string()];
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![spacer, anchor, overlay],
+  );
+  container.id = 204;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_fragment.bounds.max_y() - anchor_fragment.bounds.y()).abs() < 0.1,
+    "flip-inline should place overlay above the anchor when the inline axis is vertical"
+  );
+  assert!(
+    overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
+    "overlay should not overflow the containing block after applying flip-inline"
+  );
+}
+
+#[test]
 fn anchor_positioning_supports_builtin_flip_block_try() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;

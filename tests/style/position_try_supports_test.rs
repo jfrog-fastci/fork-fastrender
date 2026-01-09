@@ -66,6 +66,22 @@ fn supports_position_try_fallbacks_builtin_keywords() {
 }
 
 #[test]
+fn supports_position_try_fallbacks_builtin_flip_block() {
+  let target = styled_target(
+    r#"
+      @supports (position-try-fallbacks: flip-block) {
+        #t { color: rgb(11, 12, 13); }
+      }
+      @supports not (position-try-fallbacks: flip-block) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(11, 12, 13));
+}
+
+#[test]
 fn position_try_fallbacks_parses_and_skips_comments() {
   let target = styled_target(
     r#"

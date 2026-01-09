@@ -1,4 +1,5 @@
 use fastrender::css::parser::{extract_scoped_css_sources, parse_stylesheet, StylesheetSource};
+use fastrender::css::types::PropertyValue;
 use fastrender::css::types::StyleSheet;
 use fastrender::dom;
 use fastrender::style::cascade::apply_style_set_with_media_target_and_imports;
@@ -6,7 +7,7 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
 use fastrender::style::style_set::StyleSet;
-use fastrender::style::values::{CustomPropertySyntax, CustomPropertyTypedValue};
+use fastrender::style::values::{CustomPropertySyntax, CustomPropertyTypedValue, Length};
 
 fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
   let mut combined = Vec::new();
@@ -181,4 +182,72 @@ fn property_registrations_are_tree_scoped() {
     inside_value.typed,
     Some(CustomPropertyTypedValue::Number(1.0))
   );
+}
+
+#[test]
+fn position_try_rules_are_tree_scoped() {
+  let html = r#"
+    <style>
+      @position-try --doc { top: 1px; }
+    </style>
+    <div id="outside"></div>
+    <div id="host">
+      <template shadowroot="open">
+        <style>
+          @position-try --shadow { top: 2px; }
+        </style>
+        <div id="inside"></div>
+      </template>
+    </div>
+  "#;
+
+  let dom = dom::parse_html(html).expect("parse html");
+  let scoped_sources = extract_scoped_css_sources(&dom);
+  let mut shadows = std::collections::HashMap::new();
+  for (host, sources) in scoped_sources.shadows {
+    shadows.insert(host, stylesheet_from_sources(&sources));
+  }
+  let style_set = StyleSet {
+    document: stylesheet_from_sources(&scoped_sources.document),
+    shadows,
+  };
+
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+
+  let outside = find_styled_by_id(&styled, "outside").expect("outside");
+  assert!(
+    outside.styles.position_try_registry.get("--shadow").is_none(),
+    "shadow-root @position-try rules must not leak into the document scope"
+  );
+  let doc = outside
+    .styles
+    .position_try_registry
+    .get("--doc")
+    .expect("document @position-try should be available in document scope");
+  assert_eq!(doc.len(), 1);
+  assert_eq!(doc[0].property.as_ref(), "top");
+  match &doc[0].value {
+    PropertyValue::Length(len) => assert_eq!(*len, Length::px(1.0)),
+    other => panic!("expected top: <length>, got {other:?}"),
+  }
+
+  let inside = find_styled_by_id(&styled, "inside").expect("inside");
+  assert!(
+    inside.styles.position_try_registry.get("--doc").is_none(),
+    "document @position-try rules must not apply inside shadow trees"
+  );
+  let shadow = inside
+    .styles
+    .position_try_registry
+    .get("--shadow")
+    .expect("shadow @position-try should be available inside the shadow scope");
+  assert_eq!(shadow.len(), 1);
+  assert_eq!(shadow[0].property.as_ref(), "top");
+  match &shadow[0].value {
+    PropertyValue::Length(len) => assert_eq!(*len, Length::px(2.0)),
+    other => panic!("expected top: <length>, got {other:?}"),
+  }
 }
