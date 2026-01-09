@@ -93,10 +93,9 @@ pub enum ScriptValue {
   Bool(bool),
   Number(f64),
   /// UTF-8 string value.
-  ///
-  /// Note: BigInt values are currently surfaced as decimal strings because this shim does not yet
-  /// expose a dedicated BigInt variant.
   String(String),
+  /// BigInt value encoded as a base-10 string.
+  BigInt(String),
   /// Non-primitive values are currently surfaced as opaque markers.
   Object,
   Symbol,
@@ -509,9 +508,7 @@ impl Evaluator<'_> {
       Value::Null => Ok(ScriptValue::Null),
       Value::Bool(b) => Ok(ScriptValue::Bool(b)),
       Value::Number(n) => Ok(ScriptValue::Number(n)),
-      // The embedding's stable value type does not model BigInt yet; surface it as a string so
-      // callers can still inspect deterministic output.
-      Value::BigInt(n) => Ok(ScriptValue::String(n.to_decimal_string())),
+      Value::BigInt(b) => Ok(ScriptValue::BigInt(b.to_decimal_string())),
       Value::String(s) => Ok(ScriptValue::String(
         heap
           .get_string(s)
@@ -533,6 +530,27 @@ impl Evaluator<'_> {
       ScriptValue::Null => Value::Null,
       ScriptValue::Bool(b) => Value::Bool(b),
       ScriptValue::Number(n) => Value::Number(n),
+      ScriptValue::BigInt(s) => {
+        let (negative, mag_str) = s
+          .strip_prefix('-')
+          .map(|rest| (true, rest))
+          .unwrap_or((false, s.as_str()));
+        if mag_str.is_empty() {
+          return Err(ScriptError::Runtime {
+            message: "invalid BigInt string".to_string(),
+            stack_trace: format_stack_trace(&self.vm.capture_stack()),
+          });
+        }
+        let magnitude: u128 = mag_str.parse().map_err(|_| ScriptError::Runtime {
+          message: "invalid BigInt string".to_string(),
+          stack_trace: format_stack_trace(&self.vm.capture_stack()),
+        })?;
+        let mut b = vm_js::JsBigInt::from_u128(magnitude);
+        if negative {
+          b = b.negate();
+        }
+        Value::BigInt(b)
+      }
       ScriptValue::String(s) => {
         let handle = scope.alloc_string(&s).map_err(vm_error_to_runtime)?;
         Value::String(handle)
@@ -865,7 +883,7 @@ impl Evaluator<'_> {
         Value::Null => ScriptValue::Null,
         Value::Bool(b) => ScriptValue::Bool(b),
         Value::Number(n) => ScriptValue::Number(n),
-        Value::BigInt(b) => ScriptValue::String(b.to_decimal_string()),
+        Value::BigInt(b) => ScriptValue::BigInt(b.to_decimal_string()),
         Value::String(s) => ScriptValue::String(
           call_scope
             .heap()
