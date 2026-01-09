@@ -392,12 +392,19 @@ impl BrowserWorkerRuntime {
     delta_css: (f32, f32),
     pointer_css: Option<(f32, f32)>,
   ) -> CoalescedScroll {
+    // Coalesce scroll bursts to avoid spamming intermediate paints/frames.
+    //
+    // Using a small timeout here makes coalescing more robust against scheduler races where the
+    // worker thread wakes up and starts processing the first scroll message before the UI thread
+    // manages to enqueue the rest of a rapid scroll sequence.
+    const COALESCE_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
+
     let mut total_dx = delta_css.0;
     let mut total_dy = delta_css.1;
     let mut last_pointer = pointer_css;
 
     loop {
-      match self.ui_rx.try_recv() {
+      match self.ui_rx.recv_timeout(COALESCE_WAIT) {
         Ok(UiToWorker::Scroll {
           tab_id: next_id,
           delta_css: (dx, dy),
@@ -411,8 +418,8 @@ impl BrowserWorkerRuntime {
           self.pending.push_back(other);
           break;
         }
-        Err(std::sync::mpsc::TryRecvError::Empty) => break,
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
       }
     }
 

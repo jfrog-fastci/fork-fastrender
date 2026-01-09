@@ -5,6 +5,7 @@ use crate::interaction::scroll_offset_for_fragment_target;
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
+use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
@@ -745,7 +746,10 @@ fn navigate_tab(
       }
     }
   } else {
-    let mut renderer = match FastRender::new() {
+    let mut renderer = match FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+    {
       Ok(renderer) => renderer,
       Err(err) => {
         let _ = tx.send(WorkerToUi::NavigationFailed {
