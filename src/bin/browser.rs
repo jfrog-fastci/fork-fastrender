@@ -166,10 +166,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       Event::UserEvent(UserEvent::WorkerWake) => {
         // Drain all pending worker messages. The bridge thread emits one wake event per message but
         // draining here ensures we coalesce renders if multiple arrive in quick succession.
+        let mut request_redraw = false;
         while let Ok(msg) = ui_rx.try_recv() {
-          app.handle_worker_message(msg);
+          request_redraw |= app.handle_worker_message(msg);
         }
-        app.window.request_redraw();
+        if request_redraw {
+          app.window.request_redraw();
+        }
       }
       Event::RedrawRequested(window_id) if window_id == app.window.id() => {
         app.render_frame(control_flow);
@@ -763,219 +766,108 @@ impl App {
     self.destroy_all_textures();
   }
 
-  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) {
-    match msg {
-      fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.scroll_state = frame.scroll_state.clone();
-          tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
-            pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
-            viewport_css: frame.viewport_css,
-            dpr: frame.dpr,
-          });
+  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
+    // UI-only side effects that depend on the raw message before the shared reducer consumes it.
+    match &msg {
+      fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
+      | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id } => {
+        if self
+          .open_select_dropdown
+          .as_ref()
+          .is_some_and(|d| d.tab_id == *tab_id)
+        {
+          self.close_select_dropdown();
         }
+      }
+      _ => {}
+    }
 
-        let pixmap = frame.pixmap;
-        if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
+    let mut request_redraw = false;
+
+    if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
+      eprintln!("[worker:{tab_id:?}] {line}");
+      let line = line.trim_end();
+      if !line.is_empty() {
+        if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+          self.debug_log.pop_front();
+        }
+        self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
+        // Debug log is rendered via a bottom panel regardless of active tab.
+        request_redraw = true;
+      }
+    }
+
+    let update = self.browser_state.apply_worker_msg(msg);
+
+    if let Some(frame_ready) = update.frame_ready {
+      // Ignore stale frames for tabs that have already been closed.
+      if self.browser_state.tab(frame_ready.tab_id).is_some() {
+        let pixmap = frame_ready.pixmap;
+        if let Some(tex) = self.tab_textures.get_mut(&frame_ready.tab_id) {
           tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
         } else {
           let mut tex =
             fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap);
           tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-          self.tab_textures.insert(tab_id, tex);
+          self.tab_textures.insert(frame_ready.tab_id, tex);
         }
       }
-      fastrender::ui::WorkerToUi::OpenSelectDropdown {
-        tab_id,
-        select_node_id,
-        control,
-      } => {
-        if self.browser_state.active_tab_id() != Some(tab_id) {
-          return;
-        }
+    }
 
+    if let Some(dropdown) = update.open_select_dropdown {
+      if self.browser_state.active_tab_id() == Some(dropdown.tab_id) {
         // Legacy cursor-anchored dropdown message (kept for backwards compatibility in the core
         // protocol). Prefer `SelectDropdownOpened` (anchored to the `<select>` control); if the
         // control-anchored dropdown is already open for the same `<select>`, ignore the legacy
         // message so it doesn't override the better anchor.
-        if self.open_select_dropdown.as_ref().is_some_and(|existing| {
-          existing.tab_id == tab_id
-            && existing.select_node_id == select_node_id
-            && existing.anchored_to_control
-        }) {
-          return;
-        }
-
-        let anchor_points = self
-          .last_cursor_pos_points
-          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
-          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
-
-        self.open_select_dropdown = Some(OpenSelectDropdown {
-          tab_id,
-          select_node_id,
-          control,
-          anchor_css: None,
-          anchor_points,
-          anchor_width_points: None,
-          anchored_to_control: false,
-        });
-        self.open_select_dropdown_rect = None;
-      }
-      fastrender::ui::WorkerToUi::SelectDropdownOpened {
-        tab_id,
-        select_node_id,
-        control,
-        anchor_css,
-      } => {
-        if self.browser_state.active_tab_id() != Some(tab_id) {
-          return;
-        }
-
-        let mut anchor_points = self
-          .last_cursor_pos_points
-          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
-          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
-        let mut anchor_width_points = None;
-
-        if anchor_css != fastrender::geometry::Rect::ZERO && self.page_input_tab == Some(tab_id) {
-          if let Some(mapping) = self.page_input_mapping {
-            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
-              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
-              anchor_width_points = Some(rect_points.width());
+        let control_anchor = dropdown
+          .anchor_css
+          .filter(|rect| *rect != fastrender::geometry::Rect::ZERO);
+        let legacy_anchor = control_anchor.is_none();
+        if legacy_anchor
+          && self.open_select_dropdown.as_ref().is_some_and(|existing| {
+            existing.tab_id == dropdown.tab_id
+              && existing.select_node_id == dropdown.select_node_id
+              && existing.anchored_to_control
+          })
+        {
+          // Ignore.
+        } else {
+          let mut anchor_points = self
+            .last_cursor_pos_points
+            .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+            .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+          let mut anchor_width_points = None;
+          if let Some(anchor_css) = control_anchor {
+            if self.page_input_tab == Some(dropdown.tab_id) {
+              if let Some(mapping) = self.page_input_mapping {
+                if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+                  anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+                  anchor_width_points = Some(rect_points.width());
+                }
+              }
             }
           }
-        }
-
-        self.open_select_dropdown = Some(OpenSelectDropdown {
-          tab_id,
-          select_node_id,
-          control,
-          anchor_css: Some(anchor_css),
-          anchor_points,
-          anchor_width_points,
-          anchored_to_control: true,
-        });
-        self.open_select_dropdown_rect = None;
-      }
-      fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id } => {
-        if self
-          .open_select_dropdown
-          .as_ref()
-          .is_some_and(|dropdown| dropdown.tab_id == tab_id)
-        {
-          self.close_select_dropdown();
-          self.window.request_redraw();
-        }
-      }
-      fastrender::ui::WorkerToUi::Stage { tab_id, stage } => {
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.stage = Some(stage);
-        }
-      }
-      fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
-        if self
-          .open_select_dropdown
-          .as_ref()
-          .is_some_and(|d| d.tab_id == tab_id)
-        {
-          self.close_select_dropdown();
-        }
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.title = None;
-          tab.current_url = Some(url.clone());
-          tab.loading = true;
-          tab.error = None;
-          tab.stage = None;
-        }
-        if self.browser_state.active_tab_id() == Some(tab_id)
-          && !self.browser_state.chrome.address_bar_editing
-        {
-          self.browser_state.chrome.address_bar_text = url;
-        }
-      }
-      fastrender::ui::WorkerToUi::NavigationCommitted {
-        tab_id,
-        url,
-        title,
-        can_go_back,
-        can_go_forward,
-      } => {
-        if self
-          .open_select_dropdown
-          .as_ref()
-          .is_some_and(|d| d.tab_id == tab_id)
-        {
-          self.close_select_dropdown();
-        }
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.current_url = Some(url.clone());
-          tab.title = title;
-          tab.loading = false;
-          tab.error = None;
-          tab.stage = None;
-          tab.can_go_back = can_go_back;
-          tab.can_go_forward = can_go_forward;
-        }
-        if self.browser_state.active_tab_id() == Some(tab_id)
-          && !self.browser_state.chrome.address_bar_editing
-        {
-          self.browser_state.chrome.address_bar_text = url;
-        }
-      }
-      fastrender::ui::WorkerToUi::NavigationFailed {
-        tab_id,
-        url,
-        error,
-        can_go_back,
-        can_go_forward,
-      } => {
-        if self
-          .open_select_dropdown
-          .as_ref()
-          .is_some_and(|d| d.tab_id == tab_id)
-        {
-          self.close_select_dropdown();
-        }
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.current_url = Some(url.clone());
-          tab.loading = false;
-          tab.error = Some(error);
-          tab.stage = None;
-          tab.can_go_back = can_go_back;
-          tab.can_go_forward = can_go_forward;
-          tab.title = None;
-        }
-        if self.browser_state.active_tab_id() == Some(tab_id)
-          && !self.browser_state.chrome.address_bar_editing
-        {
-          self.browser_state.chrome.address_bar_text = url;
-        }
-      }
-      fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.scroll_state = scroll;
-        }
-      }
-      fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.loading = loading;
-          if !loading {
-            tab.stage = None;
-          }
-        }
-      }
-      fastrender::ui::WorkerToUi::DebugLog { tab_id, line } => {
-        eprintln!("[worker:{tab_id:?}] {line}");
-        let line = line.trim_end();
-        if !line.is_empty() {
-          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
-            self.debug_log.pop_front();
-          }
-          self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
+ 
+          self.open_select_dropdown = Some(OpenSelectDropdown {
+            tab_id: dropdown.tab_id,
+            select_node_id: dropdown.select_node_id,
+            control: dropdown.control,
+            anchor_css: control_anchor,
+            anchor_points,
+            anchor_width_points,
+            anchored_to_control: control_anchor.is_some(),
+          });
+          self.open_select_dropdown_rect = None;
+          request_redraw = true;
         }
       }
     }
+
+    request_redraw |= update.request_redraw;
+    request_redraw
   }
 
   fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
