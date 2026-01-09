@@ -3056,6 +3056,74 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
 }
 
 #[test]
+fn select_keyboard_navigation_without_box_tree_changes_selection_and_skips_disabled_options() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "s")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2"), ("disabled", "")], vec![]),
+          el("option", vec![("id", "o3")], vec![]),
+          el(
+            "optgroup",
+            vec![("id", "g"), ("disabled", "")],
+            vec![el("option", vec![("id", "o4")], vec![])],
+          ),
+          el("option", vec![("id", "o5")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "s");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(select_dom_id), false);
+
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-focus-visible"),
+    "focus should not initially be focus-visible (simulating a pointer focus)"
+  );
+  assert!(has_attr(&dom, "o1", "selected"));
+
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::ArrowDown, "https://x/", "https://x/");
+  assert!(changed);
+  assert_eq!(action, InteractionAction::None);
+  assert_eq!(
+    attr_value(&dom, "s", "data-fastr-focus-visible").as_deref(),
+    Some("true"),
+    "keyboard interaction should set focus-visible"
+  );
+
+  // ArrowDown should skip disabled options.
+  assert!(has_attr(&dom, "o3", "selected"));
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+
+  // ArrowDown should also skip options inside a disabled optgroup.
+  engine.key_activate(&mut dom, KeyAction::ArrowDown, "https://x/", "https://x/");
+  assert!(has_attr(&dom, "o5", "selected"));
+  assert!(!has_attr(&dom, "o4", "selected"));
+
+  // ArrowUp should move back, skipping disabled options/optgroups.
+  engine.key_activate(&mut dom, KeyAction::ArrowUp, "https://x/", "https://x/");
+  assert!(has_attr(&dom, "o3", "selected"));
+
+  // Home/End should jump to first/last enabled option.
+  engine.key_activate(&mut dom, KeyAction::Home, "https://x/", "https://x/");
+  assert!(has_attr(&dom, "o1", "selected"));
+  engine.key_activate(&mut dom, KeyAction::End, "https://x/", "https://x/");
+  assert!(has_attr(&dom, "o5", "selected"));
+}
+
+#[test]
 fn listbox_select_click_accounts_for_element_scroll_offset() {
   let option_ids = [
     "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
