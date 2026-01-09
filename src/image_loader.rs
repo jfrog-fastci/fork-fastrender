@@ -123,6 +123,13 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
     .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn strip_url_fragment(url: &str) -> Cow<'_, str> {
+  url
+    .split_once('#')
+    .map(|(prefix, _)| Cow::Borrowed(prefix))
+    .unwrap_or(Cow::Borrowed(url))
+}
+
 fn decode_inline_svg_url(url: &str) -> Option<String> {
   let trimmed = trim_ascii_whitespace_start(url);
   if trimmed.is_empty() {
@@ -3448,8 +3455,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
-    let mut request =
-      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
+    let fetch_url_no_fragment = strip_url_fragment(resolved_url);
+    let mut request = FetchRequest::new(fetch_url_no_fragment.as_ref(), destination)
+      .with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -3463,7 +3471,10 @@ impl ImageCache {
       .read_cache_artifact_with_request(request, CacheArtifactKind::ImageProbeMetadata)
     {
       if let Some(ctx) = &self.resource_context {
-        let policy_url = cached.final_url.as_deref().unwrap_or(resolved_url);
+        let policy_url = cached
+          .final_url
+          .as_deref()
+          .unwrap_or(fetch_url_no_fragment.as_ref());
         if let Err(err) = ctx.check_allowed(ResourceKind::Image, policy_url) {
           let blocked = Error::Image(ImageError::LoadFailed {
             url: resolved_url.to_string(),
@@ -3491,7 +3502,10 @@ impl ImageCache {
       }
 
       // Corrupt or incompatible cache entry; evict so we don't repeatedly reparse it.
-      let artifact_url = cached.final_url.as_deref().unwrap_or(resolved_url);
+      let artifact_url = cached
+        .final_url
+        .as_deref()
+        .unwrap_or(fetch_url_no_fragment.as_ref());
       let mut remove_request =
         FetchRequest::new(artifact_url, destination).with_credentials_mode(credentials_mode);
       if let Some(origin) = client_origin {
@@ -3960,8 +3974,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
+    let fetch_url_no_fragment = strip_url_fragment(resolved_url);
     let mut request =
-      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
+      FetchRequest::new(fetch_url_no_fragment.as_ref(), destination).with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -4176,8 +4191,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
+    let fetch_url_no_fragment = strip_url_fragment(resolved_url);
     let mut request =
-      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
+      FetchRequest::new(fetch_url_no_fragment.as_ref(), destination).with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -6468,6 +6484,38 @@ mod tests {
     let key = svg_pixmap_key(svg, url, 0.0, 10, 10);
     let key_neg = svg_pixmap_key(svg, url, -0.0, 10, 10);
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn image_fetch_strips_http_fragment() {
+    let url = "https://example.test/icon.svg";
+    let url_with_fragment = "https://example.test/icon.svg#frag";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>"#;
+
+    let mut res = FetchedResource::new(svg.as_bytes().to_vec(), Some("image/svg+xml".to_string()));
+    res.status = Some(200);
+    res.final_url = Some(url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let img = cache.load(url_with_fragment).expect("image should load");
+    assert!(img.is_vector, "expected SVG image");
+    assert_eq!(img.dimensions(), (1, 1));
+    assert_eq!(
+      fetcher.requests(),
+      vec![(url.to_string(), FetchDestination::Image)]
+    );
+  }
+
+  #[test]
+  fn data_svg_url_with_fragment_decodes() {
+    let url = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='1'%20height='1'%3E%3C/svg%3E#ignored";
+    let cache = ImageCache::new();
+
+    let img = cache.load(url).expect("data SVG should decode");
+    assert!(img.is_vector, "expected SVG image");
+    assert_eq!(img.dimensions(), (1, 1));
   }
 
   fn svg_policy_cache_same_origin_only(doc_url: &str) -> ImageCache {
