@@ -38,7 +38,7 @@ pub trait DocumentLifecycleHost {
       } else {
         false
       }
-    });
+    })?;
 
     if ready_state_changed {
       fire_ready_state_change(self)?;
