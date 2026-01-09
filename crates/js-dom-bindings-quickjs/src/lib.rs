@@ -310,6 +310,22 @@ impl Node {
     id.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
+  #[qjs(get, rename = "childNodes")]
+  fn child_nodes<'js>(&self, ctx: Ctx<'js>) -> JsResult<Vec<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let children: Vec<NodeId> = dom
+      .children(self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
+      .to_vec();
+    drop(dom);
+
+    children
+      .into_iter()
+      .map(|id| self.state.wrap_node(ctx.clone(), id))
+      .collect()
+  }
+
   // ===========================================================================
   // Node mutation
   // ===========================================================================

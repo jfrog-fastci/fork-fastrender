@@ -139,6 +139,52 @@ fn element_closest_returns_ancestors_and_null() {
 }
 
 #[test]
+fn child_nodes_is_an_array_and_updates_after_mutations() {
+  let dom = make_dom(
+    r#"<!doctype html><html><body><div id="x"><span id="a"></span><span id="b"></span></div></body></html>"#,
+  );
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const x = document.getElementById("x");
+            const a = document.getElementById("a");
+            const b = document.getElementById("b");
+            if (!x || !a || !b) return "missing";
+
+            if (!Array.isArray(x.childNodes)) return "not_array";
+            if (x.childNodes.length !== 2) return "bad_len:" + String(x.childNodes.length);
+            if (x.childNodes[0] !== a || x.childNodes[1] !== b) return "bad_identity";
+
+            x.removeChild(a);
+            if (a.parentNode !== null) return "bad_parent";
+            if (x.childNodes.length !== 1 || x.childNodes[0] !== b) return "bad_after_remove";
+
+            while (x.childNodes.length) {
+              x.removeChild(x.childNodes[0]);
+            }
+            if (x.childNodes.length !== 0) return "bad_clear";
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "childNodes smoke failed: {outcome}");
+  });
+}
+
+#[test]
 fn element_creation_append_and_text_content() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 
