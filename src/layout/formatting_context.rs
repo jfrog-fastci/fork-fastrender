@@ -1576,7 +1576,44 @@ pub trait FormattingContext: Send + Sync {
     } else {
       LayoutConstraints::new(AvailableSpace::Indefinite, intrinsic_inline_space)
     };
-    let fragment = self.layout(box_node, &constraints)?;
+
+    // Out-of-flow positioned descendants do not contribute to a box's intrinsic sizes. In addition
+    // to being spec-correct, filtering them out avoids pathological intrinsic probes on pages that
+    // wrap long "sr-only" text in absolutely positioned link overlays (common in flex items with
+    // `min-height:auto`), which can otherwise inflate the measured block-size and break flex layout.
+    let has_out_of_flow_children = box_node.children.iter().any(|child| {
+      child.style.running_position.is_some()
+        || matches!(child.style.position, Position::Absolute | Position::Fixed)
+    });
+    let probe_node = has_out_of_flow_children.then(|| {
+      let children = box_node
+        .children
+        .iter()
+        .filter(|child| {
+          child.style.running_position.is_none()
+            && !matches!(child.style.position, Position::Absolute | Position::Fixed)
+        })
+        .cloned()
+        .collect();
+      BoxNode {
+        style: box_node.style.clone(),
+        starting_style: box_node.starting_style.clone(),
+        box_type: box_node.box_type.clone(),
+        children,
+        footnote_body: box_node.footnote_body.clone(),
+        id: box_node.id,
+        debug_info: box_node.debug_info.clone(),
+        styled_node_id: box_node.styled_node_id,
+        generated_pseudo: box_node.generated_pseudo,
+        table_cell_span: box_node.table_cell_span,
+        table_column_span: box_node.table_column_span,
+        first_line_style: box_node.first_line_style.clone(),
+        first_letter_style: box_node.first_letter_style.clone(),
+      }
+    });
+    let node_for_layout = probe_node.as_ref().unwrap_or(box_node);
+
+    let fragment = self.layout(node_for_layout, &constraints)?;
     let block_size = if inline_is_horizontal {
       fragment.bounds.height()
     } else {

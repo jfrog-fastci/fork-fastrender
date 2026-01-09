@@ -2207,23 +2207,54 @@ impl GridFormattingContext {
     positioned_children: &mut FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
   ) -> Result<TaffyNodeId, LayoutError> {
     let mut deadline_counter = 0usize;
-    let mut in_flow_children: Vec<&BoxNode> = Vec::new();
+    // CSS `order` applies to grid items (as well as flex items) and participates in the grid
+    // auto-placement algorithm + paint order. Taffy does not model `order`, so we must explicitly
+    // reorder in-flow grid children before building the Taffy tree.
+    //
+    // Spec: https://drafts.csswg.org/css-display-3/#order-property
+    let mut in_flow_children: Vec<(usize, &BoxNode)> = Vec::new();
     let mut positioned: Vec<*const BoxNode> = Vec::new();
     let mut child_has_subgrid = false;
-    for child in root_children {
+    let mut in_flow_children_need_sort = false;
+    let mut last_in_flow_order: Option<i32> = None;
+    for (idx, child) in root_children.iter().enumerate() {
       check_layout_deadline(&mut deadline_counter)?;
+      let child = *child;
       match child.style.position {
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed => {
-          positioned.push(*child as *const BoxNode)
+          positioned.push(child as *const BoxNode)
         }
         _ => {
           if child.style.grid_row_subgrid || child.style.grid_column_subgrid {
             child_has_subgrid = true;
           }
-          in_flow_children.push(*child)
+          if let Some(prev) = last_in_flow_order {
+            if child.style.order < prev {
+              in_flow_children_need_sort = true;
+            }
+          }
+          last_in_flow_order = Some(child.style.order);
+          in_flow_children.push((idx, child))
         }
       }
     }
+    if in_flow_children_need_sort {
+      // `check_layout_deadline()` is periodic; ensure we still perform a definite check before doing
+      // potentially expensive sort work.
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      in_flow_children.sort_by(|(a_idx, a), (b_idx, b)| {
+        a.style.order.cmp(&b.style.order).then_with(|| a_idx.cmp(b_idx))
+      });
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+    }
+    let in_flow_children: Vec<&BoxNode> = in_flow_children
+      .into_iter()
+      .map(|(_, child)| child)
+      .collect();
 
     let has_subgrid = root_style.grid_row_subgrid || root_style.grid_column_subgrid;
 
@@ -2347,7 +2378,9 @@ impl GridFormattingContext {
     positioned_children: &mut FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
     deadline_counter: &mut usize,
   ) -> Result<TaffyNodeId, LayoutError> {
-    let mut children_iter: Vec<&BoxNode> = Vec::new();
+    // Child collection for grid containers uses (order, DOM index) so we can implement CSS `order`
+    // in a deterministic way (Taffy does not support it natively).
+    let mut children_iter: Vec<(usize, &BoxNode)> = Vec::new();
     let mut positioned: Vec<*const BoxNode> = Vec::new();
     let mut has_subgrid_child = false;
 
@@ -2377,25 +2410,34 @@ impl GridFormattingContext {
 
     // Partition children into in-flow vs positioned for grid containers we expand in the tree.
     if is_grid_container {
+      let mut children_need_sort = false;
+      let mut last_order: Option<i32> = None;
       if let Some(children_override) = children_override {
-        for child in children_override {
+        for (idx, child) in children_override.iter().enumerate() {
           check_layout_deadline(deadline_counter)?;
+          let child = *child;
           if is_collapsible_whitespace_grid_item(child) {
             continue;
           }
           match child.style.position {
             crate::style::position::Position::Absolute
-            | crate::style::position::Position::Fixed => positioned.push(*child as *const BoxNode),
+            | crate::style::position::Position::Fixed => positioned.push(child as *const BoxNode),
             _ => {
               if child.style.grid_row_subgrid || child.style.grid_column_subgrid {
                 has_subgrid_child = true;
               }
-              children_iter.push(*child)
+              if let Some(prev) = last_order {
+                if child.style.order < prev {
+                  children_need_sort = true;
+                }
+              }
+              last_order = Some(child.style.order);
+              children_iter.push((idx, child))
             }
           }
         }
       } else {
-        for child in box_node.children.iter() {
+        for (idx, child) in box_node.children.iter().enumerate() {
           check_layout_deadline(deadline_counter)?;
           if is_collapsible_whitespace_grid_item(child) {
             continue;
@@ -2407,17 +2449,42 @@ impl GridFormattingContext {
               if child.style.grid_row_subgrid || child.style.grid_column_subgrid {
                 has_subgrid_child = true;
               }
-              children_iter.push(child)
+              if let Some(prev) = last_order {
+                if child.style.order < prev {
+                  children_need_sort = true;
+                }
+              }
+              last_order = Some(child.style.order);
+              children_iter.push((idx, child))
             }
           }
         }
       }
+
+      if children_need_sort {
+        if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+          return Err(LayoutError::Timeout { elapsed });
+        }
+        children_iter.sort_by(|(a_idx, a), (b_idx, b)| {
+          a.style.order.cmp(&b.style.order).then_with(|| a_idx.cmp(b_idx))
+        });
+        if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+          return Err(LayoutError::Timeout { elapsed });
+        }
+      }
     } else if is_root {
-      children_iter = match children_override {
+      // Non-grid roots should preserve DOM order.
+      let ordered = match children_override {
         Some(children_override) => children_override.to_vec(),
         None => box_node.children.iter().collect(),
       };
+      children_iter = ordered.into_iter().enumerate().collect();
     }
+
+    let children_iter: Vec<&BoxNode> = children_iter
+      .into_iter()
+      .map(|(_, child)| child)
+      .collect();
 
     // Expand subgrids (and any grid that hosts a subgrid child) into the Taffy tree so tracks can be shared.
     if is_grid_container {
@@ -8662,11 +8729,13 @@ impl FormattingContext for GridFormattingContext {
       FxHashMap::default();
 
     // Partition children into running, in-flow vs. out-of-flow positioned.
-    let mut in_flow_children: Vec<&BoxNode> = Vec::new();
+    let mut in_flow_children: Vec<(usize, &BoxNode)> = Vec::new();
     let mut positioned_children: Vec<&BoxNode> = Vec::new();
     let mut running_children: Vec<(usize, BoxNode)> = Vec::new();
     let mut deadline_counter = 0usize;
     let mut child_has_subgrid = false;
+    let mut in_flow_children_need_sort = false;
+    let mut last_in_flow_order: Option<i32> = None;
     for (idx, child) in box_node.children.iter().enumerate() {
       check_layout_deadline(&mut deadline_counter)?;
       if child.style.running_position.is_some() {
@@ -8683,10 +8752,33 @@ impl FormattingContext for GridFormattingContext {
           if child.style.grid_row_subgrid || child.style.grid_column_subgrid {
             child_has_subgrid = true;
           }
-          in_flow_children.push(child)
+          if let Some(prev) = last_in_flow_order {
+            if child.style.order < prev {
+              in_flow_children_need_sort = true;
+            }
+          }
+          last_in_flow_order = Some(child.style.order);
+          in_flow_children.push((idx, child))
         }
       }
     }
+    if in_flow_children_need_sort {
+      // `check_layout_deadline()` is periodic; ensure we still perform a definite check before doing
+      // potentially expensive sort work.
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      in_flow_children.sort_by(|(a_idx, a), (b_idx, b)| {
+        a.style.order.cmp(&b.style.order).then_with(|| a_idx.cmp(b_idx))
+      });
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+    }
+    let in_flow_children: Vec<&BoxNode> = in_flow_children
+      .into_iter()
+      .map(|(_, child)| child)
+      .collect();
 
     let intrinsic_keyword_overrides = self.resolve_intrinsic_sizing_keywords_for_taffy_tree(
       box_node,
@@ -13423,6 +13515,62 @@ mod tests {
     let fragment = fc.layout(&grid, &constraints).unwrap();
 
     assert_eq!(fragment.children.len(), 3);
+  }
+
+  #[test]
+  fn grid_order_reorders_auto_placement_and_preserves_fragment_mapping() {
+    let first_id = 601usize;
+    let second_id = 602usize;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+    container_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(10.0)),
+      GridTrack::Length(Length::px(20.0)),
+    ];
+    let container_style = Arc::new(container_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.order = 1;
+    let mut first =
+      BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+    first.id = first_id;
+
+    let mut second_style = ComputedStyle::default();
+    second_style.order = 0;
+    let mut second =
+      BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+    second.id = second_id;
+
+    // DOM order places `first` before `second`, but `order` should cause `second` to be placed in
+    // the first row and `first` in the second row.
+    let container = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Grid,
+      vec![first, second],
+    );
+
+    // Force the parallel child conversion path so `in_flow_children` ordering must match the
+    // Taffy child order.
+    let fc = GridFormattingContext::with_viewport(Size::new(100.0, 100.0)).with_parallelism(
+      LayoutParallelism::enabled(1).with_max_threads(Some(2)),
+    );
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+    let first_fragment = find_block_fragment(&fragment, first_id);
+    let second_fragment = find_block_fragment(&fragment, second_id);
+    assert!(
+      (second_fragment.bounds.y() - 0.0).abs() < 0.1,
+      "expected second (order 0) item at y=0, got {:?}",
+      second_fragment.bounds
+    );
+    assert!(
+      (first_fragment.bounds.y() - 10.0).abs() < 0.1,
+      "expected first (order 1) item at y=10, got {:?}",
+      first_fragment.bounds
+    );
   }
 
   #[test]

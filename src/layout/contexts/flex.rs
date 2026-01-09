@@ -9130,44 +9130,77 @@ impl FlexFormattingContext {
       }
     }
 
-    // Only apply the non-increasing main-axis fallback for single-line (nowrap) flex containers.
+    // Only apply the "fix up non-monotonic main-axis positions" fallback for single-line (nowrap)
+    // flex containers.
+    //
     // Wrapped flex containers intentionally reset their main-axis cursor at line breaks; treating
     // that as an error destroys Taffy's line placement (including `align-content` offsets).
+    //
+    // Note: main-axis "monotonicity" depends on the effective axis direction. For `row-reverse` /
+    // `column-reverse` (or RTL/vertical writing modes), valid layouts naturally produce decreasing
+    // physical coordinates along the main axis.
     if !children.is_empty() && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
+      let eps = 0.1;
       if main_axis_is_horizontal {
-        let mut non_increasing = false;
+        let mut violates_monotonicity = false;
         let mut last_x = children[0].bounds.x();
         for child in children.iter().skip(1) {
           let x = child.bounds.x();
-          if x <= last_x + 0.1 {
-            non_increasing = true;
+          if main_grows_positive {
+            if x <= last_x + eps {
+              violates_monotonicity = true;
+              break;
+            }
+          } else if x >= last_x - eps {
+            violates_monotonicity = true;
             break;
           }
           last_x = x;
         }
-        if non_increasing {
-          let mut cursor = children[0].bounds.x();
-          for child in &mut children {
-            child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
-            cursor += child.bounds.width();
+        if violates_monotonicity {
+          if main_grows_positive {
+            let mut cursor = children[0].bounds.x();
+            for child in &mut children {
+              child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
+              cursor += child.bounds.width();
+            }
+          } else {
+            let mut cursor = children[0].bounds.max_x();
+            for child in &mut children {
+              cursor -= child.bounds.width();
+              child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
+            }
           }
         }
       } else {
-        let mut non_increasing = false;
+        let mut violates_monotonicity = false;
         let mut last_y = children[0].bounds.y();
         for child in children.iter().skip(1) {
           let y = child.bounds.y();
-          if y <= last_y + 0.1 {
-            non_increasing = true;
+          if main_grows_positive {
+            if y <= last_y + eps {
+              violates_monotonicity = true;
+              break;
+            }
+          } else if y >= last_y - eps {
+            violates_monotonicity = true;
             break;
           }
           last_y = y;
         }
-        if non_increasing {
-          let mut cursor = children[0].bounds.y();
-          for child in &mut children {
-            child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
-            cursor += child.bounds.height();
+        if violates_monotonicity {
+          if main_grows_positive {
+            let mut cursor = children[0].bounds.y();
+            for child in &mut children {
+              child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
+              cursor += child.bounds.height();
+            }
+          } else {
+            let mut cursor = children[0].bounds.max_y();
+            for child in &mut children {
+              cursor -= child.bounds.height();
+              child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
+            }
           }
         }
       }
@@ -9447,6 +9480,19 @@ impl FlexFormattingContext {
       deadline_counter: &mut usize,
     ) -> Result<(), LayoutError> {
       check_layout_deadline(deadline_counter)?;
+      // Out-of-flow positioned fragments (absolute/fixed + running elements) do not contribute to
+      // an element's intrinsic size. Skipping them avoids flex items with only abspos overlays
+      // (e.g. "sr-only" link text) accidentally inflating their flex base size.
+      if node
+        .style
+        .as_deref()
+        .is_some_and(|style| {
+          style.running_position.is_some()
+            || matches!(style.position, Position::Absolute | Position::Fixed)
+        })
+      {
+        return Ok(());
+      }
       let origin = Point::new(node.bounds.x() + offset.x, node.bounds.y() + offset.y);
       let bounds = Rect::new(origin, node.bounds.size);
       min.x = min.x.min(bounds.x());
@@ -9482,6 +9528,16 @@ impl FlexFormattingContext {
     ) -> Result<(), LayoutError> {
       check_layout_deadline(deadline_counter)?;
       for child in node.children.iter() {
+        if child
+          .style
+          .as_deref()
+          .is_some_and(|style| {
+            style.running_position.is_some()
+              || matches!(style.position, Position::Absolute | Position::Fixed)
+          })
+        {
+          continue;
+        }
         let origin = Point::new(child.bounds.x() + offset.x, child.bounds.y() + offset.y);
         let bounds = Rect::new(origin, child.bounds.size);
         *found = true;
@@ -10566,6 +10622,76 @@ mod tests {
   }
 
   #[test]
+  fn flex_auto_min_size_ignores_out_of_flow_positioned_descendants() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(next_epoch, true);
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    // Flex item with *no in-flow contents*, only an absolutely positioned descendant with long
+    // text. The out-of-flow child must not inflate the flex item's automatic minimum block size.
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    // Clamp the abspos containing block width so the long text wraps into multiple line boxes,
+    // making it easy to observe if it incorrectly influences the intrinsic probe.
+    abs_style.width = Some(Length::px(1.0));
+    abs_style.width_keyword = None;
+
+    let abs_text = BoxNode::new_text(text_style.clone(), "sr-only sr-only sr-only".to_string());
+    let abs_inline = BoxNode::new_inline(text_style.clone(), vec![abs_text]);
+    let mut abs_box =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![abs_inline]);
+    abs_box.id = 101;
+
+    let mut out_of_flow_item = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![abs_box],
+    );
+    out_of_flow_item.id = 100;
+
+    let mut after_style = ComputedStyle::default();
+    after_style.height = Some(Length::px(10.0));
+    after_style.height_keyword = None;
+    let mut after_item =
+      BoxNode::new_block(Arc::new(after_style), FormattingContextType::Block, vec![]);
+    after_item.id = 102;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![out_of_flow_item, after_item],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    let out_frag = find_block_child(&fragment, 100);
+    let after_frag = find_block_child(&fragment, 102);
+
+    assert!(
+      out_frag.bounds.height() <= 1.0,
+      "expected out-of-flow-only flex item to have ~0 height, got {:.1}",
+      out_frag.bounds.height()
+    );
+    assert!(
+      after_frag.bounds.y().abs() < 0.5,
+      "expected following item y≈0, got {:.1}",
+      after_frag.bounds.y()
+    );
+  }
+
+  #[test]
   fn flex_constraints_from_taffy_treats_tiny_known_sizes_as_indefinite() {
     let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 
@@ -11136,6 +11262,63 @@ mod tests {
       (nav_fragment.bounds.y() - 56.0).abs() < 0.5,
       "expected nav y≈56, got {}",
       nav_fragment.bounds.y()
+    );
+  }
+
+  #[test]
+  fn flex_column_reverse_does_not_trigger_non_monotonic_main_axis_fallback() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::ColumnReverse;
+    container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
+
+    let mut child0_style = ComputedStyle::default();
+    child0_style.height = Some(Length::px(10.0));
+    child0_style.height_keyword = None;
+    let mut child0 =
+      BoxNode::new_block(Arc::new(child0_style), FormattingContextType::Block, vec![]);
+    child0.id = 21;
+
+    let mut child1_style = ComputedStyle::default();
+    child1_style.height = Some(Length::px(20.0));
+    child1_style.height_keyword = None;
+    let mut child1 =
+      BoxNode::new_block(Arc::new(child1_style), FormattingContextType::Block, vec![]);
+    child1.id = 22;
+
+    let mut child2_style = ComputedStyle::default();
+    child2_style.height = Some(Length::px(30.0));
+    child2_style.height_keyword = None;
+    let mut child2 =
+      BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
+    child2.id = 23;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![child0, child1, child2],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    let frag0 = find_block_child(&fragment, 21);
+    let frag1 = find_block_child(&fragment, 22);
+    let frag2 = find_block_child(&fragment, 23);
+
+    assert!(
+      frag0.bounds.y() > frag1.bounds.y() && frag1.bounds.y() > frag2.bounds.y(),
+      "expected column-reverse to produce decreasing y positions (got y0={:.1}, y1={:.1}, y2={:.1})",
+      frag0.bounds.y(),
+      frag1.bounds.y(),
+      frag2.bounds.y()
+    );
+    assert!(
+      (frag0.bounds.max_y() - 100.0).abs() < 0.5,
+      "expected first child bottom to align to container end (got max_y={:.1})",
+      frag0.bounds.max_y()
     );
   }
 

@@ -2270,6 +2270,7 @@ impl InlineBlockItem {
   ) -> Self {
     let width = fragment.bounds.width();
     let height = fragment.bounds.height();
+    let margin_box_height = height + margin_top + margin_bottom;
     let mut first_baseline: Option<f32> = None;
     let mut last_baseline: Option<f32> = None;
     if has_line_baseline {
@@ -2286,13 +2287,26 @@ impl InlineBlockItem {
       last_baseline
     };
 
-    let margin_height = height + margin_top + margin_bottom;
+    // Inline-blocks participate in inline baseline calculations using their margin box, but the
+    // fragment bounds are border-box sized. Track vertical margins separately so we can:
+    // - compute line box heights from the margin box (spec)
+    // - position the border box at `margin-top` within that margin box (paint)
     let metrics = chosen_baseline.map_or_else(
       || {
         // No in-flow line boxes: baseline is the bottom *margin* edge.
         // (CSS 2.1 §10.8.1 / inline-block baseline rules)
-        let height = margin_height;
-        BaselineMetrics::for_replaced(height)
+        let baseline_offset = margin_box_height;
+        BaselineMetrics {
+          baseline_offset,
+          height: margin_box_height,
+          ascent: baseline_offset,
+          descent: 0.0,
+          line_gap: 0.0,
+          // Preserve legacy semantics for `vertical-align:<percentage>`, which previously used the
+          // border-box height as the line-height proxy.
+          line_height: height,
+          x_height: None,
+        }
       },
       |baseline| {
         // Baseline from the inline-block's last in-flow line box. Convert from border-box
@@ -2301,14 +2315,16 @@ impl InlineBlockItem {
         let upper = height.max(0.0);
         let clamped_baseline = baseline.max(0.0).min(upper);
         let baseline_offset = margin_top + clamped_baseline;
-        let height = margin_height;
+        let descent = (margin_box_height - baseline_offset).max(0.0);
         BaselineMetrics {
           baseline_offset,
-          height,
+          height: margin_box_height,
           ascent: baseline_offset,
-          descent: (height - baseline_offset).max(0.0),
+          descent,
           line_gap: 0.0,
+          // Preserve legacy semantics for `vertical-align:<percentage>`.
           line_height: height,
+          // Approximate x-height as half-ascent for middle alignment fallback.
           x_height: Some(baseline_offset * 0.5),
         }
       },
@@ -2535,7 +2551,17 @@ impl ReplacedItem {
     margin_top: f32,
     margin_bottom: f32,
   ) -> Self {
-    let metrics = BaselineMetrics::for_replaced(size.height + margin_top + margin_bottom);
+    let margin_box_height = size.height + margin_top + margin_bottom;
+    let metrics = BaselineMetrics {
+      baseline_offset: margin_box_height,
+      height: margin_box_height,
+      ascent: margin_box_height,
+      descent: 0.0,
+      line_gap: 0.0,
+      // Preserve legacy semantics for `vertical-align:<percentage>`.
+      line_height: size.height,
+      x_height: None,
+    };
     Self {
       box_id,
       width: size.width,

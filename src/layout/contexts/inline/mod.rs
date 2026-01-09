@@ -2397,6 +2397,7 @@ impl InlineFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
+    let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
       compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
@@ -4754,13 +4755,14 @@ impl InlineFormattingContext {
           (border_top + padding_top + vertical_offset + text_baseline_from_content_top).max(0.0);
         let baseline_offset_from_box_top = baseline_offset_from_box_top.min(box_height);
 
-        let height = box_height + margin_top + margin_bottom;
         let baseline_offset = margin_top + baseline_offset_from_box_top;
+        let margin_box_height = box_height + margin_top + margin_bottom;
+        let descent = (margin_box_height - baseline_offset).max(0.0);
         item = item.with_metrics(BaselineMetrics {
           baseline_offset,
-          height,
+          height: margin_box_height,
           ascent: baseline_offset,
-          descent: (height - baseline_offset).max(0.0),
+          descent,
           line_gap,
           line_height,
           x_height,
@@ -4775,16 +4777,20 @@ impl InlineFormattingContext {
         } else {
           1.0
         };
-        let baseline_from_box_top = layout.baseline * content_scale_y + padding_top + border_top;
-        let height = box_height + margin_top + margin_bottom;
-        let baseline_offset = margin_top + baseline_from_box_top;
-        let descent = (height - baseline_offset).max(0.0);
-        item = item.with_metrics(BaselineMetrics::new(
+        let border_baseline = layout.baseline * content_scale_y + padding_top + border_top;
+        let baseline_offset = margin_top + border_baseline;
+        let margin_box_height = box_height + margin_top + margin_bottom;
+        let descent = (margin_box_height - baseline_offset).max(0.0);
+        item = item.with_metrics(BaselineMetrics {
           baseline_offset,
-          height,
-          baseline_offset,
+          height: margin_box_height,
+          ascent: baseline_offset,
           descent,
-        ));
+          line_gap: 0.0,
+          // Preserve legacy semantics for percentage alignment.
+          line_height: box_height,
+          x_height: Some(baseline_offset * 0.5),
+        });
       }
     }
 
@@ -6224,18 +6230,17 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => self.create_item_fragment(item, inline_pos, block_pos),
       InlineItem::InlineBlock(block_item) => {
         let mut fragment = block_item.fragment.clone();
-        let block_pos = block_pos + block_item.margin_top;
         if inline_vertical {
           fragment.bounds = Rect::from_xywh(
             block_pos + block_item.margin_left,
-            inline_pos,
+            inline_pos + block_item.margin_top,
             block_item.height,
             block_item.width,
           );
         } else {
           fragment.bounds = Rect::from_xywh(
             inline_pos + block_item.margin_left,
-            block_pos,
+            block_pos + block_item.margin_top,
             block_item.width,
             block_item.height,
           );
@@ -6245,11 +6250,10 @@ impl InlineFormattingContext {
       InlineItem::Replaced(replaced_item) => {
         let paint_offset = replaced_item.paint_offset;
         let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
-        let block_pos = block_pos + replaced_item.margin_top;
         if inline_vertical {
           let bounds = Rect::from_xywh(
             block_pos + replaced_item.margin_left,
-            inline_pos + paint_offset,
+            inline_pos + paint_offset + replaced_item.margin_top,
             replaced_item.height,
             replaced_item.width,
           );
@@ -6265,7 +6269,7 @@ impl InlineFormattingContext {
         } else {
           let bounds = Rect::from_xywh(
             inline_pos + replaced_item.margin_left + paint_offset,
-            block_pos,
+            block_pos + replaced_item.margin_top,
             replaced_item.width,
             replaced_item.height,
           );
@@ -6525,7 +6529,7 @@ impl InlineFormattingContext {
         let mut fragment = block_item.fragment.clone();
         fragment.bounds = Rect::from_xywh(
           x + block_item.margin_left,
-          y,
+          y + block_item.margin_top,
           block_item.width,
           block_item.height,
         );
@@ -6535,7 +6539,7 @@ impl InlineFormattingContext {
         let paint_offset = replaced_item.paint_offset;
         let bounds = Rect::from_xywh(
           x + replaced_item.margin_left + paint_offset,
-          y,
+          y + replaced_item.margin_top,
           replaced_item.width,
           replaced_item.height,
         );
@@ -17442,6 +17446,32 @@ mod tests {
     let line = fragment.children.first().expect("line fragment");
     let child = line.children.first().expect("inline-block fragment");
     assert!((child.bounds.height() - 60.0).abs() < 0.1);
+  }
+
+  #[test]
+  fn inline_block_vertical_margins_offset_border_box_within_line_box() {
+    let ifc = InlineFormattingContext::new();
+    let mut ib_style = ComputedStyle::default();
+    ib_style.display = Display::InlineBlock;
+    ib_style.width = Some(Length::px(80.0));
+    ib_style.height = Some(Length::px(20.0));
+    ib_style.width_keyword = None;
+    ib_style.height_keyword = None;
+    ib_style.margin_top = Some(Length::px(30.0));
+    ib_style.margin_bottom = Some(Length::px(10.0));
+    let inline_block =
+      BoxNode::new_inline_block(Arc::new(ib_style), FormattingContextType::Block, vec![]);
+    let root = make_inline_container(vec![inline_block]);
+    let constraints = LayoutConstraints::definite(200.0, 120.0);
+
+    let fragment = ifc.layout(&root, &constraints).unwrap();
+    let line = fragment.children.first().expect("line fragment");
+    let child = line.children.first().expect("inline-block fragment");
+    assert!(
+      (child.bounds.y() - 30.0).abs() < 0.1,
+      "expected margin-top to offset inline-block border box within the line box, got {:?}",
+      child.bounds
+    );
   }
 
   #[test]
