@@ -5848,6 +5848,46 @@ mod tests {
   }
 
   #[test]
+  fn mfenced_empty_open_close_without_children_parses_as_empty_row() {
+    let fenced = parse_math_from_html("<math><mfenced open=\"\" close=\"\" separators=\"\"></mfenced></math>");
+    let row = parse_math_from_html("<math><mrow></mrow></math>");
+
+    let MathNode::Math {
+      children: fenced_children,
+      ..
+    } = &fenced
+    else {
+      panic!("expected math root");
+    };
+    assert_eq!(fenced_children.len(), 1);
+    let MathNode::Row(fenced_row) = &fenced_children[0] else {
+      panic!("expected mfenced to parse as a row");
+    };
+    assert_eq!(
+      fenced_row.len(),
+      0,
+      "mfenced with empty open/close and no children should not emit delimiter operators"
+    );
+
+    let style = ComputedStyle::default();
+    let ctx = FontContext::empty();
+    let fenced_layout = layout_mathml(&fenced, &style, &ctx);
+    let row_layout = layout_mathml(&row, &style, &ctx);
+    assert!(
+      (fenced_layout.height - row_layout.height).abs() < 0.001,
+      "empty mfenced without fences should match empty mrow height: {} vs {}",
+      fenced_layout.height,
+      row_layout.height
+    );
+    assert!(
+      (fenced_layout.baseline - row_layout.baseline).abs() < 0.001,
+      "empty mfenced without fences should match empty mrow baseline: {} vs {}",
+      fenced_layout.baseline,
+      row_layout.baseline
+    );
+  }
+
+  #[test]
   fn none_scripts_do_not_affect_multiscript_width() {
     let style = ComputedStyle::default();
     let ctx = FontContext::empty();
