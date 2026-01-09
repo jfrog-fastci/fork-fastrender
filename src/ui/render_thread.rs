@@ -611,13 +611,12 @@ impl BrowserRenderThread {
       let box_tree = prepared.box_tree().clone();
 
       let viewport_point = Point::new(pos_css.0, pos_css.1);
-      let document_url = tab.url.as_deref().unwrap_or("");
+      let document_url = tab.url.as_deref().unwrap_or(about_pages::ABOUT_BASE_URL);
       let base_url = tab
         .base_url
         .as_deref()
         .or_else(|| tab.url.as_deref())
-        .unwrap_or("");
-      let document_url = tab.url.as_deref().unwrap_or("");
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
 
       let mut action = InteractionAction::None;
       let changed = doc.mutate_dom(|dom| {
