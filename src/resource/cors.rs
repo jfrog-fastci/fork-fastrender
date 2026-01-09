@@ -30,14 +30,7 @@ impl CorsMode {
 ///
 /// Controlled by `FASTR_FETCH_ENFORCE_CORS` (truthy/falsey). Defaults to `true`.
 pub fn cors_enforcement_enabled() -> bool {
-  let toggles = runtime::runtime_toggles();
-  let Some(raw) = toggles.get("FASTR_FETCH_ENFORCE_CORS") else {
-    return true;
-  };
-  !matches!(
-    raw.trim().to_ascii_lowercase().as_str(),
-    "0" | "false" | "no" | "off"
-  )
+  runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_ENFORCE_CORS", true)
 }
 
 /// Validate the `Access-Control-Allow-Origin` response header for a fetched resource.

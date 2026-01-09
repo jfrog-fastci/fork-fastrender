@@ -69,7 +69,7 @@ impl RuntimeToggles {
     } else {
       self
         .get(key)
-        .map(|v| !matches_ignore_case(v, &["0", "false", "off"]))
+        .map(|v| !matches_ignore_case(v, &["0", "false", "no", "off"]))
         .unwrap_or(default)
     }
   }
@@ -1071,7 +1071,7 @@ fn parse_media_overrides(raw: &HashMap<String, String>) -> MediaOverrides {
 
 fn truthy(raw: Option<&String>, default: bool) -> bool {
   raw
-    .map(|v| !matches_ignore_case(v, &["0", "false", "off"]))
+    .map(|v| !matches_ignore_case(v, &["0", "false", "no", "off"]))
     .unwrap_or(default)
 }
 
@@ -1152,7 +1152,7 @@ fn parse_progress_interval(raw: Option<&String>) -> Option<u64> {
 
 fn parse_presence_bool(raw: Option<&String>) -> bool {
   raw
-    .map(|v| !matches_ignore_case(v, &["0", "false", "off"]))
+    .map(|v| !matches_ignore_case(v, &["0", "false", "no", "off"]))
     .unwrap_or(false)
 }
 
