@@ -156,6 +156,18 @@ impl WindowRealm {
     self.runtime.exec_script(source)
   }
 
+  /// Execute a classic script in this window realm using a custom host hook implementation.
+  ///
+  /// This allows Promise jobs created by the script to be routed into the embedding's microtask
+  /// queue via `VmHostHooks::host_enqueue_promise_job` (HTML `HostEnqueuePromiseJob`).
+  pub fn exec_script_with_host(
+    &mut self,
+    host: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.runtime.exec_script_with_host(host, source)
+  }
+
   /// Execute a classic script with an explicit source name for stack traces.
   pub fn exec_script_with_name(
     &mut self,

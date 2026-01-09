@@ -770,8 +770,8 @@ mod tests {
     // Simulate a Promise job by directly enqueueing a `vm-js` job via the host hooks. This is
     // sufficient to validate that requestAnimationFrame callbacks are invoked with the correct
     // host hook implementation (so Promise jobs are routed into the FastRender event loop).
-    let job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| -> vm_js::JobResult {
-      let _ = ctx.call(hooks, Value::Object(job_cb), Value::Object(global), &[])?;
+    let job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, job_hooks| -> vm_js::JobResult {
+      let _ = ctx.call(job_hooks, Value::Object(job_cb), Value::Object(global), &[])?;
       Ok(())
     });
     hooks.host_enqueue_promise_job(job, None);

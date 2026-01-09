@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
+use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::window_realm::{
   register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
@@ -129,10 +130,17 @@ impl WindowHost {
   pub fn exec_script(&mut self, source: &str) -> Result<vm_js::Value> {
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
-      host
-        .window_mut()
-        .exec_script(source)
-        .map_err(|e| Error::Other(e.to_string()))
+      let window = host.window_mut();
+      // Route Promise jobs created during script execution into the FastRender event loop microtask
+      // queue (HTML `HostEnqueuePromiseJob`).
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
+      let result = window
+        .exec_script_with_host(&mut hooks, source)
+        .map_err(|e| Error::Other(e.to_string()));
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
     })
   }
 }
@@ -326,6 +334,24 @@ mod tests {
     host.perform_microtask_checkpoint()?;
 
     assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn exec_script_routes_promise_jobs_into_event_loop_microtasks() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Nested Promise job: the inner `then` must run in the same microtask checkpoint.
+    host.exec_script(
+      "var g = this; g.__x = 0; Promise.resolve().then(function () { g.__x = 1; Promise.resolve().then(function () { g.__x = 2; }); });",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 2.0));
     Ok(())
   }
 }
