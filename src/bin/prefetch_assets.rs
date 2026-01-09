@@ -2515,7 +2515,7 @@ mod disk_cache_main {
 
         let credentials_mode = match crossorigin {
           CrossOriginAttribute::None => FetchCredentialsMode::Include,
-          CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
+          CrossOriginAttribute::Anonymous => FetchCredentialsMode::SameOrigin,
           CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
         };
         let success = match fetcher.fetch_with_request(

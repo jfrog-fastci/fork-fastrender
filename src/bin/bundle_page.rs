@@ -1771,7 +1771,7 @@ fn crawl_document(
       let (destination, credentials_mode) = match req.crossorigin {
         CrossOriginAttribute::None => (FetchDestination::Image, FetchCredentialsMode::Include),
         CrossOriginAttribute::Anonymous => {
-          (FetchDestination::ImageCors, FetchCredentialsMode::Omit)
+          (FetchDestination::ImageCors, FetchCredentialsMode::SameOrigin)
         }
         CrossOriginAttribute::UseCredentials => (FetchDestination::ImageCors, FetchCredentialsMode::Include),
       };
