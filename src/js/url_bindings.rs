@@ -1,9 +1,10 @@
-use crate::js::url::{Url, UrlLimits, UrlSearchParams};
+use crate::js::url::{Url, UrlError, UrlLimits, UrlSearchParams};
 use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Value, VmError};
+use webidl_js_runtime::runtime::JsPropertyKind;
 
 #[derive(Default)]
 struct UrlBindingState {
@@ -37,6 +38,19 @@ fn to_rust_string(rt: &mut webidl_js_runtime::VmJsRuntime, value: Value) -> Resu
     return Err(type_error(rt, "ToString did not return a string"));
   };
   Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn url_setter_result(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  result: Result<(), UrlError>,
+) -> Result<(), VmError> {
+  match result {
+    Ok(()) => Ok(()),
+    // WHATWG URL setters (other than `href`) do not throw on parse failures; they simply do
+    // nothing. Preserve that behaviour while still surfacing resource-limit failures.
+    Err(UrlError::SetterFailure { .. }) => Ok(()),
+    Err(e) => Err(type_error(rt, &e.to_string())),
+  }
 }
 
 fn define_method(
@@ -159,6 +173,29 @@ fn expect_object(rt: &mut webidl_js_runtime::VmJsRuntime, this: Value, class_nam
   Ok(obj)
 }
 
+fn array_like_length(rt: &mut webidl_js_runtime::VmJsRuntime, value: Value) -> Result<Option<u32>, VmError> {
+  if !rt.is_object(value) {
+    return Ok(None);
+  }
+  let length_key = rt.property_key_from_str("length")?;
+  let Some(desc) = rt.get_own_property(value, length_key)? else {
+    return Ok(None);
+  };
+  if desc.enumerable {
+    return Ok(None);
+  }
+  let JsPropertyKind::Data { value } = desc.kind else {
+    return Ok(None);
+  };
+  let Value::Number(n) = value else {
+    return Ok(None);
+  };
+  if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+    return Ok(None);
+  }
+  Ok(Some(n as u32))
+}
+
 fn init_url_instance(
   rt: &mut webidl_js_runtime::VmJsRuntime,
   state: Rc<RefCell<UrlBindingState>>,
@@ -247,6 +284,101 @@ fn init_url_instance(
     })?;
     roots.push(rt.heap_mut().add_root(protocol_get)?);
 
+    let protocol_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_protocol(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(protocol_set)?);
+
+    let username_get = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        let username = url
+          .username()
+          .map_err(|e| type_error(rt, &e.to_string()))?;
+        rt.alloc_string_value(&username)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(username_get)?);
+
+    let username_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_username(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(username_set)?);
+
+    let password_get = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        let password = url
+          .password()
+          .map_err(|e| type_error(rt, &e.to_string()))?;
+        rt.alloc_string_value(&password)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(password_get)?);
+
+    let password_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_password(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(password_set)?);
+
     let host_get = rt.alloc_function_value({
       let state = state.clone();
       move |rt, this, _args| {
@@ -263,6 +395,25 @@ fn init_url_instance(
       }
     })?;
     roots.push(rt.heap_mut().add_root(host_get)?);
+
+    let host_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_host(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(host_set)?);
 
     let hostname_get = rt.alloc_function_value({
       let state = state.clone();
@@ -283,6 +434,25 @@ fn init_url_instance(
     })?;
     roots.push(rt.heap_mut().add_root(hostname_get)?);
 
+    let hostname_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_hostname(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(hostname_set)?);
+
     let port_get = rt.alloc_function_value({
       let state = state.clone();
       move |rt, this, _args| {
@@ -299,6 +469,25 @@ fn init_url_instance(
       }
     })?;
     roots.push(rt.heap_mut().add_root(port_get)?);
+
+    let port_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_port(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(port_set)?);
 
     let pathname_get = rt.alloc_function_value({
       let state = state.clone();
@@ -318,6 +507,25 @@ fn init_url_instance(
       }
     })?;
     roots.push(rt.heap_mut().add_root(pathname_get)?);
+
+    let pathname_set = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let value = to_rust_string(rt, value)?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        url_setter_result(rt, url.set_pathname(&value))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(pathname_set)?);
 
     let search_get = rt.alloc_function_value({
       let state = state.clone();
@@ -478,17 +686,37 @@ fn init_url_instance(
     })?;
     roots.push(rt.heap_mut().add_root(to_json)?);
 
+    let to_string = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URL")?;
+        let url = state
+          .borrow()
+          .urls
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+          .url
+          .clone();
+        let href = url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+        rt.alloc_string_value(&href)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(to_string)?);
+
     define_accessor(rt, obj, "href", href_get, href_set)?;
     define_accessor(rt, obj, "origin", origin_get, Value::Undefined)?;
-    define_accessor(rt, obj, "protocol", protocol_get, Value::Undefined)?;
-    define_accessor(rt, obj, "host", host_get, Value::Undefined)?;
-    define_accessor(rt, obj, "hostname", hostname_get, Value::Undefined)?;
-    define_accessor(rt, obj, "port", port_get, Value::Undefined)?;
-    define_accessor(rt, obj, "pathname", pathname_get, Value::Undefined)?;
+    define_accessor(rt, obj, "protocol", protocol_get, protocol_set)?;
+    define_accessor(rt, obj, "username", username_get, username_set)?;
+    define_accessor(rt, obj, "password", password_get, password_set)?;
+    define_accessor(rt, obj, "host", host_get, host_set)?;
+    define_accessor(rt, obj, "hostname", hostname_get, hostname_set)?;
+    define_accessor(rt, obj, "port", port_get, port_set)?;
+    define_accessor(rt, obj, "pathname", pathname_get, pathname_set)?;
     define_accessor(rt, obj, "search", search_get, search_set)?;
     define_accessor(rt, obj, "hash", hash_get, hash_set)?;
     define_accessor(rt, obj, "searchParams", search_params_get, Value::Undefined)?;
     define_method(rt, obj, "toJSON", to_json)?;
+    define_method(rt, obj, "toString", to_string)?;
 
     Ok(())
   })();
@@ -876,6 +1104,18 @@ pub fn install_url_bindings(
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
+          Some(Value::Object(obj)) => {
+            // `vm-js` does not implement full object-to-string coercion yet (it produces
+            // `"[object Object]"` for ordinary objects). To support `new URL(rel, baseUrlObj)` we
+            // special-case bases that are themselves URL wrappers.
+            let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
+            if let Some(base_url) = maybe_base {
+              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              Some(href)
+            } else {
+              Some(to_rust_string(rt, Value::Object(obj))?)
+            }
+          }
           Some(v) => Some(to_rust_string(rt, v)?),
         };
 
@@ -902,6 +1142,15 @@ pub fn install_url_bindings(
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
+          Some(Value::Object(obj)) => {
+            let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
+            if let Some(base_url) = maybe_base {
+              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              Some(href)
+            } else {
+              Some(to_rust_string(rt, Value::Object(obj))?)
+            }
+          }
           Some(v) => Some(to_rust_string(rt, v)?),
         };
 
@@ -930,6 +1179,15 @@ pub fn install_url_bindings(
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
+          Some(Value::Object(obj)) => {
+            let maybe_base = { state.borrow().urls.get(&obj).map(|u| u.url.clone()) };
+            if let Some(base_url) = maybe_base {
+              let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
+              Some(href)
+            } else {
+              Some(to_rust_string(rt, Value::Object(obj))?)
+            }
+          }
           Some(v) => Some(to_rust_string(rt, v)?),
         };
 
@@ -946,10 +1204,132 @@ pub fn install_url_bindings(
         let limits = { state.borrow().limits.clone() };
         let params = match init {
           None | Some(Value::Undefined) => UrlSearchParams::new(&limits),
-          Some(v) => {
+          // WebIDL treats String objects as string values when converting the constructor union.
+          Some(v) if rt.is_string_object(v) => {
             let init = to_rust_string(rt, v)?;
-            UrlSearchParams::parse(&init, &limits)
-              .map_err(|e| type_error(rt, &e.to_string()))?
+            UrlSearchParams::parse(&init, &limits).map_err(|e| type_error(rt, &e.to_string()))?
+          }
+          Some(v) if rt.is_object(v) => {
+            // The WHATWG constructor accepts:
+            // - `USVString`
+            // - `sequence<sequence<USVString>>` (iterable of pairs)
+            // - `record<USVString, USVString>`
+            //
+            // `vm-js` arrays are not iterable yet, so we special-case them by detecting array-ish
+            // objects via their non-enumerable `length` own property.
+            let iter_key = rt.symbol_iterator()?;
+            if let Some(method) = rt.get_method(v, iter_key)? {
+              // Iterable of pairs.
+              let mut record = rt.get_iterator_from_method(v, method)?;
+              let mut roots: Vec<RootId> = Vec::new();
+              let result = (|| -> Result<UrlSearchParams, VmError> {
+                roots.push(rt.heap_mut().add_root(record.iterator)?);
+                roots.push(rt.heap_mut().add_root(record.next_method)?);
+
+                let params = UrlSearchParams::new(&limits);
+                while let Some(pair) = rt.iterator_step_value(&mut record)? {
+                  let pair_root = rt.heap_mut().add_root(pair)?;
+                  let step = (|| -> Result<(), VmError> {
+                    let Value::Object(pair_obj) = pair else {
+                      return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                    };
+
+                    let length_key = rt.property_key_from_str("length")?;
+                    let len = rt.get(Value::Object(pair_obj), length_key)?;
+                    if len != Value::Number(2.0) {
+                      return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                    }
+
+                    let name_value = {
+                      let key = rt.property_key_from_u32(0)?;
+                      rt.get(Value::Object(pair_obj), key)?
+                    };
+                    let name = to_rust_string(rt, name_value)?;
+
+                    let value_value = {
+                      let key = rt.property_key_from_u32(1)?;
+                      rt.get(Value::Object(pair_obj), key)?
+                    };
+                    let value = to_rust_string(rt, value_value)?;
+
+                    params
+                      .append(&name, &value)
+                      .map_err(|e| type_error(rt, &e.to_string()))?;
+                    Ok(())
+                  })();
+                  rt.heap_mut().remove_root(pair_root);
+                  step?;
+                }
+                Ok(params)
+              })();
+              for id in roots {
+                rt.heap_mut().remove_root(id);
+              }
+              result?
+            } else if let Some(len) = array_like_length(rt, v)? {
+              // Array-of-pairs.
+              let params = UrlSearchParams::new(&limits);
+              for idx in 0..len {
+                let pair = {
+                  let key = rt.property_key_from_u32(idx)?;
+                  rt.get(v, key)?
+                };
+                let Value::Object(pair_obj) = pair else {
+                  return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                };
+
+                let length_key = rt.property_key_from_str("length")?;
+                let len = rt.get(Value::Object(pair_obj), length_key)?;
+                if len != Value::Number(2.0) {
+                  return Err(type_error(rt, "URLSearchParams init: expected a [name, value] pair"));
+                }
+
+                let name_value = {
+                  let key = rt.property_key_from_u32(0)?;
+                  rt.get(Value::Object(pair_obj), key)?
+                };
+                let name = to_rust_string(rt, name_value)?;
+
+                let value_value = {
+                  let key = rt.property_key_from_u32(1)?;
+                  rt.get(Value::Object(pair_obj), key)?
+                };
+                let value = to_rust_string(rt, value_value)?;
+
+                params
+                  .append(&name, &value)
+                  .map_err(|e| type_error(rt, &e.to_string()))?;
+              }
+              params
+            } else {
+              // Record/object of key/value pairs.
+              let params = UrlSearchParams::new(&limits);
+              let keys = rt.own_property_keys(v)?;
+              for key in keys {
+                let PropertyKey::String(s) = key else {
+                  continue;
+                };
+                let Some(desc) = rt.get_own_property(v, key)? else {
+                  continue;
+                };
+                if !desc.enumerable {
+                  continue;
+                }
+
+                let name = rt.heap().get_string(s)?.to_utf8_lossy();
+                let value_value = rt.get(v, key)?;
+                let value = to_rust_string(rt, value_value)?;
+                params
+                  .append(&name, &value)
+                  .map_err(|e| type_error(rt, &e.to_string()))?;
+              }
+              params
+            }
+          }
+          Some(v) => {
+            // String (and any non-object / non-String-object value).
+            let init = to_rust_string(rt, v)?;
+            UrlSearchParams::parse(&init, &limits).map_err(|e| type_error(rt, &e.to_string()))?
           }
         };
         let obj = rt.alloc_object_value()?;

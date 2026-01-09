@@ -37,6 +37,9 @@ fn call_method(rt: &mut VmJsRuntime, this: Value, name: &str, args: &[Value]) ->
 }
 
 fn set_accessor(rt: &mut VmJsRuntime, obj: Value, name: &str, value: Value) {
+  // Keep the receiver and value rooted in case key allocation triggers GC.
+  let obj_root = rt.heap_mut().add_root(obj).unwrap();
+  let value_root = rt.heap_mut().add_root(value).unwrap();
   let key = key(rt, name);
   let desc = rt
     .get_own_property(obj, key)
@@ -46,6 +49,8 @@ fn set_accessor(rt: &mut VmJsRuntime, obj: Value, name: &str, value: Value) {
     panic!("{name} is not an accessor property");
   };
   call(rt, set, obj, &[value]);
+  rt.heap_mut().remove_root(value_root);
+  rt.heap_mut().remove_root(obj_root);
 }
 
 fn new_url(rt: &mut VmJsRuntime, global: Value, input: &str, base: Option<&str>) -> Value {
@@ -61,6 +66,44 @@ fn new_url_search_params(rt: &mut VmJsRuntime, global: Value, init: Option<&str>
   let ctor = get(rt, global, "URLSearchParams");
   let args = init.map(|s| vec![str_val(rt, s)]).unwrap_or_default();
   call(rt, ctor, Value::Undefined, &args)
+}
+
+fn new_url_search_params_value(rt: &mut VmJsRuntime, global: Value, init: Value) -> Value {
+  let ctor = get(rt, global, "URLSearchParams");
+  call(rt, ctor, Value::Undefined, &[init])
+}
+
+fn array(rt: &mut VmJsRuntime, items: &[Value]) -> Value {
+  let arr = rt.alloc_array().unwrap();
+  let arr_root = rt.heap_mut().add_root(arr).unwrap();
+  for (idx, item) in items.iter().copied().enumerate() {
+    let item_root = rt.heap_mut().add_root(item).unwrap();
+    let idx_u32: u32 = idx.try_into().unwrap();
+    let key = rt.property_key_from_u32(idx_u32).unwrap();
+    rt.define_data_property(arr, key, item, true).unwrap();
+    rt.heap_mut().remove_root(item_root);
+  }
+  rt.heap_mut().remove_root(arr_root);
+  arr
+}
+
+fn record(rt: &mut VmJsRuntime, entries: &[(&str, &str)]) -> Value {
+  let obj = rt.alloc_object_value().unwrap();
+  let obj_root = rt.heap_mut().add_root(obj).unwrap();
+  for (k, v) in entries {
+    let key = key(rt, k);
+    let key_root = match key {
+      PropertyKey::String(s) => Some(rt.heap_mut().add_root(Value::String(s)).unwrap()),
+      PropertyKey::Symbol(s) => Some(rt.heap_mut().add_root(Value::Symbol(s)).unwrap()),
+    };
+    let value = str_val(rt, v);
+    rt.define_data_property(obj, key, value, true).unwrap();
+    if let Some(id) = key_root {
+      rt.heap_mut().remove_root(id);
+    }
+  }
+  rt.heap_mut().remove_root(obj_root);
+  obj
 }
 
 #[test]
@@ -91,6 +134,26 @@ fn url_parse_and_can_parse() {
 }
 
 #[test]
+fn url_stringification_and_base_url_object() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let base_url = new_url(&mut rt, global, "https://example.com/base", None);
+  let base_url_root = rt.heap_mut().add_root(base_url).unwrap();
+  let base_str = call_method(&mut rt, base_url, "toString", &[]);
+  assert_eq!(as_rust_string(&rt, base_str), "https://example.com/base");
+
+  let url_ctor = get(&mut rt, global, "URL");
+  let foo = str_val(&mut rt, "foo");
+  let url = call(&mut rt, url_ctor, Value::Undefined, &[foo, base_url]);
+  let href = get(&mut rt, url, "href");
+  assert_eq!(as_rust_string(&rt, href), "https://example.com/foo");
+
+  rt.heap_mut().remove_root(base_url_root);
+}
+
+#[test]
 fn relative_parsing_with_base() {
   let mut rt = VmJsRuntime::new();
   let global = rt.alloc_object_value().unwrap();
@@ -99,6 +162,28 @@ fn relative_parsing_with_base() {
   let url = new_url(&mut rt, global, "foo", Some("https://example.com/bar/baz"));
   let href = get(&mut rt, url, "href");
   assert_eq!(as_rust_string(&rt, href), "https://example.com/bar/foo");
+}
+
+#[test]
+fn url_setters_update_href() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let url = new_url(&mut rt, global, "https://example.com/", None);
+  let user = str_val(&mut rt, "user");
+  let pass = str_val(&mut rt, "pass");
+  let host = str_val(&mut rt, "example.org:8080");
+  let pathname = str_val(&mut rt, "/a/b");
+  let protocol = str_val(&mut rt, "http:");
+  set_accessor(&mut rt, url, "username", user);
+  set_accessor(&mut rt, url, "password", pass);
+  set_accessor(&mut rt, url, "host", host);
+  set_accessor(&mut rt, url, "pathname", pathname);
+  set_accessor(&mut rt, url, "protocol", protocol);
+
+  let href = get(&mut rt, url, "href");
+  assert_eq!(as_rust_string(&rt, href), "http://user:pass@example.org:8080/a/b");
 }
 
 #[test]
@@ -213,6 +298,37 @@ fn searchparams_get_all_returns_array_with_length_semantics() {
 }
 
 #[test]
+fn urlsearchparams_constructor_variants() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  // sequence<sequence<USVString>> (array-of-pairs)
+  let a = str_val(&mut rt, "a");
+  let b = str_val(&mut rt, "b");
+  let c = str_val(&mut rt, "c");
+  let d = str_val(&mut rt, "d");
+  let pair1 = array(&mut rt, &[a, b]);
+  let pair2 = array(&mut rt, &[c, d]);
+  let init = array(&mut rt, &[pair1, pair2]);
+  let params = new_url_search_params_value(&mut rt, global, init);
+  let s = call_method(&mut rt, params, "toString", &[]);
+  assert_eq!(as_rust_string(&rt, s), "a=b&c=d");
+
+  // record<USVString, USVString> (plain object)
+  let init = record(&mut rt, &[("a", "b"), ("c", "d")]);
+  let params = new_url_search_params_value(&mut rt, global, init);
+  let s = call_method(&mut rt, params, "toString", &[]);
+  assert_eq!(as_rust_string(&rt, s), "a=b&c=d");
+
+  // iterable (URLSearchParams itself implements @@iterator)
+  let original = new_url_search_params(&mut rt, global, Some("a=b&c=d"));
+  let params = new_url_search_params_value(&mut rt, global, original);
+  let s = call_method(&mut rt, params, "toString", &[]);
+  assert_eq!(as_rust_string(&rt, s), "a=b&c=d");
+}
+
+#[test]
 fn urlsearchparams_size_sort_and_iteration() {
   let mut rt = VmJsRuntime::new();
   let global = rt.alloc_object_value().unwrap();
@@ -267,6 +383,12 @@ fn url_instance_initialization_survives_gc_pressure() {
 
   let json = call_method(&mut rt, url, "toJSON", &[]);
   assert_eq!(as_rust_string(&rt, json), "https://example.com/?x=1#hash");
+
+  let stringified = call_method(&mut rt, url, "toString", &[]);
+  assert_eq!(
+    as_rust_string(&rt, stringified),
+    "https://example.com/?x=1#hash"
+  );
 
   let search_params = get(&mut rt, url, "searchParams");
   let x = str_val(&mut rt, "x");
