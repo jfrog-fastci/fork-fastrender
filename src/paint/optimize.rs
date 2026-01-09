@@ -865,6 +865,7 @@ impl DisplayListOptimizer {
       && item.opacity >= 1.0 - f32::EPSILON
       && !item.is_isolated
       && item.radii.is_zero()
+      && !item.has_clip_path
   }
 
   fn compute_blend_isolation_scopes_checked(

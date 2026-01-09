@@ -73,6 +73,7 @@ mod mix_blend_mode_non_isolated_group_surface_test;
 mod multi_root_display_list;
 mod offscreen_culling_stress;
 mod optimize_test;
+mod optimizer_pixel_equivalence_test;
 mod form_control_appearance_none_affordances;
 mod form_control_overflow_clip_regression;
 mod transform_origin;
