@@ -79,13 +79,17 @@ See [env-vars.md](env-vars.md) for details.
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
       `tests/browser_integration/ui_worker_navigation_messages.rs`,
       `tests/browser_integration/ui_worker_hover_active.rs`, and
-      `tests/browser_integration/ui_worker_navigation_errors.rs`.
+      `tests/browser_integration/ui_select_listbox_click.rs`.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode.
   - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
-    wheel scrolling) and some interaction tests: [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
-    - Exercised by `tests/browser_integration/ui_worker_scroll.rs` and
-      `tests/browser_integration/ui_worker_interaction.rs`.
+    wheel scrolling) and most interaction/navigation protocol tests:
+    [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
+    - Exercised by `tests/browser_integration/ui_worker_scroll.rs`,
+      `tests/browser_integration/ui_worker_interaction.rs`,
+      `tests/browser_integration/ui_worker_tabs.rs`,
+      `tests/browser_integration/ui_worker_keyboard.rs`,
+      `tests/browser_integration/ui_worker_navigation_errors.rs`, etc.
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
     - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
@@ -122,8 +126,9 @@ The browser UI should run rendering on a dedicated large-stack thread:
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - The windowed `browser` app uses [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
   spawns the render worker via `std::thread::Builder` and configures the stack size.
-- The headless UI worker used by integration tests is spawned via
-  [`spawn_render_worker_thread`](../src/ui/worker.rs).
+- Headless UI worker loops used by integration tests also use dedicated large-stack threads (see
+  [`spawn_render_worker_thread`](../src/ui/worker.rs) and the `DEFAULT_RENDER_STACK_SIZE` usage in
+  [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)).
 
 ### Message protocol (channels)
 

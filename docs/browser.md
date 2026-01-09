@@ -53,11 +53,13 @@ FastRender also has a small DOM interaction layer intended to support basic “n
 - hit-testing + link activation (`<a href=...>`, including same-document `#fragment` scrolling)
 - basic form interactions (text inputs, checkboxes, radios; limited keyboard activation via
   `Enter`/`Space`)
+- built-in `about:*` pages (`about:newtab`, `about:blank`, `about:error`)
 
-These interactions are currently exercised by the headless UI workers used by integration tests;
-the windowed `browser` app now uses the same worker-thread wiring, so link clicking and basic form
-interactions work in the GUI as well. See [browser_ui.md](browser_ui.md) for implementation details
-and current status.
+These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
+app uses the same worker-thread wiring, so link clicking and basic form interactions work in the GUI
+as well.
+
+See [browser_ui.md](browser_ui.md) for implementation details and current status.
 
 ## Environment variables / resource limits
 
