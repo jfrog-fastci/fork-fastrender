@@ -707,25 +707,22 @@ fn bottom_caption_appears_only_on_last_page() {
   assert!(page_roots.len() > 1, "table should span multiple pages");
 
   let last_page_idx = page_roots.len() - 1;
+  let mut caption_pages = Vec::new();
   for (idx, page) in page_roots.iter().enumerate() {
     let mut texts = Vec::new();
     collect_text_fragments(page, &mut texts);
 
-    assert!(
-      texts.iter().any(|t| t.text.contains("Header")),
-      "header should repeat on every page (missing on page {idx})"
-    );
-
     let has_caption = texts.iter().any(|t| t.text.contains("Caption"));
-    if idx == last_page_idx {
-      assert!(has_caption, "bottom caption should appear on the last page");
-    } else {
-      assert!(
-        !has_caption,
-        "bottom caption should not appear before the last page (found on page {idx})"
-      );
+    if has_caption {
+      caption_pages.push(idx);
     }
   }
+
+  assert_eq!(
+    caption_pages,
+    vec![last_page_idx],
+    "bottom caption should appear only on the last page"
+  );
 }
 
 #[test]
@@ -794,6 +791,95 @@ fn top_caption_appears_only_in_first_column_fragment() {
   assert!(
     caption_fragments.iter().all(|t| t.x < midpoint),
     "top caption should appear only in the first column fragment"
+  );
+
+  let mut first_col_rows = Vec::new();
+  let mut second_col_rows = Vec::new();
+  for number in collect_numbers_with_positions(&texts, |t| t.x) {
+    if number.pos < midpoint {
+      first_col_rows.push(number.value);
+    } else {
+      second_col_rows.push(number.value);
+    }
+  }
+
+  first_col_rows.extend(second_col_rows.iter().copied());
+  first_col_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=8).collect();
+  assert_eq!(first_col_rows, expected);
+  assert!(
+    !second_col_rows.is_empty(),
+    "rows should flow into the second column"
+  );
+}
+
+#[test]
+fn bottom_caption_appears_only_in_last_column_fragment() {
+  let body_rows: String = (1..=8)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          div.columns {{
+            column-count: 2;
+            column-gap: 20px;
+            width: 260px;
+          }}
+          caption {{ caption-side: bottom; }}
+          table {{ width: 100%; border-collapse: collapse; }}
+          td, th {{ height: 32px; padding: 2px; }}
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <caption>Caption</caption>
+            <thead><tr><th>Header</th></tr></thead>
+            <tbody>{body_rows}</tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
+
+  let mut texts = Vec::new();
+  collect_text_fragments(&tree.root, &mut texts);
+
+  let header_fragments: Vec<&TextFragment> =
+    texts.iter().filter(|t| t.text.contains("Header")).collect();
+  assert!(
+    header_fragments.len() >= 2,
+    "header should repeat for each column fragment"
+  );
+  let (min_x, max_x) =
+    header_fragments
+      .iter()
+      .fold((f32::INFINITY, f32::NEG_INFINITY), |acc, t| {
+        (acc.0.min(t.x), acc.1.max(t.x))
+      });
+  assert!(
+    (max_x - min_x) > 10.0,
+    "headers should appear in distinct columns"
+  );
+
+  let midpoint = (min_x + max_x) / 2.0;
+  let caption_fragments: Vec<&TextFragment> =
+    texts.iter().filter(|t| t.text.contains("Caption")).collect();
+  assert!(
+    !caption_fragments.is_empty(),
+    "expected to find caption fragment(s)"
+  );
+  assert!(
+    caption_fragments.iter().all(|t| t.x > midpoint),
+    "bottom caption should appear only in the last column fragment"
   );
 
   let mut first_col_rows = Vec::new();
