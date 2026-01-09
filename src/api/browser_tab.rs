@@ -116,6 +116,12 @@ impl BrowserTabHost {
         continue;
       }
 
+      // HTML: "prepare a script" early-outs when the script element is not connected. Be robust
+      // against partially-detached nodes that may still appear in a parent's `children` list.
+      if !dom.is_connected_for_scripting(id) {
+        continue;
+      }
+
       let mut next_in_head = in_head;
       let mut next_in_template = in_template;
       let mut next_in_foreign_namespace = in_foreign_namespace;
@@ -152,17 +158,8 @@ impl BrowserTabHost {
               }
             }
 
-            // Reuse the JS `type`/`language` classification logic by building a minimal renderer-dom
-            // node. This keeps behavior consistent with other JS plumbing without requiring a
-            // separate dom2-specific implementation.
-            let script_type = crate::js::determine_script_type(&crate::dom::DomNode {
-              node_type: crate::dom::DomNodeType::Element {
-                tag_name: tag_name.to_string(),
-                namespace: namespace.to_string(),
-                attributes: attributes.clone(),
-              },
-              children: Vec::new(),
-            });
+            // Reuse the shared HTML script `type`/`language` classification logic.
+            let script_type = crate::js::determine_script_type_dom2(dom, id);
 
             out.push((
               id,
