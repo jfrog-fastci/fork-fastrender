@@ -17,9 +17,10 @@ use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
-  RequestCredentials, WebFetchExecutionContext, WebFetchError,
+  RequestCredentials, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
 };
 use crate::resource::{origin_from_url, DocumentOrigin, FetchDestination, ReferrerPolicy, ResourceFetcher};
+use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -101,9 +102,14 @@ impl EnvState {
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static ENVS: OnceLock<Mutex<HashMap<u64, EnvState>>> = OnceLock::new();
+static DEFAULT_FETCH_LIMITS: OnceLock<WebFetchLimits> = OnceLock::new();
 
 fn envs() -> &'static Mutex<HashMap<u64, EnvState>> {
   ENVS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn default_fetch_limits() -> &'static WebFetchLimits {
+  DEFAULT_FETCH_LIMITS.get_or_init(WebFetchLimits::default)
 }
 
 pub fn unregister_window_fetch_env(env_id: u64) {
@@ -214,9 +220,58 @@ fn set_data_prop(
   scope.define_property(obj, key, data_desc(value, writable))
 }
 
-fn to_rust_string(heap: &mut Heap, value: Value) -> Result<String, VmError> {
+const FETCH_URL_TOO_LONG_ERROR: &str = "fetch URL exceeds maximum length";
+const FETCH_METHOD_TOO_LONG_ERROR: &str = "fetch method exceeds maximum length";
+const FETCH_HEADER_NAME_TOO_LONG_ERROR: &str = "fetch header name exceeds maximum length";
+const FETCH_HEADER_VALUE_TOO_LONG_ERROR: &str = "fetch header value exceeds maximum length";
+const FETCH_BODY_TOO_LONG_ERROR: &str = "fetch body string exceeds maximum length";
+const FETCH_CREDENTIALS_TOO_LONG_ERROR: &str = "Request.credentials exceeds maximum length";
+const FETCH_STATUS_TEXT_TOO_LONG_ERROR: &str = "Response statusText exceeds maximum length";
+
+fn js_string_to_rust_string_limited(
+  heap: &Heap,
+  handle: vm_js::GcString,
+  max_bytes: usize,
+  error: &'static str,
+) -> Result<String, VmError> {
+  let js = heap.get_string(handle)?;
+
+  let code_units_len = js.len_code_units();
+  // UTF-8 output bytes are always >= UTF-16 code unit length (and can grow by up to 3 bytes per
+  // code unit when decoding lone surrogates as U+FFFD). Reject overly large strings up-front to
+  // prevent unbounded host allocations.
+  if code_units_len > max_bytes {
+    return Err(VmError::TypeError(error));
+  }
+
+  // Decode manually so we can enforce the byte limit without relying on the potentially-large
+  // allocation performed by `String::from_utf16_lossy`.
+  let capacity = code_units_len.saturating_mul(3).min(max_bytes);
+  let mut out = String::with_capacity(capacity);
+  let mut out_len = 0usize;
+
+  for decoded in decode_utf16(js.as_code_units().iter().copied()) {
+    let ch = decoded.unwrap_or('\u{FFFD}');
+    let ch_len = ch.len_utf8();
+    let next_len = out_len.checked_add(ch_len).unwrap_or(usize::MAX);
+    if next_len > max_bytes {
+      return Err(VmError::TypeError(error));
+    }
+    out.push(ch);
+    out_len = next_len;
+  }
+
+  Ok(out)
+}
+
+fn to_rust_string_limited(
+  heap: &mut Heap,
+  value: Value,
+  max_bytes: usize,
+  error: &'static str,
+) -> Result<String, VmError> {
   let s = heap.to_string(value)?;
-  Ok(heap.get_string(s)?.to_utf8_lossy())
+  js_string_to_rust_string_limited(heap, s, max_bytes, error)
 }
 
 fn number_to_u64(value: Value) -> Result<u64, VmError> {
@@ -322,7 +377,12 @@ fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> Error {
     VmError::Throw(value) => {
       if let Value::String(s) = value {
         if let Ok(js) = heap.get_string(s) {
-          return Error::Other(js.to_utf8_lossy());
+          // Converting a UTF-16 JS string to a Rust `String` allocates in the host. Keep this
+          // bounded so hostile scripts cannot force large host allocations via `throw "..."`.
+          const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+          if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
+            return Error::Other(js.to_utf8_lossy());
+          }
         }
       }
 
@@ -340,7 +400,14 @@ fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> Error {
             .ok()?
             .unwrap_or(Value::Undefined);
           match value {
-            Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+            Value::String(s) => {
+              const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+              let js = scope.heap().get_string(s).ok()?;
+              if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+                return None;
+              }
+              Some(js.to_utf8_lossy())
+            }
             _ => None,
           }
         };
@@ -867,8 +934,19 @@ fn fill_headers_from_init(
       let k1 = alloc_key(scope, "1")?;
       let name_val = vm.get(scope, entry_obj, k0)?;
       let value_val = vm.get(scope, entry_obj, k1)?;
-      let name = to_rust_string(scope.heap_mut(), name_val)?;
-      let value = to_rust_string(scope.heap_mut(), value_val)?;
+      let max_header_bytes = headers.limits().max_total_header_bytes;
+      let name = to_rust_string_limited(
+        scope.heap_mut(),
+        name_val,
+        max_header_bytes,
+        FETCH_HEADER_NAME_TOO_LONG_ERROR,
+      )?;
+      let value = to_rust_string_limited(
+        scope.heap_mut(),
+        value_val,
+        max_header_bytes,
+        FETCH_HEADER_VALUE_TOO_LONG_ERROR,
+      )?;
       sequence.push([name, value]);
     }
     headers
@@ -884,9 +962,20 @@ fn fill_headers_from_init(
     let PropertyKey::String(s) = key else {
       continue;
     };
-    let name = scope.heap().get_string(s)?.to_utf8_lossy();
+    let max_header_bytes = headers.limits().max_total_header_bytes;
+    let name = js_string_to_rust_string_limited(
+      scope.heap(),
+      s,
+      max_header_bytes,
+      FETCH_HEADER_NAME_TOO_LONG_ERROR,
+    )?;
     let value_val = vm.get(scope, obj, key)?;
-    let value = to_rust_string(scope.heap_mut(), value_val)?;
+    let value = to_rust_string_limited(
+      scope.heap_mut(),
+      value_val,
+      max_header_bytes,
+      FETCH_HEADER_VALUE_TOO_LONG_ERROR,
+    )?;
     pairs.push((name, value));
   }
   headers
@@ -908,8 +997,22 @@ fn headers_append_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let name = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
-  let value = to_rust_string(scope.heap_mut(), args.get(1).copied().unwrap_or(Value::Undefined))?;
+  let max_header_bytes = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.limits().max_total_header_bytes)
+  })?;
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
+  let value = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(1).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_VALUE_TOO_LONG_ERROR,
+  )?;
 
   with_env_state_mut(env_id, |state| {
     let headers = get_headers_mut(state, kind, owner)?;
@@ -932,8 +1035,22 @@ fn headers_set_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let name = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
-  let value = to_rust_string(scope.heap_mut(), args.get(1).copied().unwrap_or(Value::Undefined))?;
+  let max_header_bytes = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.limits().max_total_header_bytes)
+  })?;
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
+  let value = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(1).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_VALUE_TOO_LONG_ERROR,
+  )?;
 
   with_env_state_mut(env_id, |state| {
     let headers = get_headers_mut(state, kind, owner)?;
@@ -956,7 +1073,16 @@ fn headers_delete_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let name = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let max_header_bytes = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.limits().max_total_header_bytes)
+  })?;
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
 
   with_env_state_mut(env_id, |state| {
     let headers = get_headers_mut(state, kind, owner)?;
@@ -979,7 +1105,16 @@ fn headers_has_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let name = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let max_header_bytes = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.limits().max_total_header_bytes)
+  })?;
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
   let has = with_env_state(env_id, |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     headers
@@ -999,7 +1134,16 @@ fn headers_get_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
-  let name = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let max_header_bytes = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.limits().max_total_header_bytes)
+  })?;
+  let name = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_header_bytes,
+    FETCH_HEADER_NAME_TOO_LONG_ERROR,
+  )?;
   let value = with_env_state(env_id, |state| {
     let headers = get_headers_ref(state, kind, owner)?;
     headers
@@ -1157,9 +1301,14 @@ fn request_ctor_construct(
         .get(&other_request_id)
         .cloned()
         .ok_or(VmError::TypeError("Request: invalid backing request"))
-    })?
+      })?
   } else {
-    let url = to_rust_string(scope.heap_mut(), input)?;
+    let url = to_rust_string_limited(
+      scope.heap_mut(),
+      input,
+      default_fetch_limits().max_url_bytes,
+      FETCH_URL_TOO_LONG_ERROR,
+    )?;
     CoreRequest::new("GET", url)
   };
 
@@ -1167,7 +1316,12 @@ fn request_ctor_construct(
     let method_key = alloc_key(scope, "method")?;
     let method_val = vm.get(scope, init_obj, method_key)?;
     if !matches!(method_val, Value::Undefined | Value::Null) {
-      request.method = to_rust_string(scope.heap_mut(), method_val)?;
+      request.method = to_rust_string_limited(
+        scope.heap_mut(),
+        method_val,
+        default_fetch_limits().max_url_bytes,
+        FETCH_METHOD_TOO_LONG_ERROR,
+      )?;
     }
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
@@ -1182,7 +1336,12 @@ fn request_ctor_construct(
     let credentials_key = alloc_key(scope, "credentials")?;
     let credentials_val = vm.get(scope, init_obj, credentials_key)?;
     if !matches!(credentials_val, Value::Undefined | Value::Null) {
-      let credentials = to_rust_string(scope.heap_mut(), credentials_val)?;
+      let credentials = to_rust_string_limited(
+        scope.heap_mut(),
+        credentials_val,
+        64,
+        FETCH_CREDENTIALS_TOO_LONG_ERROR,
+      )?;
       request.credentials = match credentials.as_str() {
         "omit" => RequestCredentials::Omit,
         "same-origin" => RequestCredentials::SameOrigin,
@@ -1201,8 +1360,15 @@ fn request_ctor_construct(
     let body_key = alloc_key(scope, "body")?;
     let body_val = vm.get(scope, init_obj, body_key)?;
     if !matches!(body_val, Value::Undefined | Value::Null) {
-      let bytes = to_rust_string(scope.heap_mut(), body_val)?.into_bytes();
-      let body = Body::new(bytes).map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      let bytes = to_rust_string_limited(
+        scope.heap_mut(),
+        body_val,
+        request.headers.limits().max_request_body_bytes,
+        FETCH_BODY_TOO_LONG_ERROR,
+      )?
+      .into_bytes();
+      let body = Body::new_with_limits(bytes, request.headers.limits())
+        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
       request.body = Some(body);
     }
   }
@@ -1581,17 +1747,25 @@ fn response_ctor_construct(
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
 
-  let body = args.get(0).copied().unwrap_or(Value::Undefined);
-  let body_bytes = if matches!(body, Value::Undefined | Value::Null) {
-    None
-  } else {
-    Some(to_rust_string(scope.heap_mut(), body)?.into_bytes())
-  };
-
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
   let mut status: u16 = 200;
   let mut status_text = String::new();
   let mut headers = CoreHeaders::new_with_guard(HeadersGuard::Response);
+
+  let body = args.get(0).copied().unwrap_or(Value::Undefined);
+  let body_bytes = if matches!(body, Value::Undefined | Value::Null) {
+    None
+  } else {
+    Some(
+      to_rust_string_limited(
+        scope.heap_mut(),
+        body,
+        headers.limits().max_response_body_bytes,
+        FETCH_BODY_TOO_LONG_ERROR,
+      )?
+      .into_bytes(),
+    )
+  };
 
   if let Value::Object(init_obj) = init {
     let status_key = alloc_key(scope, "status")?;
@@ -1604,7 +1778,12 @@ fn response_ctor_construct(
     let status_text_key = alloc_key(scope, "statusText")?;
     let st_val = vm.get(scope, init_obj, status_text_key)?;
     if !matches!(st_val, Value::Undefined | Value::Null) {
-      status_text = to_rust_string(scope.heap_mut(), st_val)?;
+      status_text = to_rust_string_limited(
+        scope.heap_mut(),
+        st_val,
+        default_fetch_limits().max_url_bytes,
+        FETCH_STATUS_TEXT_TOO_LONG_ERROR,
+      )?;
     }
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
@@ -1696,7 +1875,12 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           .ok_or(VmError::TypeError("Request: invalid backing request"))
       })?
     } else {
-      let url = to_rust_string(scope.heap_mut(), input)?;
+      let url = to_rust_string_limited(
+        scope.heap_mut(),
+        input,
+        default_fetch_limits().max_url_bytes,
+        FETCH_URL_TOO_LONG_ERROR,
+      )?;
       let mut request = CoreRequest::new("GET", url);
       request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
       request
@@ -1706,7 +1890,12 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let method_key = alloc_key(scope, "method")?;
     let method_val = vm.get(scope, init_obj, method_key)?;
     if !matches!(method_val, Value::Undefined | Value::Null) {
-      request.method = to_rust_string(scope.heap_mut(), method_val)?;
+      request.method = to_rust_string_limited(
+        scope.heap_mut(),
+        method_val,
+        default_fetch_limits().max_url_bytes,
+        FETCH_METHOD_TOO_LONG_ERROR,
+      )?;
     }
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
@@ -1720,7 +1909,12 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let credentials_key = alloc_key(scope, "credentials")?;
     let credentials_val = vm.get(scope, init_obj, credentials_key)?;
     if !matches!(credentials_val, Value::Undefined | Value::Null) {
-      let credentials = to_rust_string(scope.heap_mut(), credentials_val)?;
+      let credentials = to_rust_string_limited(
+        scope.heap_mut(),
+        credentials_val,
+        64,
+        FETCH_CREDENTIALS_TOO_LONG_ERROR,
+      )?;
       request.credentials = match credentials.as_str() {
         "omit" => RequestCredentials::Omit,
         "same-origin" => RequestCredentials::SameOrigin,
@@ -1739,8 +1933,15 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let body_key = alloc_key(scope, "body")?;
     let body_val = vm.get(scope, init_obj, body_key)?;
     if !matches!(body_val, Value::Undefined | Value::Null) {
-      let bytes = to_rust_string(scope.heap_mut(), body_val)?.into_bytes();
-      let body = Body::new(bytes).map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      let bytes = to_rust_string_limited(
+        scope.heap_mut(),
+        body_val,
+        request.headers.limits().max_request_body_bytes,
+        FETCH_BODY_TOO_LONG_ERROR,
+      )?
+      .into_bytes();
+      let body = Body::new_with_limits(bytes, request.headers.limits())
+        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
       request.body = Some(body);
     }
   }
