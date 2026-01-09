@@ -82,6 +82,27 @@ pub struct ViewportArgs {
   pub dpr: f32,
 }
 
+#[derive(Debug, Clone, Args, Default)]
+pub struct AnimationTimeArgs {
+  /// Sample time-based animations/transitions at this time in milliseconds since load.
+  ///
+  /// Negative or non-finite values are clamped to 0.
+  #[arg(long, value_name = "MS")]
+  pub animation_time_ms: Option<f32>,
+}
+
+impl AnimationTimeArgs {
+  pub fn animation_time_ms(&self) -> Option<f32> {
+    self.animation_time_ms.map(|time_ms| {
+      if time_ms.is_finite() {
+        time_ms.max(0.0)
+      } else {
+        0.0
+      }
+    })
+  }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum MediaTypeArg {
   Screen,

@@ -15,8 +15,9 @@ mod stage_buckets;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use common::args::{
-  cpu_budget, default_jobs, parse_shard, CompatArgs, CompatProfileArg, DiskCacheArgs, DomCompatArg,
-  LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs, ResourceAccessArgs,
+  cpu_budget, default_jobs, parse_shard, AnimationTimeArgs, CompatArgs, CompatProfileArg,
+  DiskCacheArgs, DomCompatArg, LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs,
+  ResourceAccessArgs,
   DEFAULT_DISK_CACHE_MAX_AGE_SECS, DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
@@ -407,6 +408,9 @@ struct RunArgs {
   #[arg(long, default_value = "1.0")]
   dpr: f32,
 
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
+
   /// Override the User-Agent header
   #[arg(long, default_value = DEFAULT_USER_AGENT)]
   user_agent: String,
@@ -775,6 +779,9 @@ struct WorkerArgs {
   /// Device pixel ratio for media queries/srcset
   #[arg(long)]
   dpr: f32,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Override the User-Agent header
   #[arg(long)]
@@ -3126,6 +3133,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     scroll_y: 0.0,
     dpr: args.dpr,
     media_type: fastrender::style::media::MediaType::Screen,
+    animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: false,
     apply_meta_viewport: true,
@@ -7970,6 +7978,9 @@ fn push_worker_args(
     .arg(&args.user_agent)
     .arg("--accept-language")
     .arg(&args.accept_language);
+  if let Some(time_ms) = args.animation_time.animation_time_ms() {
+    cmd.arg("--animation-time-ms").arg(time_ms.to_string());
+  }
   if args.memory.mem_limit_mb > 0 {
     cmd
       .arg("--mem-limit-mb")
@@ -9955,6 +9966,7 @@ mod tests {
       memory: MemoryGuardArgs::default(),
       viewport: (120, 80),
       dpr: 1.0,
+      animation_time: AnimationTimeArgs::default(),
       user_agent: DEFAULT_USER_AGENT.to_string(),
       accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
       no_http_freshness: false,

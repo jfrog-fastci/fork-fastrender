@@ -7,7 +7,7 @@
 use fastrender::cli_utils as common;
 
 use clap::Parser;
-use common::args::{default_jobs, parse_shard, parse_viewport, MediaTypeArg};
+use common::args::{default_jobs, parse_shard, parse_viewport, AnimationTimeArgs, MediaTypeArg};
 use common::prng;
 use common::render_pipeline::{
   apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
@@ -72,6 +72,9 @@ struct Cli {
   /// Device pixel ratio for media queries/srcset.
   #[arg(long, default_value = "1.0")]
   dpr: f32,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaTypeArg::Screen)]
@@ -420,6 +423,9 @@ fn run(cli: Cli) -> io::Result<()> {
     .with_viewport(cli.viewport.0, cli.viewport.1)
     .with_device_pixel_ratio(cli.dpr)
     .with_media_type(cli.media.as_media_type());
+  if let Some(time_ms) = cli.animation_time.animation_time_ms() {
+    base_options = base_options.with_animation_time(time_ms);
+  }
   if cli.fit_canvas_to_content {
     base_options = base_options.with_fit_canvas_to_content(true);
   }

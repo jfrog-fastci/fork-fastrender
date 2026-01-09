@@ -4,7 +4,7 @@
 use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
-use common::args::CompatArgs;
+use common::args::{AnimationTimeArgs, CompatArgs};
 use common::asset_discovery::extract_inline_css_chunks;
 use common::render_pipeline::{
   build_http_fetcher, build_render_configs, build_renderer_with_fetcher, decode_html_resource,
@@ -162,6 +162,9 @@ struct FetchArgs {
   #[arg(long, default_value = "1.0")]
   dpr: f32,
 
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
+
   /// Horizontal scroll offset in CSS px
   #[arg(long, default_value = "0")]
   scroll_x: f32,
@@ -237,6 +240,9 @@ struct CacheArgs {
   #[arg(long, default_value = "1.0")]
   dpr: f32,
 
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
+
   /// Horizontal scroll offset in CSS px
   #[arg(long, default_value = "0")]
   scroll_x: f32,
@@ -279,6 +285,9 @@ struct RenderArgs {
   /// Override device pixel ratio
   #[arg(long)]
   dpr: Option<f32>,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Override horizontal scroll offset
   #[arg(long)]
@@ -917,6 +926,7 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
     scroll_y: render.scroll_y,
     dpr: render.device_pixel_ratio,
     media_type: MediaType::Screen,
+    animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: None,
     allow_partial: false,
     apply_meta_viewport: true,
@@ -1146,6 +1156,7 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
     scroll_y: render.scroll_y,
     dpr: render.device_pixel_ratio,
     media_type: MediaType::Screen,
+    animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: None,
     allow_partial: false,
     apply_meta_viewport: true,

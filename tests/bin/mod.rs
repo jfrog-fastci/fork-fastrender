@@ -17,6 +17,7 @@ mod diff_snapshots_pageset_dump_layout_test;
 mod diff_snapshots_pageset_progress_layout_test;
 mod diff_snapshots_render_fixtures_layout_test;
 mod fetch_and_render_dom_compat_test;
+mod fetch_and_render_animation_time_test;
 mod fetch_and_render_exit_test;
 mod fetch_and_render_help_test;
 mod fetch_and_render_layout_parallel_stack_size_test;

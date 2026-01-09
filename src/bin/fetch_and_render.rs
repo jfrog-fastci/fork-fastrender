@@ -12,8 +12,8 @@ use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Parser};
 use common::args::{
-  AllowPartialArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, LayoutParallelArgs, MediaArgs,
-  MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs, ViewportArgs,
+  AllowPartialArgs, AnimationTimeArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, LayoutParallelArgs,
+  MediaArgs, MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs, ViewportArgs,
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
@@ -86,6 +86,9 @@ struct Args {
 
   #[command(flatten)]
   surface: ViewportArgs,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Horizontal scroll offset in CSS px
   #[arg(long, default_value = "0")]
@@ -301,6 +304,7 @@ fn try_main(args: Args) -> Result<()> {
     scroll_y,
     dpr: args.surface.dpr,
     media_type: args.media.media_type(),
+    animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: args.allow_partial.allow_partial,
     apply_meta_viewport: true,

@@ -56,6 +56,7 @@ pub struct RenderSurface {
   pub scroll_y: f32,
   pub dpr: f32,
   pub media_type: MediaType,
+  pub animation_time_ms: Option<f32>,
   pub css_limit: Option<usize>,
   pub allow_partial: bool,
   pub apply_meta_viewport: bool,
@@ -96,6 +97,9 @@ pub fn build_render_configs(surface: &RenderSurface) -> RenderConfigBundle {
     .with_stylesheet_limit(surface.css_limit)
     .allow_partial(surface.allow_partial);
   options.trace_output = surface.trace_output.clone();
+  if let Some(time_ms) = surface.animation_time_ms {
+    options = options.with_animation_time(time_ms);
+  }
 
   if let Some(parallelism) = surface.layout_parallelism {
     config = config.with_layout_parallelism(parallelism);
@@ -1148,6 +1152,7 @@ pub struct WorkerCommonArgs<'a> {
   pub viewport: (u32, u32),
   pub dpr: f32,
   pub scroll: Option<(f32, f32)>,
+  pub animation_time_ms: Option<f32>,
   pub user_agent: &'a str,
   pub accept_language: &'a str,
   pub no_http_freshness: bool,
@@ -1188,6 +1193,9 @@ pub fn apply_worker_common_args(cmd: &mut Command, args: &WorkerCommonArgs<'_>) 
       .arg(scroll_x.to_string())
       .arg("--scroll-y")
       .arg(scroll_y.to_string());
+  }
+  if let Some(time_ms) = args.animation_time_ms {
+    cmd.arg("--animation-time-ms").arg(time_ms.to_string());
   }
 
   if let Some(ms) = args.soft_timeout_ms {

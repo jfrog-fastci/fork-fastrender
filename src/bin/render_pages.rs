@@ -9,8 +9,8 @@ use fastrender::cli_utils as common;
 use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_bool_preference, parse_color_scheme, parse_contrast, parse_shard,
-  parse_viewport, CompatArgs, DiskCacheArgs, DiskCacheStalePolicyArg, LayoutParallelArgs,
-  MemoryGuardArgs, ResourceAccessArgs,
+  parse_viewport, AnimationTimeArgs, CompatArgs, DiskCacheArgs, DiskCacheStalePolicyArg,
+  LayoutParallelArgs, MemoryGuardArgs, ResourceAccessArgs,
 };
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
@@ -184,6 +184,9 @@ struct Args {
   /// Device pixel ratio for media queries/srcset
   #[arg(long, default_value = "1.0")]
   dpr: f32,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Reduced transparency preference (reduce|no-preference)
   #[arg(long, value_parser = parse_bool_preference)]
@@ -895,6 +898,7 @@ fn build_render_shared(
     scroll_y: args.scroll_y,
     dpr: args.dpr,
     media_type: MediaType::Screen,
+    animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: false,
     apply_meta_viewport: true,
@@ -1328,6 +1332,7 @@ fn build_worker_command(
       viewport: args.viewport,
       dpr: args.dpr,
       scroll: Some((args.scroll_x, args.scroll_y)),
+      animation_time_ms: args.animation_time.animation_time_ms(),
       user_agent: &args.user_agent,
       accept_language: &args.accept_language,
       no_http_freshness: args.no_http_freshness,
