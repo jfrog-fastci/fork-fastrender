@@ -863,19 +863,19 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
         r#"
  globalThis.__log = {};
  globalThis.__log_len = 0;
- queueMicrotask(() => {
-   globalThis.__log[globalThis.__log_len] = "micro";
-   globalThis.__log_len = globalThis.__log_len + 1;
- });
-  fetch("https://example.com/x")
-    .then(function (r) { return r.text(); })
-    .then(function (t) {
+  queueMicrotask(() => {
+    globalThis.__log[globalThis.__log_len] = "micro";
+    globalThis.__log_len = globalThis.__log_len + 1;
+  });
+   fetch("https://example.com/x")
+    .then(r => r.text())
+    .then(t => {
       globalThis.__log[globalThis.__log_len] = t;
       globalThis.__log_len = globalThis.__log_len + 1;
     });
- globalThis.__log[globalThis.__log_len] = "sync";
- globalThis.__log_len = globalThis.__log_len + 1;
- "#,
+  globalThis.__log[globalThis.__log_len] = "sync";
+  globalThis.__log_len = globalThis.__log_len + 1;
+  "#,
       );
       if let Err(err) = res {
         let (_vm, heap) = realm.vm_and_heap_mut();
@@ -1222,8 +1222,8 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
       let res = realm.exec_script(
         r#"
   fetch("https://example.com/json")
-    .then(function (r) { return r.json(); })
-    .then(function (v) { globalThis.__json_ok = v.ok; });
+    .then(r => r.json())
+    .then(v => globalThis.__json_ok = v.ok);
  "#,
       );
       if let Err(err) = res {

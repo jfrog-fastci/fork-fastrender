@@ -1311,6 +1311,7 @@ fn document_query_selector_native(
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
+  }
 }
 
 fn document_create_element_native(

@@ -153,7 +153,7 @@ pub struct WindowHostState {
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
   pub base_url: Option<String>,
   dom_source_id: Option<u64>,
-  document: DocumentHostState,
+  document: Box<DocumentHostState>,
   window: WindowRealm,
   _fetch_bindings: WindowFetchBindings,
 }
@@ -169,7 +169,10 @@ impl WindowHostState {
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
     let document_url = document_url.into();
-    let mut document = DocumentHostState::new(dom);
+    // The JS bindings store a `dom_source_id` that resolves to a raw pointer in a thread-local
+    // registry. That pointer must remain stable for the lifetime of this host, so keep the
+    // `DocumentHostState` on the heap.
+    let mut document = Box::new(DocumentHostState::new(dom));
     let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
     let mut window = match WindowRealm::new(
       WindowRealmConfig::new(document_url.clone())
