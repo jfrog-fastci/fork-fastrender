@@ -145,3 +145,26 @@ fn scan_file(
     ));
   }
 }
+
+#[test]
+fn docs_mention_fastr_xtask_limit_as() {
+  // Keep a lightweight regression test to ensure the docs mention the env var users need when
+  // headless Chrome runs into `RLIMIT_AS` and fails with "Oilpan: Out of memory".
+  let repo_root = repo_root();
+  let docs_root = repo_root.join("docs");
+
+  let mut found = false;
+  for path in iter_markdown_files(&docs_root) {
+    let content = fs::read_to_string(&path)
+      .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    if content.contains("FASTR_XTASK_LIMIT_AS") {
+      found = true;
+      break;
+    }
+  }
+
+  assert!(
+    found,
+    "Expected docs to mention FASTR_XTASK_LIMIT_AS (xtask RLIMIT_AS override for headless Chrome)."
+  );
+}

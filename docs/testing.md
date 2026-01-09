@@ -96,6 +96,33 @@ Artifacts for failures land in `target/pages_diffs/<page>_{actual,expected,diff}
 
 When doing accuracy work, it’s often useful to compare an offline fixture render against Chrome using the **same** deterministic inputs (no network). Chrome baselines are **local-only artifacts** and are not committed.
 
+#### Headless Chrome + `RLIMIT_AS` (virtual address space)
+
+Several xtask workflows in this section spawn headless Chrome (`page-loop --chrome`, `chrome-baseline-fixtures`, `fixture-chrome-diff`, and `refresh-progress-accuracy` when it refreshes Chrome baselines).
+
+On Linux we run most commands under an address-space limit (`RLIMIT_AS`) to protect agent hosts from pathological allocations (see [resource-limits.md](resource-limits.md)). Modern headless Chrome reserves a very large virtual address space up front (**>64GiB**, ~**75GiB** on Chrome 143), even when its RSS is still small. If `RLIMIT_AS` is too low, Chrome can fail immediately with an error containing:
+
+```
+Oilpan: Out of memory
+```
+
+`bash scripts/cargo_agent.sh` keeps the default cap at `64G` for normal Cargo commands, but bumps it to `96G` for xtask runs (`cargo xtask`, i.e. `cargo run -p xtask`; configurable via `FASTR_XTASK_LIMIT_AS`).
+
+If you hit an Oilpan OOM (or are running a particularly large fixture set), rerun the command with a higher xtask address-space cap:
+
+```bash
+FASTR_XTASK_LIMIT_AS=128G bash scripts/cargo_agent.sh xtask fixture-chrome-diff
+# Or disable the address-space cap entirely (less safe on shared hosts):
+FASTR_XTASK_LIMIT_AS=unlimited bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --chrome
+```
+
+If you are invoking `scripts/run_limited.sh` directly, override its default with `--as ...` or `LIMIT_AS=...`:
+
+```bash
+LIMIT_AS=128G bash scripts/run_limited.sh -- \
+  bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures
+```
+
 For determinism, the fixture baseline step patches the HTML before loading it in Chrome:
 
 - Forces a light color scheme and white `html/body` background (to match FastRender’s default white canvas and avoid platform dark-mode defaults).
@@ -115,7 +142,7 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff
 scripts/chrome_vs_fastrender_fixtures.sh
 
 # 1) Render the offline fixture(s) with FastRender (offline; bundled fonts):
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --out-dir target/fixture_chrome_diff/fastrender
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --out-dir target/fixture_chrome_diff/fastrender
 
 # 2) Produce local Chrome baseline PNGs for those fixture(s):
 bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures --out-dir target/fixture_chrome_diff/chrome
@@ -129,7 +156,7 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff
 bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json
 
 # `pageset_progress report --rank-accuracy` now reflects the deterministic fixture diffs.
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report --rank-accuracy
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report --rank-accuracy
 ```
 
 Preferred workflow for refreshing the committed accuracy telemetry:
@@ -169,7 +196,7 @@ When diagnosing paint nondeterminism (often scheduling-dependent under high para
 - In-process repeat/shuffle harness (captures raw `Pixmap::data()` bytes; can save per-variant PNGs):
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- \
   --fixtures preserve_3d_stack --jobs 8 \
   --repeat 10 --shuffle --fail-on-nondeterminism --save-variants
 ```
@@ -198,7 +225,7 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_c
 bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_chrome_diff_after
 
 # Summarize deltas (improvements/regressions) between the two reports:
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
   --baseline target/fixture_chrome_diff_before/report.json \
   --new target/fixture_chrome_diff_after/report.json \
   --json target/fixture_chrome_diff_delta/report.json \
@@ -222,7 +249,7 @@ scripts/chrome_vs_fastrender.sh --out-dir target/chrome_vs_fastrender_before --p
 scripts/chrome_vs_fastrender.sh --out-dir target/chrome_vs_fastrender_after --pages example.com
 
 # Summarize deltas between the two runs:
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
   --baseline target/chrome_vs_fastrender_before/report.json \
   --new target/chrome_vs_fastrender_after/report.json \
   --json target/chrome_vs_fastrender_delta/report.json \
@@ -244,10 +271,10 @@ This is intended as a convenient way to attach evidence to PRs without requiring
 Use `bundle_page` to capture a page once, then convert that bundle into a deterministic fixture consumable by `pages_regression`:
 
 1. Capture a bundle:
-   - Online (network): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out /tmp/capture.tar` (or a directory path)
-      - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
-   - Offline (from warmed pageset caches): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
-       - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
+   - Online (network): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out /tmp/capture.tar` (or a directory path)
+       - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
+   - Offline (from warmed pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
+        - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
 2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
 3. Validate the imported fixture is fully offline (no fetchable `http(s)` URLs left behind): `bash scripts/cargo_agent.sh xtask validate-page-fixtures --only <fixture_name>`
 4. Add the new fixture to `tests/regression/pages.rs` and generate a golden if you want it covered by the suite.
@@ -301,7 +328,7 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
 
 Use `import_wpt` to bring small slices of upstream WPT into `tests/wpt/tests/` without curating each support file by hand. The importer is entirely file-based and rewrites absolute URLs so tests work offline.
 
-- Example (against a local WPT checkout): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin import_wpt -- --wpt-root ~/code/wpt --suite css/css-text/white-space --out tests/wpt/tests`
+- Example (against a local WPT checkout): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin import_wpt -- --wpt-root ~/code/wpt --suite css/css-text/white-space --out tests/wpt/tests`
 - `--suite` can be repeated and supports directories, individual files, and globs (e.g. `--suite css/css-text/* --suite html/semantics/forms/the-input-element/input-type-number.html`).
 - Preview changes without writing: add `--dry-run`
 - Update existing files/manifest entries: add `--overwrite`
@@ -322,7 +349,7 @@ Use `import_wpt` to bring small slices of upstream WPT into `tests/wpt/tests/` w
 A tiny synthetic WPT-like tree lives under `tests/wpt/_import_testdata/` and is exercised in CI. You can sanity check the importer locally via:
 
 ```
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin import_wpt -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin import_wpt -- \
   --wpt-root tests/wpt/_import_testdata/wpt \
   --suite css/simple \
   --out /tmp/fastrender-wpt-import \

@@ -51,6 +51,14 @@ one-command driver:
 bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --overlay --write-snapshot --chrome
 ```
 
+Note: `--chrome` spawns headless Chrome. Modern Chrome reserves a very large virtual address space up front (>64GiB), so if you see a failure containing `Oilpan: Out of memory`, bump the xtask address-space cap:
+
+```bash
+FASTR_XTASK_LIMIT_AS=128G bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --overlay --write-snapshot --chrome
+# Or disable the address-space cap entirely (less safe on shared hosts):
+FASTR_XTASK_LIMIT_AS=unlimited bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --chrome
+```
+
 Artifacts are written under `target/page_loop/<stem>/`:
 
 - `fastrender/<stem>.png` (+ `<stem>.json` metadata)
@@ -86,14 +94,14 @@ Use `--viewport`, `--dpr`, and `--media screen|print` to align FastRender, overl
 Dump the first 400 paint commands:
 
 ```bash
-FASTR_DUMP_COMMANDS=400 scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --pages news.ycombinator.com
+FASTR_DUMP_COMMANDS=400 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --pages news.ycombinator.com
 ```
 
 Log timings + fragment bounds for a single render:
 
 ```bash
 FASTR_RENDER_TIMINGS=1 FASTR_LOG_FRAG_BOUNDS=1 \
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
 ```
 
 ## Chrome/Perfetto traces from `pageset_progress`

@@ -23,7 +23,7 @@ This doc describes a two-layer strategy:
 Use the repo helper which prefers `prlimit` and falls back to `ulimit`:
 
 ```bash
-scripts/run_limited.sh --as 64G -- \
+bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh bench --bench selector_bloom_bench
 ```
 
@@ -41,14 +41,14 @@ for the test profile (debug symbols can make large test binaries significantly m
 link):
 
 ```bash
-CARGO_PROFILE_TEST_DEBUG=0 scripts/run_limited.sh --as 12G --cpu 60 -- \
+CARGO_PROFILE_TEST_DEBUG=0 bash scripts/run_limited.sh --as 12G --cpu 60 -- \
   bash scripts/cargo_agent.sh test -j 1 --quiet --lib
 ```
 
 You can also set defaults via environment variables:
 
 ```bash
-LIMIT_AS=64G scripts/run_limited.sh -- \
+LIMIT_AS=64G bash scripts/run_limited.sh -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -59,13 +59,13 @@ If `prlimit` is available (usually via `util-linux`), it can cap address-space:
 ```bash
 # Note: `prlimit` expects raw byte counts; size suffixes (e.g. 64G) are not universally supported.
 prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 Notes:
 - `--as` (virtual address space) is the most reliable “hard memory ceiling”.
 - `--rss` is not reliably enforced on all kernels; treat it as advisory.
-- Cap `cargo` itself if you are running “scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run”; `cargo` spawns child processes and inherits limits.
+- Cap `cargo` itself if you are running “bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run”; `cargo` spawns child processes and inherits limits.
   - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=64G`). Prefer raw byte
     counts or use `scripts/run_limited.sh`, which converts suffixes to bytes automatically.
 
@@ -86,7 +86,7 @@ If systemd is available:
 
 ```bash
 systemd-run --user -p MemoryMax=64G -- \
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 This is the most robust approach for multi-agent environments.
@@ -115,7 +115,7 @@ Examples:
 
 ```bash
 # 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
   --mem-limit-mb 65536 \
   --stage-mem-budget-mb 8192
 ```
@@ -147,7 +147,16 @@ When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics b
 Too many agents running `cargo` concurrently can spawn thousands of `rustc`/`rust-lld` processes and blow up RAM.
 Use the repo wrapper `bash scripts/cargo_agent.sh`, which:
 - throttles concurrent cargo invocations with lock “slots”
-- enforces an address-space cap by default (`--as 64G`), without CPU limiting
+- enforces an address-space cap (`RLIMIT_AS`) by default via `bash scripts/run_limited.sh`
+  - most cargo commands default to `64G` (`FASTR_CARGO_LIMIT_AS`)
+  - `cargo xtask` (i.e. `cargo run -p xtask`) defaults to `96G` (`FASTR_XTASK_LIMIT_AS`) because headless Chrome reserves >64GiB of virtual address space and can fail with `Oilpan: Out of memory`
+
+To override the xtask limit (for Chrome workflows like `page-loop --chrome` / `fixture-chrome-diff`):
+
+```bash
+FASTR_XTASK_LIMIT_AS=128G bash scripts/cargo_agent.sh xtask fixture-chrome-diff
+FASTR_XTASK_LIMIT_AS=unlimited bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --chrome
+```
 
 Example:
 
@@ -193,6 +202,6 @@ In-process caps prevent accidental runaway allocations, but the most reliable pr
 an OS-enforced ceiling. Prefer:
 
 ```bash
-FASTR_BENCH_VERBOSE=1 scripts/run_limited.sh --as 64G -- \
+FASTR_BENCH_VERBOSE=1 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh bench --bench selector_bloom_bench -- --noplot
 ```
