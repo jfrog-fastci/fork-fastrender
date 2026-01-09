@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
@@ -209,19 +208,9 @@ fn cancellation_on_scroll_drops_stale_frames() {
     })
     .unwrap();
 
-  // Wait for paint to begin (stage heartbeat) before triggering cancellation.
-  loop {
-    match ui_rx.recv_timeout(Duration::from_secs(10)) {
-      Ok(WorkerToUi::Stage { tab_id: msg_id, stage })
-        if msg_id == tab_id
-          && matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize) =>
-      {
-        break;
-      }
-      Ok(_) => continue,
-      Err(err) => panic!("timed out waiting for paint stage heartbeat: {err}"),
-    }
-  }
+  // Repaints (scroll/input) do not forward stage heartbeats; wait briefly so the worker has time to
+  // begin the first scroll paint before we bump cancellation.
+  std::thread::sleep(Duration::from_millis(50));
 
   cancel.bump_paint();
   ui_tx

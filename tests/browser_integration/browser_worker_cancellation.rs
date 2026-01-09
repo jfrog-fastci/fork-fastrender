@@ -245,11 +245,9 @@ fn rapid_scroll_cancels_stale_paint() {
     })
     .expect("scroll 1");
 
-  // Wait until we see at least one stage heartbeat during the first scroll paint, then cancel it.
-  let _ = support::recv_for_tab(&worker.rx, tab_id, MAX_WAIT, |msg| {
-    matches!(msg, WorkerToUi::Stage { .. })
-  })
-  .expect("stage heartbeat during scroll paint");
+  // Repaints (scroll/input) do not forward stage heartbeats. Sleep briefly so the worker has time
+  // to begin the first scroll paint before we bump cancellation.
+  std::thread::sleep(Duration::from_millis(50));
 
   cancel.bump_paint();
   worker
