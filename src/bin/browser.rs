@@ -56,14 +56,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let worker = fastrender::ui::spawn_browser_worker()?;
-  let fastrender::ui::BrowserWorkerHandle {
-    tx: ui_to_worker_tx,
-    rx: raw_rx,
-    join: worker_join,
-  } = worker;
+  let worker = fastrender::ui::worker::spawn_ui_worker("fastr-browser-ui-worker")?;
+  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) = worker.into_parts();
 
-  let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx))?;
+  let mut app = pollster::block_on(App::new(
+    window,
+    &event_loop,
+    ui_to_worker_tx,
+    worker_join,
+  ))?;
   app.startup();
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
@@ -76,7 +77,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .spawn({
       let event_loop_proxy = event_loop_proxy.clone();
       move || {
-        while let Ok(msg) = raw_rx.recv() {
+        while let Ok(msg) = worker_to_ui_rx.recv() {
           if ui_tx.send(msg).is_err() {
             break;
           }
@@ -90,7 +91,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   app.window.request_redraw();
 
   let mut app = Some(app);
-  let mut worker_join = Some(worker_join);
   let mut bridge_join = Some(bridge_join);
 
   event_loop.run(move |event, _, control_flow| {
@@ -99,16 +99,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
-      // Dropping the UI sender closes the worker's receiver, letting it exit cleanly.
       if let Some(mut app) = app.take() {
-        app.destroy_all_textures();
+        app.shutdown();
       }
 
-      if let Some(join) = worker_join.take() {
-        let _ = join.join();
-      }
       if let Some(join) = bridge_join.take() {
-        let _ = join.join();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+        let _ = std::thread::spawn(move || {
+          let _ = done_tx.send(join.join());
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+          Ok(_) => {}
+          Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            eprintln!("timed out waiting for browser worker bridge thread to exit");
+          }
+          Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            eprintln!("browser worker bridge join helper thread disconnected during shutdown");
+          }
+        }
       }
       return;
     }
@@ -127,7 +135,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         match event {
           WindowEvent::CloseRequested => {
-            app.destroy_all_textures();
+            app.shutdown();
             *control_flow = ControlFlow::Exit;
           }
           WindowEvent::Resized(new_size) => {
@@ -446,6 +454,7 @@ struct App {
   pixels_per_point: f32,
 
   ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
+  worker_join: Option<std::thread::JoinHandle<()>>,
   browser_state: fastrender::ui::BrowserAppState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -475,6 +484,7 @@ impl App {
     window: winit::window::Window,
     event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
+    worker_join: std::thread::JoinHandle<()>,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     let pixels_per_point = window.scale_factor() as f32;
 
@@ -547,6 +557,7 @@ impl App {
       egui_renderer,
       pixels_per_point,
       ui_to_worker_tx,
+      worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
       page_rect_points: None,
@@ -628,6 +639,39 @@ impl App {
   fn close_select_dropdown(&mut self) {
     self.open_select_dropdown = None;
     self.open_select_dropdown_rect = None;
+  }
+
+  fn shutdown(&mut self) {
+    // Close the UI→worker channel so the worker can observe it and exit.
+    //
+    // We can't `drop(self.ui_to_worker_tx)` directly because `App` continues to exist until the
+    // winit loop exits; instead swap in a disconnected sender.
+    let (dummy_tx, _dummy_rx) = std::sync::mpsc::channel::<fastrender::ui::UiToWorker>();
+    drop(std::mem::replace(&mut self.ui_to_worker_tx, dummy_tx));
+
+    if let Some(join) = self.worker_join.take() {
+      // Best-effort join: don't risk hanging the UI thread forever if the worker is stuck in a
+      // long render job.
+      let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+      let _ = std::thread::spawn(move || {
+        let _ = done_tx.send(join.join());
+      });
+
+      match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+          eprintln!("ui worker thread panicked during shutdown");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+          eprintln!("timed out waiting for ui worker thread to exit; shutting down anyway");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+          eprintln!("ui worker join helper thread disconnected during shutdown");
+        }
+      }
+    }
+
+    self.destroy_all_textures();
   }
 
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) {
@@ -1659,7 +1703,7 @@ impl App {
       }
       Err(wgpu::SurfaceError::OutOfMemory) => {
         eprintln!("wgpu surface out of memory; exiting");
-        self.destroy_all_textures();
+        self.shutdown();
         *control_flow = winit::event_loop::ControlFlow::Exit;
         return;
       }

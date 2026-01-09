@@ -5,6 +5,7 @@ use crate::interaction::scroll_offset_for_fragment_target;
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
+use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
@@ -101,6 +102,16 @@ impl UiWorkerHandle {
     // Ensure the worker loop can observe channel closure before we block on joining.
     drop(self.ui_tx);
     self.handle.join()
+  }
+
+  pub fn into_parts(
+    self,
+  ) -> (
+    Sender<UiToWorker>,
+    Receiver<WorkerToUi>,
+    std::thread::JoinHandle<()>,
+  ) {
+    (self.ui_tx, self.ui_rx, self.handle)
   }
 }
 
@@ -595,7 +606,80 @@ fn navigate_tab(
     .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y)
     .with_element_scroll_offsets(tab.scroll_state.elements.clone());
 
-  let final_url = if let Some(doc) = tab.document.as_mut() {
+  let final_url = if about_pages::is_about_url(&url) {
+    let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
+      about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+    });
+
+    if let Some(doc) = tab.document.as_mut() {
+      // Ensure `about:*` pages never resolve relative URLs against the previous navigation origin.
+      doc.set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
+      doc.set_document_url(Some(url.clone()));
+      if let Err(err) = doc.reset_with_html(&html, options) {
+        let _ = tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+      url.clone()
+    } else {
+      let mut renderer = match FastRender::new() {
+        Ok(renderer) => renderer,
+        Err(err) => {
+          let _ = tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url,
+            error: err.to_string(),
+          });
+          return;
+        }
+      };
+
+      // Ensure `about:*` pages never resolve relative URLs against the previous navigation origin.
+      renderer.set_base_url(about_pages::ABOUT_BASE_URL);
+
+      let dom = match renderer.parse_html(&html) {
+        Ok(dom) => dom,
+        Err(err) => {
+          let _ = tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url,
+            error: err.to_string(),
+          });
+          return;
+        }
+      };
+
+      let report = match renderer.prepare_dom_with_options(dom, Some(&url), options.clone()) {
+        Ok(report) => report,
+        Err(err) => {
+          let _ = tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url,
+            error: err.to_string(),
+          });
+          return;
+        }
+      };
+
+      let final_url = report.final_url.clone().unwrap_or_else(|| url.clone());
+      let doc = match BrowserDocument::from_prepared(renderer, report.document, options) {
+        Ok(doc) => doc,
+        Err(err) => {
+          let _ = tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url,
+            error: err.to_string(),
+          });
+          return;
+        }
+      };
+      tab.document = Some(doc);
+      final_url
+    }
+  } else if let Some(doc) = tab.document.as_mut() {
     match doc.navigate_url(&url, options) {
       Ok(report) => report.final_url.clone().unwrap_or_else(|| url.clone()),
       Err(err) => {
