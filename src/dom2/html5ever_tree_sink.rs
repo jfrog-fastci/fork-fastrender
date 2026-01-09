@@ -328,18 +328,21 @@ impl Dom2TreeSink {
     let Some((tag_name, namespace, attrs)) = Self::element_info(&doc.node(child).kind) else {
       return;
     };
+    if !tag_name.eq_ignore_ascii_case("base") {
+      return;
+    }
     let (in_head, in_foreign_namespace, in_template) = Self::compute_insertion_flags(doc, parent);
     self
       .base_url_tracker
       .borrow_mut()
       .on_element_inserted(
-      tag_name,
-      namespace,
-      attrs,
-      in_head,
-      in_foreign_namespace,
-      in_template,
-    );
+        tag_name,
+        namespace,
+        attrs,
+        in_head,
+        in_foreign_namespace,
+        in_template,
+      );
   }
 }
 
@@ -643,7 +646,7 @@ impl TreeSink for Dom2TreeSink {
 mod tests {
   use super::Dom2TreeSink;
   use crate::debug::snapshot::snapshot_dom;
-  use crate::dom2::{NodeId, NodeKind};
+  use crate::dom2::{Document, NodeId, NodeKind};
   use html5ever::tendril::TendrilSink;
   use html5ever::ParseOpts;
   use selectors::context::QuirksMode;
@@ -651,6 +654,45 @@ mod tests {
   fn parse_with_sink(html: &str) -> crate::dom2::Document {
     let sink = Dom2TreeSink::new(None);
     html5ever::parse_document(sink, ParseOpts::default()).one(html)
+  }
+
+  fn assert_parent_child_invariants(doc: &Document) {
+    for (idx, node) in doc.nodes().iter().enumerate() {
+      let id = NodeId(idx);
+      if id == doc.root() {
+        assert!(node.parent.is_none(), "root node must have no parent");
+      }
+      if let Some(parent) = node.parent {
+        assert!(
+          doc.node(parent).children.contains(&id),
+          "node parent pointer must be reflected in the parent's children list"
+        );
+      }
+      for &child in &node.children {
+        let child_node = doc.node(child);
+        assert_eq!(
+          child_node.parent,
+          Some(id),
+          "child must point back to parent"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn dom2_tree_sink_roundtrips_via_renderer_snapshot() {
+    let html = concat!(
+      "<!DOCTYPE html>",
+      "<html><head><title>x</title></head>",
+      "<body><div id=a class=b>Hello<span>world</span></div></body></html>"
+    );
+    let expected = crate::dom::parse_html(html).unwrap();
+
+    let doc = parse_with_sink(html);
+    assert_parent_child_invariants(&doc);
+
+    let snapshot = doc.to_renderer_dom();
+    assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
   }
 
   #[test]
@@ -794,6 +836,32 @@ mod tests {
     let doc = parse_with_sink(html);
     let snapshot = doc.to_renderer_dom();
     assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
+  }
+
+  #[test]
+  fn deep_tree_parses_without_recursion_overflow() {
+    const DEPTH: usize = 50_000;
+
+    let mut html = String::with_capacity(256 + DEPTH * 7);
+    html.push_str("<!doctype html><html><head></head><body>");
+    for _ in 0..DEPTH {
+      html.push_str("<x>");
+    }
+    html.push_str("leaf");
+    for _ in 0..DEPTH {
+      html.push_str("</x>");
+    }
+    html.push_str("</body></html>");
+
+    let doc = parse_with_sink(&html);
+    assert_parent_child_invariants(&doc);
+
+    assert!(
+      doc.nodes_len() >= DEPTH + 5,
+      "expected at least {} nodes, got {}",
+      DEPTH + 5,
+      doc.nodes_len()
+    );
   }
 }
 
