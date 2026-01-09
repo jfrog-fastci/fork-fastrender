@@ -220,16 +220,36 @@ where
     "__fastrender_dom_query_selector",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
-      move |ctx: Ctx<'js>, selectors: String| {
+      move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
         let mut dom = dom.borrow_mut();
+        let scope = scope.map(|id| NodeId::from_index(id as usize));
         let result = dom.mutate_dom(|dom| {
-          match dom.query_selector(&selectors, None) {
+          match dom.query_selector(&selectors, scope) {
             Ok(found) => (Ok(found), false),
             Err(err) => (Err(err), false),
           }
         });
         match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
+          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_query_selector_all",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
+        let mut dom = dom.borrow_mut();
+        let scope = scope.map(|id| NodeId::from_index(id as usize));
+        let result = dom.mutate_dom(|dom| match dom.query_selector_all(&selectors, scope) {
+          Ok(found) => (Ok(found), false),
+          Err(err) => (Err(err), false),
+        });
+        match result {
+          Ok(found) => Ok(found.into_iter().map(|id| id.index() as u32).collect::<Vec<_>>()),
           Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
         }
       }
@@ -680,6 +700,21 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return !!g.__fastrender_dom_has_attribute(this.__node_id, String(name));
   };
 
+  Element.prototype.querySelector = function (selectors) {
+    var id = g.__fastrender_dom_query_selector(String(selectors), this.__node_id);
+    if (id == null) return null;
+    return g.__fastrender_wrap_node_id(id, "element");
+  };
+
+  Element.prototype.querySelectorAll = function (selectors) {
+    var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
+    }
+    return out;
+  };
+
   function defineReflectedString(prop, attr) {
     try {
       Object.defineProperty(Element.prototype, prop, {
@@ -974,9 +1009,19 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return g.__fastrender_wrap_node_id(id, "text");
   };
   Document.prototype.querySelector = function (selectors) {
-    var id = g.__fastrender_dom_query_selector(String(selectors));
+    // Pass an explicit `null` scope so the host binding can treat it as "no scope" even if the
+    // JS engine doesn't map omitted args to `Option<T>` reliably.
+    var id = g.__fastrender_dom_query_selector(String(selectors), null);
     if (id == null) return null;
     return g.__fastrender_wrap_node_id(id, "element");
+  };
+  Document.prototype.querySelectorAll = function (selectors) {
+    var ids = g.__fastrender_dom_query_selector_all(String(selectors), null);
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
+    }
+    return out;
   };
   Document.prototype.getElementById = function (id) {
     var found = g.__fastrender_dom_get_element_by_id(String(id));
@@ -1625,6 +1670,46 @@ const DOM_BINDINGS_SHIM: &str = r##"
     assert!(tokens.contains("c"));
     assert!(!tokens.contains("a"));
     assert!(!tokens.contains("d"));
+    Ok(())
+  }
+
+  #[test]
+  fn query_selector_all_returns_wrappers_and_supports_element_scope() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(
+      "<!doctype html><html><body><div class=b></div><div class=b></div></body></html>",
+    )?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var all = document.querySelectorAll("div.b");
+            if (!all || all.length !== 2) return false;
+            if (typeof all[0].getAttribute !== "function") return false;
+
+            // Identity is cached by node id, so re-querying should return the same wrapper objects.
+            var all2 = document.querySelectorAll("div.b");
+            if (all2.length !== 2) return false;
+            if (all[0] !== all2[0]) return false;
+
+            // Element-scoped queries should work too.
+            var scoped = document.body.querySelectorAll("div.b");
+            if (!scoped || scoped.length !== 2) return false;
+            if (scoped[0] !== all[0]) return false;
+
+            var first = document.body.querySelector("div.b");
+            if (first !== all[0]) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
     Ok(())
   }
 }  
