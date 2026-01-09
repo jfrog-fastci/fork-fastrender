@@ -3,41 +3,15 @@
 //! This crate is intentionally small and focuses on wiring up host-maintained state that is
 //! observable from JavaScript, such as `document.currentScript`.
 
-use fastrender::dom::HTML_NAMESPACE;
 use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
 use fastrender::js::DomHost;
 use fastrender::web::dom::DomException;
 use fastrender::js::CurrentScriptStateHandle;
-use rquickjs::{Ctx, Function, Object, Result as JsResult, Value};
+use rquickjs::{Ctx, Function, Object, Result as JsResult};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-fn element_id(dom: &Dom2Document, node_id: NodeId) -> String {
-  let node = dom.node(node_id);
-  match &node.kind {
-    NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => {
-      let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
-      for (name, value) in attributes {
-        if (is_html && name.eq_ignore_ascii_case("id")) || (!is_html && name == "id") {
-          return value.clone();
-        }
-      }
-      String::new()
-    }
-    _ => String::new(),
-  }
-}
-
-fn element_tag_name(dom: &Dom2Document, node_id: NodeId) -> String {
+fn node_tag_name(dom: &Dom2Document, node_id: NodeId) -> String {
   match &dom.node(node_id).kind {
     NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
     NodeKind::Slot { .. } => "SLOT".to_string(),
@@ -45,59 +19,44 @@ fn element_tag_name(dom: &Dom2Document, node_id: NodeId) -> String {
   }
 }
 
-fn make_element_object<'js>(
-  ctx: Ctx<'js>,
-  dom: &Dom2Document,
-  node_id: NodeId,
-) -> JsResult<Object<'js>> {
-  let element = Object::new(ctx.clone())?;
-  element.set("id", element_id(dom, node_id))?;
-  element.set("tagName", element_tag_name(dom, node_id))?;
-  element.set("__node_id", node_id.index() as u32)?;
+fn get_text_content(dom: &Dom2Document, root: NodeId) -> String {
+  match &dom.node(root).kind {
+    NodeKind::Text { content } => return content.clone(),
+    _ => {}
+  }
 
-  // Minimal DOM mutation hooks frequently used by bootstrap scripts:
-  // `document.head.appendChild(...)`, `document.body.appendChild(...)`, etc.
-  //
-  // This is a very small shim, not a full DOM: we mirror mutations into the Rust `dom2` tree via
-  // host functions, and maintain a JS-side `childNodes` array for compatibility with common code.
-  let child_nodes: Value<'js> = ctx.eval("[]")?;
-  element.set("childNodes", child_nodes)?;
-  let append_child: Function<'js> = ctx.eval(
-    r#"(function (child) {
-      if (!this.childNodes) this.childNodes = [];
-      if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
-        throw new DOMException("InvalidNodeType", "InvalidNodeType");
-      }
-      if (typeof globalThis.__fastrender_dom_append_child === "function" && this.__node_id != null) {
-        globalThis.__fastrender_dom_append_child(this.__node_id, child.__node_id);
-      }
-      this.childNodes.push(child);
-      child.parentNode = this;
-      return child;
-    })"#,
-  )?;
-  element.set("appendChild", append_child)?;
-  let remove_child: Function<'js> = ctx.eval(
-    r#"(function (child) {
-      if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
-        throw new DOMException("InvalidNodeType", "InvalidNodeType");
-      }
-      if (typeof globalThis.__fastrender_dom_remove_child === "function" && this.__node_id != null) {
-        globalThis.__fastrender_dom_remove_child(this.__node_id, child.__node_id);
-      }
-      if (this.childNodes && this.childNodes.length) {
-        var idx = this.childNodes.indexOf(child);
-        if (idx >= 0) this.childNodes.splice(idx, 1);
-      }
-      if (child && (typeof child === "object" || typeof child === "function")) {
-        if (child.parentNode === this) child.parentNode = null;
-      }
-      return child;
-    })"#,
-  )?;
-  element.set("removeChild", remove_child)?;
+  let mut out = String::new();
+  for id in dom.subtree_preorder(root) {
+    if let NodeKind::Text { content } = &dom.node(id).kind {
+      out.push_str(content);
+    }
+  }
+  out
+}
 
-  Ok(element)
+fn set_text_content(dom: &mut Dom2Document, node: NodeId, value: &str) -> Result<bool, DomError> {
+  if node.index() >= dom.nodes_len() {
+    return Err(DomError::NotFoundError);
+  }
+
+  match &dom.node(node).kind {
+    NodeKind::Text { .. } => return dom.set_text_data(node, value),
+    _ => {}
+  }
+
+  // Replace children.
+  let children: Vec<NodeId> = dom.children(node)?.to_vec();
+  let mut changed = false;
+  for child in children {
+    changed |= dom.remove_child(node, child)?;
+  }
+
+  if !value.is_empty() {
+    let text = dom.create_text(value);
+    changed |= dom.append_child(node, text)?;
+  }
+
+  Ok(changed)
 }
 
 pub fn install_dom_bindings<'js, Host>(
@@ -121,25 +80,21 @@ where
       return Ok(None);
     };
 
-    let maybe_id = dom_for_getter.borrow().with_dom(|dom| {
-      // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
-      // surface `null` rather than crashing.
-      if node_id.index() >= dom.nodes_len() {
-        return None;
-      }
-      if !matches!(&dom.node(node_id).kind, NodeKind::Element { .. }) {
-        return None;
-      }
-      Some(element_id(dom, node_id))
+    // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
+    // surface `null` rather than crashing.
+    let is_valid_script = dom_for_getter.borrow().with_dom(|dom| {
+      node_id.index() < dom.nodes_len() && matches!(&dom.node(node_id).kind, NodeKind::Element { .. })
     });
-
-    let Some(id) = maybe_id else {
+    if !is_valid_script {
       return Ok(None);
     };
 
-    let element = Object::new(ctx.clone())?;
-    element.set("id", id)?;
-    Ok(Some(element))
+    // Create/lookup a JS wrapper so `document.currentScript` can be used like a real element
+    // (`.id`, `.getAttribute`, `.dataset`, etc.).
+    let globals = ctx.globals();
+    let wrap_fn: Function<'js> = globals.get("__fastrender_wrap_node_id")?;
+    let el: Object<'js> = wrap_fn.call((node_id.index() as u32, "element"))?;
+    Ok(Some(el))
   })?;
 
   globals.set("__fastrender_get_current_script", getter)?;
@@ -156,45 +111,22 @@ where
   //
   // This is not a full DOM implementation; we expose stable JS objects with minimal shape needed by
   // real-world scripts.
-  let (doc_el, head, body) = dom
+  let (doc_el_id, head_id, body_id) = dom
     .borrow()
-    .with_dom(|dom| -> JsResult<(Option<Object<'js>>, Option<Object<'js>>, Option<Object<'js>>)> {
-    let doc_el = dom
-      .document_element()
-      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
-      .transpose()?;
-    let head = dom
-      .head()
-      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
-      .transpose()?;
-    let body = dom
-      .body()
-      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
-      .transpose()?;
-    Ok((doc_el, head, body))
-  })?;
+    .with_dom(|dom| (dom.document_element(), dom.head(), dom.body()));
+  let wrap_fn: Function<'js> = globals.get("__fastrender_wrap_node_id")?;
+  let doc_el = doc_el_id
+    .map(|id| wrap_fn.call::<_, Object<'js>>((id.index() as u32, "element")))
+    .transpose()?;
+  let head = head_id
+    .map(|id| wrap_fn.call::<_, Object<'js>>((id.index() as u32, "element")))
+    .transpose()?;
+  let body = body_id
+    .map(|id| wrap_fn.call::<_, Object<'js>>((id.index() as u32, "element")))
+    .transpose()?;
   document.set("documentElement", doc_el)?;
   document.set("head", head)?;
   document.set("body", body)?;
-
-  // Ensure these structural nodes are discoverable via `document.querySelector`, which is backed by
-  // the `__fastrender_node_by_id` mapping in `DOM_BINDINGS_SHIM`.
-  ctx.eval::<(), _>(
-    r#"(function () {
-      var g = typeof globalThis !== "undefined" ? globalThis : this;
-      var map = g.__fastrender_node_by_id;
-      if (!map || typeof map.set !== "function") return;
-      var doc = g.document;
-      if (!doc) return;
-      var nodes = [doc.documentElement, doc.head, doc.body];
-      for (var i = 0; i < nodes.length; i++) {
-        var n = nodes[i];
-        if (n && n.__node_id != null) {
-          map.set(n.__node_id, n);
-        }
-      }
-    })();"#,
-  )?;
 
   Ok(())
 }
@@ -304,6 +236,264 @@ where
     })?,
   )?;
 
+  globals.set(
+    "__fastrender_dom_get_element_by_id",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |id: String| {
+        let found = dom.borrow().with_dom(|dom| dom.get_element_by_id(&id));
+        Ok::<Option<u32>, rquickjs::Error>(found.map(|id| id.index() as u32))
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_get_attribute",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.borrow().with_dom(|dom| {
+          dom
+            .get_attribute(node_id, &name)
+            .map(|v| v.map(|s| s.to_string()))
+        });
+        match result {
+          Ok(v) => Ok(v),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_has_attribute",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.borrow().with_dom(|dom| dom.has_attribute(node_id, &name));
+        match result {
+          Ok(v) => Ok(v),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_set_attribute",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String, value: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.set_attribute(node_id, &name, &value) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_remove_attribute",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.remove_attribute(node_id, &name) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_set_bool_attribute",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String, present: bool| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.set_bool_attribute(node_id, &name, present) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_dataset_get",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32, prop: String| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom
+          .borrow()
+          .with_dom(|dom| dom.dataset_get(node_id, &prop).map(|v| v.to_string()));
+        Ok::<Option<String>, rquickjs::Error>(result)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_dataset_set",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, prop: String, value: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.dataset_set(node_id, &prop, &value) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_dataset_delete",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, prop: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.dataset_delete(node_id, &prop) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_style_get_property_value",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32, name: String| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.borrow().with_dom(|dom| dom.style_get_property_value(node_id, &name));
+        Ok::<String, rquickjs::Error>(result)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_style_set_property",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, name: String, value: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match dom.style_set_property(node_id, &name, &value) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_get_text_content",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.borrow().with_dom(|dom| {
+          if node_id.index() >= dom.nodes_len() {
+            return Err(DomError::NotFoundError);
+          }
+          Ok(get_text_content(dom, node_id))
+        });
+        match result {
+          Ok(v) => Ok(v),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_set_text_content",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, value: String| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = NodeId::from_index(node as usize);
+          match set_text_content(dom, node_id, &value) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_get_tag_name",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32| {
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.borrow().with_dom(|dom| {
+          if node_id.index() >= dom.nodes_len() {
+            return Err(DomError::NotFoundError);
+          }
+          Ok(node_tag_name(dom, node_id))
+        });
+        match result {
+          Ok(v) => Ok(v),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
   ctx.eval::<(), _>(DOM_BINDINGS_SHIM)?;
 
   Ok(())
@@ -328,9 +518,13 @@ fn throw_syntax_error<'js, T>(ctx: Ctx<'js>, message: &str) -> JsResult<T> {
   }
 }
 
-const DOM_BINDINGS_SHIM: &str = r#"
+// Note: use `r##"..."##` (double-hash) so the shim can contain `"#` sequences (e.g. CSS selectors
+// like `"#id"`), which would otherwise terminate a `r#"... "#` raw string literal.
+const DOM_BINDINGS_SHIM: &str = r##"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
+  if (g.__fastrender_dom_bindings_installed) return;
+  g.__fastrender_dom_bindings_installed = true;
 
   // --- DOMException (minimal but spec-shaped enough for WPT + real scripts) ---
   if (typeof g.DOMException !== "function") {
@@ -353,88 +547,354 @@ const DOM_BINDINGS_SHIM: &str = r#"
   var doc = g.document;
   if (!doc) return;
 
-  // Node id -> JS object mapping so selectors can preserve identity.
+  function define(obj, key, value) {
+    try {
+      Object.defineProperty(obj, key, { value: value, writable: true, configurable: true });
+    } catch (_e) {
+      obj[key] = value;
+    }
+  }
+
+  function ensureArrayProp(obj, key) {
+    if (!obj) return;
+    if (!Array.isArray(obj[key])) {
+      define(obj, key, []);
+    }
+  }
+
+  // Node id -> JS object mapping so selector queries can preserve identity.
   var nodeById = g.__fastrender_node_by_id;
   if (!nodeById) {
     nodeById = new Map();
     g.__fastrender_node_by_id = nodeById;
   }
 
-  function registerNode(obj, id) {
+  function ensureNodeBasics(obj, id) {
     if (!obj) return obj;
-    try {
-      Object.defineProperty(obj, "__node_id", {
-        value: id,
-        writable: true,
-        configurable: true,
-      });
-    } catch (_e) {
-      obj.__node_id = id;
-    }
+    if (obj.__node_id == null) define(obj, "__node_id", id);
+    if (!("parentNode" in obj)) define(obj, "parentNode", null);
+    ensureArrayProp(obj, "childNodes");
+    if (!("ownerDocument" in obj)) define(obj, "ownerDocument", doc);
     nodeById.set(id, obj);
     return obj;
   }
 
-  function ensureNodeApis(obj) {
-    if (!obj) return;
-    if (typeof obj.appendChild !== "function") {
-      obj.appendChild = function (child) {
-        if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
-          throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
-        }
-        g.__fastrender_dom_append_child(this.__node_id, child.__node_id);
-        if (child && (typeof child === "object" || typeof child === "function")) {
-          child.parentNode = this;
-        }
-        return child;
-      };
+  // --- Prototypes ------------------------------------------------------------
+
+  function Node() {}
+
+  Node.prototype.appendChild = function (child) {
+    if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
     }
-    if (typeof obj.removeChild !== "function") {
-      obj.removeChild = function (child) {
-        if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
-          throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
-        }
-        g.__fastrender_dom_remove_child(this.__node_id, child.__node_id);
-        if (child && (typeof child === "object" || typeof child === "function")) {
-          if (child.parentNode === this) child.parentNode = null;
-        }
-        return child;
-      };
+
+    g.__fastrender_dom_append_child(this.__node_id, child.__node_id);
+
+    ensureArrayProp(this, "childNodes");
+
+    // Maintain a small JS-side view of the tree for bootstrap scripts that inspect `childNodes`.
+    // If the child was already attached somewhere else, detach it from the old parent's JS list.
+    var oldParent = child.parentNode;
+    if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
+      var oldIdx = oldParent.childNodes.indexOf(child);
+      if (oldIdx >= 0) oldParent.childNodes.splice(oldIdx, 1);
+    }
+    if (Array.isArray(this.childNodes)) {
+      var idx = this.childNodes.indexOf(child);
+      if (idx >= 0) this.childNodes.splice(idx, 1);
+      this.childNodes.push(child);
+    }
+    child.parentNode = this;
+    return child;
+  };
+
+  Node.prototype.removeChild = function (child) {
+    if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+
+    g.__fastrender_dom_remove_child(this.__node_id, child.__node_id);
+
+    if (Array.isArray(this.childNodes)) {
+      var idx = this.childNodes.indexOf(child);
+      if (idx >= 0) this.childNodes.splice(idx, 1);
+    }
+    if (child.parentNode === this) child.parentNode = null;
+    return child;
+  };
+
+  try {
+    Object.defineProperty(Node.prototype, "textContent", {
+      get: function () {
+        return String(g.__fastrender_dom_get_text_content(this.__node_id));
+      },
+      set: function (value) {
+        var v = value == null ? "" : String(value);
+        g.__fastrender_dom_set_text_content(this.__node_id, v);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore; scripts can still call the host functions directly if needed.
+  }
+
+  function Element() {}
+  Element.prototype = Object.create(Node.prototype);
+  Element.prototype.constructor = Element;
+
+  try {
+    Object.defineProperty(Element.prototype, "tagName", {
+      get: function () {
+        return String(g.__fastrender_dom_get_tag_name(this.__node_id));
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
+  Element.prototype.getAttribute = function (name) {
+    var v = g.__fastrender_dom_get_attribute(this.__node_id, String(name));
+    return v == null ? null : String(v);
+  };
+
+  Element.prototype.setAttribute = function (name, value) {
+    g.__fastrender_dom_set_attribute(this.__node_id, String(name), String(value));
+  };
+
+  Element.prototype.removeAttribute = function (name) {
+    g.__fastrender_dom_remove_attribute(this.__node_id, String(name));
+  };
+
+  Element.prototype.hasAttribute = function (name) {
+    return !!g.__fastrender_dom_has_attribute(this.__node_id, String(name));
+  };
+
+  function defineReflectedString(prop, attr) {
+    try {
+      Object.defineProperty(Element.prototype, prop, {
+        get: function () {
+          var v = g.__fastrender_dom_get_attribute(this.__node_id, attr);
+          return v == null ? "" : String(v);
+        },
+        set: function (value) {
+          g.__fastrender_dom_set_attribute(this.__node_id, attr, String(value));
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    } catch (_e) {
+      // Ignore.
     }
   }
 
-  // Register the document root as node id 0 (dom2::Document::root()).
-  if (doc.__node_id == null) {
-    registerNode(doc, 0);
+  function defineReflectedBool(prop, attr) {
+    try {
+      Object.defineProperty(Element.prototype, prop, {
+        get: function () {
+          return !!g.__fastrender_dom_has_attribute(this.__node_id, attr);
+        },
+        set: function (value) {
+          g.__fastrender_dom_set_bool_attribute(this.__node_id, attr, !!value);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    } catch (_e) {
+      // Ignore.
+    }
   }
-  ensureNodeApis(doc);
 
-  doc.createElement = function (tagName) {
-    var el = { tagName: String(tagName), parentNode: null };
+  defineReflectedString("id", "id");
+  defineReflectedString("className", "class");
+  defineReflectedString("src", "src");
+  defineReflectedString("srcset", "srcset");
+  defineReflectedString("sizes", "sizes");
+  defineReflectedString("href", "href");
+  defineReflectedString("rel", "rel");
+  defineReflectedString("type", "type");
+  defineReflectedString("charset", "charset");
+  defineReflectedString("crossOrigin", "crossorigin");
+  defineReflectedString("height", "height");
+  defineReflectedString("width", "width");
+  defineReflectedBool("async", "async");
+  defineReflectedBool("defer", "defer");
+
+  var dataset_cache = typeof WeakMap === "function" ? new WeakMap() : null;
+  function datasetProxyFor(el) {
+    if (!dataset_cache) return {};
+    var cached = dataset_cache.get(el);
+    if (cached) return cached;
+    var proxy = new Proxy(
+      {},
+      {
+        get: function (_t, prop) {
+          if (typeof prop !== "string") return undefined;
+          var v = g.__fastrender_dom_dataset_get(el.__node_id, prop);
+          return v == null ? undefined : String(v);
+        },
+        set: function (_t, prop, value) {
+          if (typeof prop !== "string") return false;
+          g.__fastrender_dom_dataset_set(el.__node_id, prop, String(value));
+          return true;
+        },
+        deleteProperty: function (_t, prop) {
+          if (typeof prop !== "string") return true;
+          g.__fastrender_dom_dataset_delete(el.__node_id, prop);
+          return true;
+        },
+      }
+    );
+    dataset_cache.set(el, proxy);
+    return proxy;
+  }
+
+  try {
+    Object.defineProperty(Element.prototype, "dataset", {
+      get: function () {
+        return datasetProxyFor(this);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
+  var style_cache = typeof WeakMap === "function" ? new WeakMap() : null;
+  function styleProxyFor(el) {
+    if (!style_cache) return {};
+    var cached = style_cache.get(el);
+    if (cached) return cached;
+
+    var style = {
+      getPropertyValue: function (name) {
+        return String(g.__fastrender_dom_style_get_property_value(el.__node_id, String(name)));
+      },
+      setProperty: function (name, value) {
+        g.__fastrender_dom_style_set_property(el.__node_id, String(name), String(value));
+      },
+    };
+
+    var proxy = new Proxy(style, {
+      get: function (target, prop) {
+        if (prop in target) return target[prop];
+        if (typeof prop !== "string") return undefined;
+        return target.getPropertyValue(prop);
+      },
+      set: function (target, prop, value) {
+        if (typeof prop !== "string") {
+          target[prop] = value;
+          return true;
+        }
+        g.__fastrender_dom_style_set_property(el.__node_id, prop, String(value));
+        return true;
+      },
+    });
+
+    style_cache.set(el, proxy);
+    return proxy;
+  }
+
+  try {
+    Object.defineProperty(Element.prototype, "style", {
+      get: function () {
+        return styleProxyFor(this);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
+  function Text() {}
+  Text.prototype = Object.create(Node.prototype);
+  Text.prototype.constructor = Text;
+  try {
+    Object.defineProperty(Text.prototype, "data", {
+      get: function () {
+        return this.textContent;
+      },
+      set: function (value) {
+        this.textContent = value == null ? "" : String(value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
+  function Document() {}
+  Document.prototype = Object.create(Node.prototype);
+  Document.prototype.constructor = Document;
+
+  Document.prototype.createElement = function (tagName) {
     var id = g.__fastrender_dom_create_element(String(tagName));
-    registerNode(el, id);
-    ensureNodeApis(el);
-    return el;
+    return g.__fastrender_wrap_node_id(id, "element");
   };
-
-  doc.createTextNode = function (data) {
-    var text = { data: String(data), parentNode: null };
+  Document.prototype.createTextNode = function (data) {
     var id = g.__fastrender_dom_create_text_node(String(data));
-    registerNode(text, id);
-    ensureNodeApis(text);
-    return text;
+    return g.__fastrender_wrap_node_id(id, "text");
   };
-
-  doc.querySelector = function (selectors) {
+  Document.prototype.querySelector = function (selectors) {
     var id = g.__fastrender_dom_query_selector(String(selectors));
     if (id == null) return null;
-    return nodeById.get(id) || null;
+    return g.__fastrender_wrap_node_id(id, "element");
   };
+  Document.prototype.getElementById = function (id) {
+    var found = g.__fastrender_dom_get_element_by_id(String(id));
+    if (found == null) return null;
+    return g.__fastrender_wrap_node_id(found, "element");
+  };
+
+  // --- Wrapper constructor ---------------------------------------------------
+
+  g.__fastrender_wrap_node_id = function (id, kind) {
+    id = Number(id) >>> 0;
+    if (id === 0) {
+      ensureNodeBasics(doc, 0);
+      try {
+        Object.setPrototypeOf(doc, Document.prototype);
+      } catch (_e) {
+        // Ignore.
+      }
+      return doc;
+    }
+
+    var existing = nodeById.get(id);
+    if (existing) return existing;
+
+    var obj = {};
+    ensureNodeBasics(obj, id);
+
+    // Default to an element wrapper; queries only expose elements today.
+    if (kind === "text") {
+      try {
+        Object.setPrototypeOf(obj, Text.prototype);
+      } catch (_e) {
+        // Ignore.
+      }
+    } else {
+      try {
+        Object.setPrototypeOf(obj, Element.prototype);
+      } catch (_e) {
+        // Ignore.
+      }
+    }
+    return obj;
+  };
+
+  // Register the document root as node id 0 (dom2::Document::root()).
+  g.__fastrender_wrap_node_id(0, "document");
 })();
-"#;
+"##;
 
 #[cfg(test)]
-mod tests {
+  mod tests {
   use super::install_dom_bindings;
   use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
   use fastrender::error::{Error, Result};
@@ -484,7 +944,11 @@ mod tests {
     while let Some(node_id) = stack.pop() {
       if let NodeKind::Element { tag_name, .. } = &dom.node(node_id).kind {
         if tag_name.eq_ignore_ascii_case("script")
-          && super::element_id(dom, node_id).as_str() == id
+          && dom
+            .get_attribute(node_id, "id")
+            .ok()
+            .flatten()
+            .is_some_and(|v| v == id)
         {
           return node_id;
         }
@@ -821,4 +1285,71 @@ mod tests {
     assert!(ok, "expected head/body bindings to behave");
     Ok(())
   }
-}
+
+  #[test]
+  fn bootstrap_like_scripts_can_configure_elements_without_throwing() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r##"(function () {
+            var s = document.createElement("script");
+            s.id = "boot";
+            s.src = "https://example.invalid/boot.js";
+            s.async = true;
+            s.defer = false;
+            s.crossOrigin = "anonymous";
+            s.dataset.fooBar = "baz";
+            s.style.display = "none";
+            s.textContent = "console.log('boot')";
+            document.head.appendChild(s);
+
+            if (document.getElementById("boot") !== s) return false;
+            if (document.querySelector("#boot") !== s) return false;
+            return true;
+          })()"##,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected bootstrap-like script to run without errors");
+
+    let dom_ref = &dom.borrow().dom;
+    let script = dom_ref
+      .get_element_by_id("boot")
+      .expect("script appended to head should be discoverable");
+    assert_eq!(
+      dom_ref.get_attribute(script, "src").unwrap(),
+      Some("https://example.invalid/boot.js")
+    );
+    assert!(dom_ref.has_attribute(script, "async").unwrap());
+    assert!(!dom_ref.has_attribute(script, "defer").unwrap());
+    assert_eq!(
+      dom_ref.get_attribute(script, "crossorigin").unwrap(),
+      Some("anonymous")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(script, "data-foo-bar").unwrap(),
+      Some("baz")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(script, "style").unwrap(),
+      Some("display: none;")
+    );
+    // textContent becomes a single text node child.
+    let children = dom_ref.children(script).unwrap();
+    assert!(
+      children.len() == 1
+        && matches!(&dom_ref.node(children[0]).kind, NodeKind::Text { content } if content == "console.log('boot')"),
+      "expected script.textContent to create a single text child"
+    );
+
+    Ok(())
+  }
+} 
