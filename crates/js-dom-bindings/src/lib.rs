@@ -381,6 +381,63 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_get_first_child",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32| {
+        let child = dom.borrow().with_dom(|dom| {
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .and_then(|node_id| dom.first_child(node_id))
+            .map(|id| id.index() as u32)
+        });
+        Ok::<Option<u32>, rquickjs::Error>(child)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_get_next_sibling",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32| {
+        let sibling = dom.borrow().with_dom(|dom| {
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .and_then(|node_id| dom.next_sibling(node_id))
+            .map(|id| id.index() as u32)
+        });
+        Ok::<Option<u32>, rquickjs::Error>(sibling)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_get_node_kind",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32| {
+        let kind = dom.borrow().with_dom(|dom| {
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .map(|node_id| match &dom.node(node_id).kind {
+              NodeKind::Document { .. } => "document",
+              NodeKind::DocumentFragment => "fragment",
+              NodeKind::Text { .. } => "text",
+              NodeKind::Comment { .. } => "comment",
+              _ => "element",
+            })
+            .map(ToString::to_string)
+        });
+        Ok::<Option<String>, rquickjs::Error>(kind)
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_query_selector",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -916,24 +973,35 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return set;
   }
 
+  function wrapNodeId(id) {
+    var existing = getCachedNode(id);
+    if (existing) return existing;
+    var kind = null;
+    try {
+      kind = g.__fastrender_dom_get_node_kind(id);
+    } catch (_e) {
+      kind = null;
+    }
+    if (kind == null) kind = "element";
+    return g.__fastrender_wrap_node_id(id, kind);
+  }
+
   function firstChildExcluding(parent, excluded) {
-    if (!parent || !Array.isArray(parent.childNodes)) return null;
-    for (var i = 0; i < parent.childNodes.length; i++) {
-      var n = parent.childNodes[i];
-      if (!n || n.__node_id == null) continue;
-      if (!excluded[n.__node_id]) return n;
+    if (!parent || parent.__node_id == null) return null;
+    var id = g.__fastrender_dom_get_first_child(parent.__node_id);
+    while (id != null) {
+      if (!excluded || !excluded[id]) return wrapNodeId(id);
+      id = g.__fastrender_dom_get_next_sibling(id);
     }
     return null;
   }
 
   function nextSiblingExcluding(parent, node, excluded) {
-    if (!parent || !Array.isArray(parent.childNodes)) return null;
-    var idx = parent.childNodes.indexOf(node);
-    if (idx < 0) return null;
-    for (var i = idx + 1; i < parent.childNodes.length; i++) {
-      var n = parent.childNodes[i];
-      if (!n || n.__node_id == null) continue;
-      if (!excluded[n.__node_id]) return n;
+    if (!node || node.__node_id == null) return null;
+    var id = g.__fastrender_dom_get_next_sibling(node.__node_id);
+    while (id != null) {
+      if (!excluded || !excluded[id]) return wrapNodeId(id);
+      id = g.__fastrender_dom_get_next_sibling(id);
     }
     return null;
   }
@@ -1817,16 +1885,15 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
   function parentNodeReplaceChildren(target, args) {
     var nodes = coerceNodes(args);
-    ensureArrayProp(target, "childNodes");
-    if (Array.isArray(target.childNodes)) {
-      // Copy so we can mutate in place.
-      var existing = target.childNodes.slice();
-      for (var i = 0; i < existing.length; i++) {
-        try {
-          target.removeChild(existing[i]);
-        } catch (_e) {
-          // Ignore; the JS-side view can be partial for pre-existing DOM nodes.
-        }
+    if (target && target.__node_id != null) {
+      // Avoid relying on the JS `childNodes` cache, which can be incomplete for nodes that existed
+      // in the initial DOM snapshot.
+      //
+      // Traverse using host-provided sibling links, removing until no children remain.
+      for (;;) {
+        var childId = g.__fastrender_dom_get_first_child(target.__node_id);
+        if (childId == null) break;
+        target.removeChild(wrapNodeId(childId));
       }
     }
     for (var i = 0; i < nodes.length; i++) {
@@ -3090,6 +3157,88 @@ const DOM_BINDINGS_SHIM: &str = r##"
       })
       .map_err(|e| Error::Other(e.to_string()))?;
     assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn convenience_mutation_methods_work_with_preexisting_dom_children() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(concat!(
+      "<!doctype html>",
+      "<html><body><div id=a></div><div id=b></div></body></html>",
+    ))?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    // Prepend must insert before dom2's first child even when `document.body.childNodes` is empty.
+    ctx
+      .with(|ctx| {
+        ctx.eval::<(), _>(
+          r#"(function () {
+            var p = document.createElement("p");
+            p.id = "p";
+            document.body.prepend(p);
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    {
+      let dom_ref = &dom.borrow().dom;
+      let body = dom_ref.body().expect("expected body");
+      let children = dom_ref.children(body).expect("read body children");
+      assert_eq!(children.len(), 3);
+      assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("p"));
+      assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("a"));
+      assert_eq!(dom_ref.get_attribute(children[2], "id").unwrap(), Some("b"));
+    }
+
+    // ChildNode.after must insert between dom2 siblings even when the JS `childNodes` cache does not
+    // include the pre-existing nodes.
+    ctx
+      .with(|ctx| {
+        ctx.eval::<(), _>(
+          r#"(function () {
+            var x = document.createElement("x");
+            x.id = "x";
+            document.getElementById("a").after(x);
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    {
+      let dom_ref = &dom.borrow().dom;
+      let body = dom_ref.body().expect("expected body");
+      let children = dom_ref.children(body).expect("read body children");
+      assert_eq!(children.len(), 4);
+      assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("p"));
+      assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("a"));
+      assert_eq!(dom_ref.get_attribute(children[2], "id").unwrap(), Some("x"));
+      assert_eq!(dom_ref.get_attribute(children[3], "id").unwrap(), Some("b"));
+    }
+
+    // replaceChildren must clear all children, including those that existed in the initial DOM
+    // snapshot.
+    ctx
+      .with(|ctx| ctx.eval::<(), _>(r#"document.body.replaceChildren("hi");"#))
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    let dom_ref = &dom.borrow().dom;
+    let body = dom_ref.body().expect("expected body");
+    let children = dom_ref.children(body).expect("read body children");
+    assert_eq!(children.len(), 1);
+    assert!(
+      matches!(&dom_ref.node(children[0]).kind, NodeKind::Text { content } if content == "hi"),
+      "expected body.replaceChildren to leave a single text node"
+    );
+    assert!(dom_ref.get_element_by_id("a").is_none());
+    assert!(dom_ref.get_element_by_id("b").is_none());
+    assert!(dom_ref.get_element_by_id("p").is_none());
+    assert!(dom_ref.get_element_by_id("x").is_none());
+
     Ok(())
   }
 
