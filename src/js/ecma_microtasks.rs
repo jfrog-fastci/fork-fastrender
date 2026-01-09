@@ -61,20 +61,16 @@ impl<'a, Host: 'static> VmJsHostHooks<'a, Host> {
 }
 
 impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
-  fn host_enqueue_promise_job(&mut self, job: vm_js::RootedJob, realm: Option<vm_js::RealmId>) {
+  fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
     if self.enqueue_error.is_some() {
       return;
     }
 
-    let result = self.event_loop.queue_microtask(move |host, event_loop| {
+    let result = self.event_loop.queue_microtask(move |host, _event_loop| {
       let mut ctx = VmJsJobContext { host, realm };
-      let mut job = job;
-      let mut hooks = VmJsHostHooks::new(event_loop);
-      job.run(&mut ctx, &mut hooks)
+      job
+        .run(&mut ctx)
         .map_err(|err| Error::Other(format!("vm-js job failed: {err}")))?;
-      if let Some(err) = hooks.take_error() {
-        return Err(err);
-      }
       Ok(())
     });
 
@@ -121,7 +117,7 @@ mod tests {
       let mut hooks = VmJsHostHooks::new(event_loop);
       let log1 = log_for_task.clone();
       hooks.host_enqueue_promise_job(
-        vm_js::RootedJob::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx| {
           log1.lock().unwrap().push("job1");
           Ok(())
         }),
@@ -129,7 +125,7 @@ mod tests {
       );
       let log2 = log_for_task.clone();
       hooks.host_enqueue_promise_job(
-        vm_js::RootedJob::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx| {
           log2.lock().unwrap().push("job2");
           Ok(())
         }),
