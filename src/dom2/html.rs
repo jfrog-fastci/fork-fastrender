@@ -274,4 +274,78 @@ impl Document {
     let _ = insert_adjacent_node(self, element, pos, text)?;
     Ok(())
   }
+
+  /// HTML `Range.createContextualFragment(string)` adapted for `dom2`.
+  ///
+  /// This returns a detached `DocumentFragment` whose children are parsed in a context derived from
+  /// `context_node` (per the HTML spec). Unlike `innerHTML`/`outerHTML`/`insertAdjacentHTML`,
+  /// `<script>` elements inside the returned fragment are *not* marked "already started".
+  ///
+  /// Spec: https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-range-createcontextualfragment
+  pub fn create_contextual_fragment(
+    &mut self,
+    context_node: NodeId,
+    html: &str,
+  ) -> DomResult<NodeId> {
+    let Some(node) = self.nodes.get(context_node.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+
+    let (element, element_is_html) = match &node.kind {
+      NodeKind::Element { tag_name, namespace, .. } => (
+        Some(context_node),
+        tag_name.eq_ignore_ascii_case("html") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+      ),
+      NodeKind::Slot { .. } => (Some(context_node), false),
+      NodeKind::Text { .. } | NodeKind::Comment { .. } => {
+        if let Some(parent) = node.parent {
+          if let Some(parent_node) = self.nodes.get(parent.index()) {
+            match &parent_node.kind {
+              NodeKind::Element {
+                tag_name, namespace, ..
+              } => (
+                Some(parent),
+                tag_name.eq_ignore_ascii_case("html")
+                  && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+              ),
+              NodeKind::Slot { .. } => (Some(parent), false),
+              _ => (None, false),
+            }
+          } else {
+            (None, false)
+          }
+        } else {
+          (None, false)
+        }
+      }
+      _ => (None, false),
+    };
+
+    let parse_context = if element.is_none() || element_is_html {
+      self.create_element("body", HTML_NAMESPACE)
+    } else {
+      element.expect("element checked above")
+    };
+
+    let fragment = super::dom_parsing::parse_html_fragment_as_fragment(self, parse_context, html)?;
+
+    // Range.createContextualFragment must *not* mark scripts as already started; reset the flag on
+    // any script element descendants.
+    let to_check: Vec<NodeId> = self.subtree_preorder(fragment).collect();
+    for node_id in to_check {
+      let is_html_script = match &self.nodes[node_id.index()].kind {
+        NodeKind::Element {
+          tag_name, namespace, ..
+        } => {
+          tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+        }
+        _ => false,
+      };
+      if is_html_script {
+        self.nodes[node_id.index()].script_already_started = false;
+      }
+    }
+
+    Ok(fragment)
+  }
 }

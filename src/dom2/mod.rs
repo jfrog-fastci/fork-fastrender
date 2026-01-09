@@ -1472,6 +1472,8 @@ mod html5ever_sink_tests;
 mod inner_html_tests;
 #[cfg(test)]
 mod html_tests;
+#[cfg(test)]
+mod contextual_fragment_tests;
 
 #[cfg(test)]
 mod helper_tests {
