@@ -1260,6 +1260,7 @@ impl FontContext {
     let allow_remote = options.policy.permits_remote_fetch();
     let selected_faces = Self::select_web_font_faces_for_load(
       faces,
+      base_url,
       allow_remote,
       filter_by_codepoints,
       used_codepoints,
@@ -1370,31 +1371,31 @@ impl FontContext {
         let guard = PendingTask::new(self.pending_async.clone());
         let done_tx: mpsc::Sender<usize> = block_tx.clone();
         let ctx = self.clone();
-         let events = Arc::clone(&events);
-         let expired_jobs = Arc::clone(&expired_jobs);
-         let render_deadline = render_deadline.clone();
-         std::thread::spawn(move || {
-           let _pending = guard;
-           let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-           if render_control::check_active(RenderStage::Css).is_err() {
-             let timed_out = expired_jobs
-               .lock()
-               .map(|set| set.contains(&job_id))
-               .unwrap_or(false);
-             if !timed_out {
-               record_font_event(
-                 &events,
-                 FontLoadEvent::skipped(&family_clone, None, face_clone.display, "render cancelled"),
-               );
-             }
-             let _ = done_tx.send(job_id);
-             return;
-           }
-           let start = Instant::now();
-           let event = ctx.load_face_sources_with_report(
-             &family_clone,
-             &face_clone,
-             base.as_deref(),
+        let events = Arc::clone(&events);
+        let expired_jobs = Arc::clone(&expired_jobs);
+        let render_deadline = render_deadline.clone();
+        std::thread::spawn(move || {
+          let _pending = guard;
+          let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+          if render_control::check_active(RenderStage::Css).is_err() {
+            let timed_out = expired_jobs
+              .lock()
+              .map(|set| set.contains(&job_id))
+              .unwrap_or(false);
+            if !timed_out {
+              record_font_event(
+                &events,
+                FontLoadEvent::skipped(&family_clone, None, face_clone.display, "render cancelled"),
+              );
+            }
+            let _ = done_tx.send(job_id);
+            return;
+          }
+          let start = Instant::now();
+          let event = ctx.load_face_sources_with_report(
+            &family_clone,
+            &face_clone,
+            base.as_deref(),
             order,
             start,
             allow_remote,
@@ -1431,24 +1432,24 @@ impl FontContext {
     // render until an explicit wait/activation step is performed.
     for (order, family, face, base) in deferred_faces {
       let guard = PendingTask::new(self.pending_async.clone());
-       let ctx = self.clone();
-       let events = Arc::clone(&events);
-       let render_deadline = render_deadline.clone();
-       std::thread::spawn(move || {
-         let _pending = guard;
-         let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-         if render_control::check_active(RenderStage::Css).is_err() {
-           record_font_event(
-             &events,
-             FontLoadEvent::skipped(&family, None, face.display, "render cancelled"),
-           );
-           return;
-         }
-         let start = Instant::now();
-         let event = ctx.load_face_sources_with_report(
-           &family,
-           &face,
-           base.as_deref(),
+      let ctx = self.clone();
+      let events = Arc::clone(&events);
+      let render_deadline = render_deadline.clone();
+      std::thread::spawn(move || {
+        let _pending = guard;
+        let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+        if render_control::check_active(RenderStage::Css).is_err() {
+          record_font_event(
+            &events,
+            FontLoadEvent::skipped(&family, None, face.display, "render cancelled"),
+          );
+          return;
+        }
+        let start = Instant::now();
+        let event = ctx.load_face_sources_with_report(
+          &family,
+          &face,
+          base.as_deref(),
           order,
           start,
           allow_remote,
@@ -1624,6 +1625,7 @@ impl FontContext {
 
   fn select_web_font_faces_for_load(
     faces: &[FontFaceRule],
+    base_url: Option<&str>,
     allow_remote: bool,
     filter_by_codepoints: bool,
     used_codepoints: &[u32],
@@ -1634,20 +1636,27 @@ impl FontContext {
       return Vec::new();
     }
 
+    let face_has_non_http_source = |face: &FontFaceRule| {
+      face.sources.iter().any(|src| match src {
+        FontFaceSource::Local(_) => true,
+        FontFaceSource::Url(url_src) => {
+          let resolved = resolve_font_url(&url_src.url, base_url);
+          !has_prefix_ignore_ascii_case(&resolved, "http://")
+            && !has_prefix_ignore_ascii_case(&resolved, "https://")
+        }
+      })
+    };
+
     let local_only = !allow_remote;
     let mut subset_candidates: Vec<(usize, usize)> = Vec::new();
-    let mut unknown_candidates: Vec<usize> = Vec::new();
+    let mut unknown_local_candidates: Vec<usize> = Vec::new();
+    let mut unknown_remote_candidates: Vec<usize> = Vec::new();
 
     for (order, face) in faces.iter().enumerate() {
       if face.family.is_none() || face.sources.is_empty() {
         continue;
       }
-      if local_only
-        && !face
-          .sources
-          .iter()
-          .any(|src| matches!(src, FontFaceSource::Local(_)))
-      {
+      if local_only && !face_has_non_http_source(face) {
         continue;
       }
 
@@ -1666,11 +1675,15 @@ impl FontContext {
         }
       }
 
-      unknown_candidates.push(order);
+      if face_has_non_http_source(face) {
+        unknown_local_candidates.push(order);
+      } else {
+        unknown_remote_candidates.push(order);
+      }
     }
 
-    if unknown_candidates.len() > max_fonts {
-      unknown_candidates.truncate(max_fonts);
+    if unknown_remote_candidates.len() > max_fonts {
+      unknown_remote_candidates.truncate(max_fonts);
     }
 
     let subset_indices = if !filter_by_codepoints || max_subset_fonts == 0 {
@@ -1693,7 +1706,8 @@ impl FontContext {
       indices
     };
 
-    let mut selected = unknown_candidates;
+    let mut selected = unknown_local_candidates;
+    selected.extend(unknown_remote_candidates);
     selected.extend(subset_indices);
     selected.sort_unstable();
     selected.dedup();
@@ -4976,7 +4990,7 @@ mod tests {
     let used_codepoints: Vec<u32> = (0..9).map(|i| 0xE000 + i).collect();
 
     let selected =
-      FontContext::select_web_font_faces_for_load(&faces, true, true, &used_codepoints, 8, 64);
+      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 8, 64);
     assert_eq!(selected, (0..9).collect::<Vec<_>>());
   }
 
@@ -4996,7 +5010,7 @@ mod tests {
     let used_codepoints = vec![0x0041];
 
     let selected =
-      FontContext::select_web_font_faces_for_load(&faces, true, true, &used_codepoints, 8, 64);
+      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 8, 64);
     assert_eq!(selected, (0..8).collect::<Vec<_>>());
   }
 
@@ -5039,7 +5053,7 @@ mod tests {
     ];
 
     let selected =
-      FontContext::select_web_font_faces_for_load(&faces, true, true, &used_codepoints, 0, 2);
+      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 0, 2);
     assert_eq!(selected, vec![0, 1]);
   }
 

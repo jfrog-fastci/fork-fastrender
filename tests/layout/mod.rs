@@ -165,6 +165,7 @@ mod scroll_snap_writing_mode;
 mod scrollbar_gutter;
 mod viewport_scrollbar_gutter;
 mod viewport_vw_units;
+mod web_font_swap_layout;
 mod shadow_dom;
 mod shape_outside;
 mod sideways_lr_regressions;
