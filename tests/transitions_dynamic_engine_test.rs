@@ -285,6 +285,52 @@ fn transition_delay_negative_starts_partway_through() -> Result<()> {
 }
 
 #[test]
+fn transition_delay_negative_finishes_immediately_when_delay_exceeds_duration() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box { width: 100px; height: 100px; background: black; opacity: 0; transition: opacity 1000ms linear -1500ms; }
+      #box.b { opacity: 1; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  // The transition is considered to have started 1500ms in the past; since duration is 1000ms,
+  // it should already be finished at t=0.
+  let eps = 1e-3;
+  let cases = [(0.0, 1.0), (100.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
 fn transition_reverses_with_shortened_duration() -> Result<()> {
   ensure_test_env();
 
