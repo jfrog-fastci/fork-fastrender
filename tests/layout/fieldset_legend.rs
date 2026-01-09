@@ -80,6 +80,59 @@ fn fieldset_legend_overlaps_border_and_pushes_content_down() {
 }
 
 #[test]
+fn fieldset_legend_overlaps_border_and_pushes_content_down_vertical_rl() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      fieldset#fs {
+        margin: 0;
+        padding: 0;
+        width: 40px;
+        height: 200px;
+        border: 4px solid black;
+        writing-mode: vertical-rl;
+      }
+      legend#lg { margin: 0; padding: 40px 0; }
+      #c { display: block; margin: 0; width: 10px; height: 10px; }
+    </style>
+    <fieldset id="fs">
+      <legend id="lg">Legend</legend>
+      <div id="c"></div>
+    </fieldset>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let intermediates = layout_intermediates(&mut renderer, html, 80, 240);
+  let fs = inspect_id(&intermediates, "fs");
+  let lg = inspect_id(&intermediates, "lg");
+  let c = inspect_id(&intermediates, "c");
+
+  let fs_bounds = block_bounds(&fs);
+  let lg_bounds = block_bounds(&lg);
+  let c_bounds = block_bounds(&c);
+
+  // In vertical-rl, the block-start edge is on the physical right.
+  // The legend should be pulled toward the right border so it overlaps that border line.
+  let fs_right = fs_bounds.x + fs_bounds.width;
+  let lg_right = lg_bounds.x + lg_bounds.width;
+  assert!(
+    lg_right > fs_right - 4.5,
+    "legend should overlap fieldset border-start (right) edge (fieldset_right={} legend_right={})",
+    fs_right,
+    lg_right
+  );
+
+  // The content should start to the left of the legend's left edge to avoid overlap.
+  let c_right = c_bounds.x + c_bounds.width;
+  assert!(
+    c_right <= lg_bounds.x + 0.1,
+    "content should start after legend block-end (legend_left={} content_right={})",
+    lg_bounds.x,
+    c_right
+  );
+}
+
+#[test]
 fn legend_shrinks_to_fit_in_fieldset() {
   let html = r#"<!doctype html>
     <style>
