@@ -1171,7 +1171,7 @@ fn install_constructors(
     let platform_objects_for_is_connected = platform_objects.clone();
     let is_connected_get = rt.alloc_function_value(move |rt, this, _args| {
       let node_id = extract_node_id(rt, &platform_objects_for_is_connected, this)?;
-      Ok(Value::Bool(dom_for_is_connected.borrow().is_connected(node_id)))
+      Ok(Value::Bool(dom_for_is_connected.borrow().is_connected_for_scripting(node_id)))
     })?;
     define_accessor(
       rt,
@@ -2330,6 +2330,58 @@ mod tests {
       .call_function(append_child, document, &[div])
       .unwrap();
     assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(true));
+  }
+
+  #[test]
+  fn node_is_connected_is_false_for_inert_template_contents() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+
+    let template_tag = realm.rt.alloc_string_value("template").unwrap();
+    let template = realm
+      .rt
+      .call_function(create_element, document, &[template_tag])
+      .unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let child = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_child, template, &[child])
+      .unwrap();
+
+    let is_connected_key = pk(&mut realm.rt, "isConnected");
+    assert_eq!(
+      realm.rt.get(template, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.rt.get(child, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
+
+    // Connecting a `<template>` should not connect its inert contents subtree.
+    realm
+      .rt
+      .call_function(append_child, document, &[template])
+      .unwrap();
+    assert_eq!(
+      realm.rt.get(template, is_connected_key).unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.rt.get(child, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
   }
 
   #[test]
