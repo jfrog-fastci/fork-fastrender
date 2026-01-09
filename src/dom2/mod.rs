@@ -19,6 +19,9 @@ mod js_shims;
 mod mutation;
 mod shadow_dom;
 mod style_attr;
+mod inner_html;
+mod dom_parsing;
+mod serialization;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
@@ -1407,6 +1410,8 @@ mod selectors_detached_tests;
 mod wbr_tests;
 #[cfg(test)]
 mod html5ever_sink_tests;
+#[cfg(test)]
+mod inner_html_tests;
 
 #[cfg(test)]
 mod helper_tests {
