@@ -18,7 +18,7 @@ mod test_public_api {
     FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
     ResourcePolicy, Rgba,
   };
-  use fastrender::render_control::{set_stage_listener, StageHeartbeat};
+  use fastrender::render_control::{push_stage_listener, StageHeartbeat};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
@@ -29,14 +29,6 @@ mod test_public_api {
     // Avoid any display-list builder rayon fan-out so the suite stays fast and deterministic.
     toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
     RuntimeToggles::from_map(toggles)
-  }
-
-  struct StageListenerGuard;
-
-  impl Drop for StageListenerGuard {
-    fn drop(&mut self) {
-      set_stage_listener(None);
-    }
   }
 
   fn deterministic_config() -> FastRenderConfig {
@@ -554,9 +546,6 @@ mod test_public_api {
 
   #[test]
   fn test_render_paint_build_stage_emitted_once_for_display_list_backend() {
-    // Stage listeners are global; serialise tests that install them.
-    let _lock = crate::misc::global_test_lock();
-
     let paint_build_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let paint_rasterize_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen_paint = Arc::new(AtomicBool::new(false));
@@ -564,7 +553,7 @@ mod test_public_api {
     let paint_build_count_listener = Arc::clone(&paint_build_count);
     let paint_rasterize_count_listener = Arc::clone(&paint_rasterize_count);
     let seen_paint_listener = Arc::clone(&seen_paint);
-    set_stage_listener(Some(Arc::new(move |stage| match stage {
+    let _listener_guard = push_stage_listener(Some(Arc::new(move |stage| match stage {
       StageHeartbeat::PaintBuild => {
         paint_build_count_listener.fetch_add(1, Ordering::Relaxed);
         seen_paint_listener.store(true, Ordering::Relaxed);
@@ -575,7 +564,6 @@ mod test_public_api {
       }
       _ => {}
     })));
-    let _stage_guard = StageListenerGuard;
 
     let mut renderer = deterministic_renderer();
     renderer
@@ -1053,11 +1041,10 @@ mod test_public_api {
     assert!(result.is_ok(), "Complex layout should succeed");
     let fragment_tree = result.unwrap();
     assert!(fragment_tree.fragment_count() > 0);
-    // Viewport scrollbars are modeled as consuming layout space (CSS Overflow 3). The test document
-    // is intentionally taller than the viewport, so the layout viewport shrinks by the default
-    // scrollbar gutter width.
-    let gutter = fastrender::layout::utils::resolve_scrollbar_width(&fastrender::ComputedStyle::default());
-    assert_eq!(fragment_tree.viewport_size().width, 240.0 - gutter);
+    // Viewport scrollbars use overlay gutters by default (`scrollbar-gutter: auto`), matching
+    // modern headless Chrome; overflowing content does not shrink the layout viewport unless the
+    // author opts into classic gutters via `scrollbar-gutter: stable`.
+    assert_eq!(fragment_tree.viewport_size().width, 240.0);
     assert_eq!(fragment_tree.viewport_size().height, 180.0);
   }
 

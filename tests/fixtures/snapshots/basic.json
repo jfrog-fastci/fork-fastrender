@@ -1231,16 +1231,16 @@
                       },
                       "style": {
                         "display": "inline",
-                        "position": "absolute",
+                        "position": "static",
                         "z_index": null,
                         "visibility": "Visible",
                         "opacity": 1.0,
                         "overflow_x": "visible",
                         "overflow_y": "visible",
-                        "top": "Length { value: 10.0, unit: Px, calc: None }",
+                        "top": "auto",
                         "right": "auto",
                         "bottom": "auto",
-                        "left": "Length { value: 6.0, unit: Px, calc: None }",
+                        "left": "auto",
                         "margin": {
                           "top": "Length { value: 0.0, unit: Px, calc: None }",
                           "right": "Length { value: 0.0, unit: Px, calc: None }",
@@ -1254,16 +1254,16 @@
                           "left": false
                         },
                         "padding": {
-                          "top": "Length { value: 2.0, unit: Px, calc: None }",
-                          "right": "Length { value: 2.0, unit: Px, calc: None }",
-                          "bottom": "Length { value: 2.0, unit: Px, calc: None }",
-                          "left": "Length { value: 2.0, unit: Px, calc: None }"
+                          "top": "Length { value: 0.0, unit: Px, calc: None }",
+                          "right": "Length { value: 0.0, unit: Px, calc: None }",
+                          "bottom": "Length { value: 0.0, unit: Px, calc: None }",
+                          "left": "Length { value: 0.0, unit: Px, calc: None }"
                         },
                         "border": {
-                          "top": "Length { value: 1.0, unit: Px, calc: None }",
-                          "right": "Length { value: 1.0, unit: Px, calc: None }",
-                          "bottom": "Length { value: 1.0, unit: Px, calc: None }",
-                          "left": "Length { value: 1.0, unit: Px, calc: None }"
+                          "top": "Length { value: 0.0, unit: Px, calc: None }",
+                          "right": "Length { value: 0.0, unit: Px, calc: None }",
+                          "bottom": "Length { value: 0.0, unit: Px, calc: None }",
+                          "left": "Length { value: 0.0, unit: Px, calc: None }"
                         },
                         "background_color": {
                           "r": 0,
@@ -1754,13 +1754,13 @@
                       "x": 6.0,
                       "y": 8.0,
                       "width": 120.0,
-                      "height": 21.792002
+                      "height": 18.0
                     },
                     "scroll_overflow": {
                       "x": 0.0,
                       "y": 0.0,
                       "width": 120.0,
-                      "height": 21.792002
+                      "height": 18.0
                     },
                     "fragment_index": 0,
                     "fragment_count": 1,
@@ -1825,13 +1825,13 @@
                           "x": 0.0,
                           "y": 0.0,
                           "width": 120.0,
-                          "height": 21.792002
+                          "height": 18.0
                         },
                         "scroll_overflow": {
                           "x": 0.0,
                           "y": 0.0,
                           "width": 120.0,
-                          "height": 21.792002
+                          "height": 18.0
                         },
                         "fragment_index": 0,
                         "fragment_count": 1,
@@ -1847,20 +1847,20 @@
                               "x": 0.0,
                               "y": 0.0,
                               "width": 120.0,
-                              "height": 21.792002
+                              "height": 18.0
                             },
                             "scroll_overflow": {
                               "x": 0.0,
                               "y": 0.0,
                               "width": 120.0,
-                              "height": 21.792002
+                              "height": 18.0
                             },
                             "fragment_index": 0,
                             "fragment_count": 1,
                             "fragmentainer_index": 0,
                             "content": {
                               "type": "line",
-                              "baseline": 17.104
+                              "baseline": 14.0
                             },
                             "children": [
                               {
@@ -1869,13 +1869,13 @@
                                   "x": 0.0,
                                   "y": 0.0,
                                   "width": 27.744,
-                                  "height": 21.792002
+                                  "height": 18.0
                                 },
                                 "scroll_overflow": {
                                   "x": 0.0,
                                   "y": 0.0,
                                   "width": 27.744,
-                                  "height": 21.792002
+                                  "height": 18.0
                                 },
                                 "fragment_index": 0,
                                 "fragment_count": 1,
@@ -1941,13 +1941,13 @@
                                       "x": 0.0,
                                       "y": 0.0,
                                       "width": 27.744,
-                                      "height": 21.792002
+                                      "height": 18.0
                                     },
                                     "scroll_overflow": {
                                       "x": 0.0,
                                       "y": 0.0,
                                       "width": 27.744,
-                                      "height": 21.792002
+                                      "height": 18.0
                                     },
                                     "fragment_index": 0,
                                     "fragment_count": 1,
@@ -1956,7 +1956,7 @@
                                       "type": "text",
                                       "text": "Bye",
                                       "box_id": 9,
-                                      "baseline_offset": 17.104,
+                                      "baseline_offset": 14.0,
                                       "is_marker": false
                                     },
                                     "style": {
@@ -2023,14 +2023,14 @@
                     "bounds": {
                       "x": 8.0,
                       "y": 12.0,
-                      "width": 6.0,
-                      "height": 6.0
+                      "width": 23.808,
+                      "height": 24.0
                     },
                     "scroll_overflow": {
                       "x": 0.0,
                       "y": 0.0,
-                      "width": 30.808,
-                      "height": 38.792
+                      "width": 23.808,
+                      "height": 24.0
                     },
                     "fragment_index": 0,
                     "fragment_count": 1,
@@ -2092,94 +2092,45 @@
                       {
                         "fragment_id": 10,
                         "bounds": {
-                          "x": 7.0,
-                          "y": 11.0,
-                          "width": 23.808,
-                          "height": 27.792002
+                          "x": 3.0,
+                          "y": 3.0,
+                          "width": 17.808,
+                          "height": 18.0
                         },
                         "scroll_overflow": {
                           "x": 0.0,
                           "y": 0.0,
-                          "width": 23.808,
-                          "height": 27.792002
+                          "width": 17.808,
+                          "height": 18.0
                         },
                         "fragment_index": 0,
                         "fragment_count": 1,
                         "fragmentainer_index": 0,
                         "content": {
                           "type": "block",
-                          "box_id": 5
-                        },
-                        "style": {
-                          "display": "inline",
-                          "position": "absolute",
-                          "z_index": null,
-                          "visibility": "Visible",
-                          "opacity": 1.0,
-                          "overflow_x": "visible",
-                          "overflow_y": "visible",
-                          "top": "Length { value: 10.0, unit: Px, calc: None }",
-                          "right": "auto",
-                          "bottom": "auto",
-                          "left": "Length { value: 6.0, unit: Px, calc: None }",
-                          "margin": {
-                            "top": "Length { value: 0.0, unit: Px, calc: None }",
-                            "right": "Length { value: 0.0, unit: Px, calc: None }",
-                            "bottom": "Length { value: 0.0, unit: Px, calc: None }",
-                            "left": "Length { value: 0.0, unit: Px, calc: None }"
-                          },
-                          "margin_auto": {
-                            "top": false,
-                            "right": false,
-                            "bottom": false,
-                            "left": false
-                          },
-                          "padding": {
-                            "top": "Length { value: 2.0, unit: Px, calc: None }",
-                            "right": "Length { value: 2.0, unit: Px, calc: None }",
-                            "bottom": "Length { value: 2.0, unit: Px, calc: None }",
-                            "left": "Length { value: 2.0, unit: Px, calc: None }"
-                          },
-                          "border": {
-                            "top": "Length { value: 1.0, unit: Px, calc: None }",
-                            "right": "Length { value: 1.0, unit: Px, calc: None }",
-                            "bottom": "Length { value: 1.0, unit: Px, calc: None }",
-                            "left": "Length { value: 1.0, unit: Px, calc: None }"
-                          },
-                          "background_color": {
-                            "r": 0,
-                            "g": 0,
-                            "b": 0,
-                            "a": 0.0
-                          },
-                          "color": {
-                            "r": 5,
-                            "g": 6,
-                            "b": 7,
-                            "a": 1.0
-                          }
+                          "box_id": null
                         },
                         "children": [
                           {
                             "fragment_id": 11,
                             "bounds": {
-                              "x": 3.0,
-                              "y": 3.0,
+                              "x": 0.0,
+                              "y": 0.0,
                               "width": 17.808,
-                              "height": 21.792002
+                              "height": 18.0
                             },
                             "scroll_overflow": {
                               "x": 0.0,
                               "y": 0.0,
                               "width": 17.808,
-                              "height": 21.792002
+                              "height": 18.0
                             },
                             "fragment_index": 0,
                             "fragment_count": 1,
                             "fragmentainer_index": 0,
                             "content": {
-                              "type": "block",
-                              "box_id": null
+                              "type": "line",
+                              "baseline": 14.0
                             },
                             "children": [
                               {
@@ -2188,20 +2139,70 @@
                                   "x": 0.0,
                                   "y": 0.0,
                                   "width": 17.808,
-                                  "height": 21.792002
+                                  "height": 18.0
                                 },
                                 "scroll_overflow": {
                                   "x": 0.0,
                                   "y": 0.0,
                                   "width": 17.808,
-                                  "height": 21.792002
+                                  "height": 18.0
                                 },
                                 "fragment_index": 0,
                                 "fragment_count": 1,
                                 "fragmentainer_index": 0,
                                 "content": {
-                                  "type": "line",
-                                  "baseline": 17.104
+                                  "type": "inline",
+                                  "box_id": 5,
+                                  "fragment_index": 0
+                                },
+                                "style": {
+                                  "display": "inline",
+                                  "position": "static",
+                                  "z_index": null,
+                                  "visibility": "Visible",
+                                  "opacity": 1.0,
+                                  "overflow_x": "visible",
+                                  "overflow_y": "visible",
+                                  "top": "auto",
+                                  "right": "auto",
+                                  "bottom": "auto",
+                                  "left": "auto",
+                                  "margin": {
+                                    "top": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "right": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "bottom": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "left": "Length { value: 0.0, unit: Px, calc: None }"
+                                  },
+                                  "margin_auto": {
+                                    "top": false,
+                                    "right": false,
+                                    "bottom": false,
+                                    "left": false
+                                  },
+                                  "padding": {
+                                    "top": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "right": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "bottom": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "left": "Length { value: 0.0, unit: Px, calc: None }"
+                                  },
+                                  "border": {
+                                    "top": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "right": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "bottom": "Length { value: 0.0, unit: Px, calc: None }",
+                                    "left": "Length { value: 0.0, unit: Px, calc: None }"
+                                  },
+                                  "background_color": {
+                                    "r": 0,
+                                    "g": 0,
+                                    "b": 0,
+                                    "a": 0.0
+                                  },
+                                  "color": {
+                                    "r": 5,
+                                    "g": 6,
+                                    "b": 7,
+                                    "a": 1.0
+                                  }
                                 },
                                 "children": [
                                   {
@@ -2210,13 +2211,13 @@
                                       "x": 0.0,
                                       "y": 0.0,
                                       "width": 17.808,
-                                      "height": 21.792002
+                                      "height": 18.0
                                     },
                                     "scroll_overflow": {
                                       "x": 0.0,
                                       "y": 0.0,
                                       "width": 17.808,
-                                      "height": 21.792002
+                                      "height": 18.0
                                     },
                                     "fragment_index": 0,
                                     "fragment_count": 1,
@@ -2225,7 +2226,7 @@
                                       "type": "text",
                                       "text": "Hi",
                                       "box_id": 6,
-                                      "baseline_offset": 17.104,
+                                      "baseline_offset": 14.0,
                                       "is_marker": false
                                     },
                                     "style": {
@@ -2490,7 +2491,7 @@
         "kind": "text",
         "bounds": {
           "x": 14.0,
-          "y": 17.104,
+          "y": 14.0,
           "width": 27.744,
           "height": 20.0
         },
@@ -2506,7 +2507,7 @@
           "glyphs": 3,
           "origin": {
             "x": 14.0,
-            "y": 33.104000091552734
+            "y": 30.0
           },
           "shadows": []
         }
@@ -2517,8 +2518,8 @@
         "bounds": {
           "x": 15.5,
           "y": 19.5,
-          "width": 7.0,
-          "height": 7.0
+          "width": 24.808,
+          "height": 25.0
         },
         "details": {
           "bottom": {
@@ -2561,8 +2562,8 @@
             }
           },
           "rect": {
-            "height": 6.0,
-            "width": 6.0,
+            "height": 24.0,
+            "width": 23.808000564575195,
             "x": 16.0,
             "y": 20.0
           },
@@ -2590,87 +2591,10 @@
       },
       {
         "item_id": 9,
-        "kind": "border",
-        "bounds": {
-          "x": 22.5,
-          "y": 30.5,
-          "width": 24.808,
-          "height": 28.792002
-        },
-        "details": {
-          "bottom": {
-            "color": {
-              "a": 1.0,
-              "b": 70,
-              "g": 60,
-              "r": 50
-            },
-            "style": "Dashed",
-            "width": 1.0
-          },
-          "has_image": false,
-          "left": {
-            "color": {
-              "a": 1.0,
-              "b": 70,
-              "g": 60,
-              "r": 50
-            },
-            "style": "Dashed",
-            "width": 1.0
-          },
-          "radii": {
-            "bottom_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "bottom_right": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_right": {
-              "x": 0.0,
-              "y": 0.0
-            }
-          },
-          "rect": {
-            "height": 27.792001724243164,
-            "width": 23.808000564575195,
-            "x": 23.0,
-            "y": 31.0
-          },
-          "right": {
-            "color": {
-              "a": 1.0,
-              "b": 70,
-              "g": 60,
-              "r": 50
-            },
-            "style": "Dashed",
-            "width": 1.0
-          },
-          "top": {
-            "color": {
-              "a": 1.0,
-              "b": 70,
-              "g": 60,
-              "r": 50
-            },
-            "style": "Dashed",
-            "width": 1.0
-          }
-        }
-      },
-      {
-        "item_id": 10,
         "kind": "text",
         "bounds": {
-          "x": 26.0,
-          "y": 35.104,
+          "x": 19.0,
+          "y": 21.0,
           "width": 17.807999,
           "height": 20.0
         },
@@ -2685,18 +2609,18 @@
           "font_size": 16.0,
           "glyphs": 2,
           "origin": {
-            "x": 26.0,
-            "y": 51.104000091552734
+            "x": 19.0,
+            "y": 37.0
           },
           "shadows": []
         }
       },
       {
-        "item_id": 11,
+        "item_id": 10,
         "kind": "pop_clip"
       },
       {
-        "item_id": 12,
+        "item_id": 11,
         "kind": "pop_stacking_context"
       }
     ]

@@ -8247,20 +8247,27 @@ mod tests {
       "-webkit-appearance:none should disable native control replacement"
     );
 
-    fn find_input_box<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
-      if node
-        .debug_info
-        .as_ref()
-        .and_then(|info| info.tag_name.as_deref())
-        == Some("input")
-        && matches!(node.style.appearance, Appearance::None)
-      {
+    fn find_node_id_by_id_attr(node: &crate::style::cascade::StyledNode, id: &str) -> Option<usize> {
+      if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
+        if attributes.iter().any(|(name, value)| name == "id" && value == id) {
+          return Some(node.node_id);
+        }
+      }
+      node.children.iter().find_map(|child| find_node_id_by_id_attr(child, id))
+    }
+    let input_node_id =
+      find_node_id_by_id_attr(&styled, "plain").expect("expected <input id=plain> in styled tree");
+
+    fn find_box_by_node_id<'a>(node: &'a BoxNode, node_id: usize) -> Option<&'a BoxNode> {
+      if node.styled_node_id == Some(node_id) && node.generated_pseudo.is_none() {
         return Some(node);
       }
-      node.children.iter().find_map(find_input_box)
+      node.children.iter().find_map(|child| find_box_by_node_id(child, node_id))
     }
+    let input_box = find_box_by_node_id(&box_tree.root, input_node_id)
+      .expect("expected <input id=plain> to produce a box tree node");
     assert!(
-      find_input_box(&box_tree.root).is_some(),
+      matches!(input_box.style.appearance, Appearance::None),
       "expected -webkit-appearance:none to compute to appearance:none"
     );
   }
@@ -8292,20 +8299,27 @@ mod tests {
       "-moz-appearance:none should disable native control replacement"
     );
 
-    fn find_input_box<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
-      if node
-        .debug_info
-        .as_ref()
-        .and_then(|info| info.tag_name.as_deref())
-        == Some("input")
-        && matches!(node.style.appearance, Appearance::None)
-      {
+    fn find_node_id_by_id_attr(node: &crate::style::cascade::StyledNode, id: &str) -> Option<usize> {
+      if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
+        if attributes.iter().any(|(name, value)| name == "id" && value == id) {
+          return Some(node.node_id);
+        }
+      }
+      node.children.iter().find_map(|child| find_node_id_by_id_attr(child, id))
+    }
+    let input_node_id =
+      find_node_id_by_id_attr(&styled, "plain").expect("expected <input id=plain> in styled tree");
+
+    fn find_box_by_node_id<'a>(node: &'a BoxNode, node_id: usize) -> Option<&'a BoxNode> {
+      if node.styled_node_id == Some(node_id) && node.generated_pseudo.is_none() {
         return Some(node);
       }
-      node.children.iter().find_map(find_input_box)
+      node.children.iter().find_map(|child| find_box_by_node_id(child, node_id))
     }
+    let input_box = find_box_by_node_id(&box_tree.root, input_node_id)
+      .expect("expected <input id=plain> to produce a box tree node");
     assert!(
-      find_input_box(&box_tree.root).is_some(),
+      matches!(input_box.style.appearance, Appearance::None),
       "expected -moz-appearance:none to compute to appearance:none"
     );
   }

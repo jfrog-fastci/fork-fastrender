@@ -712,12 +712,7 @@ impl InlineFormattingContext {
         None
       };
       if crate::debug::runtime::runtime_toggles().truthy("FASTR_LOG_FOOTNOTES") {
-        if child
-          .debug_info
-          .as_ref()
-          .and_then(|d| d.tag_name.as_deref())
-          .is_some_and(|name| name.contains("footnote-call"))
-        {
+        if child.footnote_body.is_some() {
           eprintln!(
             "[footnotes] saw call box_id={} has_body={}",
             child.id,

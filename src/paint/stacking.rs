@@ -1635,10 +1635,14 @@ where
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
       let child_offset = if child_is_viewport_fixed {
-        Point::new(
-          child.bounds.origin.x - this_context_abs_offset.x,
-          child.bounds.origin.y - this_context_abs_offset.y,
-        )
+        if skip_viewport_scroll_cancel_for_children {
+          child.bounds.origin
+        } else {
+          Point::new(
+            child.bounds.origin.x - this_context_abs_offset.x,
+            child.bounds.origin.y - this_context_abs_offset.y,
+          )
+        }
       } else {
         Point::new(
           base_offset.x + child.bounds.origin.x,
@@ -1764,10 +1768,14 @@ where
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
       let child_offset = if child_is_viewport_fixed {
-        Point::new(
-          child.bounds.origin.x - context_abs_offset.x,
-          child.bounds.origin.y - context_abs_offset.y,
-        )
+        if skip_viewport_scroll_cancel_for_children {
+          child.bounds.origin
+        } else {
+          Point::new(
+            child.bounds.origin.x - context_abs_offset.x,
+            child.bounds.origin.y - context_abs_offset.y,
+          )
+        }
       } else {
         Point::new(
           base_offset.x + child.bounds.origin.x,
@@ -1948,10 +1956,14 @@ where
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
       let child_offset = if child_is_viewport_fixed {
-        Point::new(
-          child.bounds.origin.x - this_context_abs_offset.x,
-          child.bounds.origin.y - this_context_abs_offset.y,
-        )
+        if skip_viewport_scroll_cancel_for_children {
+          child.bounds.origin
+        } else {
+          Point::new(
+            child.bounds.origin.x - this_context_abs_offset.x,
+            child.bounds.origin.y - this_context_abs_offset.y,
+          )
+        }
       } else {
         Point::new(
           base_offset.x + child.bounds.origin.x,
@@ -2076,10 +2088,14 @@ where
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
       let child_offset = if child_is_viewport_fixed {
-        Point::new(
-          child.bounds.origin.x - context_abs_offset.x,
-          child.bounds.origin.y - context_abs_offset.y,
-        )
+        if skip_viewport_scroll_cancel_for_children {
+          child.bounds.origin
+        } else {
+          Point::new(
+            child.bounds.origin.x - context_abs_offset.x,
+            child.bounds.origin.y - context_abs_offset.y,
+          )
+        }
       } else {
         Point::new(
           base_offset.x + child.bounds.origin.x,
