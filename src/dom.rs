@@ -13449,6 +13449,21 @@ mod tests {
   }
 
   #[test]
+  fn parse_html_ignores_noscript_content_with_scripting_enabled() {
+    let html = "<!doctype html><html><head><noscript><style id='fallback-style'>.fallback{color:red;}</style></noscript></head><body><noscript><div id='fallback'>hello</div></noscript></body></html>";
+    let dom = parse_html_with_options(html, DomParseOptions::javascript_enabled()).expect("parse");
+
+    assert!(
+      find_element_by_id(&dom, "fallback-style").is_none(),
+      "head <noscript> children should not be parsed when scripting is enabled"
+    );
+    assert!(
+      find_element_by_id(&dom, "fallback").is_none(),
+      "body <noscript> children should not be parsed when scripting is enabled"
+    );
+  }
+
+  #[test]
   fn scope_matches_document_root_only() {
     let child = element("div", vec![]);
     let root = element("html", vec![child.clone()]);
