@@ -3183,25 +3183,18 @@ pub fn compute_part_export_map_with_ids(
 
       if node.is_shadow_host() {
         let nested_id = ids.get(&(node as *const DomNode)).copied().unwrap_or(0);
-        if let Some(mapping) = node.get_attribute_ref("exportparts") {
+        // Nested shadow contents are only exposed when the nested host opts in via `exportparts`.
+        if node.get_attribute_ref("exportparts").is_some() {
           if let Some(nested_exports) = map.exports_for_host(nested_id) {
-            for (inner, alias) in parse_exportparts(mapping) {
-              check_active_periodic(
-                &mut deadline_counter,
-                SHADOW_MAP_DEADLINE_STRIDE,
-                RenderStage::Cascade,
-              )
-              .map_err(Error::Render)?;
-              if let Some(targets) = nested_exports.get(&inner) {
-                for target in targets {
-                  check_active_periodic(
-                    &mut deadline_counter,
-                    SHADOW_MAP_DEADLINE_STRIDE,
-                    RenderStage::Cascade,
-                  )
-                  .map_err(Error::Render)?;
-                  push_part_export(&mut exports, &alias, target.clone());
-                }
+            for (name, targets) in nested_exports.iter() {
+              for target in targets {
+                check_active_periodic(
+                  &mut deadline_counter,
+                  SHADOW_MAP_DEADLINE_STRIDE,
+                  RenderStage::Cascade,
+                )
+                .map_err(Error::Render)?;
+                push_part_export(&mut exports, name, target.clone());
               }
             }
           }
@@ -3218,6 +3211,12 @@ pub fn compute_part_export_map_with_ids(
     }
 
     if let Some(exportparts) = host.get_attribute_ref("exportparts") {
+      // Per CSS Shadow Parts, `exportparts` acts as an allowlist: when present, only the mapped
+      // part names are exported across this shadow boundary.
+      //
+      // Apply the mapping against the pre-mapping `exports` table so mappings cannot chain within a
+      // single attribute value (e.g. `a:b, b:c` must not export `a` as `c` when there is no `b`).
+      let mut mapped: HashMap<String, Vec<ExportedPartTarget>> = HashMap::new();
       for (internal, alias) in parse_exportparts(exportparts) {
         check_active_periodic(
           &mut deadline_counter,
@@ -3225,7 +3224,7 @@ pub fn compute_part_export_map_with_ids(
           RenderStage::Cascade,
         )
         .map_err(Error::Render)?;
-        if let Some(targets) = exports.get(&internal).cloned() {
+        if let Some(targets) = exports.get(&internal) {
           for target in targets {
             check_active_periodic(
               &mut deadline_counter,
@@ -3233,10 +3232,11 @@ pub fn compute_part_export_map_with_ids(
               RenderStage::Cascade,
             )
             .map_err(Error::Render)?;
-            push_part_export(&mut exports, &alias, target);
+            push_part_export(&mut mapped, &alias, target.clone());
           }
         }
       }
+      exports = mapped;
     }
 
     map.insert_host_exports(host_id, exports);

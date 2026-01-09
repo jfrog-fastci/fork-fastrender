@@ -119,6 +119,10 @@ fn part_export_map_alias_chaining_across_multiple_levels() {
     targets.contains(&ExportedPartTarget::Element(inner_part_id)),
     "chained alias exports must include forwarded element target"
   );
+  assert!(
+    exports.get("mid").is_none(),
+    "outer host exportparts mapping must not leak intermediate part name"
+  );
 }
 
 #[test]
@@ -150,6 +154,94 @@ fn part_export_map_does_not_leak_nested_shadow_without_exportparts() {
       !targets.contains(&ExportedPartTarget::Element(inner_part_id))
     }),
     "outer host exports must not include inner shadow part without exportparts"
+  );
+}
+
+#[test]
+fn part_export_map_host_exportparts_hides_unlisted_parts() {
+  let html = r#"
+    <div id="host" exportparts="one">
+      <template shadowrootmode="open">
+        <span id="one-part" part="one"></span>
+        <span id="two-part" part="two"></span>
+      </template>
+    </div>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+  let host_id = node_id_by_html_id(&dom, &ids, "host");
+  let one_id = node_id_by_html_id(&dom, &ids, "one-part");
+
+  let exports = map.exports_for_host(host_id).expect("host exports");
+  let one_targets = exports.get("one").expect("one part exports");
+  assert!(
+    one_targets.contains(&ExportedPartTarget::Element(one_id)),
+    "listed part should be exported"
+  );
+  assert!(
+    exports.get("two").is_none(),
+    "unlisted part must not be exported when exportparts is present"
+  );
+}
+
+#[test]
+fn part_export_map_host_exportparts_rename_hides_internal_name() {
+  let html = r#"
+    <div id="host" exportparts="inner:outer">
+      <template shadowrootmode="open">
+        <span id="part" part="inner"></span>
+      </template>
+    </div>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+  let host_id = node_id_by_html_id(&dom, &ids, "host");
+  let part_id = node_id_by_html_id(&dom, &ids, "part");
+
+  let exports = map.exports_for_host(host_id).expect("host exports");
+  let targets = exports.get("outer").expect("outer part exports");
+  assert!(
+    targets.contains(&ExportedPartTarget::Element(part_id)),
+    "renamed part must be exported under its alias"
+  );
+  assert!(
+    exports.get("inner").is_none(),
+    "internal part name must not be exported when exportparts renames it"
+  );
+}
+
+#[test]
+fn part_export_map_host_exportparts_does_not_chain_mappings() {
+  let html = r#"
+    <div id="host" exportparts="inner:mid, mid:outer">
+      <template shadowrootmode="open">
+        <span id="part" part="inner"></span>
+      </template>
+    </div>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+  let host_id = node_id_by_html_id(&dom, &ids, "host");
+  let part_id = node_id_by_html_id(&dom, &ids, "part");
+
+  let exports = map.exports_for_host(host_id).expect("host exports");
+  let targets = exports.get("mid").expect("mid part exports");
+  assert!(
+    targets.contains(&ExportedPartTarget::Element(part_id)),
+    "first mapping should export the part under its alias"
+  );
+  assert!(
+    exports.get("outer").is_none(),
+    "exportparts mappings must not chain within a single attribute value"
   );
 }
 
