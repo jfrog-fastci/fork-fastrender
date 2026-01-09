@@ -1101,6 +1101,11 @@ impl JsRuntime for VmJsRuntime {
     if self.is_bigint(value) {
       return Ok(value);
     }
+    if let Value::Object(obj) = value {
+      if let Some(bigint_data) = self.bigint_object_data(obj)? {
+        return Ok(Value::BigInt(bigint_data));
+      }
+    }
     Ok(Value::Number(self.to_number(value)?))
   }
 

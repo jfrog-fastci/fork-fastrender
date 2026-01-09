@@ -69,7 +69,7 @@ impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn call(
     &mut self,
-    hooks: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     this: vm_js::Value,
     args: &[vm_js::Value],
@@ -83,15 +83,15 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      vm.call_with_host(&mut scope, hooks, callee, this, args)
+      vm.call_with_host(&mut scope, host, callee, this, args)
     } else {
-      vm.call_with_host(&mut scope, hooks, callee, this, args)
+      vm.call_with_host(&mut scope, host, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
-    hooks: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     args: &[vm_js::Value],
     new_target: vm_js::Value,
@@ -104,9 +104,9 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      vm.construct_with_host(&mut scope, hooks, callee, args, new_target)
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     } else {
-      vm.construct_with_host(&mut scope, hooks, callee, args, new_target)
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     }
   }
 

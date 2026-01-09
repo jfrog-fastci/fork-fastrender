@@ -186,7 +186,7 @@ struct RegisteredListener {
   options: AddEventListenerOptions,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct EventListenerRegistry {
   next_record_id: Cell<u64>,
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
@@ -284,6 +284,22 @@ impl EventListenerRegistry {
       listeners.remove(&target);
     }
     true
+  }
+}
+
+impl Clone for EventListenerRegistry {
+  fn clone(&self) -> Self {
+    // `RefCell`'s derived Clone impl panics if the cell is mutably borrowed. Cloning the registry is
+    // only used for snapshotting/testing today, so prefer a best-effort clone over panicking.
+    let listeners = self
+      .listeners
+      .try_borrow()
+      .map(|map| map.clone())
+      .unwrap_or_default();
+    Self {
+      next_record_id: Cell::new(self.next_record_id.get()),
+      listeners: RefCell::new(listeners),
+    }
   }
 }
 
