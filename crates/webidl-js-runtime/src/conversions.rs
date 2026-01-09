@@ -645,7 +645,32 @@ pub fn to_interface<R: WebIdlJsRuntime>(
   if rt.implements_interface(value, interface) {
     return Ok(value);
   }
-  Err(rt.throw_type_error("Value is not a platform object implementing the expected interface"))
+  Err(rt.throw_type_error(&format!(
+    "Value is not a platform object implementing interface `{interface}`"
+  )))
+}
+
+/// Convert an ECMAScript value to an opaque platform object id for a given WebIDL interface.
+///
+/// This is a convenience wrapper around [`WebIdlJsRuntime::implements_interface`] and
+/// [`WebIdlJsRuntime::platform_object_opaque`].
+pub fn to_interface_opaque<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  interface: &str,
+) -> Result<u64, R::Error> {
+  if !rt.implements_interface(value, interface) {
+    return Err(rt.throw_type_error(&format!(
+      "Value is not a platform object implementing interface `{interface}`"
+    )));
+  }
+  rt
+    .platform_object_opaque(value)
+    .ok_or_else(|| {
+      rt.throw_type_error(&format!(
+        "Platform object implementing interface `{interface}` does not expose an opaque id"
+      ))
+    })
 }
 
 fn convert_to_callback_internal<R: WebIdlJsRuntime>(
@@ -732,6 +757,39 @@ pub fn convert_to_interface<R: WebIdlJsRuntime>(
   ty: &IdlType,
 ) -> Result<R::JsValue, R::Error> {
   convert_to_interface_internal(rt, value, ty)
+}
+
+fn convert_to_interface_opaque_internal<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  ty: &IdlType,
+) -> Result<Option<u64>, R::Error> {
+  match ty {
+    IdlType::Annotated { inner, .. } => convert_to_interface_opaque_internal(rt, value, inner),
+    IdlType::Nullable(inner) => {
+      if is_null_or_undefined(rt, value) {
+        return Ok(None);
+      }
+      convert_to_interface_opaque_internal(rt, value, inner)
+    }
+    IdlType::Named(named) => match named.kind {
+      NamedTypeKind::Interface => Ok(Some(to_interface_opaque(rt, value, &named.name)?)),
+      _ => Err(rt.throw_type_error("Expected an interface type")),
+    },
+    _ => Err(rt.throw_type_error("Expected an interface type")),
+  }
+}
+
+/// Convert an ECMAScript value to an opaque platform object id described by `ty`.
+///
+/// - For `Interface` types, returns `Ok(Some(id))`.
+/// - For `nullable interface` types, returns `Ok(None)` when `value` is `null` or `undefined`.
+pub fn convert_to_interface_opaque<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  ty: &IdlType,
+) -> Result<Option<u64>, R::Error> {
+  convert_to_interface_opaque_internal(rt, value, ty)
 }
 
 /// Invoke a previously-converted callback interface value.

@@ -6,10 +6,7 @@
 
 use crate::runtime::WebIdlJsRuntime;
 
-use webidl_ir::{
-  DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext,
-  WebIdlValue,
-};
+use webidl_ir::{IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext, WebIdlValue};
 
 /// Limits applied while converting WebIDL values back into JavaScript.
 ///
@@ -427,7 +424,10 @@ mod tests {
   use crate::VmJsRuntime;
   use std::collections::BTreeMap;
   use vm_js::Value;
-  use webidl_ir::{parse_idl_type_complete, DictionarySchema, NamedType, NamedTypeKind, PlatformObject};
+  use webidl_ir::{
+    parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema, NamedType, NamedTypeKind,
+    PlatformObject,
+  };
 
   #[test]
   fn primitives_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
