@@ -271,28 +271,53 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
       UiToWorker::Scroll {
         tab_id,
         delta_css,
-        ..
+        pointer_css,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        if tab.document.is_none() {
+        let Some(doc) = tab.document.as_mut() else {
           continue;
+        };
+
+        let pointer = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+        let delta = (
+          if delta_css.0.is_finite() { delta_css.0 } else { 0.0 },
+          if delta_css.1.is_finite() { delta_css.1 } else { 0.0 },
+        );
+
+        if let Some((x, y)) = pointer {
+          // Prefer pointer-based wheel scrolling when we have a cached layout; this enables nested
+          // overflow container scrolling, scroll chaining, and viewport fallback.
+          if doc
+            .wheel_scroll_at_viewport_point(Point::new(x, y), delta)
+            .is_ok()
+          {
+            tab.scroll_state = doc.scroll_state();
+          } else {
+            let next = Point::new(
+              tab.scroll_state.viewport.x + delta.0,
+              tab.scroll_state.viewport.y + delta.1,
+            );
+            tab.scroll_state.viewport.x =
+              if next.x.is_finite() { next.x.max(0.0) } else { 0.0 };
+            tab.scroll_state.viewport.y =
+              if next.y.is_finite() { next.y.max(0.0) } else { 0.0 };
+            doc.set_scroll_state(tab.scroll_state.clone());
+          }
+        } else {
+          let next = Point::new(
+            tab.scroll_state.viewport.x + delta.0,
+            tab.scroll_state.viewport.y + delta.1,
+          );
+          tab.scroll_state.viewport.x = if next.x.is_finite() { next.x.max(0.0) } else { 0.0 };
+          tab.scroll_state.viewport.y = if next.y.is_finite() { next.y.max(0.0) } else { 0.0 };
+          doc.set_scroll_state(tab.scroll_state.clone());
         }
 
-        let next = Point::new(
-          tab.scroll_state.viewport.x + delta_css.0,
-          tab.scroll_state.viewport.y + delta_css.1,
-        );
-        tab.scroll_state.viewport.x = if next.x.is_finite() { next.x.max(0.0) } else { 0.0 };
-        tab.scroll_state.viewport.y = if next.y.is_finite() { next.y.max(0.0) } else { 0.0 };
         tab
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-
-        if let Some(doc) = tab.document.as_mut() {
-          doc.set_scroll_state(tab.scroll_state.clone());
-        }
         repaint_if_needed(tab_id, tab, &tx);
       }
       UiToWorker::PointerMove { tab_id, pos_css, .. } => {

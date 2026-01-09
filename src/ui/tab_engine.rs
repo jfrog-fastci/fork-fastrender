@@ -1,5 +1,6 @@
 use crate::api::FastRender;
 use crate::geometry::Point;
+use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
@@ -159,15 +160,32 @@ impl TabEngine {
       UiToWorker::Scroll {
         tab_id,
         delta_css,
-        pointer_css: _,
+        pointer_css,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           return;
         };
 
+        let delta_x = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
+        let delta_y = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+
         let mut next = tab.scroll_state.clone();
-        next.viewport.x = (next.viewport.x + delta_css.0).max(0.0);
-        next.viewport.y = (next.viewport.y + delta_css.1).max(0.0);
+        if let (Some(doc), Some((x, y))) = (
+          tab.prepared.as_ref(),
+          pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()),
+        ) {
+          let page_point = Point::new(x + next.viewport.x, y + next.viewport.y);
+          next = apply_wheel_scroll_at_point(
+            doc.fragment_tree(),
+            &next,
+            doc.layout_viewport(),
+            page_point,
+            ScrollWheelInput { delta_x, delta_y },
+          );
+        } else {
+          next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+          next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+        }
         tab.scroll_state = next;
 
         // Best-effort: if we have a prepared document, repaint and synchronize the scroll state.

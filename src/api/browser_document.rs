@@ -456,8 +456,8 @@ impl BrowserDocument {
 
   /// Applies a scroll wheel delta at a point in viewport coordinates.
   ///
-  /// This updates element scroll container offsets (e.g. `<select size>` listboxes) using the
-  /// cached layout's fragment tree. Viewport scrolling is intentionally not handled here.
+  /// This updates both viewport scroll and element scroll container offsets (e.g. `<select size>`
+  /// listboxes) using the cached layout's fragment tree.
   pub fn wheel_scroll_at_viewport_point(
     &mut self,
     viewport_point_css: crate::geometry::Point,
