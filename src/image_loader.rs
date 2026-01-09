@@ -3915,6 +3915,7 @@ impl ImageCache {
             || (local_name == "src" && node.tag_name().name() == "image")
           {
             check_url(attr.value())?;
+            continue;
           }
 
           if local_name == "style" {
@@ -3925,7 +3926,16 @@ impl ImageCache {
               svg_url,
               &mut check_url,
             )?;
+            continue;
           }
+
+          scan_css_urls(
+            attr.value(),
+            false,
+            &mut css_budget_remaining,
+            svg_url,
+            &mut check_url,
+          )?;
         }
 
         if node.tag_name().name() == "style" {
@@ -6559,6 +6569,47 @@ mod tests {
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_url_in_fill_attribute() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://cross.test/a.png)" width="10" height="10"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG attribute url() subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.png");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_url_in_filter_attribute() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><rect filter="url(https://cross.test/f.svg#f)" width="10" height="10"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG attribute url() subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/f.svg#f");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_ignores_fragment_only_url_in_attributes() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(#grad)" width="10" height="10"/></svg>"#;
+    cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect("expected fragment-only url() references to be ignored");
   }
 
   #[test]
