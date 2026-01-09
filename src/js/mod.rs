@@ -35,6 +35,7 @@ pub mod browser_tab;
 pub mod page_load;
 pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
+pub mod promise;
 pub mod runtime;
 pub mod time;
 pub mod url;
@@ -45,6 +46,7 @@ pub mod vm_host;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
+pub mod fetch;
 pub mod webidl;
 pub mod bindings;
 pub mod window_realm;
@@ -96,6 +98,8 @@ pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmH
 pub use window::{WindowHost, WindowHostState};
 pub use vm_host::JsVmHost;
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
+pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};
+pub use fetch::{fetch, FetchInit, HeadersInit, JsHeaders, JsRequest, JsResponse, RequestInit, WebFetchHost};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
