@@ -164,6 +164,11 @@ CPU by stopping stale work early.
 ## Known limitations (as of now)
 
 - **No author JavaScript**: `<script>` does not execute.
+- **Window UI interaction parity**: the windowed `browser` app currently uses a minimal in-binary
+  worker (`spawn_default_render_worker` in [`src/bin/browser.rs`](../src/bin/browser.rs)) that
+  repaints on input but does not yet apply DOM interaction/hit-testing. Link clicking and basic
+  form interactions are currently implemented in the headless worker loop
+  ([`src/ui/worker.rs`](../src/ui/worker.rs)) used by integration tests.
 - **Limited form support** (non-JS):
   - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
   - many controls are not yet supported (`<select>`, `contenteditable`, file inputs, etc.)
