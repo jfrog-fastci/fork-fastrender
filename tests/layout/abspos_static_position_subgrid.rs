@@ -425,3 +425,69 @@ fn absolute_child_in_nested_subgrid_inherits_named_grid_lines_for_static_positio
     abs_fragment.bounds.x()
   );
 }
+
+#[test]
+fn absolute_child_in_subgrid_named_line_static_position_respects_parent_span() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  parent_style.grid_column_line_names = vec![
+    vec!["one".to_string()],
+    vec!["two".to_string()],
+    vec!["three".to_string()],
+    vec!["four".to_string()],
+  ];
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  // Place the subgrid on the parent grid from the second line to the fourth line (columns 2-3).
+  subgrid_style.grid_column_start = 2;
+  subgrid_style.grid_column_end = 4;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  // "three / four" should resolve to the second track *within the subgrid*, even though the subgrid
+  // begins on parent line "two".
+  abs_style.grid_column_raw = Some("three / four".to_string());
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let container = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fc = GridFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("grid layout");
+
+  let abs_fragment = fragment
+    .iter_fragments()
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
+    .expect("absolute fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 30.0).abs() < 0.1,
+    "static position should align with the second subgrid track (got x = {})",
+    abs_fragment.bounds.x()
+  );
+}

@@ -365,7 +365,8 @@ impl ScriptRealm for VmJsScriptRealm {
       scope.alloc_object().map_err(vm_error_to_runtime)?
     };
     let value = Value::Object(obj);
-    self.env
+    self
+      .env
       .set(&mut self.heap, name, value)
       .map_err(vm_error_to_runtime)?;
     self.host_functions.insert(
@@ -438,6 +439,19 @@ impl Evaluator<'_> {
     let mut frames = self.vm.capture_stack();
     frames.push(self.frame_at_loc(loc, None));
     format_stack_trace(&frames)
+  }
+
+  fn vm_error_at_loc(&self, loc: parse_js::loc::Loc, err: VmError) -> ScriptError {
+    match err {
+      VmError::Termination(term) => ScriptError::Termination {
+        reason: term.reason.into(),
+        stack_trace: format_stack_trace(&term.stack),
+      },
+      other => ScriptError::Runtime {
+        message: other.to_string(),
+        stack_trace: self.stack_trace_at_loc(loc),
+      },
+    }
   }
 
   fn value_to_string(&self, heap: &mut Heap, value: Value) -> Result<String, VmError> {
@@ -621,37 +635,14 @@ impl Evaluator<'_> {
       parse_js::operator::OperatorName::Addition => {
         let left = self.eval_expr(scope, &expr.left)?;
         let mut rhs_scope = scope.reborrow();
-        rhs_scope.push_root(left).map_err(|err| match err {
-          VmError::Termination(term) => ScriptError::Termination {
-            reason: term.reason.into(),
-            stack_trace: format_stack_trace(&term.stack),
-          },
-          other => ScriptError::Runtime {
-            message: other.to_string(),
-            stack_trace: self.stack_trace_at_loc(node.loc),
-          },
-        })?;
+        rhs_scope
+          .push_root(left)
+          .map_err(|err| self.vm_error_at_loc(node.loc, err))?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        rhs_scope.push_root(right).map_err(|err| match err {
-          VmError::Termination(term) => ScriptError::Termination {
-            reason: term.reason.into(),
-            stack_trace: format_stack_trace(&term.stack),
-          },
-          other => ScriptError::Runtime {
-            message: other.to_string(),
-            stack_trace: self.stack_trace_at_loc(node.loc),
-          },
-        })?;
-        add_operator(&mut rhs_scope, left, right).map_err(|err| match err {
-          VmError::Termination(term) => ScriptError::Termination {
-            reason: term.reason.into(),
-            stack_trace: format_stack_trace(&term.stack),
-          },
-          other => ScriptError::Runtime {
-            message: other.to_string(),
-            stack_trace: self.stack_trace_at_loc(node.loc),
-          },
-        })
+        rhs_scope
+          .push_root(right)
+          .map_err(|err| self.vm_error_at_loc(node.loc, err))?;
+        add_operator(&mut rhs_scope, left, right).map_err(|err| self.vm_error_at_loc(node.loc, err))
       }
       parse_js::operator::OperatorName::Assignment => {
         let name = match &*expr.left.stx {
@@ -667,16 +658,7 @@ impl Evaluator<'_> {
         self
           .env
           .set(scope.heap_mut(), name, value)
-          .map_err(|err| match err {
-            VmError::Termination(term) => ScriptError::Termination {
-              reason: term.reason.into(),
-              stack_trace: format_stack_trace(&term.stack),
-            },
-            other => ScriptError::Runtime {
-              message: other.to_string(),
-              stack_trace: self.stack_trace_at_loc(node.loc),
-            },
-          })?;
+          .map_err(|err| self.vm_error_at_loc(node.loc, err))?;
         Ok(value)
       }
       _ => Err(ScriptError::Runtime {
@@ -694,10 +676,9 @@ impl Evaluator<'_> {
   ) -> Result<Value, ScriptError> {
     let callee = self.eval_expr(scope, &expr.callee)?;
     let mut call_scope = scope.reborrow();
-    call_scope.push_root(callee).map_err(|err| ScriptError::Runtime {
-      message: err.to_string(),
-      stack_trace: self.stack_trace_at_loc(node.loc),
-    })?;
+    call_scope
+      .push_root(callee)
+      .map_err(|err| self.vm_error_at_loc(node.loc, err))?;
 
     let Value::Object(obj) = callee else {
       return Err(ScriptError::Runtime {
@@ -721,10 +702,9 @@ impl Evaluator<'_> {
         });
       }
       let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
-      call_scope.push_root(value).map_err(|err| ScriptError::Runtime {
-        message: err.to_string(),
-        stack_trace: self.stack_trace_at_loc(arg.loc),
-      })?;
+      call_scope
+        .push_root(value)
+        .map_err(|err| self.vm_error_at_loc(arg.loc, err))?;
       // Convert into the embedding's stable value representation for the host callback.
       args.push(match value {
         Value::Undefined => ScriptValue::Undefined,
