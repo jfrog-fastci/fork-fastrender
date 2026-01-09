@@ -752,6 +752,32 @@ fn dom_node_next_sibling_getter(
   wrap_node(host, scope, sibling_id, kind)
 }
 
+fn dom_node_node_type_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let node_type = match &host.dom.borrow().node(node_id).kind {
+    NodeKind::Document { .. } => 9,
+    NodeKind::DocumentFragment => 11,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::ShadowRoot { .. } => 11,
+    NodeKind::Slot { .. } | NodeKind::Element { .. } => 1,
+    NodeKind::Text { .. } => 3,
+  };
+
+  Ok(Value::Number(node_type as f64))
+}
+
 fn dom_element_set_attribute(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1158,6 +1184,7 @@ pub fn install_dom_bindings_with_limits(
   let call_last_child = vm.register_native_call(dom_node_last_child_getter)?;
   let call_previous_sibling = vm.register_native_call(dom_node_previous_sibling_getter)?;
   let call_next_sibling = vm.register_native_call(dom_node_next_sibling_getter)?;
+  let call_node_type = vm.register_native_call(dom_node_node_type_getter)?;
   let call_set_attribute = vm.register_native_call(dom_element_set_attribute)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
@@ -1180,6 +1207,7 @@ pub fn install_dom_bindings_with_limits(
   install_getter(&mut scope, proto_node, "lastChild", call_last_child)?;
   install_getter(&mut scope, proto_node, "previousSibling", call_previous_sibling)?;
   install_getter(&mut scope, proto_node, "nextSibling", call_next_sibling)?;
+  install_getter(&mut scope, proto_node, "nodeType", call_node_type)?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
   install_accessor(

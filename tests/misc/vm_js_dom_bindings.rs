@@ -140,6 +140,9 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   let key_next_sibling = PropertyKey::from_string(scope.alloc_string("nextSibling")?);
   let next_sibling_get = get_accessor_getter(scope.heap(), el_obj, &key_next_sibling)
     .expect("nextSibling getter should exist");
+  let key_node_type = PropertyKey::from_string(scope.alloc_string("nodeType")?);
+  let node_type_get = get_accessor_getter(scope.heap(), el_obj, &key_node_type)
+    .expect("nodeType getter should exist");
 
   assert_eq!(
     vm.call_without_host(&mut scope, parent_node_get, document_val, &[])?,
@@ -168,6 +171,14 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   assert_eq!(
     vm.call_without_host(&mut scope, next_sibling_get, el_val, &[])?,
     Value::Null
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, node_type_get, document_val, &[])?,
+    Value::Number(9.0)
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, node_type_get, el_val, &[])?,
+    Value::Number(1.0)
   );
 
   // Add two child nodes under `<div id="foo">` so we can validate sibling relationships.
@@ -198,6 +209,10 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   assert_eq!(
     vm.call_without_host(&mut scope, parent_element_get, child1, &[])?,
     el_val
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, node_type_get, child1, &[])?,
+    Value::Number(1.0)
   );
 
   let next_sibling_get = get_accessor_getter(scope.heap(), child1_obj, &key_next_sibling)
