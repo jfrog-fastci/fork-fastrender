@@ -41,11 +41,12 @@ pub trait VmJsEngineHost {
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
 ///
 /// `vm-js` models job execution via [`vm_js::VmJobContext`], which provides:
+/// - access to the [`vm_js::Heap`] for Promise state machines and persistent roots,
 /// - `call` / `construct` for invoking JavaScript values, and
 /// - `add_root` / `remove_root` for keeping GC handles alive while queued.
 ///
-/// FastRender stores the realm that a job was enqueued with so the eventual evaluator integration
-/// can re-establish the correct realm/settings object when running the job.
+/// FastRender also stores the realm that a job was enqueued with so the eventual evaluator
+/// integration can re-establish the correct realm/settings object when running the job.
 pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {
   /// The host value passed to [`EventLoop`] tasks/microtasks.
   pub host: &'a mut Host,

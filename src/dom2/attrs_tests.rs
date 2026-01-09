@@ -129,3 +129,38 @@ fn text_data_editing_works_and_errors_on_non_text_nodes() {
   assert_eq!(doc.text_data(el), Err(DomError::InvalidNodeType));
   assert_eq!(doc.set_text_data(el, "x"), Err(DomError::InvalidNodeType));
 }
+
+#[test]
+fn invalid_nodeid_attribute_and_text_apis_are_deterministic() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let el = make_element(&mut doc, /* namespace */ "");
+  let text = make_text(&mut doc, "x");
+
+  let bogus = NodeId(999_999);
+  assert_eq!(doc.get_attribute(bogus, "id"), Err(DomError::NotFoundError));
+  assert_eq!(doc.has_attribute(bogus, "id"), Err(DomError::NotFoundError));
+  assert_eq!(doc.id(bogus), Err(DomError::NotFoundError));
+  assert_eq!(doc.class_name(bogus), Err(DomError::NotFoundError));
+  assert_eq!(
+    doc.set_attribute(bogus, "id", "a"),
+    Err(DomError::NotFoundError)
+  );
+  assert_eq!(
+    doc.remove_attribute(bogus, "id"),
+    Err(DomError::NotFoundError)
+  );
+  assert_eq!(
+    doc.set_bool_attribute(bogus, "disabled", true),
+    Err(DomError::NotFoundError)
+  );
+  assert_eq!(doc.text_data(bogus), Err(DomError::NotFoundError));
+  assert_eq!(
+    doc.set_text_data(bogus, "y"),
+    Err(DomError::NotFoundError)
+  );
+
+  // Ensure valid nodes still work after bogus calls (no partial mutation).
+  assert_eq!(doc.set_attribute(el, "id", "a").unwrap(), true);
+  assert_eq!(doc.get_attribute(el, "ID").unwrap(), Some("a"));
+  assert_eq!(doc.text_data(text).unwrap(), "x");
+}

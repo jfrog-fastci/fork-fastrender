@@ -525,7 +525,7 @@ impl Evaluator<'_> {
       .add_root(Value::Undefined)
       .map_err(vm_error_to_runtime)?;
     // Ensure we clear the persistent root even if statement execution fails partway through.
-    let result = (|| {
+    let result = (|| -> Result<Value, ScriptError> {
       let mut last_value = Value::Undefined;
       for stmt in stmts {
         if let Some(v) = self.exec_stmt(scope, stmt)? {
