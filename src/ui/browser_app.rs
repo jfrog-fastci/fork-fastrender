@@ -69,7 +69,21 @@ impl BrowserTabState {
   ///
   /// On success, this marks the tab as loading, updates `current_url`, and sets `pending_nav_url`.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
-    let normalized = normalize_user_url(raw)?;
+    let raw_trimmed = raw.trim();
+
+    let normalized = if raw_trimmed.starts_with('#') {
+      let current = self
+        .current_url
+        .as_deref()
+        .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
+      let current = Url::parse(current).map_err(|err| err.to_string())?;
+      current
+        .join(raw_trimmed)
+        .map_err(|err| err.to_string())?
+        .to_string()
+    } else {
+      normalize_user_url(raw_trimmed)?
+    };
     validate_typed_url_scheme(&normalized)?;
 
     self.current_url = Some(normalized.clone());
@@ -142,6 +156,33 @@ mod tab_tests {
 
     assert_eq!(tab.current_url(), Some("about:blank"));
     assert_eq!(tab.pending_nav_url.as_deref(), Some("about:blank"));
+    assert!(tab.loading);
+  }
+
+  #[test]
+  fn typed_fragment_is_resolved_against_current_url() {
+    let mut tab = BrowserTabState::new(TabId(1), "https://example.com/page.html".to_string());
+    let msg = tab
+      .navigate_typed("#target")
+      .expect("fragment-only URL should resolve against current URL");
+    match msg {
+      UiToWorker::Navigate {
+        tab_id,
+        url,
+        reason,
+      } => {
+        assert_eq!(tab_id, TabId(1));
+        assert_eq!(url, "https://example.com/page.html#target");
+        assert_eq!(reason, NavigationReason::TypedUrl);
+      }
+      other => panic!("expected Navigate, got {other:?}"),
+    }
+
+    assert_eq!(tab.current_url(), Some("https://example.com/page.html#target"));
+    assert_eq!(
+      tab.pending_nav_url.as_deref(),
+      Some("https://example.com/page.html#target")
+    );
     assert!(tab.loading);
   }
 }
