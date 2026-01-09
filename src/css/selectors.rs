@@ -900,6 +900,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "file-selector-button" | "-webkit-file-upload-button" => true,
       "-moz-focus-inner" => true,
       "-moz-focus-outer" => true,
+      // Standard slider pseudo-elements (CSS Forms). Treat these like their vendor equivalents so
+      // authored selectors like `input::slider-thumb` match.
+      "slider-thumb" | "slider-track" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       _ => false,
@@ -1164,8 +1167,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       }
       "-moz-focus-inner" => Ok(PseudoElement::MozFocusInner),
       "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
-      "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
-      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
+      "slider-thumb" | "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => {
+        Ok(PseudoElement::SliderThumb)
+      }
+      "slider-track" | "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
         Ok(PseudoElement::SliderTrack)
       }
       s if s.starts_with("-webkit-")
@@ -1808,7 +1813,12 @@ mod tests {
       PseudoElement::MozFocusOuter
     );
 
-    for name in ["-webkit-slider-thumb", "-moz-range-thumb", "-ms-thumb"] {
+    for name in [
+      "slider-thumb",
+      "-webkit-slider-thumb",
+      "-moz-range-thumb",
+      "-ms-thumb",
+    ] {
       assert_eq!(
         parser
           .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
@@ -1819,6 +1829,7 @@ mod tests {
     }
 
     for name in [
+      "slider-track",
       "-webkit-slider-runnable-track",
       "-moz-range-track",
       "-ms-track",
@@ -1895,6 +1906,7 @@ mod tests {
       pseudo_for("input::-webkit-slider-thumb"),
       PseudoElement::SliderThumb
     );
+    assert_eq!(pseudo_for("input::slider-thumb"), PseudoElement::SliderThumb);
     assert_eq!(
       pseudo_for("input::-moz-range-thumb"),
       PseudoElement::SliderThumb
@@ -1905,6 +1917,7 @@ mod tests {
       pseudo_for("input::-webkit-slider-runnable-track"),
       PseudoElement::SliderTrack
     );
+    assert_eq!(pseudo_for("input::slider-track"), PseudoElement::SliderTrack);
     assert_eq!(
       pseudo_for("input::-moz-range-track"),
       PseudoElement::SliderTrack
