@@ -2,6 +2,15 @@ use crate::backend::{Backend, BackendInit};
 use crate::cookie_jar::CookieJar;
 use crate::wpt_report::WptReport;
 use crate::RunError;
+use crate::window_or_worker_global_scope::{
+  forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
+  latin1_encode, serialized_origin_for_document_url,
+};
+use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::TreeBuilderOpts;
+use html5ever::{parse_fragment, ParseOpts};
+use markup5ever::{LocalName, Namespace, QualName};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{LitArrExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr};
 use parse_js::ast::expr::{
@@ -22,10 +31,6 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 use url::{form_urlencoded, Url};
-use crate::window_or_worker_global_scope::{
-  forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
-  latin1_encode, serialized_origin_for_document_url,
-};
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm,
   VmError, VmOptions,
@@ -1553,6 +1558,41 @@ impl JsWptRuntime {
     )?;
     self.env.set("reportError", Value::Object(report_error_fn));
 
+    // --- Minimal fetch/URL shims ---
+    //
+    // These are intentionally tiny, but they allow the smoke corpus to validate URL resolution
+    // semantics (`fetch("foo")` should resolve against the document URL).
+    let resolve_url_fn = self.alloc_native_function(native_fastrender_resolve_url)?;
+    let resolve_url_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("__fastrender_resolve_url")?)
+    };
+    self.define_data_prop(self.global_object, resolve_url_key, Value::Object(resolve_url_fn))?;
+    self.env.set("__fastrender_resolve_url", Value::Object(resolve_url_fn));
+
+    // Request constructor (minimal: stores the resolved request URL as `.url`).
+    let request_proto = self.alloc_object()?;
+    let request_ctor = self.alloc_native_function(native_request_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(request_ctor, prototype_key, Value::Object(request_proto))?;
+    self.env.set("Request", Value::Object(request_ctor));
+    let request_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Request")?)
+    };
+    self.define_data_prop(self.global_object, request_key, Value::Object(request_ctor))?;
+
+    let fetch_fn = self.alloc_native_function(native_fetch)?;
+    let fetch_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("fetch")?)
+    };
+    self.define_data_prop(self.global_object, fetch_key, Value::Object(fetch_fn))?;
+    self.env.set("fetch", Value::Object(fetch_fn));
+
     Ok(())
   }
 
@@ -2343,6 +2383,58 @@ impl JsWptRuntime {
       })?;
     }
     Ok(())
+  }
+
+  /// Resolves a Promise with `value`, adopting other vm-js Promise objects.
+  ///
+  /// This implements the bit of the ECMAScript Promise resolution procedure that matters for our
+  /// curated WPT corpus: when a `.then` handler returns a Promise, the downstream Promise must
+  /// "follow" it instead of being fulfilled with the Promise object itself.
+  fn resolve_promise(&mut self, promise: GcObject, value: Value) -> Result<(), JsError> {
+    let Some(status) = self.promises.get(&promise).map(|state| state.status) else {
+      return Err(JsError::Vm(VmError::Throw(
+        self.alloc_string_value("TypeError: not a Promise")?,
+      )));
+    };
+    if status != PromiseStatus::Pending {
+      return Ok(());
+    }
+
+    if let Value::Object(obj) = value {
+      if self.promises.contains_key(&obj) {
+        if obj == promise {
+          let reason = self.alloc_string_value("TypeError: promise resolved with itself")?;
+          return self.settle_promise(promise, PromiseStatus::Rejected, reason);
+        }
+
+        let (status, settled_value) = self
+          .promises
+          .get(&obj)
+          .map(|state| (state.status, state.value))
+          .expect("promise present");
+        let reaction = PromiseReaction {
+          on_fulfilled: Value::Undefined,
+          on_rejected: Value::Undefined,
+          next_promise: promise,
+        };
+        match status {
+          PromiseStatus::Pending => {
+            let state = self.promises.get_mut(&obj).expect("promise present");
+            state.reactions.push(reaction);
+          }
+          settled @ (PromiseStatus::Fulfilled | PromiseStatus::Rejected) => {
+            self.enqueue_promise_job(PromiseJob {
+              status: settled,
+              value: settled_value,
+              reaction,
+            })?;
+          }
+        }
+        return Ok(());
+      }
+    }
+
+    self.settle_promise(promise, PromiseStatus::Fulfilled, value)
   }
 
   fn reported(&self) -> bool {
@@ -6509,128 +6601,145 @@ fn dom_serialize_node(rt: &JsWptRuntime, node: GcObject, out: &mut String) -> Re
   }
 }
 
-#[derive(Debug)]
-struct DomParsedSimpleElement {
-  tag: String,
-  attrs: Vec<(String, String)>,
-  text: String,
+const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+fn handle_children(handle: &Handle) -> Vec<Handle> {
+  handle.children.borrow().iter().cloned().collect()
 }
 
-fn dom_parse_simple_element_list(html: &str) -> Result<Option<Vec<DomParsedSimpleElement>>, ()> {
-  if !html.as_bytes().contains(&b'<') {
-    return Ok(None);
+fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
+  let children = handle_children(&rcdom.document);
+  let significant: Vec<Handle> = children
+    .iter()
+    .filter(|handle| !matches!(handle.data, NodeData::Doctype { .. } | NodeData::Comment { .. }))
+    .cloned()
+    .collect();
+
+  // `html5ever`'s fragment parsing may return a synthetic `<html>` wrapper; strip it so callers can
+  // insert the nodes directly (matching `innerHTML`/`outerHTML` semantics).
+  if significant.len() == 1 {
+    if let NodeData::Element { name, .. } = &significant[0].data {
+      if name.ns.to_string() == HTML_NAMESPACE && name.local.as_ref().eq_ignore_ascii_case("html") {
+        return handle_children(&significant[0]);
+      }
+    }
   }
 
-  let mut out = Vec::<DomParsedSimpleElement>::new();
-  let mut pos = 0usize;
-  while pos < html.len() {
-    if html.as_bytes()[pos] != b'<' {
-      return Ok(None);
-    }
+  significant
+}
 
-    // `<tag [attr="value"...]>`
-    let open_end_rel = html[pos..].find('>').ok_or(())?;
-    let open_end = pos + open_end_rel;
-    if open_end <= pos + 1 {
-      return Ok(None);
-    }
-    let open_tag = &html[pos + 1..open_end];
-    if open_tag.starts_with('/') {
-      return Ok(None);
-    }
+fn dom_parse_html_fragment(
+  rt: &mut JsWptRuntime,
+  context_tag: &str,
+  html: &str,
+) -> Result<Vec<GcObject>, JsError> {
+  let context_tag = if context_tag.is_empty() {
+    "div"
+  } else {
+    context_tag
+  };
 
-    // Parse the tag name.
-    let bytes = open_tag.as_bytes();
-    let mut idx = 0usize;
-    while idx < bytes.len() && (bytes[idx] as char).is_ascii_alphanumeric() {
-      idx += 1;
-    }
-    if idx == 0 {
-      return Ok(None);
-    }
-    let tag_raw = &open_tag[..idx];
-    let tag = tag_raw.to_ascii_lowercase();
+  let context = QualName::new(
+    None,
+    Namespace::from(HTML_NAMESPACE),
+    LocalName::from(context_tag.to_ascii_lowercase()),
+  );
 
-    // Parse attributes (very small subset: `name[="value"]`).
-    let mut attrs = Vec::<(String, String)>::new();
-    let mut rest_pos = idx;
-    while rest_pos < bytes.len() {
-      while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
-        rest_pos += 1;
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  // `html5ever::parse_fragment` takes `context_element_allows_scripting` as a separate boolean flag
+  // (it only affects the tokenizer initial state when the context element is `<noscript>`). Our
+  // harness assumes JS-enabled parsing semantics, so keep it enabled.
+  let rcdom: RcDom = parse_fragment(RcDom::default(), opts, context, Vec::new(), true).one(html);
+
+  #[derive(Clone)]
+  struct WorkItem {
+    parent: Option<GcObject>,
+    handle: Handle,
+  }
+
+  let mut roots: Vec<GcObject> = Vec::new();
+  let mut stack: Vec<WorkItem> = fragment_children_from_rcdom(&rcdom)
+    .into_iter()
+    .rev()
+    .map(|handle| WorkItem { parent: None, handle })
+    .collect();
+
+  while let Some(item) = stack.pop() {
+    match &item.handle.data {
+      NodeData::Document => {
+        for child in handle_children(&item.handle).into_iter().rev() {
+          stack.push(WorkItem {
+            parent: item.parent,
+            handle: child,
+          });
+        }
       }
-      if rest_pos >= bytes.len() {
-        break;
-      }
-
-      let name_start = rest_pos;
-      while rest_pos < bytes.len() {
-        let c = bytes[rest_pos] as char;
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-          rest_pos += 1;
+      NodeData::Text { contents } => {
+        let content = contents.borrow().to_string();
+        let id = rt.alloc_dom_text_node(&content)?;
+        if let Some(parent) = item.parent {
+          let _ = native_node_append_child(rt, Value::Object(parent), &[Value::Object(id)])?;
         } else {
-          break;
+          roots.push(id);
         }
       }
-      if rest_pos == name_start {
-        return Ok(None);
-      }
-      let name = open_tag[name_start..rest_pos].to_ascii_lowercase();
+      NodeData::Element {
+        name,
+        attrs,
+        template_contents,
+        ..
+      } => {
+        let id = rt.alloc_dom_element(&name.local.to_string())?;
 
-      while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
-        rest_pos += 1;
-      }
-
-      let mut value = String::new();
-      if rest_pos < bytes.len() && bytes[rest_pos] == b'=' {
-        rest_pos += 1;
-        while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
-          rest_pos += 1;
-        }
-        if rest_pos >= bytes.len() {
-          return Ok(None);
-        }
-
-        match bytes[rest_pos] {
-          b'"' | b'\'' => {
-            let quote = bytes[rest_pos];
-            rest_pos += 1;
-            let val_start = rest_pos;
-            while rest_pos < bytes.len() && bytes[rest_pos] != quote {
-              rest_pos += 1;
-            }
-            if rest_pos >= bytes.len() {
-              return Ok(None);
-            }
-            value = open_tag[val_start..rest_pos].to_string();
-            rest_pos += 1;
-          }
-          _ => {
-            let val_start = rest_pos;
-            while rest_pos < bytes.len() && !(bytes[rest_pos] as char).is_ascii_whitespace() {
-              rest_pos += 1;
-            }
-            value = open_tag[val_start..rest_pos].to_string();
+        let attrs_ref = attrs.borrow();
+        for attr in attrs_ref.iter() {
+          let attr_name = attr.name.local.to_string().to_ascii_lowercase();
+          let value = attr.value.to_string();
+          let value_handle = {
+            let mut scope = rt.heap.scope();
+            scope.alloc_string(&value)?
+          };
+          if let Some(state) = rt.dom_nodes.get_mut(&id) {
+            state.attributes.insert(attr_name, value_handle);
           }
         }
+
+        if let Some(parent) = item.parent {
+          let _ = native_node_append_child(rt, Value::Object(parent), &[Value::Object(id)])?;
+        } else {
+          roots.push(id);
+        }
+
+        let is_template = name.local.as_ref().eq_ignore_ascii_case("template");
+        let children = if is_template {
+          template_contents
+            .borrow()
+            .as_ref()
+            .map(handle_children)
+            .unwrap_or_else(|| handle_children(&item.handle))
+        } else {
+          handle_children(&item.handle)
+        };
+
+        for child in children.into_iter().rev() {
+          stack.push(WorkItem {
+            parent: Some(id),
+            handle: child,
+          });
+        }
       }
-      attrs.push((name, value));
+      _ => {}
     }
-
-    pos = open_end + 1;
-
-    // `</tag>`
-    let close_seq = format!("</{tag_raw}>");
-    let close_rel = html[pos..].find(&close_seq).ok_or(())?;
-    let close_start = pos + close_rel;
-    let text = html[pos..close_start].to_string();
-    if text.contains('<') {
-      return Ok(None);
-    }
-    out.push(DomParsedSimpleElement { tag, attrs, text });
-    pos = close_start + close_seq.len();
   }
 
-  Ok(Some(out))
+  Ok(roots)
 }
 
 fn native_dom_element_get_attribute(
@@ -6826,89 +6935,16 @@ fn native_dom_element_set_inner_html(
 
   dom_detach_children(rt, element)?;
 
-  let parsed = dom_parse_simple_element_list(&html).unwrap_or(None);
-  let parent_tag = rt
+  let context_tag = rt
     .dom_nodes
     .get(&element)
     .map(|s| s.tag_name.clone())
-    .unwrap_or_default();
-  let parent_is_template = parent_tag == "template";
-  let parent_node_key = {
-    let mut scope = rt.heap.scope();
-    PropertyKey::from_string(scope.alloc_string("parentNode")?)
-  };
-
-  if let Some(items) = parsed {
-    for DomParsedSimpleElement { tag, attrs, text } in items {
-      let mut stored_attrs = Vec::<(String, GcString)>::new();
-      for (name, value) in attrs {
-        let Value::String(value_handle) = rt.alloc_string_value(&value)? else {
-          continue;
-        };
-        stored_attrs.push((name, value_handle));
-      }
-
-      let node = rt.alloc_dom_element(&tag)?;
-      let node_is_template = tag == "template";
-      if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        for (name, value_handle) in stored_attrs {
-          state.attributes.insert(name, value_handle);
-        }
-        state.parent = Some(element);
-      }
-      if let Some(et) = rt.event_targets.get_mut(&node) {
-        et.parent = Some(element);
-      }
-      rt.define_data_prop(node, parent_node_key, Value::Object(element))?;
-
-      // Model text as an explicit child Text node so `childNodes` matches browser semantics.
-      if !text.is_empty() {
-        let text_node = rt.alloc_dom_text_node(&text)?;
-        if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
-          state.parent = Some(node);
-        }
-        if let Some(et) = rt.event_targets.get_mut(&text_node) {
-          et.parent = Some(node);
-        }
-        rt.define_data_prop(text_node, parent_node_key, Value::Object(node))?;
-        if let Some(state) = rt.dom_nodes.get_mut(&node) {
-          if node_is_template {
-            state.template_content.push(text_node);
-          } else {
-            state.children.push(text_node);
-          }
-        }
-        rt.update_dom_child_nodes(node)?;
-      }
-
-      if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
-        if parent_is_template {
-          parent_state.template_content.push(node);
-        } else {
-          parent_state.children.push(node);
-        }
-      }
-    }
-  } else if !html.is_empty() {
-    // For the minimal DOM harness we treat any non-element innerHTML as a single text node.
-    let text_node = rt.alloc_dom_text_node(&html)?;
-    if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
-      state.parent = Some(element);
-    }
-    if let Some(et) = rt.event_targets.get_mut(&text_node) {
-      et.parent = Some(element);
-    }
-    rt.define_data_prop(text_node, parent_node_key, Value::Object(element))?;
-    if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
-      if parent_is_template {
-        parent_state.template_content.push(text_node);
-      } else {
-        parent_state.children.push(text_node);
-      }
-    }
+    .unwrap_or_else(|| "div".to_string());
+  let new_nodes = dom_parse_html_fragment(rt, &context_tag, &html)?;
+  for node in new_nodes {
+    let args = [Value::Object(node)];
+    let _ = native_node_append_child(rt, Value::Object(element), &args)?;
   }
-
-  rt.update_dom_child_nodes(element)?;
   Ok(Value::Undefined)
 }
 
@@ -6948,50 +6984,12 @@ fn native_dom_element_set_outer_html(
     PropertyKey::from_string(scope.alloc_string("parentNode")?)
   };
 
-  let parsed = dom_parse_simple_element_list(&html).unwrap_or(None);
-  let mut new_nodes = Vec::<GcObject>::new();
-  if let Some(items) = parsed {
-    for DomParsedSimpleElement { tag, attrs, text } in items {
-      let mut stored_attrs = Vec::<(String, GcString)>::new();
-      for (name, value) in attrs {
-        let Value::String(value_handle) = rt.alloc_string_value(&value)? else {
-          continue;
-        };
-        stored_attrs.push((name, value_handle));
-      }
-
-      let node = rt.alloc_dom_element(&tag)?;
-      let node_is_template = tag == "template";
-      if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        for (name, value_handle) in stored_attrs {
-          state.attributes.insert(name, value_handle);
-        }
-      }
-
-      if !text.is_empty() {
-        let text_node = rt.alloc_dom_text_node(&text)?;
-        if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
-          state.parent = Some(node);
-        }
-        if let Some(et) = rt.event_targets.get_mut(&text_node) {
-          et.parent = Some(node);
-        }
-        rt.define_data_prop(text_node, parent_node_key, Value::Object(node))?;
-        if let Some(state) = rt.dom_nodes.get_mut(&node) {
-          if node_is_template {
-            state.template_content.push(text_node);
-          } else {
-            state.children.push(text_node);
-          }
-        }
-        rt.update_dom_child_nodes(node)?;
-      }
-      new_nodes.push(node);
-    }
+  let context_tag = if parent_tag.is_empty() {
+    "div".to_string()
   } else {
-    // Minimal harness: ignore unsupported outerHTML fragments that are not element lists.
-    new_nodes.clear();
-  }
+    parent_tag.clone()
+  };
+  let new_nodes = dom_parse_html_fragment(rt, &context_tag, &html)?;
 
   // Detach the replaced element.
   if let Some(state) = rt.dom_nodes.get_mut(&element) {
@@ -7235,7 +7233,7 @@ fn native_run_promise_job(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -
 
   if rt.is_callable_value(handler) {
     match rt.call(handler, Value::Undefined, &[job.value]) {
-      Ok(v) => rt.settle_promise(next, PromiseStatus::Fulfilled, v)?,
+      Ok(v) => rt.resolve_promise(next, v)?,
       Err(JsError::Vm(err)) => match err.thrown_value() {
         Some(reason) => rt.settle_promise(next, PromiseStatus::Rejected, reason)?,
         None => return Err(JsError::Vm(err)),
@@ -7244,7 +7242,7 @@ fn native_run_promise_job(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -
     }
   } else {
     match job.status {
-      PromiseStatus::Fulfilled => rt.settle_promise(next, PromiseStatus::Fulfilled, job.value)?,
+      PromiseStatus::Fulfilled => rt.resolve_promise(next, job.value)?,
       PromiseStatus::Rejected => rt.settle_promise(next, PromiseStatus::Rejected, job.value)?,
       PromiseStatus::Pending => {}
     }
