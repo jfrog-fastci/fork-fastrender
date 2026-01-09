@@ -261,7 +261,7 @@ impl JsFixtureHarness {
 
   fn pump_until_stalled(&mut self) -> Result<PumpOutcome> {
     loop {
-      let yield_ = { self.parser.borrow_mut().pump() };
+      let yield_ = { self.parser.borrow_mut().pump()? };
       match yield_ {
         StreamingParserYield::Script {
           script,
