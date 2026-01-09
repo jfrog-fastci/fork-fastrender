@@ -8160,6 +8160,29 @@ mod tests {
   }
 
   #[test]
+  fn shaping_style_hash_includes_font_feature_values_registry() {
+    let base = ComputedStyle::default();
+    let base_hash = shaping_style_hash(&base);
+
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Styleset,
+      FxHashMap::from_iter([("disambiguation".to_string(), vec![2u32])]),
+    );
+    registry.register(rule);
+
+    let mut with_feature_values = base.clone();
+    with_feature_values.font_feature_values = Arc::new(registry);
+
+    assert_ne!(
+      base_hash,
+      shaping_style_hash(&with_feature_values),
+      "font-feature-values should affect shaping cache key (named alternates depend on them)"
+    );
+  }
+
+  #[test]
   fn shaping_cache_misses_when_font_variant_alternates_change() {
     let style = ComputedStyle::default();
     let ctx = FontContext::new();
@@ -10305,6 +10328,30 @@ mod tests {
 
     let features = collect_opentype_features(&style, "Inter");
     assert_eq!(tag_value(&features, b"ss02"), Some(1));
+  }
+
+  #[test]
+  fn missing_named_alternate_emits_no_feature_tags() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Styleset,
+      FxHashMap::from_iter([("disambiguation".to_string(), vec![2u32])]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style
+      .font_variant_alternates
+      .stylesets
+      .push(FontVariantAlternateValue::Name("unknown".to_string()));
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert!(
+      tag_value(&features, b"ss02").is_none(),
+      "unknown named alternate should not emit OpenType tags"
+    );
   }
 
   #[test]
