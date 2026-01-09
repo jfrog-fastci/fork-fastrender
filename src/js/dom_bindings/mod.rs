@@ -9,6 +9,7 @@
 //! internal slots).
 
 use crate::dom2::{self, NodeId, NodeKind};
+use crate::js::bindings::DomExceptionClass;
 use crate::js::orchestrator::CurrentScriptState;
 use crate::web::events;
 use rustc_hash::FxHashMap;
@@ -272,6 +273,13 @@ fn to_rust_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
     unreachable!("ToString must return a string");
   };
   Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn selector_mentions_scope(selectors: &str) -> bool {
+  selectors
+    .as_bytes()
+    .windows(6)
+    .any(|w| w.eq_ignore_ascii_case(b":scope"))
 }
 
 fn get_text_content(dom: &dom2::Document, root: NodeId) -> String {
@@ -695,6 +703,9 @@ fn install_constructors(
   let document_key = prop_key_str(rt, "document")?;
   let document = rt.get(global, document_key)?;
   let document_node_id = dom.borrow().root();
+
+  // Minimal DOMException implementation needed for spec-shaped selector errors.
+  let dom_exception = DomExceptionClass::install(rt, global)?;
 
   // EventTarget / Node / Element / Document constructors: non-constructable stubs.
   let event_target_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "EventTarget"))?;
@@ -1769,6 +1780,211 @@ fn install_constructors(
       Ok(Value::Undefined)
     })?;
     define_accessor(rt, prototypes.element, "className", class_get, class_set)?;
+
+    // `Element.prototype.matches(selectors)`
+    let dom_for_matches = dom.clone();
+    let platform_objects_for_matches = platform_objects.clone();
+    let dom_ex_for_matches = dom_exception;
+    let matches = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Element.matches: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let node_id = extract_node_id(rt, &platform_objects_for_matches, this)?;
+      {
+        let dom_ref = dom_for_matches.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("matches: receiver is not an Element")),
+        }
+      }
+      let selectors = to_rust_string(rt, args[0])?;
+      let matched = match dom_for_matches.borrow_mut().matches_selector(node_id, &selectors) {
+        Ok(v) => v,
+        Err(err) => {
+          let exc = dom_ex_for_matches.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+      Ok(Value::Bool(matched))
+    })?;
+    define_method(rt, prototypes.element, "matches", matches)?;
+
+    // `Element.prototype.closest(selectors)`
+    let dom_for_closest = dom.clone();
+    let platform_objects_for_closest = platform_objects.clone();
+    let node_wrapper_cache_for_closest = node_wrapper_cache.clone();
+    let dom_ex_for_closest = dom_exception;
+    let closest = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Element.closest: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let node_id = extract_node_id(rt, &platform_objects_for_closest, this)?;
+      {
+        let dom_ref = dom_for_closest.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("closest: receiver is not an Element")),
+        }
+      }
+      let selectors = to_rust_string(rt, args[0])?;
+      let found = match dom_for_closest.borrow_mut().closest(node_id, &selectors) {
+        Ok(v) => v,
+        Err(err) => {
+          let exc = dom_ex_for_closest.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+      match found {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_closest,
+          &platform_objects_for_closest,
+          &node_wrapper_cache_for_closest,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_method(rt, prototypes.element, "closest", closest)?;
+
+    // `ParentNode.querySelector(selectors)` scoped to an element.
+    let dom_for_el_query = dom.clone();
+    let platform_objects_for_el_query = platform_objects.clone();
+    let node_wrapper_cache_for_el_query = node_wrapper_cache.clone();
+    let dom_ex_for_el_query = dom_exception;
+    let query_selector = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Element.querySelector: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let node_id = extract_node_id(rt, &platform_objects_for_el_query, this)?;
+      {
+        let dom_ref = dom_for_el_query.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("querySelector: receiver is not an Element")),
+        }
+      }
+      let selectors = to_rust_string(rt, args[0])?;
+      let allow_scope = selector_mentions_scope(&selectors);
+      let scope = Some(node_id);
+      let filter_self = !allow_scope;
+
+      let found = if filter_self {
+        let ids = match dom_for_el_query
+          .borrow_mut()
+          .query_selector_all(&selectors, scope)
+        {
+          Ok(v) => v,
+          Err(err) => {
+            let exc = dom_ex_for_el_query.from_dom_exception(rt, &err)?;
+            return Err(VmError::Throw(exc));
+          }
+        };
+        ids.into_iter().find(|id| *id != node_id)
+      } else {
+        match dom_for_el_query
+          .borrow_mut()
+          .query_selector(&selectors, scope)
+        {
+          Ok(v) => v,
+          Err(err) => {
+            let exc = dom_ex_for_el_query.from_dom_exception(rt, &err)?;
+            return Err(VmError::Throw(exc));
+          }
+        }
+      };
+
+      match found {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_el_query,
+          &platform_objects_for_el_query,
+          &node_wrapper_cache_for_el_query,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_method(rt, prototypes.element, "querySelector", query_selector)?;
+
+    let dom_for_el_query_all = dom.clone();
+    let platform_objects_for_el_query_all = platform_objects.clone();
+    let node_wrapper_cache_for_el_query_all = node_wrapper_cache.clone();
+    let dom_ex_for_el_query_all = dom_exception;
+    let query_selector_all = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Element.querySelectorAll: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let node_id = extract_node_id(rt, &platform_objects_for_el_query_all, this)?;
+      {
+        let dom_ref = dom_for_el_query_all.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("querySelectorAll: receiver is not an Element")),
+        }
+      }
+      let selectors = to_rust_string(rt, args[0])?;
+      let allow_scope = selector_mentions_scope(&selectors);
+      let scope = Some(node_id);
+      let filter_self = !allow_scope;
+
+      let ids = match dom_for_el_query_all
+        .borrow_mut()
+        .query_selector_all(&selectors, scope)
+      {
+        Ok(v) => v,
+        Err(err) => {
+          let exc = dom_ex_for_el_query_all.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+
+      let arr = rt.alloc_array()?;
+      let arr_root = rt.heap_mut().add_root(arr)?;
+      let res = (|| {
+        let mut idx: u32 = 0;
+        for id in ids {
+          if filter_self && id == node_id {
+            continue;
+          }
+          let key = rt.property_key_from_u32(idx)?;
+          idx = idx.wrapping_add(1);
+          let value = wrap_node(
+            rt,
+            &dom_for_el_query_all,
+            &platform_objects_for_el_query_all,
+            &node_wrapper_cache_for_el_query_all,
+            document_node_id,
+            document,
+            prototypes,
+            id,
+          )?;
+          rt.define_data_property(arr, key, value, true)?;
+        }
+        Ok(arr)
+      })();
+      rt.heap_mut().remove_root(arr_root);
+      res
+    })?;
+    define_method(rt, prototypes.element, "querySelectorAll", query_selector_all)?;
   }
 
   // Document.prototype
@@ -1836,6 +2052,91 @@ fn install_constructors(
       }
     })?;
     define_method(rt, prototypes.document, "getElementById", get_by_id)?;
+
+    // `ParentNode.querySelector(selectors)` for Document.
+    let dom_for_doc_query = dom.clone();
+    let platform_objects_for_doc_query = platform_objects.clone();
+    let node_wrapper_cache_for_doc_query = node_wrapper_cache.clone();
+    let dom_ex_for_doc_query = dom_exception;
+    let query_selector = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Document.querySelector: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let _doc_id = extract_document_id(rt, &platform_objects_for_doc_query, this)?;
+      let selectors = to_rust_string(rt, args[0])?;
+      let found = match dom_for_doc_query.borrow_mut().query_selector(&selectors, None) {
+        Ok(v) => v,
+        Err(err) => {
+          let exc = dom_ex_for_doc_query.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+      match found {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_doc_query,
+          &platform_objects_for_doc_query,
+          &node_wrapper_cache_for_doc_query,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_method(rt, prototypes.document, "querySelector", query_selector)?;
+
+    let dom_for_doc_query_all = dom.clone();
+    let platform_objects_for_doc_query_all = platform_objects.clone();
+    let node_wrapper_cache_for_doc_query_all = node_wrapper_cache.clone();
+    let dom_ex_for_doc_query_all = dom_exception;
+    let query_selector_all = rt.alloc_function_value(move |rt, this, args| {
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Document.querySelectorAll: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      let _doc_id = extract_document_id(rt, &platform_objects_for_doc_query_all, this)?;
+      let selectors = to_rust_string(rt, args[0])?;
+      let ids = match dom_for_doc_query_all
+        .borrow_mut()
+        .query_selector_all(&selectors, None)
+      {
+        Ok(v) => v,
+        Err(err) => {
+          let exc = dom_ex_for_doc_query_all.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+
+      let arr = rt.alloc_array()?;
+      let arr_root = rt.heap_mut().add_root(arr)?;
+      let res = (|| {
+        for (idx, id) in ids.into_iter().enumerate() {
+          let key = rt.property_key_from_u32(idx as u32)?;
+          let value = wrap_node(
+            rt,
+            &dom_for_doc_query_all,
+            &platform_objects_for_doc_query_all,
+            &node_wrapper_cache_for_doc_query_all,
+            document_node_id,
+            document,
+            prototypes,
+            id,
+          )?;
+          rt.define_data_property(arr, key, value, true)?;
+        }
+        Ok(arr)
+      })();
+      rt.heap_mut().remove_root(arr_root);
+      res
+    })?;
+    define_method(rt, prototypes.document, "querySelectorAll", query_selector_all)?;
 
     let dom_for_doc_el = dom.clone();
     let platform_objects_for_doc_el = platform_objects.clone();
@@ -2384,6 +2685,199 @@ mod tests {
       .unwrap();
 
     assert_eq!(found, el, "wrapper identity should be preserved");
+  }
+
+  #[test]
+  fn selector_apis_respect_element_scope_and_scope_pseudo_class() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let set_attribute_key = pk(&mut realm.rt, "setAttribute");
+    let set_attribute_div = realm.rt.get(div, set_attribute_key).unwrap();
+    let class_str = realm.rt.alloc_string_value("class").unwrap();
+    let x_str = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(set_attribute_div, div, &[class_str, x_str])
+      .unwrap();
+
+    let set_attribute_span = realm.rt.get(span, set_attribute_key).unwrap();
+    let class_str2 = realm.rt.alloc_string_value("class").unwrap();
+    let x_str2 = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(set_attribute_span, span, &[class_str2, x_str2])
+      .unwrap();
+
+    // Build: document -> div.x -> span.x
+    realm
+      .rt
+      .call_function(append_child, div, &[span])
+      .unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[div])
+      .unwrap();
+
+    let doc_query_selector_key = pk(&mut realm.rt, "querySelector");
+    let doc_query_selector = realm.rt.get(document, doc_query_selector_key).unwrap();
+    let sel_x = realm.rt.alloc_string_value(".x").unwrap();
+    let doc_found = realm
+      .rt
+      .call_function(doc_query_selector, document, &[sel_x])
+      .unwrap();
+    assert_eq!(
+      doc_found, div,
+      "Document.querySelector should return the first match in document order"
+    );
+
+    let el_query_selector_key = pk(&mut realm.rt, "querySelector");
+    let el_query_selector = realm.rt.get(div, el_query_selector_key).unwrap();
+
+    // Element-scoped querySelector should not include the scope element unless :scope is used.
+    let sel_x2 = realm.rt.alloc_string_value(".x").unwrap();
+    let el_found = realm
+      .rt
+      .call_function(el_query_selector, div, &[sel_x2])
+      .unwrap();
+    assert_eq!(
+      el_found, span,
+      "Element.querySelector should exclude the scope element for non-:scope selectors"
+    );
+
+    let sel_scope = realm.rt.alloc_string_value(":scope").unwrap();
+    let scope_found = realm
+      .rt
+      .call_function(el_query_selector, div, &[sel_scope])
+      .unwrap();
+    assert_eq!(scope_found, div, "Element.querySelector(:scope) should return self");
+
+    let el_query_selector_all_key = pk(&mut realm.rt, "querySelectorAll");
+    let el_query_selector_all = realm.rt.get(div, el_query_selector_all_key).unwrap();
+
+    let sel_x3 = realm.rt.alloc_string_value(".x").unwrap();
+    let list = realm
+      .rt
+      .call_function(el_query_selector_all, div, &[sel_x3])
+      .unwrap();
+    assert!(realm.rt.is_object(list));
+    let key0 = realm.rt.property_key_from_u32(0).unwrap();
+    let first = realm.rt.get(list, key0).unwrap();
+    assert_eq!(first, span);
+    let key1 = realm.rt.property_key_from_u32(1).unwrap();
+    let second = realm.rt.get(list, key1).unwrap();
+    assert!(matches!(second, Value::Undefined));
+
+    let sel_scope2 = realm.rt.alloc_string_value(":scope").unwrap();
+    let list2 = realm
+      .rt
+      .call_function(el_query_selector_all, div, &[sel_scope2])
+      .unwrap();
+    let key0 = realm.rt.property_key_from_u32(0).unwrap();
+    let first2 = realm.rt.get(list2, key0).unwrap();
+    assert_eq!(first2, div);
+  }
+
+  #[test]
+  fn selector_apis_support_matches_closest_and_domexception_syntaxerror() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    realm
+      .rt
+      .call_function(append_child, div, &[span])
+      .unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[div])
+      .unwrap();
+
+    let matches_key = pk(&mut realm.rt, "matches");
+    let matches_fn = realm.rt.get(span, matches_key).unwrap();
+    let sel_span = realm.rt.alloc_string_value("span").unwrap();
+    let matched = realm
+      .rt
+      .call_function(matches_fn, span, &[sel_span])
+      .unwrap();
+    assert_eq!(matched, Value::Bool(true));
+
+    let closest_key = pk(&mut realm.rt, "closest");
+    let closest_fn = realm.rt.get(span, closest_key).unwrap();
+    let sel_div = realm.rt.alloc_string_value("div").unwrap();
+    let closest_div = realm
+      .rt
+      .call_function(closest_fn, span, &[sel_div])
+      .unwrap();
+    assert_eq!(closest_div, div);
+
+    let sel_section = realm.rt.alloc_string_value("section").unwrap();
+    let closest_none = realm
+      .rt
+      .call_function(closest_fn, span, &[sel_section])
+      .unwrap();
+    assert_eq!(closest_none, Value::Null);
+
+    // Invalid selector strings should throw DOMException(name="SyntaxError"), not a JS SyntaxError.
+    let bad_sel = realm.rt.alloc_string_value("[").unwrap();
+    let err = realm
+      .rt
+      .call_function(matches_fn, span, &[bad_sel])
+      .unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected VmError::Throw, got {other:?}"),
+    };
+
+    let name_key = pk(&mut realm.rt, "name");
+    let name = realm.rt.get(thrown, name_key).unwrap();
+    let name = realm.rt.to_string(name).unwrap();
+    assert_eq!(as_str(&realm.rt, name), "SyntaxError");
+
+    let ctor_key = pk(&mut realm.rt, "constructor");
+    let ctor = realm.rt.get(thrown, ctor_key).unwrap();
+    let domexc_key = pk(&mut realm.rt, "DOMException");
+    let domexc_ctor = realm.rt.get(realm.window(), domexc_key).unwrap();
+    assert_eq!(ctor, domexc_ctor);
+
+    let syntax_key = pk(&mut realm.rt, "SyntaxError");
+    let syntax_ctor = realm.rt.get(realm.window(), syntax_key).unwrap();
+    if realm.rt.is_callable(syntax_ctor) {
+      assert_ne!(ctor, syntax_ctor);
+    }
   }
 
   #[test]
