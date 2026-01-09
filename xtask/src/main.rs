@@ -19,6 +19,7 @@ mod import_page_fixture;
 mod js;
 mod lint_no_panics;
 mod page_loop;
+mod pageset_triage;
 mod recapture_page_fixtures;
 mod sync_progress_accuracy;
 mod update_pageset_guardrails;
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
     Commands::PageLoop(args) => page_loop::run_page_loop(args),
     Commands::Pageset(args) => run_pageset(args),
     Commands::PagesetDiff(args) => run_pageset_diff(args),
+    Commands::PagesetTriage(args) => pageset_triage::run_pageset_triage(args),
     Commands::DiffRenders(args) => run_diff_renders(args),
     Commands::CapabilityMap(args) => capability_map::run_capability_map(args),
     Commands::FixtureChromeDiff(args) => fixture_chrome_diff::run_fixture_chrome_diff(args),
@@ -100,6 +102,8 @@ enum Commands {
   Pageset(PagesetArgs),
   /// Refresh the pageset scoreboard and compare against a baseline
   PagesetDiff(PagesetDiffArgs),
+  /// Generate a per-page triage report from `progress/pages/*.json` (optionally enriched by fixture-vs-Chrome diffs)
+  PagesetTriage(pageset_triage::PagesetTriageArgs),
   /// Compare two render outputs and write visual diffs
   DiffRenders(DiffRendersArgs),
   /// Generate a systematic capability map (breadth-first roadmap)

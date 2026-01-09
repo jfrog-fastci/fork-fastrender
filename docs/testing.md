@@ -83,7 +83,7 @@ Pass `cargo xtask chrome-baseline-fixtures --allow-dark-mode` to opt out of the 
 # One-command evidence report (runs FastRender render + Chrome baseline + diff):
 cargo xtask fixture-chrome-diff
 # Report: target/fixture_chrome_diff/report.html
-# Defaults to the curated pages_regression fixture set from tests/pages_regression_test.rs.
+# Defaults to the curated pages_regression fixture set from tests/regression/pages.rs.
 # Pass --all-fixtures to render everything under tests/pages/fixtures instead.
 
 # Convenience wrapper for the same command (delegates to `cargo xtask fixture-chrome-diff` and
@@ -215,7 +215,7 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
       - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
 2. Import: `cargo xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
 3. Validate the imported fixture is fully offline (no fetchable `http(s)` URLs left behind): `cargo xtask validate-page-fixtures --only <fixture_name>`
-4. Add the new fixture to `tests/pages_regression_test.rs` and generate a golden if you want it covered by the suite.
+4. Add the new fixture to `tests/regression/pages.rs` and generate a golden if you want it covered by the suite.
 
 The importer rewrites all HTML/CSS references to hashed files under `assets/` and refuses to leave `http(s)` URLs behind, so the resulting directory is fully offline. A synthetic bundle for testing lives under `tests/fixtures/bundle_page/simple`, and `tests/pages/fixtures/bundle_import_example/` shows the expected output produced by the importer.
 

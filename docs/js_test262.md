@@ -53,7 +53,7 @@ flags we use the most).
   - Select which preset suite to run (the default is the curated suite).
 - `--manifest <PATH>`
   - Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
-  - When omitted, xtask defaults to: `tests/js/test262_semantic_expectations.toml`.
+  - When omitted, xtask defaults to: `tests/js/test262_manifest.toml`.
 - `--shard <index>/<total>`
   - Run a deterministic shard of the corpus (0-based index).
   - Example: `--shard 0/8` to run the first shard out of 8.
@@ -71,7 +71,7 @@ The suite contains tests with an **expected outcome**. The runner records the **
 and marks the test as a **mismatch** when they disagree.
 
 The expectations manifest (passed via `--manifest`, or defaulting to
-`tests/js/test262_semantic_expectations.toml`) is how we track known gaps without hiding
+`tests/js/test262_manifest.toml`) is how we track known gaps without hiding
 regressions:
 
 - **Unexpected mismatch**: not covered by the manifest.

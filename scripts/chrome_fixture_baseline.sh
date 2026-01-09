@@ -40,7 +40,7 @@ Filtering:
   <fixtures-dir>/<glob>/index.html). Example: grid_news, subgrid_*
 
   With no positional filters, defaults to the fixtures listed in
-  tests/pages_regression_test.rs (fallback: all <fixtures-dir>/*/index.html).
+  tests/regression/pages.rs (fallback: all <fixtures-dir>/*/index.html).
 
 Output:
   <out-dir>/<fixture>.png        Screenshot
@@ -134,11 +134,11 @@ mkdir -p "${OUT_DIR}"
 
 discover_default_fixtures() {
   local out=()
-  if [[ -f tests/pages_regression_test.rs ]]; then
+  if [[ -f tests/regression/pages.rs ]]; then
     # Extract `html: "name/index.html"` entries from the regression suite.
     mapfile -t out < <(
       (
-        grep -Eo 'html:[[:space:]]*"[^"]+"' tests/pages_regression_test.rs 2>/dev/null || true
+        grep -Eo 'html:[[:space:]]*"[^"]+"' tests/regression/pages.rs 2>/dev/null || true
       ) | sed -E 's/.*"([^"]+)".*/\1/' \
         | awk -F/ '{print $1}' \
         | awk '!seen[$0]++'

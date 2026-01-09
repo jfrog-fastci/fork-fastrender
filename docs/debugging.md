@@ -106,3 +106,21 @@ FASTR_RENDER_TIMINGS=1 FASTR_LOG_FRAG_BOUNDS=1 \
 
 - `pageset_progress run --dump-failures summary` writes pipeline snapshots for failing pages under `target/pageset/dumps/<stem>/`. Use `--dump-slow-ms <ms> --dump-slow <summary|full>` to capture slow-but-OK pages.
 - Dumps default to `--dump-timeout timeout*2` with a soft timeout 250ms earlier; bump the dump timeout instead of the main timeout when captures need extra headroom.
+
+## Pageset triage report (brokenness inventory)
+
+To turn the committed `progress/pages/*.json` scoreboard (timings/hotspots/accuracy) plus the latest offline fixture-vs-Chrome diffs into an actionable per-page template:
+
+```bash
+# Optional: generate/update the fixture diff report first.
+cargo xtask fixture-chrome-diff --from-progress progress/pages --only-failures --top-worst-accuracy 20
+
+# Generate the triage markdown (no rendering; pure file processing).
+cargo xtask pageset-triage \
+  --progress-dir progress/pages \
+  --report target/fixture_chrome_diff/report.json
+
+# Output: target/pageset_triage/report.md
+```
+
+Use `--only <stem,...>` to focus on a subset, or `--top-worst-accuracy N` / `--top-slowest N` to slice the report, then fill in each page’s **Brokenness inventory** section to coordinate fixes across subsystems (layout/text/paint/resources).

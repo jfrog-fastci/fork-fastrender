@@ -109,11 +109,11 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - `--ignore-alpha`, `--max-diff-percent`, `--max-perceptual-distance`, `--sort-by`, and `--shard` are forwarded to `diff_renders` (defaults match the historical `--max-diff-percent=0` behavior).
   - Use `--fail-on-differences` to exit non-zero when the report contains diffs/missing/error entries.
   - Use `--no-build` to reuse an existing `target/release/diff_renders` binary (skips `cargo build`).
-- Chrome baseline screenshots for offline fixtures (local-only; not committed): `cargo xtask chrome-baseline-fixtures`
+  - Chrome baseline screenshots for offline fixtures (local-only; not committed): `cargo xtask chrome-baseline-fixtures`
   - Disables CSS animations/transitions by default for deterministic baselines; pass `--allow-animations` to opt out.
   - Forces a light color scheme + white background by default to avoid platform dark-mode/background differences; pass `--allow-dark-mode` to opt out.
   - Chrome-vs-FastRender diff report for offline fixtures (deterministic; offline): `cargo xtask fixture-chrome-diff`
-    - Defaults to the curated `pages_regression` fixture set in `tests/pages_regression_test.rs`.
+    - Defaults to the curated `pages_regression` fixture set in `tests/regression/pages.rs`.
     - Pass `--all-fixtures` to render every fixture under `tests/pages/fixtures/`.
     - Select fixtures from pageset progress JSON (instead of a manual `--fixtures a,b,c` list):
       - Failing pages: `cargo xtask fixture-chrome-diff --from-progress progress/pages --only-failures`

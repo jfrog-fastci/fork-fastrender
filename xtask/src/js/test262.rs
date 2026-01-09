@@ -33,7 +33,7 @@ pub enum FailOn {
 }
 
 impl FailOn {
-  fn as_cli_value(self) -> &'static str {
+  pub(crate) fn as_cli_value(self) -> &'static str {
     match self {
       Self::All => "all",
       Self::New => "new",

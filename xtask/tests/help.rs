@@ -24,6 +24,7 @@ fn help_lists_commands() {
       && stdout.contains("capture-accuracy-fixtures")
       && stdout.contains("pageset")
       && stdout.contains("pageset-diff")
+      && stdout.contains("pageset-triage")
       && stdout.contains("\n  js ")
       && stdout.contains("perf-smoke")
       && stdout.contains("validate-page-fixtures")
@@ -49,6 +50,30 @@ fn js_test262_help_mentions_flags() {
   assert!(
     stdout.contains("--suite")
       && stdout.contains("--manifest")
+      && stdout.contains("--shard")
+      && stdout.contains("--timeout-secs")
+      && stdout.contains("--fail-on")
+      && stdout.contains("--report")
+      && stdout.contains("--test262-dir"),
+    "help output should mention key flags; got:\n{stdout}"
+  );
+}
+
+#[test]
+fn js_test262_parser_help_mentions_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["js", "test262-parser", "--help"])
+    .output()
+    .expect("run cargo xtask js test262-parser --help");
+
+  assert!(
+    output.status.success(),
+    "js test262-parser help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--manifest")
       && stdout.contains("--shard")
       && stdout.contains("--timeout-secs")
       && stdout.contains("--fail-on")
