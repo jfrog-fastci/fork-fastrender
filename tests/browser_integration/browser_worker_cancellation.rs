@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
@@ -48,6 +49,7 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
   let mut started_first = false;
   let mut sent_second = false;
   let mut last_committed: Option<String> = None;
+  let mut committed_first = false;
   let mut saw_second_frame = false;
   let mut saw_first_frame = false;
   let mut saw_failed_first = false;
@@ -76,6 +78,9 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
           }
           WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
             last_committed = Some(url.clone());
+            if url == &first_url {
+              committed_first = true;
+            }
           }
           WorkerToUi::NavigationFailed { tab_id: got, url, .. } if *got == tab_id => {
             if url == &first_url {
@@ -122,6 +127,11 @@ fn navigation_cancellation_drops_stale_frame_and_is_silent() {
   assert!(
     saw_second_frame,
     "expected FrameReady for the second navigation; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert!(
+    !committed_first,
+    "expected no NavigationCommitted for the cancelled first navigation; messages:\n{}",
     support::format_messages(&captured)
   );
   assert!(
@@ -335,6 +345,182 @@ fn rapid_scroll_cancels_stale_paint() {
       .count()
       == 1,
     "unexpected additional FrameReady messages after latest scroll frame; messages:\n{}",
+    support::format_messages(&captured)
+  );
+}
+
+#[test]
+fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
+  let _lock = super::stage_listener_test_lock();
+  // Slow down deadline checks so we have time to bump paint cancellation during the navigation
+  // prepare stage (before the initial paint begins).
+  let delay_guard = support::TestRenderDelayGuard::set(Some(2));
+
+  let site = support::TempSite::new();
+  let mut body = String::new();
+  for i in 0..128 {
+    body.push_str(&format!("<div class=\"row\">row {i}</div>\n"));
+  }
+  let url = site.write(
+    "nav.html",
+    &format!(
+      r#"<!doctype html>
+        <html>
+          <head>
+            <style>
+              html, body {{ margin: 0; padding: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }}
+              .row {{ height: 24px; border-bottom: 1px solid #ccc; }}
+            </style>
+          </head>
+          <body>
+            {body}
+          </body>
+        </html>"#
+    ),
+  );
+
+  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let tab_id = TabId::new();
+  let cancel = CancelGens::new();
+  worker
+    .tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: cancel.clone(),
+    })
+    .expect("create tab");
+
+  const VIEWPORT_A: (u32, u32) = (200, 120);
+  const VIEWPORT_B: (u32, u32) = (240, 120);
+
+  worker
+    .tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: VIEWPORT_A,
+      dpr: 1.0,
+    })
+    .expect("viewport");
+
+  worker
+    .tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("navigate");
+
+  // Wait until the navigation has started and we observe at least one non-paint stage heartbeat,
+  // then bump paint and enqueue a viewport change. This should cancel the navigation's initial
+  // paint without producing a navigation failure/error page.
+  let deadline = Instant::now() + MAX_WAIT;
+  let mut started = false;
+  let mut bumped = false;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+  while Instant::now() < deadline && !bumped {
+    match worker.rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::NavigationStarted { tab_id: got, url: started_url } if *got == tab_id && started_url == &url => {
+            started = true;
+          }
+          WorkerToUi::Stage { tab_id: got, stage }
+            if *got == tab_id
+              && started
+              && !bumped
+              && !matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize) =>
+          {
+            bumped = true;
+            cancel.bump_paint();
+            worker
+              .tx
+              .send(UiToWorker::ViewportChanged {
+                tab_id,
+                viewport_css: VIEWPORT_B,
+                dpr: 1.0,
+              })
+              .expect("viewport B");
+          }
+          _ => {}
+        }
+        captured.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  assert!(
+    bumped,
+    "timed out waiting for prepare-stage heartbeat during navigation; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  // Disable the artificial slowdown once the cancellation-triggering bump has happened; the rest
+  // of the test just needs the navigation + repaint to complete.
+  drop(delay_guard);
+
+  let deadline = Instant::now() + MAX_WAIT;
+  let mut saw_failed = false;
+  let mut saw_committed = false;
+  let mut saw_frame = None::<(u32, u32)>;
+  let mut saw_stale_frame_after_commit = false;
+  while Instant::now() < deadline && !(saw_committed && saw_frame.is_some()) {
+    match worker.rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::NavigationCommitted { tab_id: got, url: got_url, .. }
+            if *got == tab_id && got_url == &url =>
+          {
+            saw_committed = true;
+          }
+          WorkerToUi::NavigationFailed { tab_id: got, url: got_url, .. }
+            if *got == tab_id && got_url == &url =>
+          {
+            saw_failed = true;
+          }
+          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+            // Only accept a frame rendered with the updated viewport; an in-flight stale paint frame
+            // should be cancelled/dropped.
+            if saw_committed && frame.viewport_css == VIEWPORT_A {
+              saw_stale_frame_after_commit = true;
+            }
+            if frame.viewport_css == VIEWPORT_B {
+              saw_frame = Some(frame.viewport_css);
+            }
+          }
+          _ => {}
+        }
+        captured.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  drop(worker.tx);
+  worker.join.join().expect("worker join");
+
+  assert!(
+    !saw_failed,
+    "unexpected NavigationFailed after bump_paint during navigation; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert!(
+    !saw_stale_frame_after_commit,
+    "saw stale FrameReady (viewport A) after navigation committed; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert!(
+    saw_committed,
+    "expected NavigationCommitted after bump_paint during navigation; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert_eq!(
+    saw_frame,
+    Some(VIEWPORT_B),
+    "expected FrameReady after cancellation to use the updated viewport; messages:\n{}",
     support::format_messages(&captured)
   );
 }

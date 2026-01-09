@@ -96,6 +96,11 @@ pub enum UiToWorker {
   CreateTab {
     tab_id: TabId,
     initial_url: Option<String>,
+    /// Per-tab cancellation generations shared with the UI thread.
+    ///
+    /// The UI should retain a clone of this `CancelGens` in its per-tab model and bump gens
+    /// *before* sending new actions so long-running prepare/layout/paint work can be cooperatively
+    /// cancelled mid-flight.
     cancel: CancelGens,
   },
   /// Optional alias for [`UiToWorker::CreateTab`].

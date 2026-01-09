@@ -1168,6 +1168,10 @@ impl BrowserRuntime {
     };
 
     let snapshot = tab.cancel.snapshot_prepare();
+    // Capture the paint snapshot at the start of the navigation job so paint-gen bumps that occur
+    // while we're still preparing (e.g. viewport resize / scroll) can cancel the initial paint and
+    // avoid emitting a stale `FrameReady`.
+    let paint_snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = snapshot.cancel_callback_for_prepare(&tab.cancel);
 
     let viewport_css = tab.viewport_css;
@@ -1273,7 +1277,6 @@ impl BrowserRuntime {
     doc.set_navigation_urls(reported_final_url.clone(), base_url.clone());
     doc.set_scroll_state(scroll_state.clone());
 
-    let paint_snapshot = tab.cancel.snapshot_paint();
     let paint_cancel_callback = paint_snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(paint_cancel_callback.clone()));
 

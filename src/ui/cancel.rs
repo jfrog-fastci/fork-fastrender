@@ -3,6 +3,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Per-tab cooperative cancellation generations shared between the UI thread and render worker.
+///
+/// The UI creates a single `CancelGens` per tab, stores it in the tab model, and sends a clone to
+/// the worker (see `UiToWorker::CreateTab { cancel }`). Because the gens are backed by `Arc`
+/// atomics, *either side* can bump them.
+///
+/// ## Contract
+///
+/// The render worker installs cancel callbacks derived from snapshots of these gens before
+/// entering long-running stages (prepare/layout/paint). To enable true mid-render cancellation,
+/// the UI should bump the appropriate gen **before sending a new action**:
+///
+/// - `bump_nav()` for navigation-affecting actions (`Navigate`, `GoBack`, `GoForward`, `Reload`).
+///   This cancels both prepare and paint stages.
+/// - `bump_paint()` for repaint-affecting actions (`ViewportChanged`, `Scroll`, input events,
+///   `RequestRepaint`). This cancels paint only and allows a navigation to still commit.
 #[derive(Clone, Debug)]
 pub struct CancelGens {
   nav: Arc<AtomicU64>,
