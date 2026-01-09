@@ -209,6 +209,14 @@ impl Document {
     self.root
   }
 
+  pub fn events(&self) -> &events::EventListenerRegistry {
+    &self.events
+  }
+
+  pub fn events_mut(&mut self) -> &mut events::EventListenerRegistry {
+    &mut self.events
+  }
+
   pub fn node(&self, id: NodeId) -> &Node {
     &self.nodes[id.0]
   }

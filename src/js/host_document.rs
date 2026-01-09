@@ -8,7 +8,6 @@ use crate::web::events;
 /// without embedding rendering pipeline details.
 pub struct DocumentHostState {
   dom: dom2::Document,
-  events: events::EventListenerRegistry,
   current_script: crate::js::CurrentScriptStateHandle,
 }
 
@@ -25,7 +24,6 @@ impl DocumentHostState {
   pub fn new(dom: dom2::Document) -> Self {
     Self {
       dom,
-      events: events::EventListenerRegistry::new(),
       current_script: crate::js::CurrentScriptStateHandle::default(),
     }
   }
@@ -43,11 +41,11 @@ impl DocumentHostState {
   }
 
   pub fn events(&self) -> &events::EventListenerRegistry {
-    &self.events
+    self.dom.events()
   }
 
   pub fn events_mut(&mut self) -> &mut events::EventListenerRegistry {
-    &mut self.events
+    self.dom.events_mut()
   }
 
   /// Convenience passthrough for `Document.currentScript` as a `dom2::NodeId` handle.
@@ -194,5 +192,30 @@ mod tests {
 
     let root = host.dom().root();
     assert_eq!(event_target_for_node(root), events::EventTargetId::Document);
+  }
+
+  #[test]
+  fn document_host_state_event_registry_is_document_owned() {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><div></div>").unwrap();
+    let mut host = DocumentHostState::from_renderer_dom(&renderer_dom);
+
+    let target = events::EventTargetId::Document;
+    let listener_id = events::ListenerId::new(1);
+    let options = events::AddEventListenerOptions::default();
+
+    assert!(
+      host
+        .events_mut()
+        .add_event_listener(target, "click", listener_id, options),
+      "listener should be newly inserted"
+    );
+
+    assert!(
+      host
+        .dom()
+        .events()
+        .remove_event_listener(target, "click", listener_id, options.capture),
+      "listener should be removable through the dom2::Document registry"
+    );
   }
 }
