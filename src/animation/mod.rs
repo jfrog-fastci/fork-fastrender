@@ -8514,16 +8514,24 @@ fn apply_transition_state_to_fragment(
           viewport,
           Size::new(fragment.bounds.width(), fragment.bounds.height()),
         );
-        let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
+        // Apply sampled transition updates deterministically. Transition records are stored in
+        // hash maps, but HashMap iteration order is nondeterministic and can lead to flaky results
+        // when multiple properties overlap (e.g. borders/outlines) or when debug output is used for
+        // comparisons.
+        let mut ordered_running: Vec<(&Arc<str>, &transitions::TransitionRecord)> =
+          element.running.iter().collect();
+        ordered_running.sort_by(|(a, _), (b, _)| a.as_ref().cmp(b.as_ref()));
+
+        let mut updates: Vec<(String, AnimatedValue)> = Vec::new();
         let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
-        for (name_arc, record) in &element.running {
+        for (name_arc, record) in ordered_running {
           let name = name_arc.as_ref();
           let Some(sample) = record.sample(time_ms, &ctx) else {
             continue;
           };
           match sample.value {
             transitions::TransitionValue::Builtin(animated) => {
-              updates.insert(name.to_string(), animated);
+              updates.push((name.to_string(), animated));
             }
             transitions::TransitionValue::Custom(value) => {
               custom_updates.push((name_arc.clone(), value));
@@ -8549,7 +8557,7 @@ fn apply_transition_state_to_fragment(
         if !updates.is_empty() || !custom_updates.is_empty() {
           let color_changed = updates.contains_key("color");
           let mut updated_style = (*style_arc).clone();
-          apply_animated_properties(&mut updated_style, &updates);
+          apply_animated_properties_ordered(&mut updated_style, &updates);
           let mut custom_properties_changed = false;
           for (name, value) in custom_updates {
             let needs_update = updated_style
@@ -8568,7 +8576,7 @@ fn apply_transition_state_to_fragment(
           if custom_properties_changed || color_changed {
             let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
             updated_style.recompute_var_dependent_properties(parent_styles, viewport);
-            apply_animated_properties(&mut updated_style, &updates);
+            apply_animated_properties_ordered(&mut updated_style, &updates);
           }
           fragment.style = Some(Arc::new(updated_style));
         }
