@@ -129,6 +129,8 @@ run_cargo() {
     return $?
   fi
 
+  # Invoke through `bash` so the wrapper works even when the executable bit is not set (e.g. when
+  # the repo is unpacked from an archive that drops file modes).
   bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
   return $?
 }

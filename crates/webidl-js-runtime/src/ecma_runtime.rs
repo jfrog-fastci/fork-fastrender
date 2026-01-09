@@ -319,6 +319,15 @@ impl VmJsRuntime {
     Ok(())
   }
 
+  /// Calls a callable value with a specific `this` value and argument list.
+  ///
+  /// This is currently only supported for host functions allocated via
+  /// [`VmJsRuntime::alloc_function_value`]. It is exposed so integration tests and forthcoming
+  /// WebIDL binding glue can invoke installed callables without requiring a full JS interpreter.
+  pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+    self.call(callee, this, args)
+  }
+
   fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(func) = callee else {
       return Err(self.throw_type_error("value is not callable"));
