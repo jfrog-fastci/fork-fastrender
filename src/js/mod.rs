@@ -20,6 +20,7 @@ pub mod dom_scripts;
 pub mod dom_host;
 pub mod dom2_bindings;
 pub mod clock;
+pub mod dom_bindings_context;
 pub mod events;
 pub mod ecma_embed;
 pub mod ecma_vm_runtime;

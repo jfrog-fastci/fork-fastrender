@@ -41,6 +41,10 @@ pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) 
 pub struct NodeId(usize);
 
 impl NodeId {
+  pub(crate) fn from_index(index: usize) -> Self {
+    Self(index)
+  }
+
   pub fn index(self) -> usize {
     self.0
   }
