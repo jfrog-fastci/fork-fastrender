@@ -1,8 +1,9 @@
-use crate::js::url::{Url, UrlError, UrlLimits, UrlSearchParams};
-use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use std::cell::RefCell;
+use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::rc::Rc;
+use crate::js::url::{Url, UrlError, UrlLimits, UrlSearchParams};
+use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Value, VmError};
 use webidl_js_runtime::runtime::JsPropertyKind;
 
@@ -32,12 +33,62 @@ fn to_property_key(
   Ok(PropertyKey::String(s))
 }
 
-fn to_rust_string(rt: &mut webidl_js_runtime::VmJsRuntime, value: Value) -> Result<String, VmError> {
+fn string_to_rust_string_limited(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  handle: vm_js::GcString,
+  max_bytes: usize,
+  context: &str,
+) -> Result<String, VmError> {
+  let js = rt.heap().get_string(handle)?;
+
+  let code_units_len = js.len_code_units();
+  // UTF-8 output bytes are always >= UTF-16 code unit length, even accounting for surrogate pairs
+  // and replacement characters produced by lossy decoding. Use this to reject pathological strings
+  // without iterating them.
+  if code_units_len > max_bytes {
+    return Err(type_error(
+      rt,
+      &format!(
+        "{context} exceeded max bytes (len_code_units={code_units_len}, limit={max_bytes})"
+      ),
+    ));
+  }
+
+  // `JsString::to_utf8_lossy` uses `String::from_utf16_lossy`, which can allocate an output string
+  // much larger than the UTF-16 input (up to 3 bytes per code unit). Build the string manually so
+  // we can stop once the configured byte limit would be exceeded.
+  let capacity = code_units_len.saturating_mul(3).min(max_bytes);
+  let mut out = String::with_capacity(capacity);
+  let mut out_len = 0usize;
+
+  for decoded in decode_utf16(js.as_code_units().iter().copied()) {
+    let ch = decoded.unwrap_or('\u{FFFD}');
+    let ch_len = ch.len_utf8();
+    let next_len = out_len.checked_add(ch_len).unwrap_or(usize::MAX);
+    if next_len > max_bytes {
+      return Err(type_error(
+        rt,
+        &format!("{context} exceeded max bytes (limit={max_bytes})"),
+      ));
+    }
+    out.push(ch);
+    out_len = next_len;
+  }
+
+  Ok(out)
+}
+
+fn to_rust_string_limited(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  value: Value,
+  max_bytes: usize,
+  context: &str,
+) -> Result<String, VmError> {
   let v = rt.to_string(value)?;
   let Value::String(s) = v else {
     return Err(type_error(rt, "ToString did not return a string"));
   };
-  Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+  string_to_rust_string_limited(rt, s, max_bytes, context)
 }
 
 fn url_setter_result(
@@ -207,6 +258,7 @@ fn init_url_instance(
   let mut roots: Vec<RootId> = Vec::new();
   let result = (|| -> Result<(), VmError> {
     roots.push(rt.heap_mut().add_root(obj)?);
+    let max_input_bytes = { state.borrow().limits.max_input_bytes };
 
     let href_get = rt.alloc_function_value({
       let state = state.clone();
@@ -232,7 +284,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.href")?;
         let url = state
           .borrow()
           .urls
@@ -289,7 +341,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.protocol")?;
         let url = state
           .borrow()
           .urls
@@ -327,7 +379,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.username")?;
         let url = state
           .borrow()
           .urls
@@ -365,7 +417,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.password")?;
         let url = state
           .borrow()
           .urls
@@ -401,7 +453,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.host")?;
         let url = state
           .borrow()
           .urls
@@ -439,7 +491,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.hostname")?;
         let url = state
           .borrow()
           .urls
@@ -475,7 +527,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.port")?;
         let url = state
           .borrow()
           .urls
@@ -513,7 +565,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.pathname")?;
         let url = state
           .borrow()
           .urls
@@ -549,7 +601,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.search")?;
         let url = state
           .borrow()
           .urls
@@ -587,7 +639,7 @@ fn init_url_instance(
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URL")?;
         let value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let value = to_rust_string(rt, value)?;
+        let value = to_rust_string_limited(rt, value, max_input_bytes, "URL.hash")?;
         let url = state
           .borrow()
           .urls
@@ -737,6 +789,7 @@ fn init_urlsearchparams_instance(
   let mut roots: Vec<RootId> = Vec::new();
   let result = (|| -> Result<(), VmError> {
     roots.push(rt.heap_mut().add_root(obj)?);
+    let max_total_query_bytes = { state.borrow().limits.max_total_query_bytes };
 
     let Value::Object(obj_handle) = obj else {
       return Err(type_error(rt, "URLSearchParams: expected object"));
@@ -747,8 +800,18 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
-        let value = to_rust_string(rt, args.get(1).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.append",
+        )?;
+        let value = to_rust_string_limited(
+          rt,
+          args.get(1).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.append",
+        )?;
         let params = state
           .borrow()
           .search_params
@@ -767,11 +830,21 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.delete",
+        )?;
         let value_arg = args.get(1).copied();
         let value = match value_arg {
           None | Some(Value::Undefined) => None,
-          Some(v) => Some(to_rust_string(rt, v)?),
+          Some(v) => Some(to_rust_string_limited(
+            rt,
+            v,
+            max_total_query_bytes,
+            "URLSearchParams.delete",
+          )?),
         };
         let params = state
           .borrow()
@@ -791,7 +864,12 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.get",
+        )?;
         let params = state
           .borrow()
           .search_params
@@ -811,7 +889,12 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.getAll",
+        )?;
         let params = state
           .borrow()
           .search_params
@@ -841,11 +924,21 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.has",
+        )?;
         let value_arg = args.get(1).copied();
         let value = match value_arg {
           None | Some(Value::Undefined) => None,
-          Some(v) => Some(to_rust_string(rt, v)?),
+          Some(v) => Some(to_rust_string_limited(
+            rt,
+            v,
+            max_total_query_bytes,
+            "URLSearchParams.has",
+          )?),
         };
         let params = state
           .borrow()
@@ -865,8 +958,18 @@ fn init_urlsearchparams_instance(
       let state = state.clone();
       move |rt, this, args| {
         let obj = expect_object(rt, this, "URLSearchParams")?;
-        let name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
-        let value = to_rust_string(rt, args.get(1).copied().unwrap_or(Value::Undefined))?;
+        let name = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.set",
+        )?;
+        let value = to_rust_string_limited(
+          rt,
+          args.get(1).copied().unwrap_or(Value::Undefined),
+          max_total_query_bytes,
+          "URLSearchParams.set",
+        )?;
         let params = state
           .borrow()
           .search_params
@@ -1088,6 +1191,16 @@ pub fn install_url_bindings(
   rt: &mut webidl_js_runtime::VmJsRuntime,
   global: Value,
 ) -> Result<(), VmError> {
+  install_url_bindings_with_limits(rt, global, UrlLimits::default())
+}
+
+/// Install WHATWG-shaped `URL` and `URLSearchParams` constructors onto `global`, using the provided
+/// resource limits.
+pub fn install_url_bindings_with_limits(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  global: Value,
+  limits: UrlLimits,
+) -> Result<(), VmError> {
   // Root `global` while defining constructors: when the heap is under GC pressure, the intermediate
   // allocations in this function can trigger a collection, and `global` is otherwise just a raw
   // handle from the embedding.
@@ -1095,12 +1208,20 @@ pub fn install_url_bindings(
   roots.push(rt.heap_mut().add_root(global)?);
 
   let result = (|| -> Result<(), VmError> {
-    let state: Rc<RefCell<UrlBindingState>> = Rc::new(RefCell::new(UrlBindingState::default()));
+    let mut state = UrlBindingState::default();
+    state.limits = limits;
+    let state: Rc<RefCell<UrlBindingState>> = Rc::new(RefCell::new(state));
 
     let url_ctor = rt.alloc_function_value({
       let state = state.clone();
       move |rt, _this, args| {
-        let input = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let limits = { state.borrow().limits.clone() };
+        let input = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          limits.max_input_bytes,
+          "URL constructor input",
+        )?;
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
@@ -1113,13 +1234,22 @@ pub fn install_url_bindings(
               let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
-              Some(to_rust_string(rt, Value::Object(obj))?)
+              Some(to_rust_string_limited(
+                rt,
+                Value::Object(obj),
+                limits.max_input_bytes,
+                "URL constructor base",
+              )?)
             }
           }
-          Some(v) => Some(to_rust_string(rt, v)?),
+          Some(v) => Some(to_rust_string_limited(
+            rt,
+            v,
+            limits.max_input_bytes,
+            "URL constructor base",
+          )?),
         };
 
-        let limits = { state.borrow().limits.clone() };
         let url = Url::parse(&input, base.as_deref(), &limits)
           .map_err(|e| type_error(rt, &e.to_string()))?;
         let obj = rt.alloc_object_value()?;
@@ -1138,7 +1268,13 @@ pub fn install_url_bindings(
     let url_parse = rt.alloc_function_value({
       let state = state.clone();
       move |rt, _this, args| {
-        let input = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let limits = { state.borrow().limits.clone() };
+        let input = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          limits.max_input_bytes,
+          "URL.parse input",
+        )?;
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
@@ -1148,13 +1284,17 @@ pub fn install_url_bindings(
               let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
-              Some(to_rust_string(rt, Value::Object(obj))?)
+              Some(to_rust_string_limited(
+                rt,
+                Value::Object(obj),
+                limits.max_input_bytes,
+                "URL.parse base",
+              )?)
             }
           }
-          Some(v) => Some(to_rust_string(rt, v)?),
+          Some(v) => Some(to_rust_string_limited(rt, v, limits.max_input_bytes, "URL.parse base")?),
         };
 
-        let limits = { state.borrow().limits.clone() };
         let url = match Url::parse_without_diagnostics(&input, base.as_deref(), &limits) {
           Ok(url) => url,
           Err(_) => return Ok(Value::Null),
@@ -1175,7 +1315,13 @@ pub fn install_url_bindings(
     let url_can_parse = rt.alloc_function_value({
       let state = state.clone();
       move |rt, _this, args| {
-        let input = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let limits = { state.borrow().limits.clone() };
+        let input = to_rust_string_limited(
+          rt,
+          args.get(0).copied().unwrap_or(Value::Undefined),
+          limits.max_input_bytes,
+          "URL.canParse input",
+        )?;
         let base_value = args.get(1).copied();
         let base = match base_value {
           None | Some(Value::Undefined) => None,
@@ -1185,13 +1331,22 @@ pub fn install_url_bindings(
               let href = base_url.href().map_err(|e| type_error(rt, &e.to_string()))?;
               Some(href)
             } else {
-              Some(to_rust_string(rt, Value::Object(obj))?)
+              Some(to_rust_string_limited(
+                rt,
+                Value::Object(obj),
+                limits.max_input_bytes,
+                "URL.canParse base",
+              )?)
             }
           }
-          Some(v) => Some(to_rust_string(rt, v)?),
+          Some(v) => Some(to_rust_string_limited(
+            rt,
+            v,
+            limits.max_input_bytes,
+            "URL.canParse base",
+          )?),
         };
 
-        let limits = { state.borrow().limits.clone() };
         Ok(Value::Bool(Url::can_parse(&input, base.as_deref(), &limits)))
       }
     })?;
@@ -1206,7 +1361,8 @@ pub fn install_url_bindings(
           None | Some(Value::Undefined) => UrlSearchParams::new(&limits),
           // WebIDL treats String objects as string values when converting the constructor union.
           Some(v) if rt.is_string_object(v) => {
-            let init = to_rust_string(rt, v)?;
+            let init =
+              to_rust_string_limited(rt, v, limits.max_input_bytes, "URLSearchParams init")?;
             UrlSearchParams::parse(&init, &limits).map_err(|e| type_error(rt, &e.to_string()))?
           }
           Some(v) if rt.is_object(v) => {
@@ -1244,13 +1400,23 @@ pub fn install_url_bindings(
                       let key = rt.property_key_from_u32(0)?;
                       rt.get(Value::Object(pair_obj), key)?
                     };
-                    let name = to_rust_string(rt, name_value)?;
+                    let name = to_rust_string_limited(
+                      rt,
+                      name_value,
+                      limits.max_total_query_bytes,
+                      "URLSearchParams init",
+                    )?;
 
                     let value_value = {
                       let key = rt.property_key_from_u32(1)?;
                       rt.get(Value::Object(pair_obj), key)?
                     };
-                    let value = to_rust_string(rt, value_value)?;
+                    let value = to_rust_string_limited(
+                      rt,
+                      value_value,
+                      limits.max_total_query_bytes,
+                      "URLSearchParams init",
+                    )?;
 
                     params
                       .append(&name, &value)
@@ -1288,13 +1454,23 @@ pub fn install_url_bindings(
                   let key = rt.property_key_from_u32(0)?;
                   rt.get(Value::Object(pair_obj), key)?
                 };
-                let name = to_rust_string(rt, name_value)?;
+                let name = to_rust_string_limited(
+                  rt,
+                  name_value,
+                  limits.max_total_query_bytes,
+                  "URLSearchParams init",
+                )?;
 
                 let value_value = {
                   let key = rt.property_key_from_u32(1)?;
                   rt.get(Value::Object(pair_obj), key)?
                 };
-                let value = to_rust_string(rt, value_value)?;
+                let value = to_rust_string_limited(
+                  rt,
+                  value_value,
+                  limits.max_total_query_bytes,
+                  "URLSearchParams init",
+                )?;
 
                 params
                   .append(&name, &value)
@@ -1316,9 +1492,19 @@ pub fn install_url_bindings(
                   continue;
                 }
 
-                let name = rt.heap().get_string(s)?.to_utf8_lossy();
+                let name = string_to_rust_string_limited(
+                  rt,
+                  s,
+                  limits.max_total_query_bytes,
+                  "URLSearchParams init",
+                )?;
                 let value_value = rt.get(v, key)?;
-                let value = to_rust_string(rt, value_value)?;
+                let value = to_rust_string_limited(
+                  rt,
+                  value_value,
+                  limits.max_total_query_bytes,
+                  "URLSearchParams init",
+                )?;
                 params
                   .append(&name, &value)
                   .map_err(|e| type_error(rt, &e.to_string()))?;
@@ -1328,7 +1514,8 @@ pub fn install_url_bindings(
           }
           Some(v) => {
             // String (and any non-object / non-String-object value).
-            let init = to_rust_string(rt, v)?;
+            let init =
+              to_rust_string_limited(rt, v, limits.max_input_bytes, "URLSearchParams init")?;
             UrlSearchParams::parse(&init, &limits).map_err(|e| type_error(rt, &e.to_string()))?
           }
         };

@@ -1,5 +1,5 @@
-use fastrender::js::{install_url_bindings, webidl::VmJsRuntime};
-use vm_js::{HeapLimits, PropertyKey, Value};
+use fastrender::js::{install_url_bindings, install_url_bindings_with_limits, webidl::VmJsRuntime, UrlLimits};
+use vm_js::{HeapLimits, PropertyKey, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use webidl_js_runtime::runtime::JsPropertyKind;
 
@@ -410,5 +410,40 @@ fn url_instance_initialization_survives_gc_pressure() {
   assert_eq!(as_rust_string(&rt, href), "https://example.com/?x=1&a=b#hash");
 
   rt.heap_mut().remove_root(url_root);
+  rt.heap_mut().remove_root(global_root);
+}
+
+#[test]
+fn url_constructor_enforces_max_input_bytes_while_decoding_utf16() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  let mut limits = UrlLimits::default();
+  limits.max_input_bytes = 5;
+  install_url_bindings_with_limits(&mut rt, global, limits).unwrap();
+
+  // Root global so later allocations (property keys, etc) cannot collect it.
+  let global_root = rt.heap_mut().add_root(global).unwrap();
+
+  let url_ctor = get(&mut rt, global, "URL");
+  let input = str_val(&mut rt, "ééé"); // 3 UTF-16 code units but 6 UTF-8 bytes.
+  let input_root = rt.heap_mut().add_root(input).unwrap();
+  let err = rt
+    .call_function(url_ctor, Value::Undefined, &[input])
+    .expect_err("expected URL() to throw");
+  rt.heap_mut().remove_root(input_root);
+
+  let VmError::Throw(thrown) = err else {
+    panic!("expected thrown TypeError, got {err:?}");
+  };
+  let thrown_root = rt.heap_mut().add_root(thrown).unwrap();
+
+  let message = get(&mut rt, thrown, "message");
+  assert!(
+    as_rust_string(&rt, message).contains("URL constructor input exceeded max bytes"),
+    "unexpected error message: {}",
+    as_rust_string(&rt, message)
+  );
+
+  rt.heap_mut().remove_root(thrown_root);
   rt.heap_mut().remove_root(global_root);
 }
