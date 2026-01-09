@@ -3,7 +3,9 @@ use crate::geometry::{Point, Size};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{InteractionAction, InteractionEngine};
+use crate::render_control::RenderDeadline;
 use crate::scroll::ScrollState;
+use crate::ui::cancel::CancelGens;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
 use crate::ui::messages::{
@@ -17,10 +19,15 @@ use url::Url;
 pub struct UiWorkerHandle {
   ui_tx: Option<Sender<UiToWorker>>,
   ui_rx: Option<Receiver<WorkerToUi>>,
+  cancel_gens: CancelGens,
   join: Option<JoinHandle<()>>,
 }
 
 impl UiWorkerHandle {
+  pub fn cancel_gens(&self) -> CancelGens {
+    self.cancel_gens.clone()
+  }
+
   pub fn shutdown(mut self) -> std::thread::Result<()> {
     let _ = self.ui_tx.take();
     let _ = self.ui_rx.take();
@@ -263,9 +270,13 @@ fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
   ui_tx: &Sender<WorkerToUi>,
+  cancel_gens: &CancelGens,
   url: String,
   _reason: NavigationReason,
 ) {
+  let prepare_snapshot = cancel_gens.snapshot_prepare();
+  let prepare_cancel_cb = prepare_snapshot.cancel_callback_for_prepare(cancel_gens);
+
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url.clone(),
@@ -278,7 +289,7 @@ fn navigate_tab(
   tab.scroll = ScrollState::default();
   tab.interaction = InteractionEngine::new();
 
-  let options = render_options_for_navigation(tab);
+  let options = render_options_for_navigation(tab).with_cancel_callback(Some(prepare_cancel_cb.clone()));
 
   let committed_url = if about_pages::is_about_url(&url) {
     let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
@@ -289,6 +300,10 @@ fn navigate_tab(
       .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
     tab.document.set_document_url(Some(url.clone()));
     if let Err(err) = tab.document.reset_with_html(&html, options) {
+      tab.document.set_cancel_callback(None);
+      if prepare_cancel_cb() {
+        return;
+      }
       let err = err.to_string();
       let _ = ui_tx.send(WorkerToUi::NavigationFailed {
         tab_id,
@@ -307,6 +322,10 @@ fn navigate_tab(
     match tab.document.navigate_url_with_options(&url, options) {
       Ok((committed, _base)) => committed,
       Err(err) => {
+        tab.document.set_cancel_callback(None);
+        if prepare_cancel_cb() {
+          return;
+        }
         let err = err.to_string();
         let _ = ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
@@ -323,12 +342,24 @@ fn navigate_tab(
     }
   };
 
-  tab.url = Some(committed_url.clone());
   tab.document.set_scroll_state(tab.scroll.clone());
 
-  let painted = match tab.document.render_frame_with_scroll_state() {
+  if prepare_cancel_cb() {
+    tab.document.set_cancel_callback(None);
+    return;
+  }
+
+  let paint_snapshot = cancel_gens.snapshot_paint();
+  let paint_cancel_cb = paint_snapshot.cancel_callback_for_paint(cancel_gens);
+  let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb.clone()));
+
+  let painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
     Ok(frame) => frame,
     Err(err) => {
+      tab.document.set_cancel_callback(None);
+      if paint_cancel_cb() {
+        return;
+      }
       let err = err.to_string();
       let _ = ui_tx.send(WorkerToUi::NavigationFailed {
         tab_id,
@@ -343,6 +374,13 @@ fn navigate_tab(
       return;
     }
   };
+
+  tab.document.set_cancel_callback(None);
+  if paint_cancel_cb() {
+    return;
+  }
+
+  tab.url = Some(committed_url.clone());
 
   let title = crate::html::title::find_document_title(tab.document.dom());
   let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
@@ -366,22 +404,45 @@ fn navigate_tab(
 /// This worker owns per-tab [`BrowserDocument`] instances and processes [`UiToWorker`] messages,
 /// emitting [`WorkerToUi`] events over standard mpsc channels.
 pub fn spawn_ui_worker(name: impl Into<String>) -> std::io::Result<UiWorkerHandle> {
+  spawn_ui_worker_inner(name.into(), None)
+}
+
+/// Spawn a headless UI worker loop configured with a per-thread render delay (test-only).
+pub fn spawn_ui_worker_for_test(
+  name: impl Into<String>,
+  test_render_delay_ms: Option<u64>,
+) -> std::io::Result<UiWorkerHandle> {
+  spawn_ui_worker_inner(name.into(), test_render_delay_ms)
+}
+
+fn spawn_ui_worker_inner(
+  name: String,
+  test_render_delay_ms: Option<u64>,
+) -> std::io::Result<UiWorkerHandle> {
   let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (to_ui_tx, to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+  let cancel_gens = CancelGens::new();
+  let cancel_gens_for_worker = cancel_gens.clone();
 
   let join = std::thread::Builder::new()
-    .name(name.into())
+    .name(name)
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
-    .spawn(move || run_worker_loop(to_worker_rx, to_ui_tx))?;
+    .spawn(move || {
+      if let Some(delay) = test_render_delay_ms {
+        crate::render_control::set_test_render_delay_ms(Some(delay));
+      }
+      run_worker_loop(to_worker_rx, to_ui_tx, cancel_gens_for_worker);
+    })?;
 
   Ok(UiWorkerHandle {
     ui_tx: Some(to_worker_tx),
     ui_rx: Some(to_ui_rx),
+    cancel_gens,
     join: Some(join),
   })
 }
 
-fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
+fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_gens: CancelGens) {
   let mut tabs: HashMap<TabId, TabState> = HashMap::new();
 
   while let Ok(msg) = rx.recv() {
@@ -428,7 +489,14 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
 
         if let Some(url) = initial_url {
           if let Some(tab) = tabs.get_mut(&tab_id) {
-            navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::TypedUrl);
+            navigate_tab(
+              tab_id,
+              tab,
+              &ui_tx,
+              &cancel_gens,
+              url,
+              NavigationReason::TypedUrl,
+            );
           }
         }
       }
@@ -459,7 +527,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        navigate_tab(tab_id, tab, &ui_tx, url, reason);
+        navigate_tab(tab_id, tab, &ui_tx, &cancel_gens, url, reason);
       }
       UiToWorker::GoBack { tab_id } | UiToWorker::GoForward { tab_id } => {
         // History navigation is implemented in the real UI worker (`ui_worker.rs`). This minimal
@@ -477,7 +545,14 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let Some(url) = tab.url.clone() else {
           continue;
         };
-        navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::Reload);
+        navigate_tab(
+          tab_id,
+          tab,
+          &ui_tx,
+          &cancel_gens,
+          url,
+          NavigationReason::Reload,
+        );
       }
       UiToWorker::Scroll {
         tab_id,
@@ -490,7 +565,8 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
 
         let delta_x = sanitize_delta(delta_css.0);
         let delta_y = sanitize_delta(delta_css.1);
-        let current = tab.scroll.clone();
+        let previous_scroll = tab.scroll.clone();
+        let current = previous_scroll.clone();
 
         let next = match pointer_css.and_then(sanitize_pointer) {
           None => {
@@ -519,11 +595,24 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           }
         };
 
+        // Update the tab's scroll model immediately so that subsequent scroll deltas accumulate
+        // even if this paint is canceled. If the paint succeeds, we will overwrite this with the
+        // final scroll state returned by the renderer (e.g. after scroll snapping).
+        tab.scroll = next.clone();
         tab.document.set_scroll_state(next);
-        let painted = match tab.document.render_if_needed_with_scroll_state() {
-          Ok(Some(frame)) => frame,
-          Ok(None) => continue,
+
+        let paint_snapshot = cancel_gens.snapshot_paint();
+        let paint_cancel_cb = paint_snapshot.cancel_callback_for_paint(&cancel_gens);
+        let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb.clone()));
+
+        let painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
+          Ok(frame) => frame,
           Err(err) => {
+            if paint_cancel_cb() {
+              continue;
+            }
+            tab.scroll = previous_scroll.clone();
+            tab.document.set_scroll_state(previous_scroll);
             let _ = ui_tx.send(WorkerToUi::DebugLog {
               tab_id,
               line: format!("paint failed after scroll: {err}"),
@@ -532,7 +621,12 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           }
         };
 
-        if painted.scroll_state != tab.scroll {
+        if paint_cancel_cb() {
+          continue;
+        }
+
+        tab.scroll = painted.scroll_state.clone();
+        if painted.scroll_state != previous_scroll {
           emit_frame(tab_id, tab, &ui_tx, painted.pixmap, painted.scroll_state);
         }
       }
@@ -599,7 +693,14 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
             if let Some(url) = fragment_navigation_target(tab, &href) {
               navigate_fragment_in_place(tab_id, tab, &ui_tx, url);
             } else {
-              navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+              navigate_tab(
+                tab_id,
+                tab,
+                &ui_tx,
+                &cancel_gens,
+                href,
+                NavigationReason::LinkClick,
+              );
             }
           }
           InteractionAction::OpenSelectDropdown {
@@ -641,7 +742,14 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         });
         match action {
           InteractionAction::Navigate { href } => {
-            navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+            navigate_tab(
+              tab_id,
+              tab,
+              &ui_tx,
+              &cancel_gens,
+              href,
+              NavigationReason::LinkClick,
+            );
           }
           _ => {
             repaint_if_needed(tab_id, tab, &ui_tx);

@@ -52,6 +52,7 @@ fn box_id_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> usize {
 
 #[test]
 fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 200);
   let url = "https://example.com/index.html";

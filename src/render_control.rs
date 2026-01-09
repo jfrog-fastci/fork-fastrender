@@ -11,6 +11,16 @@ thread_local! {
   static ACTIVE_STAGE: Cell<Option<RenderStage>> = const { Cell::new(None) };
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+thread_local! {
+  static TEST_RENDER_DELAY_MS: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+pub fn set_test_render_delay_ms(ms: Option<u64>) {
+  TEST_RENDER_DELAY_MS.with(|cell| cell.set(ms));
+}
+
 /// Callback type used to cooperatively cancel rendering work.
 pub type CancelCallback = dyn Fn() -> bool + Send + Sync;
 
@@ -282,11 +292,12 @@ impl RenderDeadline {
 
   /// Check for timeout or cancellation at the given stage.
   pub fn check(&self, stage: RenderStage) -> Result<(), RenderError> {
-    #[cfg(test)]
-    if let Some(delay) = std::env::var("FASTR_TEST_RENDER_DELAY_MS")
-      .ok()
-      .and_then(|v| v.parse::<u64>().ok())
-    {
+    #[cfg(any(test, feature = "browser_ui"))]
+    if let Some(delay) = TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
+      std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    }) {
       std::thread::sleep(Duration::from_millis(delay));
     }
     if let Some(cb) = &self.cancel {

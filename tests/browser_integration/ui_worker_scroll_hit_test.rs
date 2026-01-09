@@ -104,6 +104,7 @@ fn wait_for_navigation_committed(
 
 #[test]
 fn click_after_scroll_hits_link() {
+  let _lock = super::stage_listener_test_lock();
   let site = TempSite::new();
   let page1_url = site.write(
     "page1.html",

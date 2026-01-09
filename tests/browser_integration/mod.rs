@@ -13,6 +13,7 @@ mod ui_render_thread;
 mod ui_render_worker_thread_builder_test;
 mod ui_select_listbox_click;
 mod ui_stage_heartbeat_forwarding;
+mod ui_worker_cancellation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
 mod ui_worker_interaction;
@@ -29,8 +30,10 @@ mod ui_worker_dpr;
 mod worker_harness;
 mod worker_runtime;
 
-// `GlobalStageListenerGuard` is process-global, so tests that use stage heartbeats must not run
-// concurrently within this test binary.
+// `GlobalStageListenerGuard` (used by stage heartbeat forwarding) is process-global. While it is
+// installed, *all* renders in the process will invoke the listener, which can leak stage messages
+// across tests and add overhead. Serialize browser UI integration tests with this lock to keep CI
+// runs deterministic under `cargo test`'s default parallelism.
 #[cfg(feature = "browser_ui")]
 pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
   static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

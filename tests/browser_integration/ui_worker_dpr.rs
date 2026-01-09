@@ -38,6 +38,7 @@ fn assert_close(actual: f32, expected: f32, eps: f32, label: &str) {
 
 #[test]
 fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
+  let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-dpr-test-a").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
@@ -94,6 +95,7 @@ fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
 
 #[test]
 fn invalid_dpr_is_sanitized() {
+  let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-dpr-test-b").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 

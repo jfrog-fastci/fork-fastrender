@@ -113,6 +113,7 @@ fn assert_pixel_rgb(pixmap: &tiny_skia::Pixmap, x: u32, y: u32, expected: (u8, u
 
 #[test]
 fn backspace_edits_focused_input_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-keyboard-backspace")
@@ -179,6 +180,7 @@ fn backspace_edits_focused_input_and_repaints() {
 
 #[test]
 fn key_action_sets_focus_visible() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-keyboard-focus-visible")
