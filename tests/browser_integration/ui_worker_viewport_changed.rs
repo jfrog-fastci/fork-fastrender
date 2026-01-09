@@ -147,16 +147,18 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(support::create_tab_msg(tab_id, None))
+    .send(support::create_tab_msg(
+      tab_id,
+      Some("about:newtab".to_string()),
+    ))
     .expect("CreateTab");
 
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (200, 100), 2.0))
     .expect("ViewportChanged");
 
-  // `CreateTab` triggers an initial `about:newtab` navigation. Ensure the first rendered frame uses
-  // the updated viewport size + device pixel ratio, even when the `ViewportChanged` message arrives
-  // immediately after `CreateTab`.
+  // Ensure the first rendered frame uses the updated viewport size + device pixel ratio, even when
+  // the `ViewportChanged` message arrives immediately after `CreateTab`.
   let frame = wait_for_frame_with_meta(&ui_rx, tab_id, (200, 100), 2.0);
   assert_pixmap_matches_viewport(&frame);
 

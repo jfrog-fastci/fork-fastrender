@@ -377,9 +377,9 @@ struct BrowserRuntime {
   /// When `true`, tabs created without an explicit initial URL will auto-navigate to
   /// `about:newtab` (matching the interactive browser UI).
   ///
-  /// The headless UI worker used by most integration tests prefers to stay inert until the test
-  /// explicitly sends a `Navigate` message; keeping this behaviour configurable avoids extra frames
-  /// that could race with test-driven navigations.
+  /// Some integration tests (and alternate embedders) prefer to keep tabs inert until they
+  /// explicitly send a `Navigate` message; keeping this behaviour configurable allows tests to
+  /// disable the default navigation when needed.
   auto_newtab_on_create: bool,
 }
 
@@ -553,20 +553,30 @@ impl BrowserRuntime {
         initial_url,
         cancel,
       } => {
-        let mut tab = TabState::new(cancel);
-        tab.needs_default_newtab = initial_url.is_none();
-        self.tabs.insert(tab_id, tab);
+        self.tabs.insert(tab_id, TabState::new(cancel));
         self.active_tab.get_or_insert(tab_id);
-        let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
-        self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        if let Some(url) = initial_url {
+          self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        } else if self.auto_newtab_on_create {
+          self.schedule_navigation(
+            tab_id,
+            about_pages::ABOUT_NEWTAB.to_string(),
+            NavigationReason::TypedUrl,
+          );
+        }
       }
       UiToWorker::NewTab { tab_id, initial_url } => {
-        let mut tab = TabState::new(CancelGens::new());
-        tab.needs_default_newtab = initial_url.is_none();
-        self.tabs.insert(tab_id, tab);
+        self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
         self.active_tab.get_or_insert(tab_id);
-        let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
-        self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        if let Some(url) = initial_url {
+          self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        } else if self.auto_newtab_on_create {
+          self.schedule_navigation(
+            tab_id,
+            about_pages::ABOUT_NEWTAB.to_string(),
+            NavigationReason::TypedUrl,
+          );
+        }
       }
       UiToWorker::CloseTab { tab_id } => {
         self.tabs.remove(&tab_id);
@@ -655,10 +665,12 @@ impl BrowserRuntime {
         };
         tab.viewport_css = clamp_viewport(viewport_css);
         tab.dpr = if dpr.is_finite() { dpr.max(f32::EPSILON) } else { 1.0 };
+        // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
+        // the first navigation completes (no document/layout cache yet).
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
 
         if let Some(doc) = tab.document.as_mut() {
+          tab.needs_repaint = true;
           tab.force_repaint = true;
           doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
           doc.set_device_pixel_ratio(tab.dpr);
@@ -2162,7 +2174,7 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
 /// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
 /// usable from tests to exercise end-to-end interaction wiring.
 pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, false)
+  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, true)
 }
 
 /// Spawn a UI worker with an optional per-frame artificial delay (test-only).
@@ -2185,7 +2197,7 @@ pub fn spawn_ui_worker_with_factory(
   name: impl Into<String>,
   factory: FastRenderFactory,
 ) -> crate::Result<UiWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, factory, false)
+  spawn_worker_with_factory_inner(name.into(), None, factory, true)
 }
 
 fn spawn_worker_with_factory_inner(
