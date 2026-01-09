@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind,
-  Value, VmError, WeakGcObject,
+  RootId, Value, VmError, WeakGcObject,
 };
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
@@ -139,7 +139,7 @@ impl VmJsRuntime {
     //
     // Instead, emulate the old temporary stack root behaviour by using persistent roots that are
     // removed immediately after `f` returns.
-    let mut root_ids = Vec::new();
+    let mut root_ids: Vec<RootId> = Vec::new();
     for v in roots {
       if !self.value_is_valid_or_primitive(v) {
         // Best-effort cleanup for any roots we managed to register before failing.

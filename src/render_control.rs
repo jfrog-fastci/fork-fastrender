@@ -1,5 +1,6 @@
 use crate::error::{RenderError, RenderStage};
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,21 @@ thread_local! {
   static ACTIVE_STAGE: Cell<Option<RenderStage>> = const { Cell::new(None) };
 }
 
+thread_local! {
+  /// Per-thread cooperative interrupt flag.
+  ///
+  /// This exists to bridge FastRender's render-level cancellation/deadlines into runtimes that
+  /// expect a shared `Arc<AtomicBool>` interrupt primitive (e.g. `vm-js`).
+  ///
+  /// This flag is intentionally coarse:
+  /// - It is reset to `false` when the **outermost** [`DeadlineGuard`] is installed.
+  /// - It is set to `true` when a deadline check fails (timeout or external cancel).
+  ///
+  /// VM embeddings can clone this `Arc` and pass it into their own interrupt tokens. Once set, it
+  /// remains set until the next render installs a new outermost deadline scope.
+  static INTERRUPT_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 thread_local! {
   static TEST_RENDER_DELAY_MS: Cell<Option<u64>> = const { Cell::new(None) };
@@ -19,6 +35,15 @@ thread_local! {
 #[cfg(any(test, feature = "browser_ui"))]
 pub fn set_test_render_delay_ms(ms: Option<u64>) {
   TEST_RENDER_DELAY_MS.with(|cell| cell.set(ms));
+}
+
+/// Returns a per-thread shared interrupt flag suitable for VM embeddings.
+pub fn interrupt_flag() -> Arc<AtomicBool> {
+  INTERRUPT_FLAG.with(|flag| Arc::clone(flag))
+}
+
+fn set_interrupt_flag(value: bool) {
+  INTERRUPT_FLAG.with(|flag| flag.store(value, Ordering::Relaxed));
 }
 
 /// Callback type used to cooperatively cancel rendering work.
@@ -358,6 +383,10 @@ impl DeadlineGuard {
       stack.push(cloned);
       previous_len
     });
+    if previous_len == 0 {
+      // Reset for each new "root" render deadline scope.
+      set_interrupt_flag(false);
+    }
     Self { previous_len }
   }
 }
@@ -430,7 +459,13 @@ pub fn active_stage() -> Option<RenderStage> {
 pub fn check_active(stage: RenderStage) -> Result<(), RenderError> {
   DEADLINE_STACK.with(|stack| {
     if let Some(Some(deadline)) = stack.borrow().last() {
-      deadline.check(stage)
+      match deadline.check(stage) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          set_interrupt_flag(true);
+          Err(err)
+        }
+      }
     } else {
       Ok(())
     }
@@ -445,7 +480,13 @@ pub fn check_active(stage: RenderStage) -> Result<(), RenderError> {
 /// not an internal sub-budget.
 pub fn check_root(stage: RenderStage) -> Result<(), RenderError> {
   if let Some(deadline) = root_deadline() {
-    deadline.check(stage)
+    match deadline.check(stage) {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        set_interrupt_flag(true);
+        Err(err)
+      }
+    }
   } else {
     Ok(())
   }
@@ -471,9 +512,15 @@ pub fn check_active_periodic(
   if stride == 0 {
     return Ok(());
   }
-  DEADLINE_STACK.with(|stack| -> Result<(), RenderError> {
+  DEADLINE_STACK.with(|stack| {
     if let Some(Some(deadline)) = stack.borrow().last() {
-      deadline.check_periodic(counter, stride, stage)
+      match deadline.check_periodic(counter, stride, stage) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          set_interrupt_flag(true);
+          Err(err)
+        }
+      }
     } else {
       Ok(())
     }
@@ -490,7 +537,13 @@ pub fn check_root_periodic(
     return Ok(());
   }
   if let Some(deadline) = root_deadline() {
-    deadline.check_periodic(counter, stride, stage)
+    match deadline.check_periodic(counter, stride, stage) {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        set_interrupt_flag(true);
+        Err(err)
+      }
+    }
   } else {
     Ok(())
   }

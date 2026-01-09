@@ -22,6 +22,7 @@ pub mod dom2_bindings;
 pub mod clock;
 pub mod events;
 pub mod ecma_embed;
+pub mod ecma_vm_runtime;
 pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod host_document;
@@ -49,6 +50,7 @@ pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
+pub use ecma_vm_runtime::{EcmaVmRuntime, EcmaVmRuntimeConfig};
 pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
   Task, TaskSource, TimerId,
