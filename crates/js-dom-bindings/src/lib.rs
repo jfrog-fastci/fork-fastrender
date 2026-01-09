@@ -1860,6 +1860,19 @@ const DOM_BINDINGS_SHIM: &str = r##"
     parentNodeReplaceChildren(this, arguments);
   };
 
+  DocumentFragment.prototype.append = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeAppend(this, arguments);
+  };
+  DocumentFragment.prototype.prepend = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodePrepend(this, arguments);
+  };
+  DocumentFragment.prototype.replaceChildren = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeReplaceChildren(this, arguments);
+  };
+
   // --- Wrapper constructor ---------------------------------------------------
 
   g.__fastrender_wrap_node_id = function (id, kind) {
@@ -2761,18 +2774,21 @@ const DOM_BINDINGS_SHIM: &str = r##"
               outside.id = "outside";
               document.body.appendChild(outside);
 
-              var frag = document.createDocumentFragment();
-              if (frag.nodeType !== 11) return "bad_fragment_type:" + String(frag.nodeType);
-              if (frag.nodeName !== "#document-fragment") return "bad_fragment_name:" + String(frag.nodeName);
-              if (typeof frag.querySelector !== "function") return "missing_fragment_querySelector";
-              if (typeof frag.querySelectorAll !== "function") return "missing_fragment_querySelectorAll";
-              if (frag.querySelector("#outside") !== null) return "fragment_query_leaked_to_document";
+               var frag = document.createDocumentFragment();
+               if (frag.nodeType !== 11) return "bad_fragment_type:" + String(frag.nodeType);
+               if (frag.nodeName !== "#document-fragment") return "bad_fragment_name:" + String(frag.nodeName);
+               if (typeof frag.querySelector !== "function") return "missing_fragment_querySelector";
+               if (typeof frag.querySelectorAll !== "function") return "missing_fragment_querySelectorAll";
+               if (typeof frag.append !== "function") return "missing_fragment_append";
+               if (typeof frag.prepend !== "function") return "missing_fragment_prepend";
+               if (typeof frag.replaceChildren !== "function") return "missing_fragment_replaceChildren";
+               if (frag.querySelector("#outside") !== null) return "fragment_query_leaked_to_document";
 
-              var inside1 = document.createElement("div");
-              inside1.id = "inside1";
-              frag.appendChild(inside1);
-              if (frag.querySelector("#inside1") !== inside1) return "fragment_query_mismatch";
-              if (document.getElementById("inside1") !== null) return "fragment_child_visible_before_insertion";
+               var inside1 = document.createElement("div");
+               inside1.id = "inside1";
+               frag.append(inside1);
+               if (frag.querySelector("#inside1") !== inside1) return "fragment_query_mismatch";
+               if (document.getElementById("inside1") !== null) return "fragment_child_visible_before_insertion";
 
               var returned = document.body.appendChild(frag);
               if (returned !== frag) return "appendChild_returned_wrong_node";
@@ -2789,16 +2805,15 @@ const DOM_BINDINGS_SHIM: &str = r##"
               document.body.appendChild(marker);
 
               var frag2 = document.createDocumentFragment();
-              var inside2 = document.createElement("div");
-              inside2.id = "inside2";
-              var inside3 = document.createElement("div");
-              inside3.id = "inside3";
-              frag2.appendChild(inside2);
-              frag2.appendChild(inside3);
-              returned = document.body.insertBefore(frag2, marker);
-              if (returned !== frag2) return "insertBefore_returned_wrong_node";
-              if (!frag2.childNodes || frag2.childNodes.length !== 0) return "fragment2_should_be_emptied";
-              if (inside2.parentNode !== document.body || inside3.parentNode !== document.body) return "fragment2_child_parent_wrong";
+               var inside2 = document.createElement("div");
+               inside2.id = "inside2";
+               var inside3 = document.createElement("div");
+               inside3.id = "inside3";
+               frag2.append(inside2, inside3);
+               returned = document.body.insertBefore(frag2, marker);
+               if (returned !== frag2) return "insertBefore_returned_wrong_node";
+               if (!frag2.childNodes || frag2.childNodes.length !== 0) return "fragment2_should_be_emptied";
+               if (inside2.parentNode !== document.body || inside3.parentNode !== document.body) return "fragment2_child_parent_wrong";
               if (document.body.childNodes.length !== 5) return "body_child_count_after_insertBefore:" + String(document.body.childNodes.length);
               if (document.body.childNodes[2] !== inside2) return "body_child2_after_insertBefore";
               if (document.body.childNodes[3] !== inside3) return "body_child3_after_insertBefore";
@@ -2806,14 +2821,14 @@ const DOM_BINDINGS_SHIM: &str = r##"
               if (document.getElementById("inside2") !== inside2) return "wrapper_cache_mismatch_inside2";
               if (document.getElementById("inside3") !== inside3) return "wrapper_cache_mismatch_inside3";
 
-              var frag3 = document.createDocumentFragment();
-              var repl1 = document.createElement("div");
-              repl1.id = "repl1";
-              frag3.appendChild(repl1);
-              returned = document.body.replaceChild(frag3, inside1);
-              if (returned !== inside1) return "replaceChild_returned_wrong_node";
-              if (inside1.parentNode !== null) return "replaced_child_parent_not_cleared";
-              if (!frag3.childNodes || frag3.childNodes.length !== 0) return "fragment3_should_be_emptied";
+               var frag3 = document.createDocumentFragment();
+               var repl1 = document.createElement("div");
+               repl1.id = "repl1";
+               frag3.append(repl1);
+               returned = document.body.replaceChild(frag3, inside1);
+               if (returned !== inside1) return "replaceChild_returned_wrong_node";
+               if (inside1.parentNode !== null) return "replaced_child_parent_not_cleared";
+               if (!frag3.childNodes || frag3.childNodes.length !== 0) return "fragment3_should_be_emptied";
               if (document.getElementById("inside1") !== null) return "replaced_id_still_visible";
               if (document.getElementById("repl1") !== repl1) return "wrapper_cache_mismatch_repl1";
               if (document.body.childNodes.length !== 5) return "body_child_count_after_replaceChild:" + String(document.body.childNodes.length);
