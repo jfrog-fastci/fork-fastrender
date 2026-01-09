@@ -9,13 +9,7 @@ use fastrender::ui::{
   spawn_browser_render_thread, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
 };
 use std::ffi::OsString;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
-
-fn test_lock() -> MutexGuard<'static, ()> {
-  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-  LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-}
 
 fn factory_for_tests() -> FastRenderFactory {
   let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
@@ -46,7 +40,7 @@ impl Drop for EnvVarGuard {
 
 #[test]
 fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
-  let _lock = test_lock();
+  let _lock = super::stage_listener_test_lock();
 
   let factory = factory_for_tests();
   let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
@@ -100,7 +94,7 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 
 #[test]
 fn scroll_produces_scroll_update_and_frame() {
-  let _lock = test_lock();
+  let _lock = super::stage_listener_test_lock();
 
   let factory = factory_for_tests();
   let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
@@ -170,7 +164,7 @@ fn scroll_produces_scroll_update_and_frame() {
 
 #[test]
 fn navigation_cancellation_drops_stale_frame() {
-  let _lock = test_lock();
+  let _lock = super::stage_listener_test_lock();
   let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "1");
 
   let factory = factory_for_tests();
@@ -257,7 +251,7 @@ fn navigation_cancellation_drops_stale_frame() {
 
 #[test]
 fn enter_submits_focused_text_input_form() {
-  let _lock = test_lock();
+  let _lock = super::stage_listener_test_lock();
 
   let factory = factory_for_tests();
   let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
@@ -333,3 +327,4 @@ fn enter_submits_focused_text_input_form() {
     "expected NavigationCommitted for {expected_url} (keyboard submit)"
   );
 }
+
