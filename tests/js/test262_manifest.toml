@@ -26,6 +26,10 @@ reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated 
 
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]
+id = "language/expressions/addition/S11.6.1_A1.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/addition/S11.6.1_A2.1_T1.js"
 status = "pass"
 
