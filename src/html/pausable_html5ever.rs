@@ -1,5 +1,6 @@
 use html5ever::driver::Parser;
 use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::BufferQueue;
 use html5ever::tree_builder::TreeSink;
 use html5ever::ParseOpts;
 use markup5ever::interface::TokenizerResult;
@@ -132,30 +133,55 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
         return Ok(Html5everPump::NeedMoreInput);
       };
 
-      check_active_periodic(
+      // If there's no buffered input left, either yield for more or finish if EOF was signalled.
+      let Some(next_input) = parser.input_buffer.pop_front() else {
+        if !self.eof {
+          return Ok(Html5everPump::NeedMoreInput);
+        }
+
+        let Some(parser) = self.parser.take() else {
+          return Ok(Html5everPump::NeedMoreInput);
+        };
+
+        parser.tokenizer.end();
+        let output = parser.tokenizer.sink.sink.finish();
+        return Ok(Html5everPump::Finished(output));
+      };
+
+      // Ensure timeouts/cancellation are observed periodically even when a large amount of input has
+      // already been buffered into `parser.input_buffer`.
+      //
+      // We intentionally drive html5ever in small chunks so a single `tokenizer.feed` call can't run
+      // arbitrarily long without returning to FastRender's cooperative deadline checks.
+      if let Err(err) = check_active_periodic(
         &mut deadline_counter,
         HTML5EVER_PUMP_DEADLINE_STRIDE,
         RenderStage::DomParse,
-      )
-      .map_err(Error::Render)?;
+      ) {
+        // Avoid dropping the buffered input we just pulled.
+        parser.input_buffer.push_front(next_input);
+        return Err(Error::Render(err));
+      }
+
+      let mut chunk = BufferQueue::default();
+      chunk.push_back(next_input);
 
       // Drive html5ever directly so `TokenizerResult::Script` can be observed.
-      let result = parser.tokenizer.feed(&parser.input_buffer);
+      let result = parser.tokenizer.feed(&chunk);
+
+      // Return any unconsumed remainder back to the shared input queue.
+      let mut remainder = Vec::new();
+      while let Some(t) = chunk.pop_front() {
+        remainder.push(t);
+      }
+      for t in remainder.into_iter().rev() {
+        parser.input_buffer.push_front(t);
+      }
 
       match result {
         TokenizerResult::Script(handle) => return Ok(Html5everPump::Script(handle)),
         TokenizerResult::Done => {
-          if !self.eof {
-            return Ok(Html5everPump::NeedMoreInput);
-          }
-
-          let Some(parser) = self.parser.take() else {
-            return Ok(Html5everPump::NeedMoreInput);
-          };
-
-          parser.tokenizer.end();
-          let output = parser.tokenizer.sink.sink.finish();
-          return Ok(Html5everPump::Finished(output));
+          // Continue pumping buffered input (or return NeedMoreInput/Finished once it drains).
         }
       }
     }
@@ -169,6 +195,8 @@ mod tests {
   use html5ever::tree_builder::TreeBuilderOpts;
   use html5ever::ParseOpts;
   use markup5ever_rcdom::{Handle, NodeData, RcDom};
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
   use std::time::Duration;
 
   // `RcDom::document` points at the root document node; walking the tree should
@@ -366,5 +394,45 @@ mod tests {
       Ok(_) => panic!("expected dom_parse timeout, got Ok"),
       Err(err) => panic!("expected dom_parse timeout, got {err}"),
     }
+  }
+
+  #[test]
+  fn pump_aborts_on_cancel_mid_parse() {
+    // The cancel callback returns false the first time it is queried, then true on the next
+    // deadline check. This ensures we only abort if the parser performs multiple periodic deadline
+    // checks while consuming a large buffered document.
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let calls_for_cb = Arc::clone(&calls);
+    let deadline = RenderDeadline::new(
+      None,
+      Some(Arc::new(move || {
+        let prev = calls_for_cb.fetch_add(1, Ordering::Relaxed);
+        prev >= 1
+      })),
+    );
+
+    let big = "a".repeat(
+      super::HTML5EVER_INPUT_MAX_TENDRIL_BYTES * (super::HTML5EVER_PUMP_DEADLINE_STRIDE + 1),
+    );
+    let result = with_deadline(Some(&deadline), || {
+      let mut parser = PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
+      parser.push_str(&big);
+      parser.set_eof();
+      parser.pump()
+    });
+
+    match result {
+      Err(crate::error::Error::Render(crate::error::RenderError::Timeout {
+        stage: crate::error::RenderStage::DomParse,
+        ..
+      })) => {}
+      Ok(_) => panic!("expected dom_parse timeout, got Ok"),
+      Err(err) => panic!("expected dom_parse timeout, got {err}"),
+    }
+
+    assert!(
+      calls.load(Ordering::Relaxed) >= 2,
+      "expected cancel callback to be consulted multiple times"
+    );
   }
 }
