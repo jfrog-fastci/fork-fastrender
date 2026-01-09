@@ -30,8 +30,11 @@ impl DomIndex {
     let mut id_to_ptr: Vec<*mut DomNode> = vec![ptr::null_mut()];
     let mut id_by_element_id: HashMap<String, usize> = HashMap::new();
 
-    let mut stack: Vec<(*mut DomNode, usize)> = vec![(root as *mut DomNode, 0)];
-    while let Some((ptr, parent_id)) = stack.pop() {
+    // Track whether a node is inside an inert `<template>` subtree. `enumerate_dom_ids` includes
+    // template contents in the stable node id scheme, but template contents should not participate
+    // in `id` attribute lookup (matching browser `getElementById` behaviour).
+    let mut stack: Vec<(*mut DomNode, usize, bool)> = vec![(root as *mut DomNode, 0, false)];
+    while let Some((ptr, parent_id, in_template_contents)) = stack.pop() {
       let id = id_to_ptr.len();
       id_to_ptr.push(ptr);
       parent.push(parent_id);
@@ -41,18 +44,22 @@ impl DomIndex {
       // this walk.
       let node = unsafe { &mut *ptr };
 
-      if let Some(element_id) = node.get_attribute_ref("id") {
-        // Keep the first occurrence to match typical getElementById behavior.
-        id_by_element_id
-          .entry(element_id.to_string())
-          .or_insert(id);
+      if !in_template_contents {
+        if let Some(element_id) = node.get_attribute_ref("id") {
+          // Keep the first occurrence to match typical getElementById behavior.
+          id_by_element_id
+            .entry(element_id.to_string())
+            .or_insert(id);
+        }
       }
 
-      if node.is_template_element() {
-        continue;
-      }
+      let child_in_template_contents = in_template_contents || node.is_template_element();
       for child in node.children.iter_mut().rev() {
-        stack.push((child as *mut DomNode, id));
+        stack.push((
+          child as *mut DomNode,
+          id,
+          child_in_template_contents,
+        ));
       }
     }
 
@@ -78,4 +85,3 @@ impl DomIndex {
     Some(f(unsafe { &mut *ptr }))
   }
 }
-

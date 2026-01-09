@@ -55,6 +55,12 @@ fn is_input_of_type(node: &DomNode, ty: &str) -> bool {
       .eq_ignore_ascii_case(ty)
 }
 
+fn radio_group_name(node: &DomNode) -> Option<&str> {
+  node
+    .get_attribute_ref("name")
+    .filter(|name| !name.is_empty())
+}
+
 fn is_text_like_input(node: &DomNode) -> bool {
   if !node
     .tag_name()
@@ -191,49 +197,200 @@ pub fn toggle_checkbox(node: &mut DomNode) -> bool {
   changed
 }
 
-pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
-  let mut index = DomIndex::build(root);
+struct PreorderFrame {
+  ptr: *mut DomNode,
+  next_child: usize,
+  node_id: usize,
+}
 
-  let Some((ok, group_name)) = index.with_node_mut(radio_node_id, |node| {
-    if !is_input_of_type(node, "radio") {
-      return (false, None);
+fn find_node_ptr_with_ancestors_by_preorder_id(
+  root: &mut DomNode,
+  target_id: usize,
+) -> Option<(*mut DomNode, Vec<*mut DomNode>)> {
+  if target_id == 0 {
+    return None;
+  }
+
+  // Depth-first pre-order traversal, matching `crate::dom::enumerate_dom_ids`.
+  let mut stack: Vec<PreorderFrame> = Vec::new();
+  stack.push(PreorderFrame {
+    ptr: root as *mut DomNode,
+    next_child: 0,
+    node_id: 1,
+  });
+  let mut next_id = 2usize;
+
+  while !stack.is_empty() {
+    let last_idx = stack.len() - 1;
+
+    if stack[last_idx].node_id == target_id {
+      let ptr = stack[last_idx].ptr;
+      let ancestors = stack[..last_idx].iter().map(|f| f.ptr).collect::<Vec<_>>();
+      return Some((ptr, ancestors));
     }
-    if is_disabled_or_inert(node) {
-      return (false, None);
+
+    let node_ptr = stack[last_idx].ptr;
+    let next_child = stack[last_idx].next_child;
+
+    // Safety: pointers are into `root`'s tree and we do not mutate any `children` vectors during
+    // this traversal.
+    let node = unsafe { &mut *node_ptr };
+    if next_child < node.children.len() {
+      // Safety: `next_child` is in bounds.
+      let child_ptr = unsafe { node.children.as_mut_ptr().add(next_child) };
+      stack[last_idx].next_child = next_child + 1;
+      let node_id = next_id;
+      next_id = next_id.saturating_add(1);
+      stack.push(PreorderFrame {
+        ptr: child_ptr,
+        next_child: 0,
+        node_id,
+      });
+    } else {
+      stack.pop();
     }
-    (true, node.get_attribute_ref("name").map(str::to_string))
-  }) else {
+  }
+
+  None
+}
+
+fn is_disabled_or_inert_with_ancestors(target: &DomNode, ancestors: &[*mut DomNode]) -> bool {
+  if is_disabled_or_inert(target) {
+    return true;
+  }
+  for ancestor_ptr in ancestors {
+    // Safety: pointers are into the same DOM tree; only read access.
+    let ancestor = unsafe { &**ancestor_ptr };
+    if is_disabled_or_inert(ancestor) {
+      return true;
+    }
+  }
+  false
+}
+
+fn radio_group_root_ptr(target_ptr: *mut DomNode, ancestors: &[*mut DomNode]) -> *mut DomNode {
+  // Radio group membership is scoped to the nearest ancestor <form> within the current tree root.
+  // Shadow roots act as tree-root boundaries, so radios inside shadow trees never group with
+  // light-DOM radios, even if the shadow host is itself inside a <form>.
+  for &ancestor_ptr in ancestors.iter().rev() {
+    // Safety: only read access.
+    let ancestor = unsafe { &*ancestor_ptr };
+    if ancestor
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+    {
+      return ancestor_ptr;
+    }
+    if matches!(
+      ancestor.node_type,
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+    ) {
+      return ancestor_ptr;
+    }
+  }
+
+  // Fallback for incomplete ancestor chains (e.g. unit tests constructing partial DOM trees).
+  ancestors.first().copied().unwrap_or(target_ptr)
+}
+
+fn clear_checked_in_radio_group(
+  group_root_ptr: *mut DomNode,
+  target_ptr: *mut DomNode,
+  group_name: &str,
+) -> bool {
+  let mut changed = false;
+
+  struct ScanFrame {
+    ptr: *mut DomNode,
+    blocked: bool,
+  }
+
+  let mut stack: Vec<ScanFrame> = Vec::new();
+  stack.push(ScanFrame {
+    ptr: group_root_ptr,
+    blocked: false,
+  });
+
+  while let Some(frame) = stack.pop() {
+    // Safety: pointers are into the same DOM tree and we never mutate `children` vectors while
+    // iterating.
+    let node_ptr = frame.ptr;
+    let node = unsafe { &mut *frame.ptr };
+    let blocked = frame.blocked || is_disabled_or_inert(node);
+
+    if is_input_of_type(node, "radio")
+      && node_ptr != target_ptr
+      && node.get_attribute_ref("name") == Some(group_name)
+    {
+      if !blocked {
+        changed |= remove_attr(node, "checked");
+      }
+    }
+
+    // Forms and shadow roots are group boundaries:
+    // - Controls in different <form> elements are never in the same group.
+    // - Shadow roots define independent trees; do not traverse into shadow DOM when scanning a
+    //   light DOM radio group (or vice-versa).
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      && node_ptr != group_root_ptr
+    {
+      continue;
+    }
+
+    if node.is_template_element() {
+      continue;
+    }
+
+    let len = node.children.len();
+    let children_ptr = node.children.as_mut_ptr();
+    for idx in (0..len).rev() {
+      // Safety: `idx` is in bounds.
+      let child_ptr = unsafe { children_ptr.add(idx) };
+      // Safety: read access to inspect node type before pushing.
+      let child = unsafe { &*child_ptr };
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
+      stack.push(ScanFrame {
+        ptr: child_ptr,
+        blocked,
+      });
+    }
+  }
+
+  changed
+}
+
+pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
+  let Some((target_ptr, ancestors)) =
+    find_node_ptr_with_ancestors_by_preorder_id(root, radio_node_id)
+  else {
     return false;
   };
 
-  if !ok {
+  // Safety: pointer is within `root` and we only borrow it mutably for this scope.
+  let target = unsafe { &mut *target_ptr };
+
+  if !is_input_of_type(target, "radio") {
     return false;
   }
 
-  let mut changed = index
-    .with_node_mut(radio_node_id, |node| set_bool_attr(node, "checked", true))
-    .unwrap_or(false);
+  if is_disabled_or_inert_with_ancestors(target, &ancestors) {
+    return false;
+  }
+
+  let group_name = radio_group_name(target).map(str::to_string);
+  let group_root_ptr = radio_group_root_ptr(target_ptr, &ancestors);
+
+  let mut changed = set_bool_attr(target, "checked", true);
 
   let Some(group_name) = group_name else {
     return changed;
   };
 
-  for id in 1..=index.len() {
-    if id == radio_node_id {
-      continue;
-    }
-    changed |= index
-      .with_node_mut(id, |node| {
-        if !is_input_of_type(node, "radio") {
-          return false;
-        }
-        if node.get_attribute_ref("name") != Some(group_name.as_str()) {
-          return false;
-        }
-        remove_attr(node, "checked")
-      })
-      .unwrap_or(false);
-  }
+  changed |= clear_checked_in_radio_group(group_root_ptr, target_ptr, &group_name);
 
   changed
 }

@@ -102,6 +102,93 @@ fn find_box_id_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> usi
 }
 
 #[test]
+fn radio_click_is_scoped_to_nearest_form() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "form",
+          vec![],
+          vec![
+            el(
+              "input",
+              vec![("id", "a1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+              vec![],
+            ),
+            el(
+              "input",
+              vec![("id", "a2"), ("type", "radio"), ("name", "g")],
+              vec![],
+            ),
+          ],
+        ),
+        el(
+          "form",
+          vec![],
+          vec![el(
+            "input",
+            vec![("id", "b1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+            vec![],
+          )],
+        ),
+      ],
+    )],
+  )]);
+
+  let a2_dom_id = node_id(&dom, "a2");
+
+  let mut a2_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  a2_box.styled_node_id = Some(a2_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![a2_box],
+  ));
+  let a2_box_id = find_box_id_for_styled_node(&box_tree, a2_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      a2_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  assert!(
+    engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0)),
+    "expected pointer_down to set active state"
+  );
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(action, InteractionAction::None);
+
+  assert!(
+    !has_attr(&dom, "a1", "checked"),
+    "radio in same form should be unchecked"
+  );
+  assert!(
+    has_attr(&dom, "a2", "checked"),
+    "clicked radio should be checked"
+  );
+  assert!(
+    has_attr(&dom, "b1", "checked"),
+    "radio in a different form should remain checked"
+  );
+}
+
+#[test]
 fn hover_chain_applies_to_ancestors() {
   let mut dom = doc(vec![el(
     "html",
