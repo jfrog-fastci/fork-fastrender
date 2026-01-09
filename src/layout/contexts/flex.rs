@@ -68,6 +68,8 @@ use crate::layout::taffy_integration::{
   CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey,
   TAFFY_ABORT_CHECK_STRIDE,
 };
+use crate::layout::utils::border_size_from_box_sizing;
+use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
@@ -207,6 +209,7 @@ fn record_flex_order_sort_call() {
 }
 
 use taffy::prelude::*;
+use taffy::style::BoxSizing as TaffyBoxSizing;
 use taffy::style::Overflow as TaffyOverflow;
 use taffy::TaffyTree;
 
@@ -795,7 +798,13 @@ impl FormattingContext for FlexFormattingContext {
     if let Some(style_override) = style_override.as_deref() {
       // When a style override is active, update the root Taffy style in-place so we can keep
       // reusing cached Taffy templates without deep-cloning the box subtree.
-      let override_style = self.computed_style_to_taffy_base(style_override, true, None)?;
+      let mut override_style = self.computed_style_to_taffy_base(style_override, true, None)?;
+      self.apply_calc_sizing_properties(
+        style_override,
+        None,
+        Some(&constraints),
+        &mut override_style,
+      );
       taffy_tree
         .set_style(root_node, override_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -1107,7 +1116,22 @@ impl FormattingContext for FlexFormattingContext {
         // If we hit the pass cap without reaching a stable viewport set, fall back to fully
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
-        let container_inner_main_size = self.flex_container_inner_main_size(style, &constraints);
+        let container_inner_size = self.flex_container_inner_size(style, &constraints);
+        let main_axis_is_row = matches!(
+          style.flex_direction,
+          FlexDirection::Row | FlexDirection::RowReverse
+        );
+        let inline_is_horizontal = matches!(style.writing_mode, WritingMode::HorizontalTb);
+        let main_axis_is_horizontal = if main_axis_is_row {
+          inline_is_horizontal
+        } else {
+          !inline_is_horizontal
+        };
+        let container_inner_main_size = if main_axis_is_horizontal {
+          container_inner_size.width
+        } else {
+          container_inner_size.height
+        };
         for (child, node_id) in auto_item_nodes.iter() {
           let mut resolved_style =
             self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
@@ -1134,6 +1158,12 @@ impl FormattingContext for FlexFormattingContext {
             &mut resolved_style,
           )?;
           self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+          self.apply_calc_sizing_properties(
+            child.style.as_ref(),
+            Some(container_inner_size),
+            None,
+            &mut resolved_style,
+          );
           taffy_tree
             .set_style(*node_id, resolved_style)
             .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -2901,7 +2931,22 @@ impl FormattingContext for FlexFormattingContext {
         break;
       }
 
-      let container_inner_main_size = self.flex_container_inner_main_size(style, &constraints);
+      let container_inner_size = self.flex_container_inner_size(style, &constraints);
+      let main_axis_is_row = matches!(
+        style.flex_direction,
+        FlexDirection::Row | FlexDirection::RowReverse
+      );
+      let inline_is_horizontal = matches!(style.writing_mode, WritingMode::HorizontalTb);
+      let main_axis_is_horizontal = if main_axis_is_row {
+        inline_is_horizontal
+      } else {
+        !inline_is_horizontal
+      };
+      let container_inner_main_size = if main_axis_is_horizontal {
+        container_inner_size.width
+      } else {
+        container_inner_size.height
+      };
       for (child, node_id) in newly_unskipped_nodes {
         let mut resolved_style =
           self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
@@ -2928,6 +2973,12 @@ impl FormattingContext for FlexFormattingContext {
           &mut resolved_style,
         )?;
         self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+        self.apply_calc_sizing_properties(
+          child.style.as_ref(),
+          Some(container_inner_size),
+          None,
+          &mut resolved_style,
+        );
         taffy_tree
           .set_style(node_id, resolved_style)
           .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -4822,7 +4873,22 @@ impl FlexFormattingContext {
     };
 
     let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
-    let container_inner_main_size = self.flex_container_inner_main_size(root_style, constraints);
+    let container_inner_size = self.flex_container_inner_size(root_style, constraints);
+    let main_axis_is_row = matches!(
+      root_style.flex_direction,
+      FlexDirection::Row | FlexDirection::RowReverse
+    );
+    let inline_is_horizontal = matches!(root_style.writing_mode, WritingMode::HorizontalTb);
+    let main_axis_is_horizontal = if main_axis_is_row {
+      inline_is_horizontal
+    } else {
+      !inline_is_horizontal
+    };
+    let container_inner_main_size = if main_axis_is_horizontal {
+      container_inner_size.width
+    } else {
+      container_inner_size.height
+    };
     let mut taffy_children = Vec::with_capacity(root_children.len());
     for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
       check_layout_deadline(&mut deadline_counter)?;
@@ -4851,6 +4917,12 @@ impl FlexFormattingContext {
         &mut resolved_style,
       )?;
       self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+      self.apply_calc_sizing_properties(
+        child.style.as_ref(),
+        Some(container_inner_size),
+        None,
+        &mut resolved_style,
+      );
       let node = taffy_tree
         .new_leaf_with_context(resolved_style, child as *const BoxNode)
         .map_err(|e| {
@@ -4860,13 +4932,15 @@ impl FlexFormattingContext {
       taffy_children.push(node);
     }
 
+    let mut root_taffy_style = template.root_style.0.clone();
+    self.apply_calc_sizing_properties(root_style, None, Some(constraints), &mut root_taffy_style);
     let taffy_node = if taffy_children.is_empty() {
       taffy_tree
-        .new_leaf(template.root_style.0.clone())
+        .new_leaf(root_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e)))?
     } else {
       taffy_tree
-        .new_with_children(template.root_style.0.clone(), &taffy_children)
+        .new_with_children(root_taffy_style, &taffy_children)
         .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy node: {:?}", e)))?
     };
 
@@ -5921,6 +5995,22 @@ impl FlexFormattingContext {
       block_is_horizontal
     };
 
+    let inner = self.flex_container_inner_size(container_style, constraints);
+    if main_axis_is_horizontal {
+      inner.width
+    } else {
+      inner.height
+    }
+  }
+
+  /// Returns the flex container's content-box size in physical axes, when definite.
+  ///
+  /// Percentage sizes on flex items resolve against this inner size (CSS Sizing / Flexbox).
+  fn flex_container_inner_size(
+    &self,
+    container_style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> taffy::geometry::Size<Option<f32>> {
     let border_box_width = constraints
       .used_border_box_width
       .or_else(|| constraints.width())
@@ -5930,6 +6020,7 @@ impl FlexFormattingContext {
       .or_else(|| constraints.height())
       .filter(|h| h.is_finite());
 
+    // Padding/border percentages resolve against the containing block's physical width.
     let inline_base = constraints
       .inline_percentage_base
       .or(border_box_width)
@@ -5958,10 +6049,9 @@ impl FlexFormattingContext {
     let content_height = border_box_height
       .map(|h| (h - border_top - border_bottom - padding_top - padding_bottom).max(0.0));
 
-    if main_axis_is_horizontal {
-      content_width
-    } else {
-      content_height
+    taffy::geometry::Size {
+      width: content_width,
+      height: content_height,
     }
   }
 
@@ -5995,6 +6085,125 @@ impl FlexFormattingContext {
       }
     }
     taffy_style.flex_basis = Dimension::auto();
+  }
+
+  fn apply_calc_sizing_properties(
+    &self,
+    style: &ComputedStyle,
+    container_inner_size: Option<taffy::geometry::Size<Option<f32>>>,
+    constraints: Option<&LayoutConstraints>,
+    taffy_style: &mut taffy::style::Style,
+  ) {
+    let (base_width, base_height) = if let Some(inner) = container_inner_size {
+      (inner.width, inner.height)
+    } else if let Some(constraints) = constraints {
+      (
+        constraints.inline_percentage_base.or_else(|| constraints.width()),
+        constraints.height(),
+      )
+    } else {
+      (None, None)
+    };
+
+    // Padding/border percentages resolve against the containing block's physical width.
+    let inline_edges_base = base_width;
+
+    let resolve_len = |len: Length, base: Option<f32>| -> Option<f32> {
+      resolve_length_with_percentage_metrics(
+        len,
+        base.filter(|b| b.is_finite()),
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
+      )
+    };
+
+    let axis_edges = |axis: Axis| -> Option<f32> {
+      let padding_left = resolve_len(style.padding_left, inline_edges_base)?;
+      let padding_right = resolve_len(style.padding_right, inline_edges_base)?;
+      let padding_top = resolve_len(style.padding_top, inline_edges_base)?;
+      let padding_bottom = resolve_len(style.padding_bottom, inline_edges_base)?;
+      let border_left = resolve_len(style.used_border_left_width(), inline_edges_base)?;
+      let border_right = resolve_len(style.used_border_right_width(), inline_edges_base)?;
+      let border_top = resolve_len(style.used_border_top_width(), inline_edges_base)?;
+      let border_bottom = resolve_len(style.used_border_bottom_width(), inline_edges_base)?;
+
+      Some(match axis {
+        Axis::Horizontal => padding_left + padding_right + border_left + border_right,
+        Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
+      })
+    };
+
+    let to_taffy_box = |specified: f32, axis: Axis| -> f32 {
+      match taffy_style.box_sizing {
+        TaffyBoxSizing::BorderBox => {
+          if style.box_sizing == BoxSizing::ContentBox {
+            axis_edges(axis)
+              .map(|edges| border_size_from_box_sizing(specified, edges, style.box_sizing))
+              .unwrap_or(specified)
+          } else {
+            specified
+          }
+        }
+        TaffyBoxSizing::ContentBox => {
+          if style.box_sizing == BoxSizing::BorderBox {
+            axis_edges(axis)
+              .map(|edges| content_size_from_box_sizing(specified, edges, style.box_sizing))
+              .unwrap_or(specified)
+          } else {
+            specified
+          }
+        }
+      }
+    };
+
+    let resolve_sizing_dimension = |len: &Length,
+                                   axis: Axis,
+                                   percentage_base: Option<f32>|
+     -> Dimension {
+      let resolved = resolve_len(*len, percentage_base);
+      let Some(px) = resolved else {
+        return Dimension::auto();
+      };
+      if !px.is_finite() {
+        return Dimension::auto();
+      }
+      let px = px.max(0.0);
+      Dimension::length(to_taffy_box(px, axis).max(0.0))
+    };
+
+    if let Some(len) = style.width.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.size.width = resolve_sizing_dimension(len, Axis::Horizontal, base_width);
+      }
+    }
+    if let Some(len) = style.height.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.size.height = resolve_sizing_dimension(len, Axis::Vertical, base_height);
+      }
+    }
+    if let Some(len) = style.min_width.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.min_size.width = resolve_sizing_dimension(len, Axis::Horizontal, base_width);
+      }
+    }
+    if let Some(len) = style.min_height.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.min_size.height = resolve_sizing_dimension(len, Axis::Vertical, base_height);
+      }
+    }
+    if let Some(len) = style.max_width.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.max_size.width = resolve_sizing_dimension(len, Axis::Horizontal, base_width);
+      }
+    }
+    if let Some(len) = style.max_height.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        taffy_style.max_size.height = resolve_sizing_dimension(len, Axis::Vertical, base_height);
+      }
+    }
   }
 
   /// Applies Flexbox's automatic minimum size (min-width/height:auto) for a specific box instance.

@@ -36,6 +36,7 @@ mod flex_auto_min_size_percent;
 mod flex_basis_calc;
 mod flex_basis_content;
 mod flex_baseline_alignment;
+mod flex_sizing_calc;
 mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
 mod flex_fragmentation;
