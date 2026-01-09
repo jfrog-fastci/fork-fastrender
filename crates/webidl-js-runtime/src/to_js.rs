@@ -99,7 +99,12 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
     }
 
     IdlType::AsyncSequence(_) => Err(rt.throw_type_error("async sequence return values are not supported")),
-    IdlType::Record(_, _) => Err(rt.throw_type_error("record return values are not supported yet")),
+    IdlType::Record(_key_ty, value_ty) => {
+      let WebIdlValue::Record { entries, .. } = value else {
+        return Err(rt.throw_type_error("expected a record value"));
+      };
+      to_js_record(rt, ctx, value_ty, entries, limits)
+    }
     IdlType::Promise(_) => Err(rt.throw_type_error("promise return values are not supported yet")),
   }
 }
@@ -133,6 +138,11 @@ fn to_js_any<R: WebIdlJsRuntime>(
     }
     WebIdlValue::String(s) | WebIdlValue::Enum(s) => to_js_string(rt, s, limits),
     WebIdlValue::Sequence { elem_ty, values } => to_js_sequence(rt, ctx, elem_ty, values, limits),
+    WebIdlValue::Record {
+      key_ty: _,
+      value_ty,
+      entries,
+    } => to_js_record(rt, ctx, value_ty, entries, limits),
     WebIdlValue::Dictionary { name, members } => {
       // Convert as if the return type was that dictionary.
       to_js_dictionary(rt, ctx, name, members, limits)
@@ -318,6 +328,29 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   Ok(obj)
 }
 
+fn to_js_record<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  ctx: &TypeContext,
+  value_ty: &IdlType,
+  entries: &std::collections::BTreeMap<String, WebIdlValue>,
+  limits: ToJsLimits,
+) -> Result<R::JsValue, R::Error> {
+  if entries.len() > limits.max_dictionary_entries {
+    return Err(rt.throw_range_error("record exceeds maximum entry count"));
+  }
+
+  let obj = rt.alloc_object()?;
+  for (key, v) in entries {
+    if key.len() > limits.max_string_bytes {
+      return Err(rt.throw_range_error("record key exceeds maximum length"));
+    }
+    let js_value = to_js_with_limits(rt, ctx, value_ty, v, limits)?;
+    let prop_key = rt.property_key_from_str(key)?;
+    rt.define_data_property(obj, prop_key, js_value, true)?;
+  }
+  Ok(obj)
+}
+
 fn dictionary_member_type<'a>(schema: &'a [DictionaryMemberSchema], name: &str) -> Option<&'a IdlType> {
   for DictionaryMemberSchema { name: member_name, ty, .. } in schema {
     if member_name == name {
@@ -332,6 +365,7 @@ mod tests {
   use super::*;
   use crate::runtime::JsRuntime;
   use crate::VmJsRuntime;
+  use std::collections::BTreeMap;
   use vm_js::Value;
   use webidl_ir::{parse_idl_type_complete, DictionarySchema};
 
@@ -448,6 +482,40 @@ mod tests {
       return Err("expected label to be a JS string".into());
     };
     assert_eq!(rt.heap().get_string(handle)?.to_utf8_lossy(), "ok");
+
+    Ok(())
+  }
+
+  #[test]
+  fn record_to_object_defines_enumerable_own_properties() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("record<DOMString, long>")?;
+    let key_ty = parse_idl_type_complete("DOMString")?;
+    let value_ty = parse_idl_type_complete("long")?;
+
+    let mut entries = BTreeMap::new();
+    entries.insert("a".to_string(), WebIdlValue::Long(1));
+    entries.insert("b".to_string(), WebIdlValue::Long(2));
+    let value = WebIdlValue::Record {
+      key_ty: Box::new(key_ty),
+      value_ty: Box::new(value_ty),
+      entries,
+    };
+
+    let obj = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(obj));
+
+    for (name, expected) in [("a", 1.0), ("b", 2.0)] {
+      let key = rt.property_key_from_str(name)?;
+      let got = rt.get(obj, key)?;
+      assert_eq!(rt.to_number(got)?, expected);
+      let desc = rt
+        .get_own_property(obj, key)?
+        .ok_or_else(|| "missing record property")?;
+      assert!(desc.enumerable);
+    }
 
     Ok(())
   }

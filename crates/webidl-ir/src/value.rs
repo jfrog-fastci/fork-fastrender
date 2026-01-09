@@ -59,6 +59,11 @@ pub enum WebIdlValue {
     elem_ty: Box<IdlType>,
     values: Vec<WebIdlValue>,
   },
+  Record {
+    key_ty: Box<IdlType>,
+    value_ty: Box<IdlType>,
+    entries: BTreeMap<String, WebIdlValue>,
+  },
   Dictionary {
     name: String,
     members: BTreeMap<String, WebIdlValue>,
