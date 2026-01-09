@@ -13,6 +13,7 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
     async_attr,
     defer_attr,
     parser_inserted: true,
+    node_id: None,
     script_type: ScriptType::Classic,
   }
 }
