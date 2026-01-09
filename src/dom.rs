@@ -3394,7 +3394,7 @@ pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
 /// `jsl10n-visible` after client-side localization. Since we do not run author scripts,
 /// mirror those initializations so content that relies on the class flip (e.g., initial
 /// opacity) is visible in static renders.
-fn apply_dom_compatibility_mutations(
+pub(crate) fn apply_dom_compatibility_mutations(
   node: &mut DomNode,
   deadline_counter: &mut usize,
 ) -> Result<()> {

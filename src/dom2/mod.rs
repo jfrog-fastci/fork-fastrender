@@ -14,6 +14,7 @@ mod error;
 pub use error::{DomError, Result as DomResult};
 
 mod html5ever_tree_sink;
+mod html_parse;
 pub mod import;
 mod js_shims;
 mod mutation;
@@ -21,6 +22,7 @@ mod shadow_dom;
 mod style_attr;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
+pub use html_parse::{parse_html, parse_html_with_options};
 
 /// Convenience helper mirroring `Document.getElementById`.
 ///

@@ -66,7 +66,8 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn heap_mut(&mut self) -> &mut vm_js::Heap {
-    self.host.vm_js_heap_mut()
+    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
+    heap
   }
 
   fn call(
@@ -109,11 +110,13 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
-    self.host.vm_js_heap_mut().add_root(value)
+    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
+    heap.add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    self.host.vm_js_heap_mut().remove_root(id);
+    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
+    heap.remove_root(id);
   }
 }
 

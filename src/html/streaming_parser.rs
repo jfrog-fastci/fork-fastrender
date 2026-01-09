@@ -53,11 +53,22 @@ impl StreamingHtmlParser {
   ///
   /// `document_url` is an optional URL hint used as the initial parse-time base URL (and as the
   /// resolution base for a later `<base href>`).
+  ///
+  /// This constructor enables scripting semantics (affects parsing of elements like `<noscript>`)
+  /// so it can be used as the foundation for `<script>` execution.
   pub fn new(document_url: Option<&str>) -> Self {
+    Self::new_with_scripting_enabled(document_url, /* scripting_enabled */ true)
+  }
+
+  /// Create a new streaming HTML parser with an explicit scripting mode.
+  ///
+  /// `scripting_enabled` maps directly to `html5ever::tree_builder::TreeBuilderOpts::scripting_enabled`.
+  /// When `false`, parsing treats scripting as disabled (notably affecting `<noscript>` handling).
+  pub fn new_with_scripting_enabled(document_url: Option<&str>, scripting_enabled: bool) -> Self {
     let sink = Dom2TreeSink::new(document_url);
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
-        scripting_enabled: true,
+        scripting_enabled,
         ..Default::default()
       },
       ..Default::default()

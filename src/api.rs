@@ -8497,6 +8497,27 @@ impl FastRender {
     )
   }
 
+  /// Parses HTML into a mutable `dom2::Document`.
+  ///
+  /// This parses HTML directly into the `dom2` representation (via html5ever + the `dom2`
+  /// TreeSink), avoiding the intermediate `RcDom -> DomNode -> dom2` conversion roundtrip.
+  ///
+  /// Notes:
+  /// - Script execution is not performed; `<script>` boundaries are ignored and parsing continues.
+  /// - Scripting semantics (affecting `<noscript>` parsing) follow this renderer's
+  ///   `dom_scripting_enabled` configuration. For direct control, use
+  ///   [`crate::dom2::parse_html_with_options`].
+  pub fn parse_html_dom2(&self, html: &str) -> Result<crate::dom2::Document> {
+    crate::dom2::parse_html_with_options(
+      html,
+      DomParseOptions {
+        scripting_enabled: self.dom_scripting_enabled,
+        compatibility_mode: self.dom_compat_mode,
+        ..Default::default()
+      },
+    )
+  }
+
   fn update_base_url_from_dom(&mut self, dom: &DomNode) {
     let document_url = self.document_url();
     let current_base_url = self.base_url.as_deref();
