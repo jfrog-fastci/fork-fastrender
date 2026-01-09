@@ -10012,6 +10012,42 @@ mod tests {
   }
 
   #[test]
+  fn svg_external_image_href_renders_without_content_type() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    // Some endpoints omit Content-Type for images. The SVG preprocessor should sniff common formats
+    // so the generated `data:` URL uses an image/* mime that resvg/usvg accept.
+    let mut img_res = FetchedResource::new(encode_single_pixel_png([255, 0, 0, 255]), None);
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <image href> should render even when the fetched image has no Content-Type"
+    );
+  }
+
+  #[test]
   fn svg_external_image_blocked_by_policy() {
     let doc_url = "https://example.test/";
     let main_url = "https://example.test/main.svg";
