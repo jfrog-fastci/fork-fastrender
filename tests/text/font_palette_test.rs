@@ -121,6 +121,19 @@ fn build_current_color_palette_registry(family: &str) -> Arc<FontPaletteRegistry
   Arc::new(registry)
 }
 
+fn build_light_dark_palette_registry(family: &str) -> Arc<FontPaletteRegistry> {
+  let css = format!(
+    "@font-palette-values --ld {{ font-family: {family}; base-palette: 0; override-colors: 1 light-dark(rgb(255 0 0), rgb(0 0 255)); }}"
+  );
+  let sheet = parse_stylesheet(&css).expect("palette rule should parse");
+  let mut collected = sheet.collect_font_palette_rules(&MediaContext::default());
+  assert_eq!(collected.len(), 1, "expected a single palette rule");
+
+  let mut registry = FontPaletteRegistry::default();
+  registry.register(collected.pop().unwrap().rule.clone());
+  Arc::new(registry)
+}
+
 fn unpremultiply(channel: u8, alpha: u8) -> u8 {
   if alpha == 0 {
     return 0;
@@ -282,6 +295,44 @@ fn palette_overrides_follow_current_color_across_cached_runs() {
     green_runs[0].palette_overrides.as_ref(),
     &vec![(1, green_style.color)]
   );
+}
+
+#[test]
+fn palette_overrides_follow_used_color_scheme_across_cached_runs() {
+  let (font_context, family) = load_test_font();
+  let palette_registry = build_light_dark_palette_registry(&family);
+
+  let mut light_style = ComputedStyle::default();
+  light_style.font_family = vec![family.clone()].into();
+  light_style.font_size = 32.0;
+  light_style.font_palette = FontPalette::Named("--ld".into());
+  light_style.font_palettes = palette_registry.clone();
+  light_style.used_dark_color_scheme = false;
+
+  let pipeline = ShapingPipeline::new();
+  let light_runs = pipeline
+    .shape("A", &light_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    light_runs[0].palette_overrides.as_ref(),
+    &vec![(1, Rgba::from_rgba8(255, 0, 0, 255))]
+  );
+  assert_eq!(pipeline.cache_len(), 1);
+
+  let mut dark_style = light_style.clone();
+  dark_style.used_dark_color_scheme = true;
+
+  let dark_runs = pipeline
+    .shape("A", &dark_style, &font_context)
+    .expect("shaping should succeed");
+  assert_eq!(
+    dark_runs[0].palette_overrides.as_ref(),
+    &vec![(1, Rgba::from_rgba8(0, 0, 255, 255))]
+  );
+
+  // With the shaping cache enabled and a shared pipeline instance, palette overrides must not be
+  // reused across a light↔dark scheme flip.
+  assert_eq!(pipeline.cache_len(), 2);
 }
 
 #[test]

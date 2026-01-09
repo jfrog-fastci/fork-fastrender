@@ -3228,8 +3228,92 @@ fn parse_font_palette_descriptors<'i, 't>(
 }
 
 fn parse_override_colors(value: &str) -> Vec<FontPaletteOverride> {
-  value
-    .split(',')
+  struct TopLevelCommaSplit<'a> {
+    input: &'a str,
+    idx: usize,
+    paren: i32,
+    bracket: i32,
+    brace: i32,
+    in_string: Option<u8>,
+    escape: bool,
+  }
+
+  impl<'a> TopLevelCommaSplit<'a> {
+    fn new(input: &'a str) -> Self {
+      Self {
+        input,
+        idx: 0,
+        paren: 0,
+        bracket: 0,
+        brace: 0,
+        in_string: None,
+        escape: false,
+      }
+    }
+  }
+
+  impl<'a> Iterator for TopLevelCommaSplit<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+      let bytes = self.input.as_bytes();
+      if self.idx >= bytes.len() {
+        return None;
+      }
+
+      let start = self.idx;
+      let mut idx = self.idx;
+      while idx < bytes.len() {
+        let b = bytes[idx];
+
+        if self.escape {
+          self.escape = false;
+          idx += 1;
+          continue;
+        }
+
+        if b == b'\\' {
+          self.escape = true;
+          idx += 1;
+          continue;
+        }
+
+        if let Some(q) = self.in_string {
+          if b == q {
+            self.in_string = None;
+          }
+          idx += 1;
+          continue;
+        }
+
+        match b {
+          b'"' | b'\'' => self.in_string = Some(b),
+          b'(' => self.paren += 1,
+          b')' => self.paren -= 1,
+          b'[' => self.bracket += 1,
+          b']' => self.bracket -= 1,
+          b'{' => self.brace += 1,
+          b'}' => self.brace -= 1,
+          b',' if self.paren == 0 && self.bracket == 0 && self.brace == 0 => {
+            self.idx = idx + 1;
+            return Some(trim_ascii_whitespace(&self.input[start..idx]));
+          }
+          _ => {}
+        }
+
+        idx += 1;
+      }
+
+      self.idx = bytes.len();
+      Some(trim_ascii_whitespace(&self.input[start..]))
+    }
+  }
+
+  fn split_top_level_commas(value: &str) -> TopLevelCommaSplit<'_> {
+    TopLevelCommaSplit::new(value)
+  }
+
+  split_top_level_commas(value)
     .filter_map(|entry| {
       let mut parts = entry
         .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
