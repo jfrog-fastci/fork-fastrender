@@ -32,6 +32,38 @@ mod tests {
   }
 
   #[test]
+  fn can_parse_reports_success_without_allocating_diagnostics() {
+    let limits = WebUrlLimits::default();
+    assert!(WebUrl::can_parse(
+      "foo",
+      Some("https://example.com/bar/baz"),
+      &limits
+    ));
+    assert!(!WebUrl::can_parse("foo", Some("not a url"), &limits));
+    assert!(!WebUrl::can_parse(":::", None, &limits));
+  }
+
+  #[test]
+  fn can_parse_rejects_urls_exceeding_href_limits() {
+    let limits = WebUrlLimits {
+      // "https://example.com/" is exactly 20 bytes; resolving "a" yields 21 bytes.
+      max_input_bytes: 20,
+      max_query_pairs: 16,
+      max_total_query_bytes: 1024,
+    };
+    assert!(!WebUrl::can_parse("a", Some("https://example.com/"), &limits));
+    let err = WebUrl::parse("a", Some("https://example.com/"), &limits).unwrap_err();
+    assert!(matches!(
+      err,
+      WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::InputBytes,
+        limit: 20,
+        attempted: 21
+      }
+    ));
+  }
+
+  #[test]
   fn urlsearchparams_preserves_duplicates_and_ordering() {
     let limits = WebUrlLimits::default();
     let params = WebUrlSearchParams::parse("a=1&a=2&b=3", &limits).unwrap();

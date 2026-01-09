@@ -71,6 +71,41 @@ impl WebUrl {
     })
   }
 
+  /// Fast-path predicate for whether `input` (optionally resolved against `base`) is a valid URL
+  /// under the provided limits.
+  ///
+  /// This is useful for implementing WHATWG `URL.canParse()` without needing to allocate the
+  /// detailed [`WebUrlError`] variants produced by [`WebUrl::parse`] (which clone input strings for
+  /// diagnostics).
+  pub fn can_parse(input: &str, base: Option<&str>, limits: &WebUrlLimits) -> bool {
+    if input.len() > limits.max_input_bytes {
+      return false;
+    }
+    if let Some(base) = base {
+      if base.len() > limits.max_input_bytes {
+        return false;
+      }
+    }
+
+    let parsed = match base {
+      Some(base) => {
+        let Ok(base_url) = ::url::Url::parse(base) else {
+          return false;
+        };
+        match ::url::Url::options().base_url(Some(&base_url)).parse(input) {
+          Ok(url) => url,
+          Err(_) => return false,
+        }
+      }
+      None => match ::url::Url::parse(input) {
+        Ok(url) => url,
+        Err(_) => return false,
+      },
+    };
+
+    parsed.as_str().len() <= limits.max_input_bytes
+  }
+
   /// Equivalent to the WHATWG `URL.href` getter.
   pub fn href(&self) -> Result<String, WebUrlError> {
     let inner = self.inner.borrow();
