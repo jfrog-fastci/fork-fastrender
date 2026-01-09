@@ -6,7 +6,9 @@ use webidl_ir::{
   parse_default_value, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType, TypeAnnotation, TypeContext,
 };
-use webidl_js_runtime::{convert_to_idl, ConvertedValue, JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+use webidl_js_runtime::{
+  convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue, JsRuntime, VmJsRuntime, WebIdlJsRuntime,
+};
 
 fn error_to_string(rt: &mut VmJsRuntime, err: VmError) -> String {
   let VmError::Throw(thrown) = err else {
@@ -270,4 +272,61 @@ fn frozen_array_conversion_from_custom_iterable() {
     values,
     vec![ConvertedValue::Long(1), ConvertedValue::Long(2)]
   );
+}
+
+#[test]
+fn record_conversion_ignores_enumerable_symbol_keys() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let obj = rt.alloc_object_value().unwrap();
+  let a_key = rt.property_key_from_str("a").unwrap();
+  rt.define_data_property(obj, a_key, Value::Number(1.0), true)
+    .unwrap();
+
+  // Use a well-known Symbol as an enumerable key; record conversion should ignore it rather than
+  // attempting to convert it to a string.
+  let sym_key = rt.symbol_iterator().unwrap();
+  rt.define_data_property(obj, sym_key, Value::Number(2.0), true)
+    .unwrap();
+
+  let ty = IdlType::Record(
+    Box::new(IdlType::String(StringType::DomString)),
+    Box::new(IdlType::Numeric(NumericType::Long)),
+  );
+
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::Record { entries, .. } = converted else {
+    panic!("expected record, got {converted:?}");
+  };
+
+  let expected = BTreeMap::from([("a".to_string(), ConvertedValue::Long(1))]);
+  assert_eq!(entries, expected);
+}
+
+#[test]
+fn convert_arguments_treats_defaulted_params_as_optional() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let params = vec![
+    ArgumentSchema {
+      name: "a",
+      ty: IdlType::Numeric(NumericType::Long),
+      optional: false,
+      default: None,
+    },
+    // This is not marked `optional`, but it has a default value; it should not contribute to the
+    // required argument count.
+    ArgumentSchema {
+      name: "b",
+      ty: IdlType::Numeric(NumericType::Long),
+      optional: false,
+      default: Some(parse_default_value("5").unwrap()),
+    },
+  ];
+
+  let args = vec![Value::Number(1.0)];
+  let converted = convert_arguments(&mut rt, &args, &params, &ctx).unwrap();
+  assert_eq!(converted, vec![ConvertedValue::Long(1), ConvertedValue::Long(5)]);
 }

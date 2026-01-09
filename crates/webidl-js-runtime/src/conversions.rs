@@ -81,7 +81,12 @@ pub fn convert_arguments<R: WebIdlJsRuntime>(
   params: &[ArgumentSchema],
   ctx: &TypeContext,
 ) -> Result<Vec<ConvertedValue<R::JsValue>>, R::Error> {
-  let required_len = params.iter().take_while(|p| !p.optional).count();
+  // A WebIDL argument is required only when it is not marked `optional` *and* has no default.
+  // Generated bindings may represent defaulted arguments without setting `optional`.
+  let required_len = params
+    .iter()
+    .take_while(|p| !p.optional && p.default.is_none())
+    .count();
   if args.len() < required_len {
     return Err(rt.throw_type_error("Not enough arguments"));
   }
@@ -863,9 +868,8 @@ fn convert_to_sequence<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  if !rt.is_object(v) {
-    return Err(rt.throw_type_error("Value is not an object"));
-  }
+  // `GetMethod(V, @@iterator)` uses `ToObject(V)` under the hood, so accept primitives here.
+  let v = rt.to_object(v)?;
   let iterator_key = rt.symbol_iterator()?;
   let Some(method) = rt.get_method(v, iterator_key)? else {
     return Err(rt.throw_type_error("Value is not iterable"));
@@ -916,6 +920,10 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   let mut entries = BTreeMap::<String, ConvertedValue<R::JsValue>>::new();
 
   for key in keys {
+    // Record keys are strings; symbol keys are ignored.
+    if rt.property_key_is_symbol(key) {
+      continue;
+    }
     let Some(desc) = rt.get_own_property(v, key)? else {
       continue;
     };
