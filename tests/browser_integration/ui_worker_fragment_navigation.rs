@@ -284,3 +284,153 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
   worker.join().expect("worker join");
 }
+
+#[test]
+fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
+  let _lock = super::stage_listener_test_lock();
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "page.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            /* Place the hash link at y=150 so that after we scroll by 150px it sits at the top of the viewport. */
+            #pre { height: 150px; }
+            #link { display: block; width: 120px; height: 40px; background: rgb(255, 0, 0); }
+            .spacer { height: 2000px; }
+            #target { height: 20px; background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="pre"></div>
+          <a href="#target" id="link">Go</a>
+          <div class="spacer"></div>
+          <div id="target">target</div>
+        </body>
+      </html>
+    "##,
+  );
+
+  let worker = spawn_ui_worker("fastr-ui-worker-fragment-back").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: Default::default(),
+    })
+    .unwrap();
+  worker
+    .ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .unwrap();
+  worker
+    .ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: page_url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })
+    .unwrap();
+
+  // Wait for the initial frame so the worker has cached layout artifacts.
+  support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("expected initial FrameReady");
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
+
+  // Scroll down some so the "pre-fragment" history entry has a non-zero scroll position.
+  worker
+    .ui_tx
+    .send(UiToWorker::Scroll {
+      tab_id,
+      delta_css: (0.0, 150.0),
+      pointer_css: None,
+    })
+    .unwrap();
+
+  let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .expect("expected ScrollStateUpdated after scroll");
+  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+    unreachable!();
+  };
+  let scroll_before = scroll.viewport.y;
+  assert!(
+    scroll_before > 0.0,
+    "expected pre-fragment scroll to be > 0, got {scroll_before}"
+  );
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
+
+  // Click the fixed-position link to jump to the fragment target.
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+
+  support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::NavigationCommitted { url, .. } if url.ends_with("#target")
+    )
+  })
+  .expect("expected NavigationCommitted for fragment navigation");
+  let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .expect("expected ScrollStateUpdated for fragment navigation");
+  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+    unreachable!();
+  };
+  let scroll_after = scroll.viewport.y;
+  assert!(
+    scroll_after > scroll_before,
+    "expected fragment navigation to increase scroll y (before={scroll_before}, after={scroll_after})"
+  );
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
+
+  // Back should restore the scroll position from before the fragment navigation.
+  worker.ui_tx.send(UiToWorker::GoBack { tab_id }).unwrap();
+  support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::NavigationCommitted { url, .. } if url == &page_url
+    )
+  })
+  .expect("expected NavigationCommitted after going back");
+
+  let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .expect("expected ScrollStateUpdated after going back");
+  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+    unreachable!();
+  };
+  assert_eq!(
+    scroll.viewport.y, scroll_before,
+    "expected back to restore previous scroll position"
+  );
+
+  worker.join().unwrap();
+}

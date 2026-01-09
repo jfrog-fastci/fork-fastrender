@@ -1,6 +1,7 @@
 use crate::api::{BrowserDocument, FastRender, PreparedDocument, PreparedPaintOptions};
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
+use crate::interaction::scroll_offset_for_fragment_target;
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
@@ -9,6 +10,7 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use crate::{Pixmap, RenderOptions, Result};
+use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -153,6 +155,54 @@ impl TabState {
       .and_then(|doc| doc.base_url())
       .or_else(|| self.current_url.as_deref())
   }
+}
+
+struct SameDocumentFragmentNavigation {
+  target_url: Url,
+  fragment: Option<String>,
+  url_changed: bool,
+}
+
+fn same_document_fragment_navigation(
+  current_url: Option<&str>,
+  target_url: &str,
+) -> Option<SameDocumentFragmentNavigation> {
+  let current_url = current_url?;
+  let current = Url::parse(current_url).ok()?;
+
+  let target = if target_url.starts_with('#') {
+    let mut resolved = current.clone();
+    resolved.set_fragment(Some(&target_url[1..]));
+    resolved
+  } else {
+    Url::parse(target_url).ok()?
+  };
+
+  let mut current_base = current.clone();
+  current_base.set_fragment(None);
+  let mut target_base = target.clone();
+  target_base.set_fragment(None);
+
+  if current_base != target_base {
+    return None;
+  }
+
+  // No fragment on either URL means this isn't a fragment navigation (it is an exact URL match).
+  // Treat this as a normal navigation so callers can reload the page.
+  if current.fragment().is_none() && target.fragment().is_none() {
+    return None;
+  }
+
+  let fragment = target.fragment().map(|raw| {
+    percent_decode_str(raw)
+      .decode_utf8_lossy()
+      .into_owned()
+  });
+  Some(SameDocumentFragmentNavigation {
+    url_changed: current.fragment() != target.fragment(),
+    target_url: target,
+    fragment,
+  })
 }
 
 fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
@@ -493,20 +543,6 @@ fn url_fragment(url: &str) -> Option<&str> {
   url.split_once('#').map(|(_, fragment)| fragment)
 }
 
-fn urls_match_except_fragment(a: &str, b: &str) -> bool {
-  let Ok(a_url) = Url::parse(a) else {
-    return false;
-  };
-  let Ok(b_url) = Url::parse(b) else {
-    return false;
-  };
-  let mut a_no_frag = a_url.clone();
-  a_no_frag.set_fragment(None);
-  let mut b_no_frag = b_url.clone();
-  b_no_frag.set_fragment(None);
-  a_no_frag == b_no_frag
-}
-
 fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
@@ -515,75 +551,12 @@ fn navigate_tab(
   restore_scroll: Option<(f32, f32)>,
   tx: &Sender<WorkerToUi>,
 ) {
-  if let (Some(current), Some(doc)) = (tab.current_url.as_deref(), tab.document.as_mut()) {
-    // Fragment-only navigation within the same document.
-    //
-    // We intentionally avoid a full reload (re-prepare/re-layout) and instead:
-    // - update the tab/document URL,
-    // - compute a new scroll position using existing layout artifacts,
-    // - emit navigation messages so the UI updates its address bar/history,
-    // - repaint at the new scroll offset.
-    //
-    // `Reload` must not take this path because the caller expects a full reload.
-    if reason != NavigationReason::Reload && current != url && urls_match_except_fragment(current, &url) {
-      let _ = tx.send(WorkerToUi::NavigationStarted {
-        tab_id,
-        url: url.clone(),
-      });
-
-      tab.current_url = Some(url.clone());
-      match reason {
-        NavigationReason::BackForward | NavigationReason::Reload => {}
-        NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(url.clone()),
+  // Allow Reload to fully reload the document even if the URL only differs by fragment.
+  if reason != NavigationReason::Reload {
+    if let Some(nav) = same_document_fragment_navigation(tab.current_url.as_deref(), &url) {
+      if handle_fragment_navigation(tab_id, tab, nav, reason, tx) {
+        return;
       }
-      // Update the document URL (including fragment) so `:target` / `:target-within` selectors can
-      // respond. This invalidates cached style/layout so the next render reflects the new target.
-      doc.set_document_url(Some(url.clone()));
-
-      if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
-        let computed = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let viewport = fragment_tree.viewport_size();
-          let fragment = url_fragment(&url).unwrap_or("");
-          let offset = crate::interaction::scroll_offset_for_fragment_target(
-            dom,
-            box_tree,
-            fragment_tree,
-            fragment,
-            viewport,
-          );
-          (false, offset)
-        });
-
-        // When the fragment is empty or missing, or the target cannot be found, scroll to the top
-        // of the document (matching common browser `href=\"#\"` behavior).
-        let offset = match computed {
-          Ok(Some(offset)) => offset,
-          Ok(None) => Point::ZERO,
-          Err(err) => {
-            let _ = tx.send(WorkerToUi::DebugLog {
-              tab_id,
-              line: format!("fragment navigation scroll failed: {err}"),
-            });
-            tab.scroll_state.viewport
-          }
-        };
-
-        tab.scroll_state.viewport = offset;
-      }
-
-      doc.set_scroll_state(tab.scroll_state.clone());
-
-      let title = crate::html::title::find_document_title(doc.dom());
-      let _ = tx.send(WorkerToUi::NavigationCommitted {
-        tab_id,
-        url: url.clone(),
-        title,
-        can_go_back: tab.history.can_go_back(),
-        can_go_forward: tab.history.can_go_forward(),
-      });
-
-      repaint_force(tab_id, tab, tx);
-      return;
     }
   }
 
@@ -719,6 +692,78 @@ fn navigate_tab(
   });
 
   repaint_force(tab_id, tab, tx);
+}
+
+fn handle_fragment_navigation(
+  tab_id: TabId,
+  tab: &mut TabState,
+  nav: SameDocumentFragmentNavigation,
+  reason: NavigationReason,
+  tx: &Sender<WorkerToUi>,
+) -> bool {
+  let Some(doc) = tab.document.as_mut() else {
+    return false;
+  };
+  if doc.prepared().is_none() {
+    return false;
+  }
+
+  // Preserve scroll offset for the current history entry before we potentially push a new one.
+  tab
+    .history
+    .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+
+  if nav.url_changed {
+    let committed_url = nav.target_url.to_string();
+    if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+      tab.history.push(committed_url.clone());
+    }
+    tab.current_url = Some(committed_url.clone());
+    // Update document URL so `:target` / `:target-within` can respond to the new fragment.
+    //
+    // Note: this marks the document dirty (style/layout) so the next repaint reflects the new
+    // selector state. We still avoid a full navigation fetch by reusing the existing DOM/layout
+    // artifacts for scroll target resolution.
+    doc.set_document_url(Some(committed_url.clone()));
+    let title = crate::html::title::find_document_title(doc.dom());
+    let _ = tx.send(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: committed_url,
+      title,
+      can_go_back: tab.history.can_go_back(),
+      can_go_forward: tab.history.can_go_forward(),
+    });
+  }
+
+  // Typed URL / link clicks should scroll to the fragment target (or top for an empty fragment).
+  // Back/forward navigations should restore the stored scroll offset for the history entry, so do
+  // not override `tab.scroll_state.viewport` here.
+  if !matches!(reason, NavigationReason::BackForward) {
+    let viewport_size = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+    let desired_scroll = match nav.fragment.as_deref() {
+      None | Some("") => Some(Point::ZERO),
+      Some(fragment) => {
+        let Some(prepared) = doc.prepared() else {
+          return false;
+        };
+        scroll_offset_for_fragment_target(
+          doc.dom(),
+          prepared.box_tree(),
+          prepared.fragment_tree(),
+          fragment,
+          viewport_size,
+        )
+      }
+    };
+
+    if let Some(point) = desired_scroll {
+      tab.scroll_state.viewport = point;
+    }
+  }
+  doc.set_scroll_state(tab.scroll_state.clone());
+  repaint_force(tab_id, tab, tx);
+
+  true
 }
 
 fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>) {
