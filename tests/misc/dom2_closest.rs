@@ -14,7 +14,7 @@ fn find_node_by_id_attr(doc: &Document, id: &str) -> NodeId {
       attrs
         .iter()
         .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
-        .then_some(NodeId::from_index(idx))
+        .then_some(doc.node_id_from_index(idx).expect("index from enumerate"))
     })
     .unwrap_or_else(|| panic!("node with id={id:?} not found"))
 }

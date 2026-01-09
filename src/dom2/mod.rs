@@ -41,17 +41,6 @@ pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) 
 pub struct NodeId(usize);
 
 impl NodeId {
-  /// Construct a `NodeId` from its raw index.
-  ///
-  /// This is intended for bindings/FFI layers that need to round-trip node handles through an
-  /// integer representation. `NodeId` values are only meaningful within a specific `dom2::Document`
-  /// instance; most `dom2` APIs validate node IDs and return `DomError::NotFoundError` for invalid
-  /// indices.
-  #[inline]
-  pub fn from_index(index: usize) -> Self {
-    Self(index)
-  }
-
   pub fn index(self) -> usize {
     self.0
   }
@@ -211,6 +200,18 @@ pub struct RendererDomSnapshot {
 }
 
 impl Document {
+  /// Convert a raw node index (e.g. from an FFI/binding handle) into a validated [`NodeId`].
+  ///
+  /// This is the preferred way for external code to "re-hydrate" a `NodeId` from an integer, since
+  /// it guarantees the index is in-bounds for this `Document`.
+  pub fn node_id_from_index(&self, index: usize) -> Result<NodeId, DomError> {
+    if index < self.nodes.len() {
+      Ok(NodeId(index))
+    } else {
+      Err(DomError::NotFoundError)
+    }
+  }
+
   fn should_inject_wbr_zwsp(&self, node_id: NodeId) -> bool {
     let node = self.node(node_id);
     let NodeKind::Element {

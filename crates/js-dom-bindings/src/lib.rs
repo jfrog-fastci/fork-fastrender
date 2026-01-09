@@ -179,8 +179,14 @@ where
       move |ctx: Ctx<'js>, parent: u32, child: u32| {
         let mut dom = dom.borrow_mut();
         let result = dom.mutate_dom(|dom| {
-          let parent = NodeId::from_index(parent as usize);
-          let child = NodeId::from_index(child as usize);
+          let parent = match dom.node_id_from_index(parent as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let child = match dom.node_id_from_index(child as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.append_child(parent, child) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -200,10 +206,22 @@ where
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, parent: u32, child: u32, reference: Option<u32>| {
         let mut dom = dom.borrow_mut();
-        let reference = reference.map(|id| NodeId::from_index(id as usize));
         let result = dom.mutate_dom(|dom| {
-          let parent = NodeId::from_index(parent as usize);
-          let child = NodeId::from_index(child as usize);
+          let parent = match dom.node_id_from_index(parent as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let child = match dom.node_id_from_index(child as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let reference = match reference {
+            Some(reference) => Some(match dom.node_id_from_index(reference as usize) {
+              Ok(id) => id,
+              Err(err) => return (Err(err), false),
+            }),
+            None => None,
+          };
           match dom.insert_before(parent, child, reference) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -224,8 +242,14 @@ where
       move |ctx: Ctx<'js>, parent: u32, child: u32| {
         let mut dom = dom.borrow_mut();
         let result = dom.mutate_dom(|dom| {
-          let parent = NodeId::from_index(parent as usize);
-          let child = NodeId::from_index(child as usize);
+          let parent = match dom.node_id_from_index(parent as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let child = match dom.node_id_from_index(child as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.remove_child(parent, child) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -246,9 +270,18 @@ where
       move |ctx: Ctx<'js>, parent: u32, new_child: u32, old_child: u32| {
         let mut dom = dom.borrow_mut();
         let result = dom.mutate_dom(|dom| {
-          let parent = NodeId::from_index(parent as usize);
-          let new_child = NodeId::from_index(new_child as usize);
-          let old_child = NodeId::from_index(old_child as usize);
+          let parent = match dom.node_id_from_index(parent as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let new_child = match dom.node_id_from_index(new_child as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let old_child = match dom.node_id_from_index(old_child as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.replace_child(parent, new_child, old_child) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -267,12 +300,12 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |node: u32| {
-        let node_id = NodeId::from_index(node as usize);
         let parent = dom.borrow().with_dom(|dom| {
-          if node_id.index() >= dom.nodes_len() {
-            return None;
-          }
-          dom.parent_node(node_id).map(|id| id.index() as u32)
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .and_then(|node_id| dom.parent_node(node_id))
+            .map(|id| id.index() as u32)
         });
         Ok::<Option<u32>, rquickjs::Error>(parent)
       }
@@ -285,13 +318,15 @@ where
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
         let mut dom = dom.borrow_mut();
-        let scope = scope.map(|id| NodeId::from_index(id as usize));
-        let result = dom.mutate_dom(|dom| {
-          match dom.query_selector(&selectors, scope) {
-            Ok(found) => (Ok(found), false),
-            Err(err) => (Err(err), false),
-          }
-        });
+        let scope = match scope {
+          Some(id) => Some(match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
+            Ok(id) => id,
+            Err(err) => return throw_dom_error(ctx, err),
+          }),
+          None => None,
+        };
+        let result = dom
+          .mutate_dom(|dom| (dom.query_selector(&selectors, scope), false));
         match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
           Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
@@ -306,11 +341,15 @@ where
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
         let mut dom = dom.borrow_mut();
-        let scope = scope.map(|id| NodeId::from_index(id as usize));
-        let result = dom.mutate_dom(|dom| match dom.query_selector_all(&selectors, scope) {
-          Ok(found) => (Ok(found), false),
-          Err(err) => (Err(err), false),
-        });
+        let scope = match scope {
+          Some(id) => Some(match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
+            Ok(id) => id,
+            Err(err) => return throw_dom_error(ctx, err),
+          }),
+          None => None,
+        };
+        let result = dom
+          .mutate_dom(|dom| (dom.query_selector_all(&selectors, scope), false));
         match result {
           Ok(found) => Ok(found.into_iter().map(|id| id.index() as u32).collect::<Vec<_>>()),
           Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
@@ -325,11 +364,12 @@ where
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32, selectors: String| {
         let mut dom = dom.borrow_mut();
-        let node_id = NodeId::from_index(node as usize);
-        let result = dom.mutate_dom(|dom| match dom.matches_selector(node_id, &selectors) {
-          Ok(matched) => (Ok(matched), false),
-          Err(err) => (Err(err), false),
-        });
+        let node_id = match dom.with_dom(|dom| dom.node_id_from_index(node as usize)) {
+          Ok(id) => id,
+          Err(err) => return throw_dom_error(ctx, err),
+        };
+        let result = dom
+          .mutate_dom(|dom| (dom.matches_selector(node_id, &selectors), false));
         match result {
           Ok(matched) => Ok(matched),
           Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
@@ -354,10 +394,9 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32, name: String| {
-        let node_id = NodeId::from_index(node as usize);
         let result = dom.borrow().with_dom(|dom| {
-          dom
-            .get_attribute(node_id, &name)
+          let node_id = dom.node_id_from_index(node as usize)?;
+          dom.get_attribute(node_id, &name)
             .map(|v| v.map(|s| s.to_string()))
         });
         match result {
@@ -373,8 +412,10 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32, name: String| {
-        let node_id = NodeId::from_index(node as usize);
-        let result = dom.borrow().with_dom(|dom| dom.has_attribute(node_id, &name));
+        let result = dom.borrow().with_dom(|dom| {
+          let node_id = dom.node_id_from_index(node as usize)?;
+          dom.has_attribute(node_id, &name)
+        });
         match result {
           Ok(v) => Ok(v),
           Err(err) => throw_dom_error(ctx, err),
@@ -390,7 +431,10 @@ where
       move |ctx: Ctx<'js>, node: u32, name: String, value: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.set_attribute(node_id, &name, &value) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -411,7 +455,10 @@ where
       move |ctx: Ctx<'js>, node: u32, name: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.remove_attribute(node_id, &name) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -432,7 +479,10 @@ where
       move |ctx: Ctx<'js>, node: u32, name: String, present: bool| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.set_bool_attribute(node_id, &name, present) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -451,10 +501,14 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |node: u32, prop: String| {
-        let node_id = NodeId::from_index(node as usize);
         let result = dom
           .borrow()
-          .with_dom(|dom| dom.dataset_get(node_id, &prop).map(|v| v.to_string()));
+          .with_dom(|dom| {
+            dom
+              .node_id_from_index(node as usize)
+              .ok()
+              .and_then(|node_id| dom.dataset_get(node_id, &prop).map(|v| v.to_string()))
+          });
         Ok::<Option<String>, rquickjs::Error>(result)
       }
     })?,
@@ -467,7 +521,10 @@ where
       move |ctx: Ctx<'js>, node: u32, prop: String, value: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.dataset_set(node_id, &prop, &value) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -488,7 +545,10 @@ where
       move |ctx: Ctx<'js>, node: u32, prop: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.dataset_delete(node_id, &prop) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -507,8 +567,12 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |node: u32, name: String| {
-        let node_id = NodeId::from_index(node as usize);
-        let result = dom.borrow().with_dom(|dom| dom.style_get_property_value(node_id, &name));
+        let result = dom.borrow().with_dom(|dom| {
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .map_or_else(String::new, |node_id| dom.style_get_property_value(node_id, &name))
+        });
         Ok::<String, rquickjs::Error>(result)
       }
     })?,
@@ -521,7 +585,10 @@ where
       move |ctx: Ctx<'js>, node: u32, name: String, value: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match dom.style_set_property(node_id, &name, &value) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -540,11 +607,8 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32| {
-        let node_id = NodeId::from_index(node as usize);
         let result = dom.borrow().with_dom(|dom| {
-          if node_id.index() >= dom.nodes_len() {
-            return Err(DomError::NotFoundError);
-          }
+          let node_id = dom.node_id_from_index(node as usize)?;
           Ok(get_text_content(dom, node_id))
         });
         match result {
@@ -562,7 +626,10 @@ where
       move |ctx: Ctx<'js>, node: u32, value: String| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
-          let node_id = NodeId::from_index(node as usize);
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
           match set_text_content(dom, node_id, &value) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
@@ -581,11 +648,8 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32| {
-        let node_id = NodeId::from_index(node as usize);
         let result = dom.borrow().with_dom(|dom| {
-          if node_id.index() >= dom.nodes_len() {
-            return Err(DomError::NotFoundError);
-          }
+          let node_id = dom.node_id_from_index(node as usize)?;
           Ok(node_tag_name(dom, node_id))
         });
         match result {
