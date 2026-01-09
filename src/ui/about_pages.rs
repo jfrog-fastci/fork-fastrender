@@ -142,9 +142,9 @@ fn test_heavy_html() -> String {
      .row{padding:4px 8px;border-bottom:1px solid rgba(0,0,0,0.08);}</style>\
      </head><body>",
   );
-  // 5000 rows is enough to trigger a meaningful amount of layout/paint work without making tests
-  // excessively slow in CI.
-  for i in 0..5000u32 {
+  // Keep this large enough that cancellation tests can reliably interrupt in-flight layout/paint,
+  // but small enough that debug builds complete comfortably under CI contention.
+  for i in 0..3000u32 {
     use std::fmt::Write;
     let _ = write!(out, "<div class=\"row\">row {i}</div>");
   }
