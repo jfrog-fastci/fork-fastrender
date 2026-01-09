@@ -395,6 +395,17 @@ impl BrowserRuntime {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
           };
+          // Best-effort: persist the current scroll position before moving in history. This matters
+          // when a scroll message has updated `tab.scroll_state` but the paint job hasn't run yet.
+          //
+          // Only do this when we are not in the middle of a navigation: during an in-flight
+          // navigation, the history index may already point at the pending entry while the UI is
+          // still showing the previous document/scroll state.
+          if tab.pending_navigation.is_none() {
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+          }
           tab.history.go_back().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
@@ -406,6 +417,11 @@ impl BrowserRuntime {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
           };
+          if tab.pending_navigation.is_none() {
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+          }
           tab.history.go_forward().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
@@ -417,6 +433,11 @@ impl BrowserRuntime {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
           };
+          if tab.pending_navigation.is_none() {
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+          }
           tab
             .history
             .reload_target()
@@ -665,6 +686,7 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    let had_pending_navigation = tab.pending_navigation.is_some();
 
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
     //
@@ -724,19 +746,19 @@ impl BrowserRuntime {
             tab.scroll_state.viewport = offset;
             doc.set_scroll_state(tab.scroll_state.clone());
 
-             let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
-               tab_id,
-               url: url_string.clone(),
-             });
-             let title = find_document_title(doc.dom());
-             if let Some(title) = title.as_deref() {
-               tab.history.set_title(title.to_string());
-             }
-             let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
-               tab_id,
-               url: url_string,
-               title,
-                can_go_back: tab.history.can_go_back(),
+            let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
+              tab_id,
+              url: url_string.clone(),
+            });
+            let title = find_document_title(doc.dom());
+            if let Some(title) = title.as_deref() {
+              tab.history.set_title(title.to_string());
+            }
+            let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+              tab_id,
+              url: url_string,
+              title,
+              can_go_back: tab.history.can_go_back(),
               can_go_forward: tab.history.can_go_forward(),
             });
 
@@ -756,6 +778,14 @@ impl BrowserRuntime {
       apply_fragment_scroll: matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick),
     });
     if push_history {
+      if !had_pending_navigation {
+        // Persist the current scroll position before pushing a new history entry. This is required
+        // for correct scroll restoration when a scroll message arrives and the subsequent paint is
+        // pre-empted by a navigation job.
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+      }
       tab.history.push(url.clone());
     }
 
