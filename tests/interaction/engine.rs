@@ -903,6 +903,71 @@ fn range_drag_ignores_sentinel_pointer_positions() {
 }
 
 #[test]
+fn cancelled_click_does_not_blur_focused_control() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("input", vec![("id", "txt"), ("type", "text")], vec![])],
+    )],
+  )]);
+
+  let txt_dom_id = node_id(&dom, "txt");
+  let mut txt_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  txt_box.styled_node_id = Some(txt_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![txt_box],
+  ));
+
+  let txt_box_id = find_box_id_for_styled_node(&box_tree, txt_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      txt_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let (changed, _action) = engine.focus_node_id(&mut dom, Some(txt_dom_id), false);
+  assert!(changed, "expected focus_node_id to set focus flags");
+  assert_eq!(
+    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+
+  // Release outside the element (no click qualifies), which should not blur the previously focused
+  // control.
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(150.0, 10.0),
+    "https://example.com/",
+    "https://example.com/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert_eq!(
+    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
 fn space_key_toggles_focused_checkbox() {
   let mut dom = doc(vec![el(
     "html",

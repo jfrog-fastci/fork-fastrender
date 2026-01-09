@@ -1844,8 +1844,16 @@ impl InteractionEngine {
       }
 
       // Blur when clicking outside focusable controls.
-      let clicked_focusable = click_target.is_some_and(|id| is_focusable_interactive_element(&index, id));
-      if !clicked_focusable && prev_focus.is_some() {
+      //
+      // If the pointer down started on a focusable target but the click was cancelled (pointer up
+      // happened elsewhere / outside the page), we should not clear focus: typical browser UX
+      // keeps the previously focused element focused in that case.
+      let clicked_focusable =
+        click_target.is_some_and(|id| is_focusable_interactive_element(&index, id));
+      let down_prevents_blur = down_semantic.is_some_and(|id| {
+        is_focusable_interactive_element(&index, id) || index.node(id).is_some_and(is_label)
+      });
+      if !clicked_focusable && !down_prevents_blur && prev_focus.is_some() {
         dom_changed |= self.set_focus(&mut index, None, false);
       }
     }
