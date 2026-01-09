@@ -39,8 +39,8 @@ use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
-  validate_cors_allow_origin, CorsMode, FetchCredentialsMode, FetchDestination, FetchRequest,
-  FetchedResource, HttpFetcher, HttpRetryPolicy, ReferrerPolicy, ResourceFetcher,
+  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource, HttpFetcher,
+  HttpRetryPolicy, ReferrerPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -294,8 +294,7 @@ impl FontFetcher for ResourceFontFetcher {
       document_origin.or_else(|| document_url.as_deref().and_then(origin_from_url));
     let referrer_policy = referrer_policy_override.or(document_referrer_policy);
 
-    let mut request =
-      FetchRequest::new(url, FetchDestination::Font).with_credentials_mode(FetchCredentialsMode::Omit);
+    let mut request = FetchRequest::new(url, FetchDestination::Font);
     if let Some(origin) = document_origin.as_ref() {
       request = request.with_client_origin(origin);
     }
@@ -4031,7 +4030,15 @@ mod tests {
   fn resource_font_fetcher_sets_client_origin_and_referrer_url() {
     #[derive(Default)]
     struct RecordingResourceFetcher {
-      request: Mutex<Option<(Option<crate::resource::DocumentOrigin>, Option<String>)>>,
+      request: Mutex<Option<RecordedRequest>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct RecordedRequest {
+      destination: FetchDestination,
+      credentials_mode: crate::resource::FetchCredentialsMode,
+      client_origin: Option<crate::resource::DocumentOrigin>,
+      referrer_url: Option<String>,
     }
 
     impl ResourceFetcher for RecordingResourceFetcher {
@@ -4040,9 +4047,13 @@ mod tests {
       }
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-        let client_origin = req.client_origin.cloned();
-        let referrer_url = req.referrer_url.map(|s| s.to_string());
-        *self.request.lock().unwrap() = Some((client_origin, referrer_url));
+        let captured = RecordedRequest {
+          destination: req.destination,
+          credentials_mode: req.credentials_mode,
+          client_origin: req.client_origin.cloned(),
+          referrer_url: req.referrer_url.map(|s| s.to_string()),
+        };
+        *self.request.lock().unwrap() = Some(captured);
         Ok(FetchedResource::new(
           b"font".to_vec(),
           Some("font/woff2".to_string()),
@@ -4065,17 +4076,22 @@ mod tests {
     };
 
     font_fetcher
-      .fetch("https://cdn.example.com/font.woff2", Some(stylesheet_base_url))
+      .fetch("https://doc.example.com/font.woff2", Some(stylesheet_base_url))
       .expect("fetch");
 
-    let (client_origin, referrer_url) = recorder
+    let captured = recorder
       .request
       .lock()
       .unwrap()
       .clone()
       .expect("recorded request");
-    assert_eq!(client_origin, Some(expected_origin));
-    assert_eq!(referrer_url.as_deref(), Some(stylesheet_base_url));
+    assert_eq!(captured.destination, FetchDestination::Font);
+    assert_eq!(
+      captured.credentials_mode,
+      crate::resource::FetchCredentialsMode::SameOrigin
+    );
+    assert_eq!(captured.client_origin, Some(expected_origin));
+    assert_eq!(captured.referrer_url.as_deref(), Some(stylesheet_base_url));
   }
 
   #[test]

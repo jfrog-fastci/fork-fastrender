@@ -880,19 +880,17 @@ impl FetchDestination {
 
   /// Returns the default credentials mode for this destination.
   ///
-  /// This is **not** derivable from `Sec-Fetch-Mode` alone:
+  /// Most CORS-mode fetches default to `"same-origin"` credentials:
   ///
   /// - `fetch()` requests are sent in `cors` mode but default to `"same-origin"` credentials per
   ///   the Fetch API.
   /// - HTML CORS settings attributes (e.g. `<img crossorigin>` / `<link rel=stylesheet crossorigin>`)
   ///   also use `cors` mode; the default/empty keyword maps to `"same-origin"` credentials.
-  /// - Fonts are currently kept at the historical default of `omit` until audited against browser
-  ///   behavior/specs. (This impacts caching and cookie sending, so we keep the existing behavior
-  ///   for now.)
+  /// - Fonts are fetched in `cors` mode and default to `"same-origin"` credentials per the CSS font
+  ///   fetch algorithms (allowing cookies for same-origin fonts when the client origin is known).
   const fn default_credentials_mode(self) -> FetchCredentialsMode {
     match self {
-      Self::Fetch | Self::StyleCors | Self::ImageCors => FetchCredentialsMode::SameOrigin,
-      Self::Font => FetchCredentialsMode::Omit,
+      Self::Fetch | Self::StyleCors | Self::ImageCors | Self::Font => FetchCredentialsMode::SameOrigin,
       Self::Document
       | Self::DocumentNoUser
       | Self::Iframe
@@ -1152,6 +1150,8 @@ impl<'a> FetchRequest<'a> {
   ///   initiated via HTML CORS settings attributes (e.g. `<link rel=stylesheet crossorigin>` /
   ///   `<img crossorigin>`). The default/empty keyword corresponds to the `"anonymous"` state,
   ///   which maps to `same-origin` credentials.
+  /// - [`FetchDestination::Font`] requests are fetched in `cors` mode and default to `same-origin`
+  ///   credentials, matching the CSS font fetch algorithms used by browsers.
   /// - Other destinations keep the historical default.
   pub fn new(url: &'a str, destination: FetchDestination) -> Self {
     Self {
@@ -11204,6 +11204,38 @@ mod tests {
   }
 
   #[test]
+  fn fetch_request_new_defaults_credentials_mode() {
+    let url = "https://example.com/asset";
+    for destination in [
+      FetchDestination::Font,
+      FetchDestination::ImageCors,
+      FetchDestination::StyleCors,
+      FetchDestination::Fetch,
+    ] {
+      assert_eq!(
+        FetchRequest::new(url, destination).credentials_mode,
+        FetchCredentialsMode::SameOrigin,
+        "expected {destination:?} to default to SameOrigin credentials for CORS-mode requests",
+      );
+    }
+
+    for destination in [
+      FetchDestination::Image,
+      FetchDestination::Style,
+      FetchDestination::Other,
+      FetchDestination::Document,
+      FetchDestination::DocumentNoUser,
+      FetchDestination::Iframe,
+    ] {
+      assert_eq!(
+        FetchRequest::new(url, destination).credentials_mode,
+        FetchCredentialsMode::Include,
+        "expected {destination:?} to default to Include credentials for non-CORS requests",
+      );
+    }
+  }
+
+  #[test]
   fn cors_cache_partition_key_partitions_by_client_origin_and_credentials() {
     if !http_browser_headers_enabled() {
       eprintln!(
@@ -11229,13 +11261,14 @@ mod tests {
       .with_client_origin(&origin_a);
       assert_eq!(cors_cache_partition_key(&no_cors), None);
 
-      let omit = FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_a);
+      let default_req =
+        FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_a);
       assert_eq!(
-        cors_cache_partition_key(&omit).as_deref(),
+        cors_cache_partition_key(&default_req).as_deref(),
         Some("https://a.test")
       );
 
-      let include = omit.with_credentials_mode(FetchCredentialsMode::Include);
+      let include = default_req.with_credentials_mode(FetchCredentialsMode::Include);
       assert_eq!(
         cors_cache_partition_key(&include).as_deref(),
         Some("https://a.test|cred=include")
