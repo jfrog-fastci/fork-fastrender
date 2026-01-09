@@ -78,8 +78,12 @@ impl Headers {
   }
 
   pub fn append(&mut self, name: &str, value: &str) -> Result<()> {
-    let name = validate_header_name(name)?;
     let value = normalize_header_value(value);
+    // Enforce byte limits up-front so validation errors can't clone arbitrarily-large inputs into
+    // `WebFetchError` variants.
+    enforce_entry_len(name, value, &self.limits)?;
+
+    let name = validate_header_name(name)?;
     validate_header_value(value)?;
 
     if !self.validate_mutation(&name, value)? {
@@ -87,12 +91,23 @@ impl Headers {
     }
 
     if self.guard == HeadersGuard::RequestNoCors {
+      let existing_len = self.header_list_get_len(&name);
+      let combined_len = match existing_len {
+        Some(len) => len.saturating_add(2).saturating_add(value.len()),
+        None => value.len(),
+      };
+      // The CORS-safelisted checks require `value.len() <= 128`; avoid allocating a potentially huge
+      // temporary string to compute the combined value when it can't possibly pass.
+      if combined_len > 128 {
+        return Ok(());
+      }
+
       let mut temporary_value = self.header_list_get(&name).unwrap_or_default();
-      if temporary_value.is_empty() {
-        temporary_value = value.to_string();
-      } else {
+      if existing_len.is_some() {
         temporary_value.push_str(", ");
         temporary_value.push_str(value);
+      } else {
+        temporary_value = value.to_string();
       }
 
       if !is_no_cors_safelisted_request_header(&name, &temporary_value) {
@@ -202,8 +217,10 @@ impl Headers {
   }
 
   pub fn set(&mut self, name: &str, value: &str) -> Result<()> {
-    let name = validate_header_name(name)?;
     let value = normalize_header_value(value);
+    enforce_entry_len(name, value, &self.limits)?;
+
+    let name = validate_header_name(name)?;
     validate_header_value(value)?;
 
     if !self.validate_mutation(&name, value)? {
@@ -476,6 +493,23 @@ impl Headers {
     Some(values.join(", "))
   }
 
+  fn header_list_get_len(&self, name: &HeaderName) -> Option<usize> {
+    let mut count: usize = 0;
+    let mut len: usize = 0;
+    for header in &self.header_list {
+      if header.name != *name {
+        continue;
+      }
+      if count != 0 {
+        // Account for the `", "` separator used by `header_list_get`.
+        len = len.saturating_add(2);
+      }
+      len = len.saturating_add(header.value.len());
+      count = count.saturating_add(1);
+    }
+    if count == 0 { None } else { Some(len) }
+  }
+
   fn header_list_delete(&mut self, name: &HeaderName) {
     self.header_list.retain(|header| header.name != *name);
   }
@@ -525,7 +559,7 @@ impl Headers {
 
 fn validate_header_name(name: &str) -> Result<HeaderName> {
   HeaderName::from_bytes(name.as_bytes()).map_err(|_| WebFetchError::InvalidHeaderName {
-    name: name.to_string(),
+    name: diagnostic_clone_str(name),
   })
 }
 
@@ -547,17 +581,51 @@ fn validate_header_value(value: &str) -> Result<()> {
     .any(|&b| b == 0x00 || b == b'\r' || b == b'\n')
   {
     return Err(WebFetchError::InvalidHeaderValue {
-      value: value.to_string(),
+      value: diagnostic_clone_str(value),
     });
   }
 
   if value.starts_with([' ', '\t']) || value.ends_with([' ', '\t']) {
     return Err(WebFetchError::InvalidHeaderValue {
-      value: value.to_string(),
+      value: diagnostic_clone_str(value),
     });
   }
 
   Ok(())
+}
+
+fn enforce_entry_len(name: &str, value: &str, limits: &WebFetchLimits) -> Result<()> {
+  let attempted = name
+    .len()
+    .checked_add(value.len())
+    .ok_or(WebFetchError::LimitExceeded {
+      kind: WebFetchLimitKind::TotalHeaderBytes,
+      limit: limits.max_total_header_bytes,
+      attempted: usize::MAX,
+    })?;
+  if attempted > limits.max_total_header_bytes {
+    return Err(WebFetchError::LimitExceeded {
+      kind: WebFetchLimitKind::TotalHeaderBytes,
+      limit: limits.max_total_header_bytes,
+      attempted,
+    });
+  }
+  Ok(())
+}
+
+fn diagnostic_clone_str(value: &str) -> String {
+  const MAX: usize = 1024;
+  if value.len() <= MAX {
+    return value.to_string();
+  }
+  let mut end = 0usize;
+  for (idx, ch) in value.char_indices() {
+    if idx >= MAX {
+      break;
+    }
+    end = idx + ch.len_utf8();
+  }
+  format!("{}…(len={})", &value[..end], value.len())
 }
 
 fn is_forbidden_response_header_name(name: &HeaderName) -> bool {
