@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
-  FetchedResource, ReferrerPolicy, ResourceFetcher,
+  FetchedResource, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -642,6 +642,29 @@ impl ResourceFetcher for BundledFetcher {
       "Resource not found in bundle: {}",
       url
     )))
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    let method_is_get = req.method.eq_ignore_ascii_case("GET");
+    let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
+    if !method_is_get && !method_is_head {
+      return Err(Error::Other(format!(
+        "Bundle cannot replay non-GET/HEAD request ({} {}): bundles only store GET responses",
+        req.method, req.fetch.url
+      )));
+    }
+    if !req.headers.is_empty() || req.body.is_some() {
+      return Err(Error::Other(format!(
+        "Bundle cannot replay request with custom headers/body ({} {}): bundles only store browser-profiled GET responses",
+        req.method, req.fetch.url
+      )));
+    }
+
+    let mut res = self.fetch_with_request(req.fetch)?;
+    if method_is_head {
+      res.bytes.clear();
+    }
+    Ok(res)
   }
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {

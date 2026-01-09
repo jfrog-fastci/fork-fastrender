@@ -47,6 +47,7 @@ use fastrender::resource::CachingFetcherConfig;
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::FetchRequest;
 use fastrender::resource::HttpFetcher;
+use fastrender::resource::HttpRequest;
 use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
@@ -1130,6 +1131,16 @@ impl<F: ResourceFetcher> ResourceFetcher for OfflineNetworkFetcher<F> {
     self
       .inner
       .fetch_with_request_and_validation(req, etag, last_modified)
+  }
+
+  fn fetch_http_request(
+    &self,
+    req: HttpRequest<'_>,
+  ) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    if Self::is_network_url(req.fetch.url) {
+      return Err(Self::error_for(req.fetch.url));
+    }
+    self.inner.fetch_http_request(req)
   }
 }
 

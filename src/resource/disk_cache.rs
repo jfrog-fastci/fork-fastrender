@@ -12,6 +12,7 @@ use super::CachingFetcherConfig;
 use super::FetchContextKind;
 use super::FetchRequest;
 use super::FetchedResource;
+use super::HttpRequest;
 use super::HttpCachePolicy;
 use super::ReferrerPolicy;
 use super::ResourceFetcher;
@@ -3310,6 +3311,29 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     self.fetch_cached(kind, req.url, Some(req))
   }
 
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    let url = req.fetch.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    let method_is_get = req.method.eq_ignore_ascii_case("GET");
+    let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
+    let cacheable = (method_is_get || method_is_head) && req.headers.is_empty() && req.body.is_none();
+
+    if cacheable {
+      let mut res = self.fetch_with_request(req.fetch)?;
+      if method_is_head {
+        res.bytes.clear();
+      }
+      return Ok(res);
+    }
+
+    // Delegate to the shared in-memory caching layer. It will bypass caches for non-GET methods and
+    // for requests with user-specified headers/bodies.
+    self.memory.fetch_http_request(req)
+  }
+
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
     self.fetch_cached(kind, url, None)
   }
@@ -3780,6 +3804,97 @@ mod tests {
       resource.final_url = Some(url.to_string());
       Ok(resource)
     }
+  }
+
+  #[test]
+  fn disk_caching_fetcher_fetch_http_request_caches_get_and_bypasses_post() {
+    #[derive(Clone)]
+    struct CallRecordingFetcher {
+      request_calls: Arc<AtomicUsize>,
+      http_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CallRecordingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("unexpected fetch() call");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let n = self.request_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("get:{n}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        let n = self.http_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("http:{n}:{}", req.method).into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.fetch.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    let request_calls = Arc::new(AtomicUsize::new(0));
+    let http_calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = DiskCachingFetcher::new(
+      CallRecordingFetcher {
+        request_calls: Arc::clone(&request_calls),
+        http_calls: Arc::clone(&http_calls),
+      },
+      tmp.path(),
+    );
+
+    let url = "http://example.com/fetch";
+    let fetch = FetchRequest::new(url, FetchDestination::Fetch);
+
+    let get_req = HttpRequest::new(fetch, "GET");
+    let first = fetcher.fetch_http_request(get_req).expect("GET 1");
+    assert_eq!(first.bytes, b"get:1");
+    let second = fetcher.fetch_http_request(get_req).expect("GET 2");
+    assert_eq!(
+      second.bytes, b"get:1",
+      "expected GET to be served from cache on second call"
+    );
+    assert_eq!(
+      request_calls.load(Ordering::SeqCst),
+      1,
+      "expected GET to call inner fetch_with_request only once"
+    );
+    assert_eq!(
+      http_calls.load(Ordering::SeqCst),
+      0,
+      "expected GET to use caching path rather than inner fetch_http_request"
+    );
+
+    let post_req = HttpRequest {
+      fetch,
+      method: "POST",
+      headers: &[],
+      body: Some(b"hello"),
+    };
+
+    let first_post = fetcher.fetch_http_request(post_req).expect("POST 1");
+    assert_eq!(first_post.bytes, b"http:1:POST");
+    let second_post = fetcher.fetch_http_request(post_req).expect("POST 2");
+    assert_eq!(second_post.bytes, b"http:2:POST");
+    assert_eq!(
+      http_calls.load(Ordering::SeqCst),
+      2,
+      "expected POST to reach the inner fetcher each time"
+    );
+    assert_eq!(
+      request_calls.load(Ordering::SeqCst),
+      1,
+      "expected POST to bypass the caching fetch_with_request path"
+    );
   }
 
   #[derive(Clone, Debug)]

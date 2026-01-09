@@ -1207,6 +1207,35 @@ impl<'a> FetchRequest<'a> {
   }
 }
 
+/// A method-aware HTTP request for use with JavaScript `fetch()`-style APIs.
+///
+/// `headers` and `body` are treated as **user-specified** inputs. Fetchers are still responsible
+/// for adding any default browser-like headers derived from [`FetchRequest`] (destination,
+/// referrer, origin, etc).
+#[derive(Debug, Clone, Copy)]
+pub struct HttpRequest<'a> {
+  /// Context used to derive browser-like request headers and cache partitioning keys.
+  pub fetch: FetchRequest<'a>,
+  /// HTTP method (e.g. `"GET"`, `"POST"`). Comparison must be ASCII case-insensitive.
+  pub method: &'a str,
+  /// User-specified request headers.
+  pub headers: &'a [(String, String)],
+  /// Optional request body.
+  pub body: Option<&'a [u8]>,
+}
+
+impl<'a> HttpRequest<'a> {
+  /// Create a request with no user headers and no body.
+  pub fn new(fetch: FetchRequest<'a>, method: &'a str) -> Self {
+    Self {
+      fetch,
+      method,
+      headers: &[],
+      body: None,
+    }
+  }
+}
+
 fn cookies_allowed_for_request(
   credentials_mode: FetchCredentialsMode,
   url: &str,
@@ -3048,6 +3077,38 @@ pub trait ResourceFetcher: Send + Sync {
     self.fetch_with_request(req)
   }
 
+  /// Fetch a resource using an explicit HTTP method, request headers, and optional body.
+  ///
+  /// This is primarily intended for JavaScript `fetch()` support. Wrapper fetchers that implement
+  /// caching should ensure that non-GET methods bypass their caches.
+  ///
+  /// The default implementation only supports `GET`/`HEAD` requests with no user headers and no
+  /// body by delegating to [`ResourceFetcher::fetch_with_request`]. Other requests return an
+  /// error.
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    if !req.headers.is_empty() || req.body.is_some() {
+      return Err(Error::Resource(ResourceError::new(
+        req.fetch.url,
+        "fetch_http_request with custom headers/body is not supported by this fetcher",
+      )));
+    }
+
+    if req.method.eq_ignore_ascii_case("GET") {
+      return self.fetch_with_request(req.fetch);
+    }
+
+    if req.method.eq_ignore_ascii_case("HEAD") {
+      let mut res = self.fetch_with_request(req.fetch)?;
+      res.bytes.clear();
+      return Ok(res);
+    }
+
+    Err(Error::Resource(ResourceError::new(
+      req.fetch.url,
+      format!("unsupported HTTP method: {}", req.method),
+    )))
+  }
+
   /// Fetch a resource with an explicit request context.
   ///
   /// Fetchers that vary request headers (e.g. `Accept`, `Sec-Fetch-*`, `Origin`, `Referer`) should
@@ -3256,6 +3317,10 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
     (**self).fetch_with_request_and_validation(req, etag, last_modified)
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    (**self).fetch_http_request(req)
   }
 
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
@@ -9137,6 +9202,29 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     inflight_guard.finish(notify);
 
     result
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    let url = req.fetch.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    let method_is_get = req.method.eq_ignore_ascii_case("GET");
+    let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
+    let cacheable = (method_is_get || method_is_head) && req.headers.is_empty() && req.body.is_none();
+
+    if cacheable {
+      let mut res = self.fetch_with_request(req.fetch)?;
+      if method_is_head {
+        res.bytes.clear();
+      }
+      return Ok(res);
+    }
+
+    let res = self.inner.fetch_http_request(req)?;
+    reserve_policy_bytes(&self.policy, &res)?;
+    Ok(res)
   }
 
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
@@ -17717,6 +17805,92 @@ mod tests {
     assert_eq!(
       snapshot[1].referrer_url.as_deref(),
       Some("http://other.example/")
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_http_request_caches_get_and_bypasses_post() {
+    #[derive(Clone)]
+    struct CallRecordingFetcher {
+      request_calls: Arc<AtomicUsize>,
+      http_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CallRecordingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("unexpected fetch() call");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let n = self.request_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("get:{n}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        let n = self.http_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("http:{n}:{}", req.method).into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.fetch.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let request_calls = Arc::new(AtomicUsize::new(0));
+    let http_calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(CallRecordingFetcher {
+      request_calls: Arc::clone(&request_calls),
+      http_calls: Arc::clone(&http_calls),
+    });
+
+    let url = "http://example.com/fetch";
+    let fetch = FetchRequest::new(url, FetchDestination::Fetch);
+
+    let get_req = HttpRequest::new(fetch, "GET");
+    let first = cache.fetch_http_request(get_req).expect("GET 1");
+    assert_eq!(first.bytes, b"get:1");
+    let second = cache.fetch_http_request(get_req).expect("GET 2");
+    assert_eq!(
+      second.bytes, b"get:1",
+      "expected GET to be served from cache on second call"
+    );
+    assert_eq!(
+      request_calls.load(Ordering::SeqCst),
+      1,
+      "expected GET to call inner fetch_with_request only once"
+    );
+    assert_eq!(
+      http_calls.load(Ordering::SeqCst),
+      0,
+      "expected GET to use caching path rather than inner fetch_http_request"
+    );
+
+    let post_req = HttpRequest {
+      fetch,
+      method: "POST",
+      headers: &[],
+      body: Some(b"hello"),
+    };
+
+    let first_post = cache.fetch_http_request(post_req).expect("POST 1");
+    assert_eq!(first_post.bytes, b"http:1:POST");
+    let second_post = cache.fetch_http_request(post_req).expect("POST 2");
+    assert_eq!(second_post.bytes, b"http:2:POST");
+    assert_eq!(
+      http_calls.load(Ordering::SeqCst),
+      2,
+      "expected POST to reach the inner fetcher each time"
+    );
+    assert_eq!(
+      request_calls.load(Ordering::SeqCst),
+      1,
+      "expected POST to bypass the caching fetch_with_request path"
     );
   }
 
