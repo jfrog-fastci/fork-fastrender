@@ -917,4 +917,40 @@ mod tests {
       assert!(threw);
     });
   }
+
+  #[test]
+  fn url_setters_ignore_invalid_values() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+    ctx.with(|ctx| {
+      let globals = ctx.globals();
+      install_url_bindings(ctx.clone(), &globals).unwrap();
+
+      // Per WHATWG URL, invalid setters should be a no-op (and must not throw).
+      let ok: bool = eval(
+        ctx.clone(),
+        r#"
+        (() => {
+          const u = new URL('https://example.com/path?x=1#y');
+          const beforeHref = u.href;
+
+          let threw = false;
+          try {
+            u.protocol = 'ht!tp:'; // invalid scheme
+            u.port = '99999'; // invalid port
+          } catch (e) {
+            threw = true;
+          }
+
+          if (threw) return false;
+          if (u.href !== beforeHref) return false;
+          if (u.protocol !== 'https:') return false;
+          if (u.port !== '') return false;
+          return true;
+        })()
+      "#,
+      );
+      assert!(ok);
+    });
+  }
 }
