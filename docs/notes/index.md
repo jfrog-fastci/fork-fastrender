@@ -8,6 +8,7 @@ Small, durable writeups that explain “why/how” decisions that are worth keep
 - [dom-compatibility.md](dom-compatibility.md) — DOM parsing compatibility mode for JS-managed class flips.
 - [dependency-locking.md](dependency-locking.md) — lockfile policy for deterministic builds and CI caching.
 - [no-panics-lint.md](no-panics-lint.md) — CI guardrail to prevent introducing new `panic!`/`unwrap()` sites.
+- [no-openssl-lint.md](no-openssl-lint.md) — CI guardrail to prevent introducing `openssl-sys` (system OpenSSL headers).
 - [custom-properties-api.md](custom-properties-api.md) — canonical storage and resolution for CSS custom properties.
 - [variable-font-decoration-metrics.md](variable-font-decoration-metrics.md) — variation-aware underline/strike metrics and current fixture coverage.
 - [http-agent-pooling.md](http-agent-pooling.md) — shared `ureq::Agent` / `reqwest::blocking::Client` connection pooling for cheaper resource fetches.
