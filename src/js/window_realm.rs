@@ -1,4 +1,7 @@
+use crate::dom2::NodeId;
+use crate::js::CurrentScriptStateHandle;
 use parking_lot::Mutex;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -13,6 +16,8 @@ pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync +
 #[derive(Clone)]
 pub struct WindowRealmConfig {
   pub document_url: String,
+  /// Host-owned `Document.currentScript` state handle to expose via `document.currentScript`.
+  pub current_script_state: Option<CurrentScriptStateHandle>,
   pub console_sink: Option<ConsoleSink>,
   /// Memory limits for the embedded `vm-js` heap.
   ///
@@ -25,9 +30,15 @@ impl WindowRealmConfig {
   pub fn new(document_url: impl Into<String>) -> Self {
     Self {
       document_url: document_url.into(),
+      current_script_state: None,
       console_sink: None,
       heap_limits: default_heap_limits(),
     }
+  }
+
+  pub fn with_current_script_state(mut self, state: CurrentScriptStateHandle) -> Self {
+    self.current_script_state = Some(state);
+    self
   }
 
   pub fn with_heap_limits(mut self, limits: HeapLimits) -> Self {
@@ -41,6 +52,7 @@ pub struct WindowRealm {
   heap: Heap,
   realm: Realm,
   console_sink_id: Option<u64>,
+  current_script_source_id: Option<u64>,
   interrupt_flag: Arc<AtomicBool>,
 }
 
@@ -52,8 +64,9 @@ impl WindowRealm {
     let mut vm = Vm::new(vm_options);
     let mut heap = Heap::new(config.heap_limits);
     let mut realm = Realm::new(&mut vm, &mut heap)?;
-    let console_sink_id = match init_window_globals(&mut vm, &mut heap, &realm, &config) {
-      Ok(id) => id,
+    let (console_sink_id, current_script_source_id) =
+      match init_window_globals(&mut vm, &mut heap, &realm, &config) {
+        Ok(ids) => ids,
       Err(err) => {
         // `vm-js` realms own persistent roots registered with the heap. Even though we're about to
         // drop the heap on this error path, `Realm` asserts (in debug builds) that embeddings call
@@ -67,6 +80,7 @@ impl WindowRealm {
       heap,
       realm,
       console_sink_id,
+      current_script_source_id,
       interrupt_flag,
     })
   }
@@ -114,6 +128,9 @@ impl WindowRealm {
   pub fn teardown(&mut self) {
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);
+    }
+    if let Some(id) = self.current_script_source_id.take() {
+      unregister_current_script_source(id);
     }
     self.realm.teardown(&mut self.heap);
   }
@@ -265,6 +282,73 @@ impl Drop for ConsoleSinkGuard {
   }
 }
 
+const LOCATION_URL_KEY: &str = "__fastrender_location_url";
+const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
+const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
+const NODE_ID_KEY: &str = "__fastrender_node_id";
+
+static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+  static CURRENT_SCRIPT_SOURCES: RefCell<HashMap<u64, CurrentScriptStateHandle>> =
+    RefCell::new(HashMap::new());
+}
+
+fn register_current_script_source(state: CurrentScriptStateHandle) -> u64 {
+  let id = NEXT_CURRENT_SCRIPT_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
+  CURRENT_SCRIPT_SOURCES.with(|sources| sources.borrow_mut().insert(id, state));
+  id
+}
+
+fn unregister_current_script_source(id: u64) {
+  CURRENT_SCRIPT_SOURCES.with(|sources| {
+    sources.borrow_mut().remove(&id);
+  });
+}
+
+fn current_script_for_source(id: u64) -> Option<NodeId> {
+  CURRENT_SCRIPT_SOURCES.with(|sources| {
+    let sources = sources.borrow();
+    let state = sources.get(&id)?;
+    let current = {
+      let state = state.borrow();
+      state.current_script
+    };
+    current
+  })
+}
+
+struct CurrentScriptSourceGuard {
+  id: u64,
+  active: bool,
+}
+
+impl CurrentScriptSourceGuard {
+  fn new(state: CurrentScriptStateHandle) -> Self {
+    Self {
+      id: register_current_script_source(state),
+      active: true,
+    }
+  }
+
+  fn id(&self) -> u64 {
+    self.id
+  }
+
+  fn disarm(mut self) -> u64 {
+    self.active = false;
+    self.id
+  }
+}
+
+impl Drop for CurrentScriptSourceGuard {
+  fn drop(&mut self) {
+    if self.active {
+      unregister_current_script_source(self.id);
+    }
+  }
+}
+
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -295,12 +379,139 @@ fn console_log_native(
   Ok(Value::Undefined)
 }
 
+fn location_href_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let key = alloc_key(scope, LOCATION_URL_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(location_obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn location_href_set_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "Navigation via location.href is not implemented yet",
+  ))
+}
+
+fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
+  let mut i = buf.len();
+  if value == 0 {
+    i -= 1;
+    buf[i] = b'0';
+  } else {
+    while value > 0 {
+      i -= 1;
+      buf[i] = b'0' + (value % 10) as u8;
+      value /= 10;
+    }
+  }
+  // SAFETY: digits are always valid UTF-8.
+  std::str::from_utf8(&buf[i..]).expect("decimal digits should be valid UTF-8")
+}
+
+fn get_or_create_node_wrapper(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  node_id: NodeId,
+) -> Result<Value, VmError> {
+  let cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
+  let cache = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &cache_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      let cache = scope.alloc_object()?;
+      scope.push_root(Value::Object(cache))?;
+      scope.define_property(
+        document_obj,
+        cache_key,
+        data_desc(Value::Object(cache)),
+      )?;
+      cache
+    }
+  };
+
+  let mut buf = [0u8; 20];
+  let key_str = decimal_str_for_usize(node_id.index(), &mut buf);
+  let wrapper_key = alloc_key(scope, key_str)?;
+
+  if let Some(existing) = scope
+    .heap()
+    .object_get_own_data_property_value(cache, &wrapper_key)?
+  {
+    if let Value::Object(obj) = existing {
+      return Ok(Value::Object(obj));
+    }
+  }
+
+  let wrapper = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrapper))?;
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  scope.define_property(
+    wrapper,
+    node_id_key,
+    data_desc(Value::Number(node_id.index() as f64)),
+  )?;
+
+  scope.define_property(cache, wrapper_key, data_desc(Value::Object(wrapper)))?;
+
+  Ok(Value::Object(wrapper))
+}
+
+fn document_current_script_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, CURRENT_SCRIPT_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(node_id) = current_script_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
   realm: &Realm,
   config: &WindowRealmConfig,
-) -> Result<Option<u64>, VmError> {
+) -> Result<(Option<u64>, Option<u64>), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
 
@@ -320,7 +531,40 @@ fn init_window_globals(
 
   let location_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(location_obj))?;
-  scope.define_property(location_obj, href_key, data_desc(url_v))?;
+  // Keep the document URL on the location object so the href getter can access it.
+  let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+  scope.define_property(location_obj, location_url_key, data_desc(url_v))?;
+
+  let href_get_call_id = vm.register_native_call(location_href_get_native)?;
+  let href_get_name = scope.alloc_string("get href")?;
+  scope.push_root(Value::String(href_get_name))?;
+  let href_get_func = scope.alloc_native_function(href_get_call_id, None, href_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(href_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(href_get_func))?;
+
+  let href_set_call_id = vm.register_native_call(location_href_set_native)?;
+  let href_set_name = scope.alloc_string("set href")?;
+  scope.push_root(Value::String(href_set_name))?;
+  let href_set_func = scope.alloc_native_function(href_set_call_id, None, href_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(href_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(href_set_func))?;
+
+  scope.define_property(
+    location_obj,
+    href_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(href_get_func),
+        set: Value::Object(href_set_func),
+      },
+    },
+  )?;
 
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
@@ -330,6 +574,53 @@ fn init_window_globals(
     document_obj,
     document_location_key,
     data_desc(Value::Object(location_obj)),
+  )?;
+
+  // document.currentScript
+  let current_script_key = alloc_key(&mut scope, "currentScript")?;
+  let current_script_call_id = vm.register_native_call(document_current_script_get_native)?;
+  let current_script_name = scope.alloc_string("get currentScript")?;
+  scope.push_root(Value::String(current_script_name))?;
+  let current_script_func =
+    scope.alloc_native_function(current_script_call_id, None, current_script_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(current_script_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(current_script_func))?;
+
+  // Shared wrapper cache for returning stable element wrappers.
+  let wrapper_cache = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrapper_cache))?;
+  let wrapper_cache_key = alloc_key(&mut scope, NODE_WRAPPER_CACHE_KEY)?;
+  scope.define_property(
+    document_obj,
+    wrapper_cache_key,
+    data_desc(Value::Object(wrapper_cache)),
+  )?;
+
+  let mut current_script_guard = config
+    .current_script_state
+    .clone()
+    .map(CurrentScriptSourceGuard::new);
+  if let Some(guard) = current_script_guard.as_ref() {
+    let id_key = alloc_key(&mut scope, CURRENT_SCRIPT_SOURCE_ID_KEY)?;
+    scope.define_property(
+      document_obj,
+      id_key,
+      data_desc(Value::Number(guard.id() as f64)),
+    )?;
+  }
+  scope.define_property(
+    document_obj,
+    current_script_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(current_script_func),
+        set: Value::Undefined,
+      },
+    },
   )?;
 
   let console_obj = scope.alloc_object()?;
@@ -368,7 +659,10 @@ fn init_window_globals(
   scope.define_property(global, document_key, data_desc(Value::Object(document_obj)))?;
   scope.define_property(global, console_key, data_desc(Value::Object(console_obj)))?;
 
-  Ok(console_sink_guard.map(ConsoleSinkGuard::disarm))
+  Ok((
+    console_sink_guard.map(ConsoleSinkGuard::disarm),
+    current_script_guard.map(CurrentScriptSourceGuard::disarm),
+  ))
 }
 
 #[cfg(test)]
@@ -424,7 +718,10 @@ mod tests {
     let Value::Object(location_obj) = location else {
       panic!("expected object");
     };
-    let href = get_prop(&mut scope, location_obj, "href");
+    let href_key_s = scope.alloc_string("href")?;
+    scope.push_root(Value::String(href_key_s))?;
+    let href_key = PropertyKey::from_string(href_key_s);
+    let href = vm.get(&mut scope, location_obj, href_key)?;
     assert_eq!(get_string(scope.heap(), href), url);
 
     let document = get_prop(&mut scope, global, "document");
