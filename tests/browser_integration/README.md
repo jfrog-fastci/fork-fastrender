@@ -108,7 +108,7 @@ If your test expects stage heartbeats (or registers a stage listener), acquire t
 the duration of the test:
 
 ```rust
-let _lock = browser_integration::stage_listener_test_lock();
+let _lock = crate::browser_integration::stage_listener_test_lock();
 ```
 
 ## Timeouts and cleanup (avoid hangs)
