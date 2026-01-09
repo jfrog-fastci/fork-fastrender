@@ -722,6 +722,131 @@ const DOM_BINDINGS_SHIM: &str = r##"
   defineReflectedBool("async", "async");
   defineReflectedBool("defer", "defer");
 
+  // --- classList -------------------------------------------------------------
+  //
+  // Many bootstrap scripts flip classes (`document.documentElement.classList.add(...)`) to enable
+  // JS-dependent styling. Implement a minimal `DOMTokenList` surface backed by the `class`
+  // attribute, keeping behavior close enough for common use without implementing the full DOM
+  // standard.
+  var class_list_cache = typeof WeakMap === "function" ? new WeakMap() : null;
+
+  function split_ascii_whitespace(s) {
+    s = s == null ? "" : String(s);
+    var out = [];
+    var cur = "";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      var is_ws = c === 9 || c === 10 || c === 12 || c === 13 || c === 32;
+      if (is_ws) {
+        if (cur) {
+          out.push(cur);
+          cur = "";
+        }
+      } else {
+        cur += s.charAt(i);
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  function validate_token(token) {
+    token = String(token);
+    if (token.length === 0) throw new g.DOMException("SyntaxError", "SyntaxError");
+    for (var i = 0; i < token.length; i++) {
+      var c = token.charCodeAt(i);
+      if (c === 9 || c === 10 || c === 12 || c === 13 || c === 32) {
+        throw new g.DOMException("InvalidCharacterError", "InvalidCharacterError");
+      }
+    }
+    return token;
+  }
+
+  function get_class_tokens(el) {
+    var cls = g.__fastrender_dom_get_attribute(el.__node_id, "class");
+    return split_ascii_whitespace(cls == null ? "" : String(cls));
+  }
+
+  function set_class_tokens(el, tokens) {
+    var serialized = tokens.join(" ");
+    if (serialized) {
+      g.__fastrender_dom_set_attribute(el.__node_id, "class", serialized);
+    } else {
+      g.__fastrender_dom_remove_attribute(el.__node_id, "class");
+    }
+  }
+
+  function classListFor(el) {
+    if (class_list_cache) {
+      var cached = class_list_cache.get(el);
+      if (cached) return cached;
+    }
+
+    var api = {
+      contains: function (token) {
+        token = validate_token(token);
+        var list = get_class_tokens(el);
+        return list.indexOf(token) >= 0;
+      },
+      add: function () {
+        var list = get_class_tokens(el);
+        for (var i = 0; i < arguments.length; i++) {
+          var token = validate_token(arguments[i]);
+          if (list.indexOf(token) < 0) list.push(token);
+        }
+        set_class_tokens(el, list);
+      },
+      remove: function () {
+        var list = get_class_tokens(el);
+        for (var i = 0; i < arguments.length; i++) {
+          var token = validate_token(arguments[i]);
+          var idx;
+          while ((idx = list.indexOf(token)) >= 0) list.splice(idx, 1);
+        }
+        set_class_tokens(el, list);
+      },
+      toggle: function (token, force) {
+        token = validate_token(token);
+        var list = get_class_tokens(el);
+        var present = list.indexOf(token) >= 0;
+        var idx;
+        if (force === true) {
+          if (!present) list.push(token);
+          set_class_tokens(el, list);
+          return true;
+        }
+        if (force === false) {
+          while ((idx = list.indexOf(token)) >= 0) list.splice(idx, 1);
+          set_class_tokens(el, list);
+          return false;
+        }
+        if (present) {
+          while ((idx = list.indexOf(token)) >= 0) list.splice(idx, 1);
+          set_class_tokens(el, list);
+          return false;
+        }
+        list.push(token);
+        set_class_tokens(el, list);
+        return true;
+      },
+    };
+
+    if (class_list_cache) class_list_cache.set(el, api);
+    return api;
+  }
+
+  try {
+    Object.defineProperty(Element.prototype, "classList", {
+      get: function () {
+        return classListFor(this);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
   var dataset_cache = typeof WeakMap === "function" ? new WeakMap() : null;
   function datasetProxyFor(el) {
     if (!dataset_cache) return {};
@@ -1352,4 +1477,49 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
     Ok(())
   }
-} 
+
+  #[test]
+  fn class_list_add_remove_toggle_updates_class_attribute() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><body><div id=x class='a b'></div></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let outcome = ctx
+      .with(|ctx| {
+        ctx.eval::<String, _>(
+          r#"(function () {
+            try {
+              var el = document.getElementById("x");
+              el.classList.add("c");
+              el.classList.remove("a");
+              el.classList.toggle("d");
+              el.classList.toggle("d");
+              return "ok";
+            } catch (e) {
+              return String(e && e.name ? e.name : e);
+            }
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert_eq!(outcome, "ok");
+
+    let dom_ref = &dom.borrow().dom;
+    let x = dom_ref.get_element_by_id("x").expect("element should exist");
+    let class_attr = dom_ref
+      .get_attribute(x, "class")
+      .expect("get_attribute should succeed")
+      .unwrap_or("")
+      .to_string();
+    let tokens: std::collections::HashSet<&str> = class_attr.split_whitespace().collect();
+    assert!(tokens.contains("b"));
+    assert!(tokens.contains("c"));
+    assert!(!tokens.contains("a"));
+    assert!(!tokens.contains("d"));
+    Ok(())
+  }
+}  
