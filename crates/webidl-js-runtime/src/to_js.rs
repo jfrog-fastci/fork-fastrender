@@ -186,7 +186,13 @@ fn to_js_any<R: WebIdlJsRuntime>(
     }
     WebIdlValue::PlatformObject(obj) => rt
       .platform_object_to_js_value(obj)
-      .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime")),
+      .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))
+      .and_then(|v| {
+        if !rt.is_object(v) {
+          return Err(rt.throw_type_error("platform object is not an object"));
+        }
+        Ok(v)
+      }),
   }
 }
 
@@ -349,6 +355,9 @@ fn to_js_named<R: WebIdlJsRuntime>(
         let js_value = rt
           .platform_object_to_js_value(obj)
           .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_object(js_value) {
+          return Err(rt.throw_type_error("platform object is not an object"));
+        }
         if !rt.implements_interface(js_value, &named.name) {
           return Err(rt.throw_type_error("platform object does not implement the interface"));
         }
@@ -403,6 +412,9 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   // This matches WebIDL's dictionary model: only schema-declared members are allowed.
   let mut schema_names = std::collections::HashSet::<&str>::new();
   for member in &schema {
+    if member.name.len() > limits.max_string_bytes {
+      return Err(rt.throw_range_error("dictionary key exceeds maximum length"));
+    }
     schema_names.insert(member.name.as_str());
     if member.required && !members.contains_key(&member.name) {
       let message = format!("dictionary `{name}` missing required member `{}`", member.name);
