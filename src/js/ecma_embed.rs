@@ -1519,11 +1519,13 @@ mod tests {
     //
     // Note: This is a FastRender-side test so we can enforce the behavior without pinning a
     // specific `vm-js` submodule commit (submodule bumps are frequent during JS bring-up).
+    //
     // `vm-js`'s environment record APIs are not public; exercise env binding growth via
     // `JsRuntime`, which declares lexical bindings on the global environment record.
     let bootstrap_limits = HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024);
-    let bootstrap_rt = vm_js::JsRuntime::new(Vm::new(VmOptions::default()), Heap::new(bootstrap_limits))
-      .expect("JsRuntime bootstrap should succeed");
+    let bootstrap_rt =
+      vm_js::JsRuntime::new(Vm::new(VmOptions::default()), Heap::new(bootstrap_limits))
+        .expect("JsRuntime bootstrap should succeed");
     let baseline_used = bootstrap_rt.heap.used_bytes();
     drop(bootstrap_rt);
 
@@ -1573,7 +1575,9 @@ mod tests {
     assert!(saw_oom, "expected heap growth to eventually hit VmError::OutOfMemory");
     assert!(
       rt.heap.used_bytes() <= max_bytes,
-      "heap.used_bytes should never exceed the configured max_bytes"
+      "heap.used_bytes should never exceed the configured max_bytes (used={} max={})",
+      rt.heap.used_bytes(),
+      max_bytes
     );
   }
 }
