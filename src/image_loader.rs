@@ -71,7 +71,7 @@ fn fetch_credentials_mode_for_crossorigin(
 ) -> FetchCredentialsMode {
   match crossorigin {
     CrossOriginAttribute::None => FetchCredentialsMode::Include,
-    CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
+    CrossOriginAttribute::Anonymous => FetchCredentialsMode::SameOrigin,
     CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
   }
 }
@@ -6157,6 +6157,103 @@ mod tests {
         .iter()
         .any(|(url, dest)| url == same_no_acao && *dest == FetchDestination::ImageCors),
       "same-origin crossorigin images should still use ImageCors destination"
+    );
+  }
+
+  #[test]
+  fn img_crossorigin_anonymous_uses_same_origin_credentials_mode() {
+    #[derive(Clone, Debug)]
+    struct ExpectedRequest {
+      url: String,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
+    }
+
+    #[derive(Clone)]
+    struct CredentialsModeFetcher {
+      expected: Arc<Mutex<Vec<ExpectedRequest>>>,
+      png: Arc<Vec<u8>>,
+    }
+
+    impl ResourceFetcher for CredentialsModeFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected ImageCache load to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let expected = self
+          .expected
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .pop()
+          .expect("unexpected fetch_with_request call");
+        assert_eq!(req.url, expected.url);
+        assert_eq!(req.destination, expected.destination);
+        assert_eq!(req.credentials_mode, expected.credentials_mode);
+        let mut res = FetchedResource::new((*self.png).clone(), Some("image/png".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        // Ensure this test remains stable even when `FASTR_FETCH_ENFORCE_CORS` is enabled globally
+        // by other concurrent tests.
+        res.access_control_allow_origin = Some("*".to_string());
+        Ok(res)
+      }
+    }
+
+    let doc_url = "https://example.com/doc.html";
+    let same_origin_url = "https://example.com/same.png";
+    let cross_origin_url = "https://cross.test/cross.png";
+    let no_cors_url = "https://example.com/no-cors.png";
+
+    let png = encode_single_pixel_png([255, 0, 0, 255]);
+
+    // Use a stack so we can `pop()` in call order.
+    let expected = vec![
+      ExpectedRequest {
+        url: no_cors_url.to_string(),
+        destination: FetchDestination::Image,
+        credentials_mode: FetchCredentialsMode::Include,
+      },
+      ExpectedRequest {
+        url: cross_origin_url.to_string(),
+        destination: FetchDestination::ImageCors,
+        credentials_mode: FetchCredentialsMode::SameOrigin,
+      },
+      ExpectedRequest {
+        url: same_origin_url.to_string(),
+        destination: FetchDestination::ImageCors,
+        credentials_mode: FetchCredentialsMode::SameOrigin,
+      },
+    ];
+
+    let fetcher = CredentialsModeFetcher {
+      expected: Arc::new(Mutex::new(expected)),
+      png: Arc::new(png),
+    };
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = crate::resource::origin_from_url(doc_url);
+    cache.set_resource_context(Some(ctx));
+
+    cache
+      .load_with_crossorigin(same_origin_url, CrossOriginAttribute::Anonymous)
+      .expect("same-origin crossorigin=anonymous should load");
+    cache
+      .load_with_crossorigin(cross_origin_url, CrossOriginAttribute::Anonymous)
+      .expect("cross-origin crossorigin=anonymous should load");
+    cache
+      .load_with_crossorigin(no_cors_url, CrossOriginAttribute::None)
+      .expect("no-cors image should load");
+
+    assert!(
+      fetcher
+        .expected
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty(),
+      "expected all fetch_with_request expectations to be consumed"
     );
   }
 
