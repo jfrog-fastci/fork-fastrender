@@ -3,6 +3,8 @@
 # Optional reftest metadata:
 # - `reference = "..."` marks the test as a reftest and points at the reference HTML.
 # - `reftest = "match" | "mismatch"` controls the expected comparison (defaults to `"match"`).
+# - `media = "screen" | "print"` configures the media type used for evaluating media queries
+#   (defaults to `"screen"`).
 
 [[tests]]
 id = "columns/multicol-001"
@@ -67,6 +69,20 @@ dpr = 1.0
 [tests.viewport]
 width = 120
 height = 120
+
+[[tests]]
+id = "media/print-media-001"
+path = "media/print-media-001.html"
+reference = "media/print-media-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+media = "print"
+
+[tests.viewport]
+width = 60
+height = 60
 
 [[tests]]
 id = "css/tables/fixed-layout-first-row-width-hint-001"

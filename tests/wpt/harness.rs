@@ -35,6 +35,7 @@
 //! ```
 
 use image::RgbaImage;
+use fastrender::style::media::MediaType;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -191,6 +192,8 @@ pub struct TestMetadata {
   pub viewport_height: u32,
   /// Device pixel ratio for the render
   pub device_pixel_ratio: f32,
+  /// Media type used for evaluating media queries.
+  pub media_type: MediaType,
 }
 
 impl TestMetadata {
@@ -228,6 +231,7 @@ impl TestMetadata {
       viewport_width: 800,
       viewport_height: 600,
       device_pixel_ratio: 1.0,
+      media_type: MediaType::Screen,
     }
   }
 
@@ -270,6 +274,12 @@ impl TestMetadata {
   /// Creates a new test metadata with custom device pixel ratio
   pub fn with_device_pixel_ratio(mut self, dpr: f32) -> Self {
     self.device_pixel_ratio = dpr;
+    self
+  }
+
+  /// Creates a new test metadata with custom media type.
+  pub fn with_media_type(mut self, media_type: MediaType) -> Self {
+    self.media_type = media_type;
     self
   }
 
@@ -936,6 +946,7 @@ mod tests {
     assert_eq!(metadata.timeout_ms, 30000);
     assert!(!metadata.disabled);
     assert!((metadata.device_pixel_ratio - 1.0).abs() < f32::EPSILON);
+    assert_eq!(metadata.media_type, MediaType::Screen);
   }
 
   #[test]
@@ -955,6 +966,13 @@ mod tests {
   fn test_test_metadata_with_dpr() {
     let metadata = TestMetadata::from_path(PathBuf::from("test.html")).with_device_pixel_ratio(2.0);
     assert!((metadata.device_pixel_ratio - 2.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn test_test_metadata_with_media_type() {
+    let metadata =
+      TestMetadata::from_path(PathBuf::from("test.html")).with_media_type(MediaType::Print);
+    assert_eq!(metadata.media_type, MediaType::Print);
   }
 
   #[test]

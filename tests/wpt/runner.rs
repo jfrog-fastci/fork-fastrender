@@ -53,6 +53,7 @@ use super::harness::TestMetadata;
 use super::harness::TestResult;
 use super::harness::TestStatus;
 use super::harness::TestType;
+use fastrender::style::media::MediaType;
 use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
 use fastrender::ResourcePolicy;
@@ -153,6 +154,8 @@ struct ManifestEntry {
   disabled: Option<String>,
   #[serde(default)]
   dpr: Option<f32>,
+  #[serde(default)]
+  media: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -168,6 +171,7 @@ struct IniMetadata {
   disabled: Option<String>,
   viewport: Option<(u32, u32)>,
   dpr: Option<f32>,
+  media_type: Option<MediaType>,
   test_type: Option<TestType>,
   reference: Option<PathBuf>,
   reftest_expectation: Option<ReftestExpectation>,
@@ -180,6 +184,7 @@ impl IniMetadata {
       && self.disabled.is_none()
       && self.viewport.is_none()
       && self.dpr.is_none()
+      && self.media_type.is_none()
       && self.test_type.is_none()
       && self.reference.is_none()
       && self.reftest_expectation.is_none()
@@ -580,6 +585,9 @@ impl WptRunner {
       .unwrap_or_else(|| Self::test_id_for_path(&metadata.path, &self.config.test_dir));
     metadata.timeout_ms = entry.timeout_ms.unwrap_or(self.config.default_timeout_ms);
     metadata.device_pixel_ratio = entry.dpr.unwrap_or(1.0);
+    if let Some(media) = entry.media.and_then(|raw| Self::parse_media_type(&raw)) {
+      metadata.media_type = media;
+    }
 
     if let Some(viewport) = entry.viewport {
       metadata.viewport_width = viewport.width;
@@ -777,6 +785,9 @@ impl WptRunner {
             ini.dpr = Some(dpr);
           }
         }
+        "media" | "media-type" | "media_type" => {
+          ini.media_type = Self::parse_media_type(raw_value);
+        }
         "type" | "test_type" => {
           ini.test_type = Some(Self::parse_test_type_from_manifest(
             raw_value,
@@ -822,6 +833,9 @@ impl WptRunner {
     }
     if let Some(dpr) = ini.dpr {
       metadata.device_pixel_ratio = dpr;
+    }
+    if let Some(media_type) = ini.media_type {
+      metadata.media_type = media_type;
     }
     if let Some(kind) = ini.test_type {
       metadata.test_type = kind;
@@ -1042,6 +1056,7 @@ impl WptRunner {
       &metadata.path,
       metadata.viewport_width,
       metadata.viewport_height,
+      metadata.media_type,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1060,6 +1075,7 @@ impl WptRunner {
       ref_path,
       metadata.viewport_width,
       metadata.viewport_height,
+      metadata.media_type,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1126,6 +1142,7 @@ impl WptRunner {
       &metadata.path,
       metadata.viewport_width,
       metadata.viewport_height,
+      metadata.media_type,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1197,6 +1214,7 @@ impl WptRunner {
       &metadata.path,
       metadata.viewport_width,
       metadata.viewport_height,
+      metadata.media_type,
     ) {
       Ok(rendered) => {
         let mut result = TestResult::pass(metadata.clone(), start.elapsed())
@@ -1228,13 +1246,23 @@ impl WptRunner {
     path: &Path,
     viewport_width: u32,
     viewport_height: u32,
+    media_type: MediaType,
   ) -> Result<Vec<u8>, String> {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let base_url = Url::from_file_path(&canonical)
       .map_err(|_| format!("Failed to convert path to file URL: {canonical:?}"))?;
     renderer.set_base_url(base_url.to_string());
-    renderer
-      .render_to_png(html, viewport_width, viewport_height)
+    let pixmap = renderer
+      .render_html_with_options(
+        html,
+        fastrender::RenderOptions {
+          viewport: Some((viewport_width, viewport_height)),
+          media_type,
+          ..fastrender::RenderOptions::default()
+        },
+      )
+      .map_err(|e| format!("Render error: {}", e))?;
+    fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
       .map_err(|e| format!("Render error: {}", e))
   }
 
@@ -1392,6 +1420,10 @@ impl WptRunner {
     } else {
       suite_dir.join(path)
     }
+  }
+
+  fn parse_media_type(value: &str) -> Option<MediaType> {
+    MediaType::parse(value).ok()
   }
 
   fn parse_test_type_from_manifest(value: &str, path: &Path) -> TestType {
@@ -2088,6 +2120,44 @@ test_type = "reftest"
       .load_manifest(&manifest_path, temp.path())
       .expect("manifest should load");
     assert_eq!(entries[0].reftest_expectation, ReftestExpectation::Mismatch);
+  }
+
+  #[test]
+  fn manifest_media_type_obeys_precedence() {
+    let renderer = create_test_renderer();
+    let mut runner = WptRunner::new(renderer);
+
+    let temp = TempDir::new().unwrap();
+    runner.config_mut().test_dir = temp.path().to_path_buf();
+    runner.config_mut().output_dir = temp.path().join("out");
+
+    std::fs::write(temp.path().join("test.html"), "<!doctype html>").unwrap();
+
+    let manifest_path = temp.path().join("manifest.toml");
+    std::fs::write(
+      &manifest_path,
+      r#"
+[[tests]]
+path = "test.html"
+test_type = "crashtest"
+media = "print"
+"#,
+    )
+    .unwrap();
+
+    let entries = runner
+      .load_manifest(&manifest_path, temp.path())
+      .expect("manifest should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].media_type, MediaType::Print);
+
+    // `.ini` sidecars override the manifest.
+    std::fs::write(temp.path().join("test.html.ini"), "[test.html]\nmedia: screen\n").unwrap();
+
+    let entries = runner
+      .load_manifest(&manifest_path, temp.path())
+      .expect("manifest should load");
+    assert_eq!(entries[0].media_type, MediaType::Screen);
   }
 
   #[test]

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>print media smoke test</title>
+    <link rel="match" href="print-media-001-ref.html">
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 60px;
+        height: 60px;
+      }
+
+      /* Screen default: red. */
+      body {
+        background: rgb(255, 0, 0);
+      }
+
+      /* Print override: green. */
+      @media print {
+        body {
+          background: rgb(0, 255, 0);
+        }
+      }
+    </style>
+  </head>
+  <body></body>
+</html>
