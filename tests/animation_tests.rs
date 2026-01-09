@@ -782,11 +782,16 @@ fn keyframes_interpolate_border_colors() {
     Size::new(800.0, 600.0),
     Size::new(200.0, 200.0),
   );
-  let colors = match sampled.get("border-color") {
-    Some(AnimatedValue::BorderColor(c)) => c,
-    other => panic!("unexpected value {other:?}"),
-  };
-  for color in colors {
+  for side in [
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ] {
+    let color = match sampled.get(side) {
+      Some(AnimatedValue::Color(c)) => c,
+      other => panic!("unexpected value {other:?}"),
+    };
     assert_eq!(color.r, 128);
     assert_eq!(color.g, 0);
     assert_eq!(color.b, 128);
@@ -809,12 +814,17 @@ fn keyframes_interpolate_border_widths() {
     Size::new(800.0, 600.0),
     Size::new(200.0, 200.0),
   );
-  let widths = match sampled.get("border-width") {
-    Some(AnimatedValue::BorderWidth(w)) => w,
-    other => panic!("unexpected value {other:?}"),
-  };
-  for width in widths {
-    assert!((width.to_px() - 5.0).abs() < 1e-3);
+  for (side, idx) in [
+    ("border-top-width", 0),
+    ("border-right-width", 1),
+    ("border-bottom-width", 2),
+    ("border-left-width", 3),
+  ] {
+    let widths = match sampled.get(side) {
+      Some(AnimatedValue::BorderWidth(w)) => w,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert!((widths[idx].to_px() - 5.0).abs() < 1e-3, "{side}");
   }
 }
 
@@ -834,18 +844,41 @@ fn keyframes_interpolate_border_shorthand() {
     Size::new(800.0, 600.0),
     Size::new(200.0, 200.0),
   );
-  let (widths, styles, colors) = match sampled.get("border") {
-    Some(AnimatedValue::Border(widths, styles, colors)) => (widths, styles, colors),
-    other => panic!("unexpected value {other:?}"),
-  };
-  for width in widths {
-    assert!((width.to_px() - 4.0).abs() < 1e-3);
+  for (side, idx) in [
+    ("border-top-width", 0),
+    ("border-right-width", 1),
+    ("border-bottom-width", 2),
+    ("border-left-width", 3),
+  ] {
+    let widths = match sampled.get(side) {
+      Some(AnimatedValue::BorderWidth(w)) => w,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert!((widths[idx].to_px() - 4.0).abs() < 1e-3, "{side}");
   }
-  for style in styles {
-    assert_eq!(*style, BorderStyle::Solid);
+  for (side, idx) in [
+    ("border-top-style", 0),
+    ("border-right-style", 1),
+    ("border-bottom-style", 2),
+    ("border-left-style", 3),
+  ] {
+    let styles = match sampled.get(side) {
+      Some(AnimatedValue::BorderStyle(styles)) => styles,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert_eq!(styles[idx], BorderStyle::Solid, "{side}");
   }
-  for color in colors {
-    assert_eq!(*color, Rgba::new(153, 0, 102, 1.0));
+  for side in [
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ] {
+    let color = match sampled.get(side) {
+      Some(AnimatedValue::Color(c)) => c,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert_eq!(*color, Rgba::new(153, 0, 102, 1.0), "{side}");
   }
 
   let sampled = sample_keyframes(
@@ -855,18 +888,41 @@ fn keyframes_interpolate_border_shorthand() {
     Size::new(800.0, 600.0),
     Size::new(200.0, 200.0),
   );
-  let (widths, styles, colors) = match sampled.get("border") {
-    Some(AnimatedValue::Border(widths, styles, colors)) => (widths, styles, colors),
-    other => panic!("unexpected value {other:?}"),
-  };
-  for width in widths {
-    assert!((width.to_px() - 6.0).abs() < 1e-3);
+  for (side, idx) in [
+    ("border-top-width", 0),
+    ("border-right-width", 1),
+    ("border-bottom-width", 2),
+    ("border-left-width", 3),
+  ] {
+    let widths = match sampled.get(side) {
+      Some(AnimatedValue::BorderWidth(w)) => w,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert!((widths[idx].to_px() - 6.0).abs() < 1e-3, "{side}");
   }
-  for style in styles {
-    assert_eq!(*style, BorderStyle::Dashed);
+  for (side, idx) in [
+    ("border-top-style", 0),
+    ("border-right-style", 1),
+    ("border-bottom-style", 2),
+    ("border-left-style", 3),
+  ] {
+    let styles = match sampled.get(side) {
+      Some(AnimatedValue::BorderStyle(styles)) => styles,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert_eq!(styles[idx], BorderStyle::Dashed, "{side}");
   }
-  for color in colors {
-    assert_eq!(*color, Rgba::new(102, 0, 153, 1.0));
+  for side in [
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ] {
+    let color = match sampled.get(side) {
+      Some(AnimatedValue::Color(c)) => c,
+      other => panic!("unexpected value {other:?}"),
+    };
+    assert_eq!(*color, Rgba::new(102, 0, 153, 1.0), "{side}");
   }
 }
 
@@ -887,14 +943,70 @@ fn keyframes_interpolate_border_style() {
       Size::new(800.0, 600.0),
       Size::new(200.0, 200.0),
     );
-    match sampled.get("border-style") {
-      Some(AnimatedValue::BorderStyle(styles)) => *styles,
-      other => panic!("unexpected value {other:?}"),
+    let mut out = [BorderStyle::None; 4];
+    for (side, idx) in [
+      ("border-top-style", 0),
+      ("border-right-style", 1),
+      ("border-bottom-style", 2),
+      ("border-left-style", 3),
+    ] {
+      let styles = match sampled.get(side) {
+        Some(AnimatedValue::BorderStyle(styles)) => styles,
+        other => panic!("unexpected value {other:?}"),
+      };
+      out[idx] = styles[idx];
     }
+    out
   };
 
   assert_eq!(sample_styles(0.4), [BorderStyle::Solid; 4]);
   assert_eq!(sample_styles(0.6), [BorderStyle::Dashed; 4]);
+}
+
+#[test]
+fn keyframes_mix_shorthand_and_longhand_selects_correct_keyframes() {
+  let sheet = parse_stylesheet(
+    "@keyframes k { from { border: 10px solid rgb(255, 0, 0); } to { border-top-color: rgb(0, 0, 255); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let base = ComputedStyle::default();
+  let viewport = Size::new(800.0, 600.0);
+  let element_size = Size::new(200.0, 200.0);
+
+  let sample_top = |progress: f32| -> Rgba {
+    let sampled = sample_keyframes(rule, progress, &base, viewport, element_size);
+    match sampled.get("border-top-color") {
+      Some(AnimatedValue::Color(c)) => *c,
+      other => panic!("unexpected value {other:?}"),
+    }
+  };
+
+  let sample_right = |progress: f32| -> Rgba {
+    let sampled = sample_keyframes(rule, progress, &base, viewport, element_size);
+    match sampled.get("border-right-color") {
+      Some(AnimatedValue::Color(c)) => *c,
+      other => panic!("unexpected value {other:?}"),
+    }
+  };
+
+  assert_eq!(sample_top(0.0), Rgba::new(255, 0, 0, 1.0));
+  assert_eq!(sample_right(0.0), Rgba::new(255, 0, 0, 1.0));
+
+  assert_eq!(sample_top(0.5), Rgba::new(128, 0, 128, 1.0));
+
+  let base_right = base.border_right_color;
+  let expected_right = Rgba::new(
+    ((255.0 + f32::from(base_right.r)) / 2.0).round() as u8,
+    ((0.0 + f32::from(base_right.g)) / 2.0).round() as u8,
+    ((0.0 + f32::from(base_right.b)) / 2.0).round() as u8,
+    (1.0 + base_right.a) * 0.5,
+  );
+  assert_eq!(sample_right(0.5), expected_right);
+
+  assert_eq!(sample_top(1.0), Rgba::new(0, 0, 255, 1.0));
 }
 
 #[test]
@@ -1105,12 +1217,22 @@ fn keyframes_interpolate_outline_shorthand() {
     Size::new(800.0, 600.0),
     Size::new(200.0, 200.0),
   );
-  let (color, style, width) = match sampled.get("outline") {
-    Some(AnimatedValue::Outline(c, s, w)) => (c, s, w),
+  let style = match sampled.get("outline-style") {
+    Some(AnimatedValue::OutlineStyle(s)) => s,
     other => panic!("unexpected value {other:?}"),
   };
   assert_eq!(*style, OutlineStyle::Solid);
+
+  let width = match sampled.get("outline-width") {
+    Some(AnimatedValue::Length(w)) => w,
+    other => panic!("unexpected value {other:?}"),
+  };
   assert_eq!(*width, Length::px(5.0));
+
+  let color = match sampled.get("outline-color") {
+    Some(AnimatedValue::OutlineColor(c)) => c,
+    other => panic!("unexpected value {other:?}"),
+  };
   assert_eq!(*color, OutlineColor::Color(Rgba::new(128, 0, 128, 1.0)));
 }
 

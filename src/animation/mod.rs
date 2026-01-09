@@ -4466,6 +4466,70 @@ fn resolve_view_timeline_keyframe_offset(
   offset.is_finite().then_some(offset)
 }
 
+fn expanded_properties_for_keyframe_sampling(property: &str) -> Option<&'static [&'static str]> {
+  const BORDER_WIDTH: [&str; 4] = [
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+  ];
+  const BORDER_STYLE: [&str; 4] = [
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+  ];
+  const BORDER_COLOR: [&str; 4] = [
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ];
+  const BORDER: [&str; 12] = [
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+  ];
+  const BORDER_TOP: [&str; 3] = ["border-top-width", "border-top-style", "border-top-color"];
+  const BORDER_RIGHT: [&str; 3] = ["border-right-width", "border-right-style", "border-right-color"];
+  const BORDER_BOTTOM: [&str; 3] = [
+    "border-bottom-width",
+    "border-bottom-style",
+    "border-bottom-color",
+  ];
+  const BORDER_LEFT: [&str; 3] = ["border-left-width", "border-left-style", "border-left-color"];
+  const BORDER_RADIUS: [&str; 4] = [
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius",
+  ];
+  const OUTLINE: [&str; 3] = ["outline-color", "outline-style", "outline-width"];
+
+  match property {
+    "border" => Some(&BORDER),
+    "border-top" => Some(&BORDER_TOP),
+    "border-right" => Some(&BORDER_RIGHT),
+    "border-bottom" => Some(&BORDER_BOTTOM),
+    "border-left" => Some(&BORDER_LEFT),
+    "border-color" => Some(&BORDER_COLOR),
+    "border-width" => Some(&BORDER_WIDTH),
+    "border-style" => Some(&BORDER_STYLE),
+    "border-radius" => Some(&BORDER_RADIUS),
+    "outline" => Some(&OUTLINE),
+    _ => None,
+  }
+}
+
 fn sample_keyframes_with_default_timing(
   rule: &KeyframesRule,
   progress: f32,
@@ -4588,29 +4652,39 @@ fn sample_keyframes_with_default_timing(
   }
 
   let ctx = AnimationResolveContext::new(viewport, element_size);
+  let mut group_properties: Vec<FxHashSet<&str>> = Vec::with_capacity(groups.len());
   let mut properties: FxHashSet<&str> = FxHashSet::default();
-  for (_, frame) in &frames {
-    for decl in &frame.declarations {
-      properties.insert(decl.property.as_str());
+  for (_, group_frames) in &groups {
+    let mut group_set: FxHashSet<&str> = FxHashSet::default();
+    for frame in group_frames {
+      for decl in &frame.declarations {
+        let prop = decl.property.as_str();
+        if decl.property.is_custom() {
+          group_set.insert(prop);
+          properties.insert(prop);
+          continue;
+        }
+        if let Some(expanded) = expanded_properties_for_keyframe_sampling(prop) {
+          for &longhand in expanded {
+            group_set.insert(longhand);
+            properties.insert(longhand);
+          }
+          continue;
+        }
+        group_set.insert(prop);
+        properties.insert(prop);
+      }
     }
+    group_properties.push(group_set);
   }
 
   let mut result = HashMap::new();
   let mut custom_properties = Vec::new();
   for prop in properties {
-    let group_has_property = |group: &[&Keyframe]| {
-      group.iter().any(|frame| {
-        frame
-          .declarations
-          .iter()
-          .any(|d| d.property.as_str() == prop)
-      })
-    };
-
     let mut prev_idx = None;
-    for (idx, (offset, group_frames)) in groups.iter().enumerate() {
+    for (idx, (offset, _)) in groups.iter().enumerate() {
       if *offset <= progress + f32::EPSILON {
-        if group_has_property(group_frames) {
+        if group_properties[idx].contains(prop) {
           prev_idx = Some(idx);
         }
       } else {
@@ -4619,8 +4693,8 @@ fn sample_keyframes_with_default_timing(
     }
 
     let mut next_idx = None;
-    for (idx, (offset, group_frames)) in groups.iter().enumerate() {
-      if !group_has_property(group_frames) {
+    for (idx, (offset, _)) in groups.iter().enumerate() {
+      if !group_properties[idx].contains(prop) {
         continue;
       }
       if *offset + f32::EPSILON < progress {
