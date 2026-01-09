@@ -1084,6 +1084,14 @@ fn display_item_value(item: &DisplayItem) -> Value {
     DisplayItem::PopStackingContext => {
       map_from_pairs(vec![("type", Value::String("PopStackingContext".into()))])
     }
+    DisplayItem::PushBackfaceVisibility(it) => map_from_pairs(vec![
+      ("type", Value::String("PushBackfaceVisibility".into())),
+      ("backface_visibility", Value::String(format!("{:?}", it))),
+    ]),
+    DisplayItem::PopBackfaceVisibility => map_from_pairs(vec![(
+      "type",
+      Value::String("PopBackfaceVisibility".into()),
+    )]),
   }
 }
 

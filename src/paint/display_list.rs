@@ -168,6 +168,18 @@ pub enum DisplayItem {
 
   /// End a stacking context
   PopStackingContext,
+
+  /// Begin a `backface-visibility` scope.
+  ///
+  /// `backface-visibility` does **not** create a stacking context in CSS, but we still need to
+  /// cull the element when an ancestor 3D transform flips its plane away from the viewer.
+  ///
+  /// This push/pop pair is emitted around elements with `backface-visibility: hidden` that would
+  /// otherwise **not** create a stacking context.
+  PushBackfaceVisibility(BackfaceVisibility),
+
+  /// End a `backface-visibility` scope.
+  PopBackfaceVisibility,
 }
 
 impl DisplayItem {
@@ -245,7 +257,9 @@ impl DisplayItem {
       | DisplayItem::PushBlendMode(_)
       | DisplayItem::PopBlendMode
       | DisplayItem::PushStackingContext(_)
-      | DisplayItem::PopStackingContext => None,
+      | DisplayItem::PopStackingContext
+      | DisplayItem::PushBackfaceVisibility(_)
+      | DisplayItem::PopBackfaceVisibility => None,
     }
   }
 
@@ -266,6 +280,8 @@ impl DisplayItem {
         | DisplayItem::PopBlendMode
         | DisplayItem::PushStackingContext(_)
         | DisplayItem::PopStackingContext
+        | DisplayItem::PushBackfaceVisibility(_)
+        | DisplayItem::PopBackfaceVisibility
     )
   }
 }

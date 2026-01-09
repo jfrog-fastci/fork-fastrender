@@ -2113,6 +2113,8 @@ fn display_item_name(item: &DisplayItem) -> &'static str {
     DisplayItem::PopBlendMode => "pop_blend_mode",
     DisplayItem::PushStackingContext(_) => "push_stacking_context",
     DisplayItem::PopStackingContext => "pop_stacking_context",
+    DisplayItem::PushBackfaceVisibility(_) => "push_backface_visibility",
+    DisplayItem::PopBackfaceVisibility => "pop_backface_visibility",
   }
 }
 

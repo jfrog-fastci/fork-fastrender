@@ -1010,6 +1010,13 @@ fn snapshot_display_item(item_id: usize, item: &DisplayItem) -> DisplayItemSnaps
       Some(snapshot_stacking_context(ctx)),
     ),
     DisplayItem::PopStackingContext => ("pop_stacking_context".to_string(), None),
+    DisplayItem::PushBackfaceVisibility(visibility) => (
+      "push_backface_visibility".to_string(),
+      Some(serde_json::json!({
+        "backface_visibility": format!("{:?}", visibility),
+      })),
+    ),
+    DisplayItem::PopBackfaceVisibility => ("pop_backface_visibility".to_string(), None),
   };
 
   DisplayItemSnapshot {

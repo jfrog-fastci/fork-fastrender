@@ -22,6 +22,8 @@ mod backdrop_root_triggers_test;
 mod backdrop_root_will_change_test;
 mod backend_parity;
 mod backface_culling_test;
+mod backface_culling_non_stacking_context;
+mod backface_visibility_does_not_create_stacking_context;
 mod border_image_outset_bounds;
 mod canvas_background_propagation_test;
 mod canvas_test;

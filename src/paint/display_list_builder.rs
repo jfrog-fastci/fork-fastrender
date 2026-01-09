@@ -1992,6 +1992,22 @@ impl DisplayListBuilder {
       }
     }
 
+    // `backface-visibility` is not a stacking-context trigger, but we still need to cull the
+    // element when an ancestor 3D transform flips it away from the viewer.
+    //
+    // Stacking contexts already carry `backface_visibility` on `StackingContextItem` and are
+    // culled in the renderer at `PushStackingContext`. Wrap only elements that would otherwise
+    // *not* create a stacking context.
+    let push_backface_visibility = style_opt.is_some_and(|style| {
+      matches!(style.backface_visibility, BackfaceVisibility::Hidden)
+        && !crate::paint::stacking::creates_stacking_context(style, None, false)
+    });
+    if push_backface_visibility {
+      self
+        .list
+        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+    }
+
     if push_opacity {
       self.push_opacity(opacity);
     }
@@ -2285,6 +2301,10 @@ impl DisplayListBuilder {
       self.pop_opacity();
     }
 
+    if push_backface_visibility {
+      self.list.push(DisplayItem::PopBackfaceVisibility);
+    }
+
     if !paint_self && !children_painted {
       self.list.items_mut().truncate(list_start);
     }
@@ -2346,6 +2366,16 @@ impl DisplayListBuilder {
             .is_some_and(|vis| !vis.intersects(absolute_rect)),
           ContentVisibility::Visible => false,
         });
+
+    let push_backface_visibility = style_opt.is_some_and(|style| {
+      matches!(style.backface_visibility, BackfaceVisibility::Hidden)
+        && !crate::paint::stacking::creates_stacking_context(style, None, false)
+    });
+    if push_backface_visibility {
+      self
+        .list
+        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+    }
     if push_opacity {
       self.push_opacity(opacity);
     }
@@ -2521,6 +2551,10 @@ impl DisplayListBuilder {
       self.pop_opacity();
     }
 
+    if push_backface_visibility {
+      self.list.push(DisplayItem::PopBackfaceVisibility);
+    }
+
     if !paint_self && !children_painted {
       self.list.items_mut().truncate(list_start);
     }
@@ -2566,6 +2600,26 @@ impl DisplayListBuilder {
   fn pop_clips(&mut self, count: usize) {
     for _ in 0..count {
       self.list.push(DisplayItem::PopClip);
+    }
+  }
+
+  #[inline]
+  fn push_backface_visibility_chain(&mut self, depth: usize) -> usize {
+    if depth == 0 {
+      return 0;
+    }
+    for _ in 0..depth {
+      self
+        .list
+        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+    }
+    depth
+  }
+
+  #[inline]
+  fn pop_backface_visibility_chain(&mut self, depth: usize) {
+    for _ in 0..depth {
+      self.list.push(DisplayItem::PopBackfaceVisibility);
     }
   }
 
@@ -2986,6 +3040,7 @@ impl DisplayListBuilder {
       mask.is_some(),
       style_has_clip_path,
     );
+    let ancestor_backface_pushed = self.push_backface_visibility_chain(context.backface_visibility_depth);
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
     // Track whether this stacking context has any *descendant* stacking context that requires
@@ -3013,6 +3068,7 @@ impl DisplayListBuilder {
       );
       if skip_contents {
         self.pop_clips(ancestor_clips_pushed);
+        self.pop_backface_visibility_chain(ancestor_backface_pushed);
         return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
       }
       let mut deadline_counter = 0usize;
@@ -3050,6 +3106,8 @@ impl DisplayListBuilder {
         }
         match item {
           Layer6Item::Positioned(fragment) => {
+            let backface_pushed =
+              self.push_backface_visibility_chain(fragment.backface_visibility_depth);
             let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_content_offset);
             self.build_fragment(
               &fragment.fragment,
@@ -3057,6 +3115,7 @@ impl DisplayListBuilder {
               local_child_visibility,
             );
             self.pop_clips(pushed);
+            self.pop_backface_visibility_chain(backface_pushed);
           }
           Layer6Item::ZeroContext(child) => {
             has_backdrop_sensitive_descendants |= self.build_stacking_context(
@@ -3083,6 +3142,7 @@ impl DisplayListBuilder {
         );
       }
       self.pop_clips(ancestor_clips_pushed);
+      self.pop_backface_visibility_chain(ancestor_backface_pushed);
       return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
     }
 
@@ -3156,6 +3216,7 @@ impl DisplayListBuilder {
         item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
       }
       self.pop_clips(ancestor_clips_pushed);
+      self.pop_backface_visibility_chain(ancestor_backface_pushed);
       return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
     }
 
@@ -3205,6 +3266,7 @@ impl DisplayListBuilder {
       }
       match item {
         Layer6Item::Positioned(fragment) => {
+          let backface_pushed = self.push_backface_visibility_chain(fragment.backface_visibility_depth);
           let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_content_offset);
           self.build_fragment(
             &fragment.fragment,
@@ -3212,6 +3274,7 @@ impl DisplayListBuilder {
             local_child_visibility,
           );
           self.pop_clips(pushed);
+          self.pop_backface_visibility_chain(backface_pushed);
         }
         Layer6Item::ZeroContext(child) => {
           has_backdrop_sensitive_descendants |= self.build_stacking_context(
@@ -3257,6 +3320,7 @@ impl DisplayListBuilder {
       item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
     }
     self.pop_clips(ancestor_clips_pushed);
+    self.pop_backface_visibility_chain(ancestor_backface_pushed);
     self_is_backdrop_sensitive || has_backdrop_sensitive_descendants
   }
 

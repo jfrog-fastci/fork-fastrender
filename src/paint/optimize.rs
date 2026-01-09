@@ -950,6 +950,7 @@ impl DisplayListOptimizer {
       Transform,
       Blend,
       StackingContext,
+      BackfaceVisibility,
     }
 
     impl StackEntry {
@@ -960,6 +961,7 @@ impl DisplayListOptimizer {
           StackEntry::Transform => DisplayItem::PopTransform,
           StackEntry::Blend => DisplayItem::PopBlendMode,
           StackEntry::StackingContext => DisplayItem::PopStackingContext,
+          StackEntry::BackfaceVisibility => DisplayItem::PopBackfaceVisibility,
         }
       }
     }
@@ -997,6 +999,8 @@ impl DisplayListOptimizer {
           DisplayItem::PopBlendMode => pop_entry(&mut stack, StackEntry::Blend),
           DisplayItem::PushStackingContext(_) => stack.push(StackEntry::StackingContext),
           DisplayItem::PopStackingContext => pop_entry(&mut stack, StackEntry::StackingContext),
+          DisplayItem::PushBackfaceVisibility(_) => stack.push(StackEntry::BackfaceVisibility),
+          DisplayItem::PopBackfaceVisibility => pop_entry(&mut stack, StackEntry::BackfaceVisibility),
           _ => {}
         }
       }

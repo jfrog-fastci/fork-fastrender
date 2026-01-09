@@ -38,14 +38,13 @@
 //! 9. Mix-blend-mode (except normal)
 //! 10. Isolation: isolate
 //! 11. Perspective property (except none)
-//! 12. Backface-visibility: hidden (implementation detail so we can cull 3D-flipped planes)
-//! 13. Backdrop-filter property (except none)
-//! 14. Containment properties (contain: layout|paint|strict|content)
-//! 15. Flex items with z-index (child of flex container with z-index)
-//! 16. Grid items with z-index (child of grid container with z-index)
-//! 17. Will-change set to property that creates stacking context
-//! 18. Container type (size or inline-size)
-//! 19. Top layer elements (fullscreen, popover, dialog)
+//! 12. Backdrop-filter property (except none)
+//! 13. Containment properties (contain: layout|paint|strict|content)
+//! 14. Flex items with z-index (child of flex container with z-index)
+//! 15. Grid items with z-index (child of grid container with z-index)
+//! 16. Will-change set to property that creates stacking context
+//! 17. Container type (size or inline-size)
+//! 18. Top layer elements (fullscreen, popover, dialog)
 //!
 //! # Usage
 //!
@@ -204,6 +203,12 @@ pub struct OrderedFragment {
   pub fragment: FragmentNode,
   pub tree_order: usize,
   pub clip_chain: Vec<ClipChainLink>,
+  /// Number of `backface-visibility: hidden` ancestors (that did *not* create stacking contexts)
+  /// between the containing stacking context and this fragment.
+  ///
+  /// These ancestors need to be re-established during display-list building because positioned
+  /// fragments can be promoted out of their non-stacking ancestors for correct z-index ordering.
+  pub backface_visibility_depth: usize,
 }
 
 impl OrderedFragment {
@@ -212,6 +217,7 @@ impl OrderedFragment {
       fragment,
       tree_order,
       clip_chain: Vec::new(),
+      backface_visibility_depth: 0,
     }
   }
 
@@ -219,11 +225,13 @@ impl OrderedFragment {
     fragment: FragmentNode,
     tree_order: usize,
     clip_chain: Vec<ClipChainLink>,
+    backface_visibility_depth: usize,
   ) -> Self {
     Self {
       fragment,
       tree_order,
       clip_chain,
+      backface_visibility_depth,
     }
   }
 }
@@ -268,13 +276,6 @@ pub enum StackingContextReason {
 
   /// Has CSS perspective
   Perspective,
-
-  /// Has `backface-visibility: hidden`.
-  ///
-  /// This does not technically establish a stacking context in the spec, but we promote it so
-  /// the paint pipeline can cull the element as a 3D plane (matching browser behaviour in
-  /// common card-flip patterns where only the ancestor is transformed).
-  BackfaceVisibility,
 
   /// Has backdrop-filter
   BackdropFilter,
@@ -359,6 +360,15 @@ pub struct StackingContext {
   /// stacking context.
   pub clip_chain: Vec<ClipChainLink>,
 
+  /// Number of `backface-visibility: hidden` ancestors (that did *not* create stacking contexts)
+  /// between the parent stacking context and this stacking context.
+  ///
+  /// Like [`Self::clip_chain`], this exists because stacking contexts are promoted to their
+  /// nearest ancestor stacking context for correct z-index ordering. `backface-visibility` must
+  /// still be respected for those promoted descendants without introducing a real stacking context
+  /// boundary.
+  pub backface_visibility_depth: usize,
+
   /// Tree order index for stable sorting
   pub tree_order: usize,
 }
@@ -402,6 +412,7 @@ impl StackingContext {
       bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
       reason: StackingContextReason::Root,
       clip_chain: Vec::new(),
+      backface_visibility_depth: 0,
       tree_order: 0,
     }
   }
@@ -420,6 +431,7 @@ impl StackingContext {
       bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
       reason,
       clip_chain: Vec::new(),
+      backface_visibility_depth: 0,
       tree_order,
     }
   }
@@ -742,8 +754,7 @@ impl StackingContext {
 
 /// Checks if an element creates a stacking context
 ///
-/// Implements the comprehensive check for all 19 conditions that create
-/// stacking contexts in CSS.
+/// Implements the comprehensive check for the conditions that create stacking contexts in CSS.
 ///
 /// # Arguments
 ///
@@ -807,16 +818,6 @@ pub fn creates_stacking_context(
   }
 
   if style.perspective.is_some() {
-    return true;
-  }
-
-  // `backface-visibility: hidden` needs a distinct plane so we can cull it when an ancestor 3D
-  // transform flips the element away from the camera (common in card flip UIs where only the
-  // parent is rotated).
-  if matches!(
-    style.backface_visibility,
-    crate::style::types::BackfaceVisibility::Hidden
-  ) {
     return true;
   }
 
@@ -925,13 +926,6 @@ pub fn get_stacking_context_reason(
 
   if style.perspective.is_some() {
     return Some(StackingContextReason::Perspective);
-  }
-
-  if matches!(
-    style.backface_visibility,
-    crate::style::types::BackfaceVisibility::Hidden
-  ) {
-    return Some(StackingContextReason::BackfaceVisibility);
   }
 
   if !style.filter.is_empty() {
@@ -1296,6 +1290,7 @@ where
 {
   let root_style = get_style(root);
   let mut clip_stack = Vec::new();
+  let mut backface_depth = 0usize;
   let mut context = build_stacking_tree_with_styles_internal(
     root,
     root_style,
@@ -1304,6 +1299,7 @@ where
     tree_order_counter,
     root.bounds.origin,
     &mut clip_stack,
+    &mut backface_depth,
     get_style,
     false,
     scroll_state,
@@ -1327,6 +1323,7 @@ where
 {
   let root_style = get_style(root);
   let mut clip_stack = Vec::new();
+  let mut backface_depth = 0usize;
   let mut context = build_stacking_tree_with_styles_internal_checked(
     root,
     root_style,
@@ -1335,6 +1332,7 @@ where
     tree_order_counter,
     root.bounds.origin,
     &mut clip_stack,
+    &mut backface_depth,
     get_style,
     false,
     deadline_counter,
@@ -1469,6 +1467,7 @@ fn build_stacking_tree_with_styles_internal_checked<F>(
   tree_order: &mut usize,
   offset_from_parent_context: Point,
   clip_stack: &mut Vec<ClipChainLink>,
+  backface_depth: &mut usize,
   get_style: &F,
   skip_viewport_scroll_cancel: bool,
   deadline_counter: &mut usize,
@@ -1520,6 +1519,7 @@ where
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();
+    context.backface_visibility_depth = *backface_depth;
     context.offset_from_parent_context = if needs_viewport_scroll_cancel {
       Point::new(
         offset_from_parent_context.x + viewport_scroll.x,
@@ -1532,6 +1532,7 @@ where
 
     let base_offset = Point::ZERO;
     let mut child_clip_stack = Vec::new();
+    let mut child_backface_depth = 0usize;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1546,6 +1547,7 @@ where
         tree_order,
         child_offset,
         &mut child_clip_stack,
+        &mut child_backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
         deadline_counter,
@@ -1595,6 +1597,7 @@ where
             translated,
             current_order,
             clip_stack.clone(),
+            *backface_depth,
           ));
       } else {
         context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
@@ -1619,6 +1622,12 @@ where
         clip_stack.push(link);
       })
       .is_some();
+    let backface_pushed = style
+      .as_deref()
+      .is_some_and(|style| matches!(style.backface_visibility, crate::style::types::BackfaceVisibility::Hidden));
+    if backface_pushed {
+      *backface_depth += 1;
+    }
 
     let element_scroll = element_scroll_offset(fragment, scroll_state);
     let base_offset = Point::new(
@@ -1639,6 +1648,7 @@ where
         tree_order,
         child_offset,
         clip_stack,
+        backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
         deadline_counter,
@@ -1672,6 +1682,9 @@ where
     if clip_pushed {
       clip_stack.pop();
     }
+    if backface_pushed {
+      *backface_depth = backface_depth.saturating_sub(1);
+    }
 
     Ok(context)
   }
@@ -1686,6 +1699,7 @@ fn build_stacking_tree_with_styles_internal<F>(
   tree_order: &mut usize,
   offset_from_parent_context: Point,
   clip_stack: &mut Vec<ClipChainLink>,
+  backface_depth: &mut usize,
   get_style: &F,
   skip_viewport_scroll_cancel: bool,
   scroll_state: Option<&ScrollState>,
@@ -1733,6 +1747,7 @@ where
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();
+    context.backface_visibility_depth = *backface_depth;
     context.offset_from_parent_context = if needs_viewport_scroll_cancel {
       Point::new(
         offset_from_parent_context.x + viewport_scroll.x,
@@ -1745,6 +1760,7 @@ where
 
     let base_offset = Point::ZERO;
     let mut child_clip_stack = Vec::new();
+    let mut child_backface_depth = 0usize;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1759,6 +1775,7 @@ where
         tree_order,
         child_offset,
         &mut child_clip_stack,
+        &mut child_backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
         scroll_state,
@@ -1807,6 +1824,7 @@ where
             translated,
             current_order,
             clip_stack.clone(),
+            *backface_depth,
           ));
       } else {
         context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
@@ -1831,6 +1849,12 @@ where
         clip_stack.push(link);
       })
       .is_some();
+    let backface_pushed = style
+      .as_deref()
+      .is_some_and(|style| matches!(style.backface_visibility, crate::style::types::BackfaceVisibility::Hidden));
+    if backface_pushed {
+      *backface_depth += 1;
+    }
 
     let element_scroll = element_scroll_offset(fragment, scroll_state);
     let base_offset = Point::new(
@@ -1851,6 +1875,7 @@ where
         tree_order,
         child_offset,
         clip_stack,
+        backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
         scroll_state,
@@ -1882,6 +1907,9 @@ where
 
     if clip_pushed {
       clip_stack.pop();
+    }
+    if backface_pushed {
+      *backface_depth = backface_depth.saturating_sub(1);
     }
 
     context
@@ -2234,14 +2262,11 @@ mod tests {
   }
 
   #[test]
-  fn test_creates_stacking_context_backface_visibility_hidden() {
+  fn test_backface_visibility_hidden_does_not_create_stacking_context() {
     let mut style = ComputedStyle::default();
     style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
-    assert!(creates_stacking_context(&style, None, false));
-    assert_eq!(
-      get_stacking_context_reason(&style, None, false),
-      Some(StackingContextReason::BackfaceVisibility)
-    );
+    assert!(!creates_stacking_context(&style, None, false));
+    assert_eq!(get_stacking_context_reason(&style, None, false), None);
   }
 
   #[test]

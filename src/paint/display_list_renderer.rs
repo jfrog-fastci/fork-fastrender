@@ -9203,7 +9203,8 @@ impl DisplayListRenderer {
       let item = items
         .get(idx)
         .expect("display list iteration should remain in-bounds");
-      if !self.preserve_3d_disabled
+      if self.culled_depth == 0
+        && !self.preserve_3d_disabled
         && self.preserve_3d_scene_depth < PRESERVE_3D_SCENE_RECURSION_LIMIT
       {
         if let DisplayItem::PushStackingContext(sc) = item {
@@ -11117,10 +11118,10 @@ impl DisplayListRenderer {
   fn render_item(&mut self, item: &DisplayItem) -> Result<()> {
     if self.culled_depth > 0 {
       match item {
-        DisplayItem::PushStackingContext(_) => {
+        DisplayItem::PushStackingContext(_) | DisplayItem::PushBackfaceVisibility(_) => {
           self.culled_depth += 1;
         }
-        DisplayItem::PopStackingContext => {
+        DisplayItem::PopStackingContext | DisplayItem::PopBackfaceVisibility => {
           if self.culled_depth > 0 {
             self.culled_depth -= 1;
           }
@@ -11982,6 +11983,19 @@ impl DisplayListRenderer {
           self.canvas.restore();
         }
       }
+      DisplayItem::PushBackfaceVisibility(visibility) => {
+        if matches!(visibility, BackfaceVisibility::Hidden) {
+          let current_transform = *self
+            .transform_stack
+            .last()
+            .unwrap_or(&Transform3D::identity());
+          if backface_is_hidden(&current_transform) {
+            self.culled_depth = 1;
+            return Ok(());
+          }
+        }
+      }
+      DisplayItem::PopBackfaceVisibility => {}
       DisplayItem::PushClip(clip) => self.push_clip(clip)?,
       DisplayItem::PopClip => self.pop_clip(),
       DisplayItem::PushOpacity(OpacityItem { opacity }) => {
