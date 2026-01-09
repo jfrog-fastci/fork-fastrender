@@ -1,49 +1,11 @@
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
+use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
+use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
+use selectors::matching::SelectorCaches;
+use selectors::OpaqueElement;
 
-pub mod error;
-pub mod events;
 pub mod import;
-mod attrs;
-mod mutation;
-
-pub use error::{DomError, Result};
-pub mod query;
-pub mod traversal;
-
-#[cfg(test)]
-mod query_tests;
-
-pub use events::{
-  DispatchResult, Event, EventListenerInvoker, EventListenerOptions, EventPhase, EventTargetId,
-  ListenerId,
-};
-
-#[derive(Debug, Clone)]
-pub struct RendererDomSnapshot {
-  pub dom: DomNode,
-  /// Mapping from `dom2::NodeId.index()` to the renderer's stable pre-order ids
-  /// (`crate::dom::enumerate_dom_ids`).
-  ///
-  /// Entry `0` means the `NodeId` is not represented in the snapshot (e.g. detached nodes that are
-  /// not reachable from the document root).
-  pub nodeid_to_preorder: Vec<usize>,
-  /// Mapping from renderer pre-order id (1-based) to the corresponding `dom2::NodeId`.
-  ///
-  /// Index 0 is unused to match the renderer's id scheme.
-  pub preorder_to_nodeid: Vec<Option<NodeId>>,
-}
-
-impl RendererDomSnapshot {
-  pub fn node_id_from_preorder(&self, id: usize) -> Option<NodeId> {
-    self.preorder_to_nodeid.get(id).copied().flatten()
-  }
-
-  pub fn preorder_id_from_node_id(&self, id: NodeId) -> Option<usize> {
-    let preorder = *self.nodeid_to_preorder.get(id.index())?;
-    (preorder != 0).then_some(preorder)
-  }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -95,43 +57,41 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
-  events: events::EventListenerRegistry,
 }
 
-fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
-  match kind {
-    NodeKind::Document { quirks_mode } => DomNodeType::Document {
-      quirks_mode: *quirks_mode,
-    },
-    NodeKind::ShadowRoot {
-      mode,
-      delegates_focus,
-    } => DomNodeType::ShadowRoot {
-      mode: *mode,
-      delegates_focus: *delegates_focus,
-    },
-    NodeKind::Slot {
-      namespace,
-      attributes,
-      assigned,
-    } => DomNodeType::Slot {
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-      assigned: *assigned,
-    },
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      attributes,
-    } => DomNodeType::Element {
-      tag_name: tag_name.clone(),
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-    },
-    NodeKind::Text { content } => DomNodeType::Text {
-      content: content.clone(),
-    },
+#[derive(Debug, Clone)]
+pub struct RendererDomMapping {
+  preorder_to_node_id: Vec<NodeId>,
+  node_id_to_preorder: Vec<usize>,
+}
+
+impl RendererDomMapping {
+  /// Translate a 1-based preorder id (as produced by `to_renderer_dom_with_mapping`) back into a
+  /// `dom2` [`NodeId`].
+  pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
+    if preorder_id == 0 {
+      return None;
+    }
+    self.preorder_to_node_id.get(preorder_id).copied()
   }
+
+  /// Translate a `dom2` [`NodeId`] to its 1-based preorder id.
+  ///
+  /// Returns `None` when the node is in a subtree that is not traversed for selector matching
+  /// (currently: inert template contents).
+  pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
+    self
+      .node_id_to_preorder
+      .get(node_id.index())
+      .copied()
+      .and_then(|v| (v != 0).then_some(v))
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct RendererDomSnapshot {
+  pub dom: DomNode,
+  pub mapping: RendererDomMapping,
 }
 
 impl Document {
@@ -139,7 +99,6 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
-      events: events::EventListenerRegistry::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -190,14 +149,46 @@ impl Document {
   /// This is used for tests and incremental adoption (e.g. import into `dom2`, mutate, then render
   /// via existing code that consumes `DomNode`).
   pub fn to_renderer_dom(&self) -> DomNode {
-    self.to_renderer_dom_internal(|_| {})
-  }
-
-  fn to_renderer_dom_internal<F: FnMut(NodeId)>(&self, mut on_node: F) -> DomNode {
     struct Frame {
       src: NodeId,
       dst: *mut DomNode,
       next_child: usize,
+    }
+
+    fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
+      match kind {
+        NodeKind::Document { quirks_mode } => DomNodeType::Document {
+          quirks_mode: *quirks_mode,
+        },
+        NodeKind::ShadowRoot {
+          mode,
+          delegates_focus,
+        } => DomNodeType::ShadowRoot {
+          mode: *mode,
+          delegates_focus: *delegates_focus,
+        },
+        NodeKind::Slot {
+          namespace,
+          attributes,
+          assigned,
+        } => DomNodeType::Slot {
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+          assigned: *assigned,
+        },
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+        } => DomNodeType::Element {
+          tag_name: tag_name.clone(),
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+        },
+        NodeKind::Text { content } => DomNodeType::Text {
+          content: content.clone(),
+        },
+      }
     }
 
     let root_id = self.root;
@@ -206,7 +197,6 @@ impl Document {
       node_type: node_kind_to_dom_node_type(&root_src.kind),
       children: Vec::with_capacity(root_src.children.len()),
     };
-    on_node(root_id);
 
     let mut stack: Vec<Frame> = vec![Frame {
       src: root_id,
@@ -230,7 +220,6 @@ impl Document {
           node_type: node_kind_to_dom_node_type(&child_src.kind),
           children: Vec::with_capacity(child_src.children.len()),
         });
-        on_node(child_id);
         let child_dst = dst
           .children
           .last_mut()
@@ -247,76 +236,316 @@ impl Document {
     root
   }
 
-  /// Snapshot this `dom2` document back into the renderer's immutable [`DomNode`] representation,
-  /// and produce a stable mapping from renderer pre-order node ids back to `dom2` node ids.
-  pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
-    let mut preorder_to_nodeid = Vec::with_capacity(self.nodes_len() + 1);
-    preorder_to_nodeid.push(None); // index 0 is unused
-    let mut nodeid_to_preorder: Vec<usize> = vec![0; self.nodes_len()];
+  fn build_preorder_mapping(&self) -> RendererDomMapping {
+    // Preorder ids are 1-based (index 0 unused), matching `crate::dom::enumerate_dom_ids` and the
+    // debug inspector.
+    let mut preorder_to_node_id: Vec<NodeId> = Vec::with_capacity(self.nodes.len() + 1);
+    preorder_to_node_id.push(NodeId(usize::MAX));
+    let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
 
-    let dom = self.to_renderer_dom_internal(|node_id| {
-      let preorder_id = preorder_to_nodeid.len();
-      preorder_to_nodeid.push(Some(node_id));
-      nodeid_to_preorder[node_id.index()] = preorder_id;
-    });
+    let mut stack: Vec<NodeId> = vec![self.root];
+    while let Some(id) = stack.pop() {
+      let preorder_id = preorder_to_node_id.len();
+      preorder_to_node_id.push(id);
+      node_id_to_preorder[id.0] = preorder_id;
 
-    RendererDomSnapshot {
-      dom,
-      nodeid_to_preorder,
-      preorder_to_nodeid,
-    }
-  }
-
-  pub fn text_data(&self, node: NodeId) -> Result<&str> {
-    let node = self
-      .nodes
-      .get(node.index())
-      .ok_or(DomError::NotFoundError)?;
-    match &node.kind {
-      NodeKind::Text { content } => Ok(content.as_str()),
-      _ => Err(DomError::InvalidNodeType),
-    }
-  }
-
-  pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool> {
-    let node = self
-      .nodes
-      .get_mut(node.index())
-      .ok_or(DomError::NotFoundError)?;
-    match &mut node.kind {
-      NodeKind::Text { content } => {
-        if content == data {
-          return Ok(false);
-        }
-        content.clear();
-        content.push_str(data);
-        Ok(true)
+      let node = self.node(id);
+      if node.inert_subtree {
+        continue;
       }
-      _ => Err(DomError::InvalidNodeType),
+      // Push children in reverse so we traverse in tree order.
+      for child in node.children.iter().rev() {
+        stack.push(*child);
+      }
+    }
+
+    RendererDomMapping {
+      preorder_to_node_id,
+      node_id_to_preorder,
     }
   }
 
-  pub fn set_text(&mut self, node: NodeId, new_text: &str) -> Result<bool> {
-    self.set_text_data(node, new_text)
+  pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
+    RendererDomSnapshot {
+      dom: self.to_renderer_dom(),
+      mapping: self.build_preorder_mapping(),
+    }
+  }
+
+  pub fn query_selector(
+    &mut self,
+    selectors: &str,
+    scope: Option<NodeId>,
+  ) -> Result<Option<NodeId>, DomException> {
+    let selector_list = parse_selector_list(selectors)?;
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
+
+    let mut selector_caches = SelectorCaches::default();
+    selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
+
+    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
+    if scope.is_some() && scope_preorder.is_none() {
+      return Ok(None);
+    }
+
+    struct StackItem<'a> {
+      node: &'a DomNode,
+      exiting: bool,
+      node_id: NodeId,
+    }
+
+    let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut stack: Vec<StackItem<'_>> = Vec::new();
+    stack.push(StackItem {
+      node: &snapshot.dom,
+      exiting: false,
+      node_id: NodeId(usize::MAX),
+    });
+    let mut next_preorder_id = 1usize;
+    let mut scope_active = scope.is_none();
+    let mut scope_anchor: Option<OpaqueElement> = None;
+
+    while let Some(item) = stack.pop() {
+      if item.exiting {
+        ancestors.pop();
+        if scope.is_some() && item.node_id == scope.unwrap() {
+          break;
+        }
+        continue;
+      }
+
+      let preorder_id = next_preorder_id;
+      next_preorder_id += 1;
+      let dom2_id = snapshot
+        .mapping
+        .node_id_for_preorder(preorder_id)
+        .unwrap_or(self.root);
+
+      if scope == Some(dom2_id) {
+        scope_active = true;
+        if item.node.is_element() {
+          scope_anchor = Some(OpaqueElement::new(item.node));
+        }
+      }
+
+      if scope_active && item.node.is_element() {
+        if node_matches_selector_list(
+          item.node,
+          &ancestors,
+          &selector_list,
+          &mut selector_caches,
+          quirks_mode,
+          scope_anchor,
+        ) {
+          return Ok(Some(dom2_id));
+        }
+      }
+
+      stack.push(StackItem {
+        node: item.node,
+        exiting: true,
+        node_id: dom2_id,
+      });
+      ancestors.push(item.node);
+
+      if !self.node(dom2_id).inert_subtree {
+        for child in item.node.children.iter().rev() {
+          stack.push(StackItem {
+            node: child,
+            exiting: false,
+            node_id: NodeId(usize::MAX),
+          });
+        }
+      }
+    }
+
+    Ok(None)
+  }
+
+  pub fn query_selector_all(
+    &mut self,
+    selectors: &str,
+    scope: Option<NodeId>,
+  ) -> Result<Vec<NodeId>, DomException> {
+    let selector_list = parse_selector_list(selectors)?;
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
+
+    let mut selector_caches = SelectorCaches::default();
+    selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
+
+    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
+    if scope.is_some() && scope_preorder.is_none() {
+      return Ok(Vec::new());
+    }
+
+    struct StackItem<'a> {
+      node: &'a DomNode,
+      exiting: bool,
+      node_id: NodeId,
+    }
+
+    let mut results: Vec<NodeId> = Vec::new();
+    let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut stack: Vec<StackItem<'_>> = Vec::new();
+    stack.push(StackItem {
+      node: &snapshot.dom,
+      exiting: false,
+      node_id: NodeId(usize::MAX),
+    });
+    let mut next_preorder_id = 1usize;
+    let mut scope_active = scope.is_none();
+    let mut scope_anchor: Option<OpaqueElement> = None;
+
+    while let Some(item) = stack.pop() {
+      if item.exiting {
+        ancestors.pop();
+        if scope.is_some() && item.node_id == scope.unwrap() {
+          break;
+        }
+        continue;
+      }
+
+      let preorder_id = next_preorder_id;
+      next_preorder_id += 1;
+      let dom2_id = snapshot
+        .mapping
+        .node_id_for_preorder(preorder_id)
+        .unwrap_or(self.root);
+
+      if scope == Some(dom2_id) {
+        scope_active = true;
+        if item.node.is_element() {
+          scope_anchor = Some(OpaqueElement::new(item.node));
+        }
+      }
+
+      if scope_active && item.node.is_element() {
+        if node_matches_selector_list(
+          item.node,
+          &ancestors,
+          &selector_list,
+          &mut selector_caches,
+          quirks_mode,
+          scope_anchor,
+        ) {
+          results.push(dom2_id);
+        }
+      }
+
+      stack.push(StackItem {
+        node: item.node,
+        exiting: true,
+        node_id: dom2_id,
+      });
+      ancestors.push(item.node);
+
+      if !self.node(dom2_id).inert_subtree {
+        for child in item.node.children.iter().rev() {
+          stack.push(StackItem {
+            node: child,
+            exiting: false,
+            node_id: NodeId(usize::MAX),
+          });
+        }
+      }
+    }
+
+    Ok(results)
+  }
+
+  pub fn matches_selector(
+    &mut self,
+    element: NodeId,
+    selectors: &str,
+  ) -> Result<bool, DomException> {
+    let selector_list = parse_selector_list(selectors)?;
+    if element.index() >= self.nodes.len() {
+      return Ok(false);
+    }
+    match &self.node(element).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => return Ok(false),
+    }
+
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
+
+    let mut selector_caches = SelectorCaches::default();
+    selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
+
+    let element_preorder = snapshot.mapping.preorder_for_node_id(element);
+    let Some(target_preorder) = element_preorder else {
+      // The element lives in an inert subtree that is not traversed for selector matching.
+      return Ok(false);
+    };
+
+    struct StackItem<'a> {
+      node: &'a DomNode,
+      exiting: bool,
+      node_id: NodeId,
+    }
+
+    let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut stack: Vec<StackItem<'_>> = Vec::new();
+    stack.push(StackItem {
+      node: &snapshot.dom,
+      exiting: false,
+      node_id: NodeId(usize::MAX),
+    });
+    let mut next_preorder_id = 1usize;
+
+    while let Some(item) = stack.pop() {
+      if item.exiting {
+        ancestors.pop();
+        continue;
+      }
+
+      let preorder_id = next_preorder_id;
+      next_preorder_id += 1;
+      let dom2_id = snapshot
+        .mapping
+        .node_id_for_preorder(preorder_id)
+        .unwrap_or(self.root);
+
+      stack.push(StackItem {
+        node: item.node,
+        exiting: true,
+        node_id: dom2_id,
+      });
+      ancestors.push(item.node);
+
+      if dom2_id == element {
+        let anchor = Some(OpaqueElement::new(item.node));
+        let matched = node_matches_selector_list(
+          item.node,
+          &ancestors[..ancestors.len().saturating_sub(1)],
+          &selector_list,
+          &mut selector_caches,
+          quirks_mode,
+          anchor,
+        );
+        return Ok(matched);
+      }
+
+      if preorder_id >= target_preorder {
+        // If we've passed the target preorder id without finding it, the mapping/traversal is out of
+        // sync; bail out defensively.
+        return Ok(false);
+      }
+
+      if !self.node(dom2_id).inert_subtree {
+        for child in item.node.children.iter().rev() {
+          stack.push(StackItem {
+            node: child,
+            exiting: false,
+            node_id: NodeId(usize::MAX),
+          });
+        }
+      }
+    }
+
+    Ok(false)
   }
 }
-
-/// Find the first element in the document with an `id` attribute matching `id`.
-pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
-  doc.get_element_by_id(id)
-}
-
-/// Set an attribute on a node, returning whether the value changed.
-///
-/// This is a small convenience wrapper around [`Document::set_attribute`] that flattens errors into
-/// `false` for callers that want a simple "did anything change?" signal.
-pub fn set_attribute(doc: &mut Document, node_id: NodeId, name: &str, value: &str) -> bool {
-  doc.set_attribute(node_id, name, value).unwrap_or(false)
-}
-
-#[cfg(test)]
-mod attrs_tests;
-#[cfg(test)]
-mod mutation_tests;
-#[cfg(test)]
-mod snapshot_tests;
