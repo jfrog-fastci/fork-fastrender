@@ -1279,4 +1279,51 @@ mod tests {
       other => panic!("expected render timeout error, got {other:?}"),
     }
   }
+
+  #[test]
+  fn queue_limits_reject_tasks_microtasks_and_timers_when_exceeded() {
+    struct Host;
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 1,
+      max_pending_microtasks: 1,
+      max_pending_timers: 1,
+    });
+
+    event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))
+      .unwrap();
+    let err = event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))
+      .expect_err("expected task queue limit error");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending tasks")),
+      "unexpected error: {err:?}"
+    );
+
+    event_loop
+      .queue_microtask(|_host, _event_loop| Ok(()))
+      .unwrap();
+    let err = event_loop
+      .queue_microtask(|_host, _event_loop| Ok(()))
+      .expect_err("expected microtask queue limit error");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending microtasks")),
+      "unexpected error: {err:?}"
+    );
+
+    let _timer = event_loop
+      .set_timeout(Duration::from_millis(0), |_host, _event_loop| Ok(()))
+      .unwrap();
+    let err = event_loop
+      .set_timeout(Duration::from_millis(0), |_host, _event_loop| Ok(()))
+      .expect_err("expected timer queue limit error");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending timers")),
+      "unexpected error: {err:?}"
+    );
+  }
 }

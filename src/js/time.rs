@@ -7,7 +7,7 @@ use std::{
 };
 
 use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
 };
 
 /// Deterministic web time model for JavaScript APIs.
@@ -194,7 +194,6 @@ fn with_time_context<T>(scope: &Scope<'_>, f: impl FnOnce(&TimeContext) -> T) ->
 fn date_now_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
@@ -209,7 +208,6 @@ fn date_now_native(
 fn performance_now_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {

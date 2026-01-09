@@ -2,6 +2,7 @@ use clap::{Args, ValueEnum};
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::image_output::OutputFormat;
+use crate::js::JsExecutionOptions;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::engine::DEFAULT_LAYOUT_MIN_FANOUT;
 use crate::resource::CacheStalePolicy;
@@ -504,6 +505,101 @@ impl TimeoutArgs {
     } else {
       Some(value)
     }
+  }
+}
+
+/// JS execution budget overrides for CLI binaries.
+///
+/// This maps directly to [`crate::js::JsExecutionOptions`]. Most renderer binaries do not yet
+/// execute JavaScript; these flags exist so the config surface is stable as JS integration lands.
+#[derive(Debug, Clone, Args, Default)]
+pub struct JsExecutionArgs {
+  /// Maximum number of bytes accepted for a single script source (inline or external).
+  #[arg(long = "js-max-script-bytes", value_name = "BYTES")]
+  pub max_script_bytes: Option<usize>,
+
+  /// Maximum number of pending tasks allowed in the JS host event loop.
+  #[arg(long = "js-max-pending-tasks", value_name = "N")]
+  pub max_pending_tasks: Option<usize>,
+
+  /// Maximum number of pending microtasks allowed in the JS host event loop.
+  #[arg(long = "js-max-pending-microtasks", value_name = "N")]
+  pub max_pending_microtasks: Option<usize>,
+
+  /// Maximum number of pending timers allowed in the JS host event loop.
+  #[arg(long = "js-max-pending-timers", value_name = "N")]
+  pub max_pending_timers: Option<usize>,
+
+  /// Maximum number of tasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
+  #[arg(long = "js-max-tasks-per-spin", value_name = "N")]
+  pub max_tasks_per_spin: Option<usize>,
+
+  /// Maximum number of microtasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
+  #[arg(long = "js-max-microtasks-per-spin", value_name = "N")]
+  pub max_microtasks_per_spin: Option<usize>,
+
+  /// Maximum wall-time per `EventLoop::run_until_idle`/`spin_until` "spin" in milliseconds.
+  ///
+  /// Use `0` to disable the wall-time spin limit (unbounded).
+  #[arg(long = "js-max-wall-time-per-spin-ms", value_name = "MS")]
+  pub max_wall_time_per_spin_ms: Option<u64>,
+
+  /// Placeholder VM budget: maximum instruction count before VM interrupt.
+  #[arg(long = "js-max-instructions", value_name = "N")]
+  pub max_instruction_count: Option<u64>,
+
+  /// Placeholder VM budget: maximum VM heap bytes.
+  #[arg(long = "js-max-vm-heap-bytes", value_name = "BYTES")]
+  pub max_vm_heap_bytes: Option<usize>,
+
+  /// Placeholder VM budget: maximum JS stack depth.
+  #[arg(long = "js-max-stack-depth", value_name = "N")]
+  pub max_stack_depth: Option<usize>,
+}
+
+impl JsExecutionArgs {
+  pub fn to_options(&self) -> JsExecutionOptions {
+    let mut options = JsExecutionOptions::default();
+
+    if let Some(max_script_bytes) = self.max_script_bytes {
+      options.max_script_bytes = max_script_bytes;
+    }
+
+    if let Some(max_pending_tasks) = self.max_pending_tasks {
+      options.event_loop_queue_limits.max_pending_tasks = max_pending_tasks;
+    }
+    if let Some(max_pending_microtasks) = self.max_pending_microtasks {
+      options.event_loop_queue_limits.max_pending_microtasks = max_pending_microtasks;
+    }
+    if let Some(max_pending_timers) = self.max_pending_timers {
+      options.event_loop_queue_limits.max_pending_timers = max_pending_timers;
+    }
+
+    if let Some(max_tasks_per_spin) = self.max_tasks_per_spin {
+      options.event_loop_run_limits.max_tasks = max_tasks_per_spin;
+    }
+    if let Some(max_microtasks_per_spin) = self.max_microtasks_per_spin {
+      options.event_loop_run_limits.max_microtasks = max_microtasks_per_spin;
+    }
+    if let Some(ms) = self.max_wall_time_per_spin_ms {
+      options.event_loop_run_limits.max_wall_time = if ms == 0 {
+        None
+      } else {
+        Some(Duration::from_millis(ms))
+      };
+    }
+
+    if let Some(max_instruction_count) = self.max_instruction_count {
+      options.max_instruction_count = Some(max_instruction_count);
+    }
+    if let Some(max_vm_heap_bytes) = self.max_vm_heap_bytes {
+      options.max_vm_heap_bytes = Some(max_vm_heap_bytes);
+    }
+    if let Some(max_stack_depth) = self.max_stack_depth {
+      options.max_stack_depth = Some(max_stack_depth);
+    }
+
+    options
   }
 }
 

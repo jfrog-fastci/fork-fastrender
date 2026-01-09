@@ -162,7 +162,6 @@ fn unregister_console_sink(id: u64) {
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {

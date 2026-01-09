@@ -1,9 +1,10 @@
 use crate::error::Result;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
+  RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator, JsExecutionOptions, RealClock,
 };
 use crate::js::webidl::VmJsRuntime;
+use std::sync::Arc;
 
 use super::BrowserDocumentDom2;
 
@@ -42,21 +43,41 @@ pub struct BrowserDocumentJs {
   event_loop: Option<EventLoop<BrowserDocumentJs>>,
   script_orchestrator: ScriptOrchestrator,
   current_script_state: CurrentScriptStateHandle,
+  js_execution_options: JsExecutionOptions,
   script_execution_log: Option<ScriptExecutionLog>,
 }
 
 impl BrowserDocumentJs {
   pub fn new(document: BrowserDocumentDom2) -> Self {
-    Self::with_event_loop(document, EventLoop::new())
+    Self::with_js_execution_options(document, JsExecutionOptions::default())
+  }
+
+  pub fn with_js_execution_options(document: BrowserDocumentDom2, js_execution_options: JsExecutionOptions) -> Self {
+    let event_loop = EventLoop::with_clock_and_queue_limits(
+      Arc::new(RealClock::default()),
+      js_execution_options.event_loop_queue_limits,
+    );
+    Self::with_event_loop_and_js_execution_options(document, event_loop, js_execution_options)
   }
 
   pub fn with_event_loop(document: BrowserDocumentDom2, event_loop: EventLoop<Self>) -> Self {
+    Self::with_event_loop_and_js_execution_options(document, event_loop, JsExecutionOptions::default())
+  }
+
+  pub fn with_event_loop_and_js_execution_options(
+    document: BrowserDocumentDom2,
+    mut event_loop: EventLoop<Self>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Self {
+    // Ensure the provided event loop inherits the queue limits from our config surface.
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
     Self {
       document,
       js_runtime: VmJsRuntime::new(),
       event_loop: Some(event_loop),
       script_orchestrator: ScriptOrchestrator::new(),
       current_script_state: CurrentScriptStateHandle::default(),
+      js_execution_options,
       script_execution_log: None,
     }
   }
@@ -79,6 +100,10 @@ impl BrowserDocumentJs {
 
   pub fn script_orchestrator_mut(&mut self) -> &mut ScriptOrchestrator {
     &mut self.script_orchestrator
+  }
+
+  pub fn js_execution_options(&self) -> JsExecutionOptions {
+    self.js_execution_options
   }
 
   /// Enable a bounded FIFO log of executed scripts for debugging.
@@ -105,9 +130,18 @@ impl BrowserDocumentJs {
   /// Drive the JS event loop and rerender until no more work remains or a limit is hit.
   ///
   /// This is intentionally deterministic and bounded:
-  /// - JS execution is bounded by `limits` via [`EventLoop::run_until_idle`].
+  /// - JS execution is bounded by [`JsExecutionOptions::event_loop_run_limits`] via
+  ///   [`EventLoop::run_until_idle`].
   /// - Rendering is bounded by `max_frames`.
-  pub fn run_until_stable(&mut self, limits: RunLimits, max_frames: usize) -> Result<RunUntilStableOutcome> {
+  pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
+    self.run_until_stable_with_run_limits(self.js_execution_options.event_loop_run_limits, max_frames)
+  }
+
+  pub fn run_until_stable_with_run_limits(
+    &mut self,
+    limits: RunLimits,
+    max_frames: usize,
+  ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
 
     loop {
@@ -165,7 +199,10 @@ mod tests {
   use super::*;
   use crate::dom2::NodeKind;
   use crate::dom2::{Document as Dom2Document, NodeId};
-  use crate::js::{Clock, CurrentScriptHost, ScriptBlockExecutor, ScriptExecutionLogEntry, ScriptSourceSnapshot, ScriptType, TaskSource};
+  use crate::js::{
+    Clock, CurrentScriptHost, JsExecutionOptions, RunLimits, RunUntilIdleStopReason,
+    ScriptBlockExecutor, ScriptExecutionLogEntry, ScriptSourceSnapshot, ScriptType, TaskSource,
+  };
   use std::cell::RefCell;
   use std::rc::Rc;
   use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,11 +262,16 @@ mod tests {
   #[test]
   fn rerenders_after_dom_mutation_task_and_microtask() -> Result<()> {
     let renderer = renderer_for_tests();
-    let mut runtime = BrowserDocumentJs::new(BrowserDocumentDom2::new(
-      renderer,
-      "<!doctype html><html><body><div>Hello</div></body></html>",
-      super::super::RenderOptions::new().with_viewport(32, 32),
-    )?);
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
 
     runtime.document_mut().render_frame()?;
 
@@ -250,7 +292,7 @@ mod tests {
       Ok(())
     })?;
 
-    let outcome = runtime.run_until_stable(RunLimits::unbounded(), 10)?;
+    let outcome = runtime.run_until_stable(10)?;
     assert_eq!(outcome, RunUntilStableOutcome::Stable { frames_rendered: 1 });
     assert_eq!(&*log.borrow(), &["task", "microtask"]);
     assert!(!runtime.document().is_dirty());
@@ -282,19 +324,19 @@ mod tests {
     let clock: Arc<dyn Clock> = Arc::new(TickClock::default());
     let event_loop = EventLoop::<BrowserDocumentJs>::with_clock(clock);
 
-    let mut runtime = BrowserDocumentJs::with_event_loop(document, event_loop);
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits {
+      max_tasks: 5,
+      max_microtasks: 100,
+      max_wall_time: None,
+    };
+    let mut runtime =
+      BrowserDocumentJs::with_event_loop_and_js_execution_options(document, event_loop, js_options);
     runtime
       .event_loop_mut()
       .set_interval(Duration::from_millis(0), |_host, _event_loop| Ok(()))?;
 
-    let outcome = runtime.run_until_stable(
-      RunLimits {
-        max_tasks: 5,
-        max_microtasks: 100,
-        max_wall_time: None,
-      },
-      10,
-    )?;
+    let outcome = runtime.run_until_stable(10)?;
 
     assert!(
       matches!(

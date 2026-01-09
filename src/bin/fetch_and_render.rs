@@ -12,8 +12,9 @@ use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Parser};
 use common::args::{
-  AllowPartialArgs, AnimationTimeArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, LayoutParallelArgs,
-  MediaArgs, MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs, ViewportArgs,
+  AllowPartialArgs, AnimationTimeArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, JsExecutionArgs,
+  LayoutParallelArgs, MediaArgs, MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs,
+  ViewportArgs,
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
@@ -115,6 +116,9 @@ struct Args {
 
   #[command(flatten)]
   compat: CompatArgs,
+
+  #[command(flatten)]
+  js: JsExecutionArgs,
 
   /// Disable serving fresh cached HTTP responses without revalidation
   #[arg(long, action = ArgAction::SetTrue)]

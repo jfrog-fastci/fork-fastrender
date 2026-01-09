@@ -24,6 +24,7 @@ pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod host_document;
 pub mod html_scripting;
+pub mod options;
 pub mod orchestrator;
 pub mod browser_tab;
 pub mod script_blocking_stylesheets;
@@ -45,6 +46,7 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
   TaskSource, TimerId,
 };
+pub use options::JsExecutionOptions;
 pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};
 pub use ecma_embed::{
   HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,

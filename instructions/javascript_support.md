@@ -82,6 +82,14 @@ JavaScript is hostile input. The JS engine must be safe to run:
 - **Deterministic tests**: conformance fixtures must be offline and stable; avoid “live web” as the
   primary correctness gate.
 
+### Execution budgets: where limits are enforced
+
+FastRender enforces JS safety via multiple layers: OS/process caps, renderer-wide cooperative
+deadlines, host event-loop limits, and (eventually) VM instruction/heap/stack budgets.
+
+See [`docs/js_execution_budgets.md`](../docs/js_execution_budgets.md) and
+[`fastrender::js::JsExecutionOptions`](../src/js/options.rs) for the configuration surface.
+
 ## Architecture: how JS plugs into the renderer
 
 ### A) Keep the pipeline staged, but allow JS to mutate DOM

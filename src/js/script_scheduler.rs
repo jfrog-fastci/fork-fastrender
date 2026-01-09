@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use super::{EventLoop, ScriptElementSpec, ScriptType, TaskSource};
+use super::{EventLoop, JsExecutionOptions, ScriptElementSpec, ScriptType, TaskSource};
 
 /// A minimal script loader interface used by the script scheduler.
 ///
@@ -65,6 +65,7 @@ pub struct ClassicScriptScheduler<Host>
 where
   Host: ScriptLoader + ScriptExecutor,
 {
+  options: JsExecutionOptions,
   parsing_finished: bool,
 
   async_pending: HashMap<<Host as ScriptLoader>::Handle, ScriptElementSpec>,
@@ -80,6 +81,7 @@ where
 {
   fn default() -> Self {
     Self {
+      options: JsExecutionOptions::default(),
       parsing_finished: false,
       async_pending: HashMap::new(),
       defer_scripts: Vec::new(),
@@ -97,6 +99,14 @@ where
     Self::default()
   }
 
+  pub fn with_options(options: JsExecutionOptions) -> Self {
+    Self { options, ..Self::default() }
+  }
+
+  pub fn options(&self) -> JsExecutionOptions {
+    self.options
+  }
+
   /// Handle a `<script>` element encountered during parsing / insertion.
   pub fn handle_script(
     &mut self,
@@ -111,6 +121,9 @@ where
 
     // Inline scripts execute immediately (async/defer ignored).
     if spec.src.is_none() {
+      self
+        .options
+        .check_script_source(&spec.inline_text, "source=inline")?;
       // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
       // parser-inserted script when the JS execution context stack is empty.
       //
@@ -170,6 +183,9 @@ where
       event_loop.perform_microtask_checkpoint(host)?;
     }
     let script_text = host.load_blocking(src_url)?;
+    self
+      .options
+      .check_script_source(&script_text, &format!("source=external url={src_url}"))?;
     {
       let _stage_guard = StageGuard::install(Some(RenderStage::Script));
       record_stage(StageHeartbeat::Script);
@@ -182,6 +198,9 @@ where
   /// Poll pending async/defer loads and schedule any newly-completed scripts.
   pub fn poll(&mut self, host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     while let Some((handle, source)) = host.poll_complete()? {
+      self
+        .options
+        .check_script_source(&source, &format!("source=external handle={handle:?}"))?;
       if let Some(spec) = self.async_pending.remove(&handle) {
         Self::queue_script_task(event_loop, spec, source)?;
         continue;
@@ -219,6 +238,9 @@ where
       let Some(source) = entry.source.take() else {
         break;
       };
+      self
+        .options
+        .check_script_source(&source, &format!("source=external defer_idx={}", self.next_defer_to_queue))?;
       let spec = entry
         .spec
         .take()
@@ -542,7 +564,7 @@ mod tests {
   use super::*;
   use crate::dom::parse_html;
   use crate::js::extract_script_elements;
-  use crate::js::{EventLoop, RunLimits, ScriptElementSpec, ScriptType};
+  use crate::js::{EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec, ScriptType};
   use std::collections::VecDeque;
 
   #[derive(Default)]
@@ -758,6 +780,23 @@ mod tests {
 
     assert_eq!(host.log, vec!["microtask".to_string(), "BLOCK".to_string()]);
     Ok(())
+  }
+
+  #[test]
+  fn rejects_inline_scripts_larger_than_max_script_bytes() {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let options = JsExecutionOptions {
+      max_script_bytes: 3,
+      ..JsExecutionOptions::default()
+    };
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
+
+    let err = scheduler
+      .handle_script(&mut host, &mut event_loop, inline_script("ABCD"))
+      .expect_err("expected oversized script to be rejected");
+    assert!(matches!(err, Error::Other(msg) if msg.contains("max_script_bytes")));
+    assert_eq!(host.log, Vec::<String>::new());
   }
 }
 
