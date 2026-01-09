@@ -17,6 +17,17 @@ fn make_executable(path: &Path) {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) {}
 
+#[cfg(unix)]
+fn make_non_executable(path: &Path) {
+  use std::os::unix::fs::PermissionsExt;
+  let mut perms = fs::metadata(path).expect("stat stub executable").permissions();
+  perms.set_mode(0o644);
+  fs::set_permissions(path, perms).expect("chmod stub executable");
+}
+
+#[cfg(not(unix))]
+fn make_non_executable(_path: &Path) {}
+
 fn repo_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     .parent()
@@ -338,5 +349,47 @@ exit 0
   assert!(
     stdout.contains("--viewport 123x456"),
     "expected wrapper to forward VIEWPORT env var; got:\n{stdout}"
+  );
+}
+
+#[test]
+#[cfg(unix)]
+fn cargo_agent_runs_when_scripts_are_not_executable() {
+  let temp = tempdir().expect("tempdir");
+  let scripts_dir = temp.path().join("scripts");
+  fs::create_dir_all(&scripts_dir).expect("create scripts dir");
+
+  let repo = repo_root();
+  let cargo_agent_path = scripts_dir.join("cargo_agent.sh");
+  let run_limited_path = scripts_dir.join("run_limited.sh");
+  fs::copy(repo.join("scripts/cargo_agent.sh"), &cargo_agent_path).expect("copy cargo_agent.sh");
+  fs::copy(repo.join("scripts/run_limited.sh"), &run_limited_path).expect("copy run_limited.sh");
+
+  // Simulate environments where executable bits are not preserved/honored (e.g. some tar/zip
+  // extraction workflows). `bash scripts/cargo_agent.sh ...` should still be able to invoke
+  // `run_limited.sh` without hitting "Permission denied".
+  make_non_executable(&cargo_agent_path);
+  make_non_executable(&run_limited_path);
+
+  let output = Command::new("bash")
+    .current_dir(temp.path())
+    .arg(cargo_agent_path)
+    .arg("--version")
+    .output()
+    .expect("run cargo_agent.sh --version");
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    output.status.success(),
+    "expected cargo_agent to succeed even when scripts are non-executable.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+  );
+  assert!(
+    !stderr.contains("Permission denied"),
+    "expected cargo_agent to not fail with Permission denied.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("cargo_agent:"),
+    "expected cargo_agent to print its slot banner.\nstdout:\n{stdout}\nstderr:\n{stderr}"
   );
 }

@@ -129,7 +129,7 @@ run_cargo() {
     return $?
   fi
 
-  "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
+  bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
   return $?
 }
 

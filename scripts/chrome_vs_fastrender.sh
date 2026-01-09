@@ -421,9 +421,9 @@ if [[ "${NO_CHROME}" -eq 1 ]]; then
 else
   set +e
   if [[ "${#FILTERS[@]}" -gt 0 ]]; then
-    scripts/chrome_baseline.sh "${chrome_args[@]}" -- "${FILTERS[@]}"
+    bash "${ROOT}/scripts/chrome_baseline.sh" "${chrome_args[@]}" -- "${FILTERS[@]}"
   else
-    scripts/chrome_baseline.sh "${chrome_args[@]}"
+    bash "${ROOT}/scripts/chrome_baseline.sh" "${chrome_args[@]}"
   fi
   chrome_status=$?
   set -e

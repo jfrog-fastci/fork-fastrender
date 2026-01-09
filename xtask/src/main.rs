@@ -30,7 +30,7 @@ fn main() -> Result<()> {
   match cli.command {
     Commands::Test(args) => run_tests(args),
     Commands::UpdateGoldens(args) => run_update_goldens(args),
-    Commands::Js(args) => run_js(args),
+    Commands::Js(args) => js::run_js(args),
     Commands::RenderPage(args) => run_render_page(args),
     Commands::Pageset(args) => run_pageset(args),
     Commands::PagesetDiff(args) => run_pageset_diff(args),
@@ -60,7 +60,6 @@ fn main() -> Result<()> {
       validate_page_fixtures::run_validate_page_fixtures(args)
     }
     Commands::PerfSmoke(args) => run_perf_smoke(args),
-    Commands::Js(args) => js::run_js(args),
     Commands::LintNoPanics(args) => {
       let repo_root = repo_root();
       lint_no_panics::run_lint_no_panics(&repo_root, args)
@@ -88,8 +87,8 @@ enum Commands {
   Test(TestArgs),
   /// Refresh checked-in render goldens (fixtures, reference images, WPT)
   UpdateGoldens(UpdateGoldensArgs),
-  /// JavaScript conformance harness wrappers (test262)
-  Js(JsArgs),
+  /// JavaScript workflows (conformance, harnesses, etc.)
+  Js(js::JsArgs),
   /// Render a single page via the fetch_and_render binary
   RenderPage(RenderPageArgs),
   /// Fetch pages, prefetch subresources, and update the committed pageset scoreboard (`progress/pages/*.json`)
@@ -128,8 +127,6 @@ enum Commands {
   ),
   /// Run the offline perf smoke harness (`perf_smoke` binary) over curated fixtures
   PerfSmoke(PerfSmokeArgs),
-  /// JavaScript workflows (conformance, harnesses, etc.)
-  Js(js::JsArgs),
   /// Ensure checked-in page fixtures do not reference network resources (offline invariant)
   ValidatePageFixtures(validate_page_fixtures::ValidatePageFixturesArgs),
   /// Regenerate the Unicode emoji property tables used by the renderer.
@@ -140,110 +137,6 @@ enum Commands {
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
   WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),
-}
-
-const DEFAULT_TEST262_SEMANTIC_MANIFEST: &str = "tests/js/test262_semantic_expectations.toml";
-const DEFAULT_TEST262_PARSER_MANIFEST: &str = "tests/js/test262_parser_expectations.toml";
-const DEFAULT_TEST262_SEMANTIC_REPORT: &str = "target/js/test262.json";
-const DEFAULT_TEST262_PARSER_REPORT: &str = "target/js/test262-parser.json";
-const TEST262_SEMANTIC_DIR: &str = "engines/ecma-rs/test262-semantic/data";
-const TEST262_PARSER_DIR: &str = "engines/ecma-rs/test262/data";
-const DEFAULT_TEST262_SEMANTIC_SUITE: &str = "smoke";
-
-#[derive(Args)]
-struct JsArgs {
-  #[command(subcommand)]
-  command: JsCommand,
-}
-
-#[derive(Subcommand)]
-enum JsCommand {
-  /// Run the curated test262 language semantics suite (ecma-rs `test262-semantic`).
-  Test262(JsTest262Args),
-  /// Run the test262 parser harness (ecma-rs `test262`).
-  #[command(name = "test262-parser")]
-  Test262Parser(JsTest262ParserArgs),
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum JsFailOn {
-  All,
-  New,
-  None,
-}
-
-impl JsFailOn {
-  fn as_cli_value(self) -> &'static str {
-    match self {
-      Self::All => "all",
-      Self::New => "new",
-      Self::None => "none",
-    }
-  }
-}
-
-#[derive(Args)]
-struct JsTest262Args {
-  /// Built-in suite(s) to run (can be passed multiple times).
-  ///
-  /// Defaults to the minimal curated `smoke` suite from the ecma-rs runner.
-  #[arg(long, value_name = "NAME")]
-  suite: Vec<String>,
-
-  /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
-  #[arg(long, value_name = "PATH")]
-  manifest: Option<PathBuf>,
-
-  /// Where to write the JSON report.
-  #[arg(long, value_name = "PATH", default_value = DEFAULT_TEST262_SEMANTIC_REPORT)]
-  report: PathBuf,
-
-  /// Run only the given shard (format: <index>/<total>, 0-based).
-  #[arg(long, value_parser = parse_shard)]
-  shard: Option<(usize, usize)>,
-
-  /// Per-test timeout in seconds (best-effort cooperative cancellation).
-  #[arg(long)]
-  timeout_secs: Option<u64>,
-
-  /// Control which mismatches cause a non-zero exit code.
-  #[arg(long, value_enum, default_value_t = JsFailOn::New)]
-  fail_on: JsFailOn,
-
-  /// Glob or regex to filter tests by id (after suite selection).
-  #[arg(long)]
-  filter: Option<String>,
-
-  /// Extra arguments forwarded to the ecma-rs `test262-semantic` runner (use `--` before these).
-  #[arg(last = true)]
-  extra: Vec<String>,
-}
-
-#[derive(Args)]
-struct JsTest262ParserArgs {
-  /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
-  #[arg(long, value_name = "PATH")]
-  manifest: Option<PathBuf>,
-
-  /// Where to write the JSON report.
-  #[arg(long, value_name = "PATH", default_value = DEFAULT_TEST262_PARSER_REPORT)]
-  report: PathBuf,
-
-  /// Run only the given shard (format: <index>/<total>, 0-based).
-  #[arg(long, value_parser = parse_shard)]
-  shard: Option<(usize, usize)>,
-
-  /// Per-test timeout in seconds (best-effort cooperative cancellation).
-  #[arg(long)]
-  timeout_secs: Option<u64>,
-
-  /// Control which mismatches cause a non-zero exit code.
-  #[arg(long, value_enum, default_value_t = JsFailOn::New)]
-  fail_on: JsFailOn,
-
-  /// Extra arguments forwarded to the ecma-rs `test262` runner (use `--` before these).
-  #[arg(last = true)]
-  extra: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1016,174 +909,6 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
   }
 
   Ok(())
-}
-
-fn run_js(args: JsArgs) -> Result<()> {
-  match args.command {
-    JsCommand::Test262(args) => run_js_test262(args),
-    JsCommand::Test262Parser(args) => run_js_test262_parser(args),
-  }
-}
-
-fn run_js_test262(args: JsTest262Args) -> Result<()> {
-  let repo_root = repo_root();
-  let ecma_rs_manifest = repo_root.join("engines/ecma-rs/Cargo.toml");
-  if !ecma_rs_manifest.is_file() {
-    bail!(
-      "Missing engines/ecma-rs submodule checkout (expected {}).\n\
-       Run: git submodule update --init engines/ecma-rs",
-      ecma_rs_manifest.display()
-    );
-  }
-
-  let test262_dir = repo_root.join(TEST262_SEMANTIC_DIR);
-  if !test262_dir.is_dir() {
-    bail!(
-      "Missing test262 semantic corpus at {}.\n\
-       Run: git -C engines/ecma-rs submodule update --init test262-semantic/data",
-      test262_dir.display()
-    );
-  }
-
-  let manifest = args
-    .manifest
-    .unwrap_or_else(|| PathBuf::from(DEFAULT_TEST262_SEMANTIC_MANIFEST));
-  let manifest = if manifest.is_absolute() {
-    manifest
-  } else {
-    repo_root.join(manifest)
-  };
-  if !manifest.is_file() {
-    bail!(
-      "Expectations manifest {} is missing.\n\
-       Either create it (even as an empty TOML file) or pass --manifest <PATH>.",
-      manifest.display()
-    );
-  }
-
-  let report = if args.report.is_absolute() {
-    args.report
-  } else {
-    repo_root.join(args.report)
-  };
-  if let Some(parent) = report.parent() {
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-  }
-
-  let suites = if args.suite.is_empty() {
-    vec![DEFAULT_TEST262_SEMANTIC_SUITE.to_string()]
-  } else {
-    args.suite
-  };
-
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .arg("--manifest-path")
-    .arg(ecma_rs_manifest)
-    .args(["-p", "test262-semantic"])
-    .arg("--")
-    .arg("--test262-dir")
-    .arg(TEST262_SEMANTIC_DIR);
-  for suite in suites {
-    cmd.arg("--suite").arg(suite);
-  }
-  cmd
-    .arg("--manifest")
-    .arg(manifest)
-    .arg("--report-path")
-    .arg(report)
-    .arg("--fail-on")
-    .arg(args.fail_on.as_cli_value());
-  if let Some((index, total)) = args.shard {
-    cmd.arg("--shard").arg(format!("{index}/{total}"));
-  }
-  if let Some(timeout_secs) = args.timeout_secs {
-    cmd.arg("--timeout-secs").arg(timeout_secs.to_string());
-  }
-  if let Some(filter) = args.filter {
-    cmd.arg("--filter").arg(filter);
-  }
-  cmd.args(args.extra);
-
-  cmd.current_dir(&repo_root);
-  println!("Running test262 semantic suite...");
-  run_command(cmd)
-}
-
-fn run_js_test262_parser(args: JsTest262ParserArgs) -> Result<()> {
-  let repo_root = repo_root();
-  let ecma_rs_manifest = repo_root.join("engines/ecma-rs/Cargo.toml");
-  if !ecma_rs_manifest.is_file() {
-    bail!(
-      "Missing engines/ecma-rs submodule checkout (expected {}).\n\
-       Run: git submodule update --init engines/ecma-rs",
-      ecma_rs_manifest.display()
-    );
-  }
-
-  let test262_dir = repo_root.join(TEST262_PARSER_DIR);
-  if !test262_dir.is_dir() {
-    bail!(
-      "Missing test262 parser corpus at {}.\n\
-       Run: git -C engines/ecma-rs submodule update --init test262/data",
-      test262_dir.display()
-    );
-  }
-
-  let manifest = args
-    .manifest
-    .unwrap_or_else(|| PathBuf::from(DEFAULT_TEST262_PARSER_MANIFEST));
-  let manifest = if manifest.is_absolute() {
-    manifest
-  } else {
-    repo_root.join(manifest)
-  };
-  if !manifest.is_file() {
-    bail!(
-      "Expectations manifest {} is missing.\n\
-       Either create it (even as an empty TOML file) or pass --manifest <PATH>.",
-      manifest.display()
-    );
-  }
-
-  let report = if args.report.is_absolute() {
-    args.report
-  } else {
-    repo_root.join(args.report)
-  };
-  if let Some(parent) = report.parent() {
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-  }
-
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .arg("--manifest-path")
-    .arg(ecma_rs_manifest)
-    .args(["-p", "test262"])
-    .arg("--")
-    .arg("--data-dir")
-    .arg(TEST262_PARSER_DIR)
-    .arg("--manifest")
-    .arg(manifest)
-    .arg("--report-path")
-    .arg(report)
-    .arg("--fail-on")
-    .arg(args.fail_on.as_cli_value());
-  if let Some((index, total)) = args.shard {
-    cmd.arg("--shard").arg(format!("{index}/{total}"));
-  }
-  if let Some(timeout_secs) = args.timeout_secs {
-    cmd.arg("--timeout-secs").arg(timeout_secs.to_string());
-  }
-  cmd.args(args.extra);
-
-  cmd.current_dir(&repo_root);
-  println!("Running test262 parser harness...");
-  run_command(cmd)
 }
 
 fn run_pageset(args: PagesetArgs) -> Result<()> {

@@ -27,6 +27,12 @@ scripts/run_limited.sh --as 64G -- \
   cargo bench --bench selector_bloom_bench
 ```
 
+If your checkout lost executable bits, invoke the wrapper explicitly with bash:
+
+```bash
+bash scripts/run_limited.sh --as 64G -- cargo --version
+```
+
 If `cargo` itself fails early with an `out of memory` message, bump `--as` (the Rust toolchain can
 reserve a surprisingly large amount of virtual address space even when RSS is low).
 
@@ -148,6 +154,8 @@ Example:
 scripts/cargo_agent.sh build --release
 scripts/cargo_agent.sh test --lib
 ```
+
+(`bash scripts/cargo_agent.sh ...` also works if the executable bit isn't set.)
 
 ## Bench safety
 

@@ -151,7 +151,7 @@ for raw_dpr in "${DPR_VALUES[@]}"; do
   stem="${base_stem}_dpr_${dpr_stem}"
 
   echo "Running chrome_baseline.sh (dpr=${dpr})..."
-  if ! scripts/chrome_baseline.sh \
+  if ! bash "${REPO_ROOT}/scripts/chrome_baseline.sh" \
     --html-dir "${html_dir}" \
     --out-dir "${out_dir}" \
     --viewport "${VIEWPORT}" \
@@ -358,7 +358,7 @@ done
 
 if [[ -n "${fixture_stem}" ]]; then
   echo "Running chrome_baseline.sh (fixture, dpr=1.0)..."
-  if ! scripts/chrome_baseline.sh \
+  if ! bash "${REPO_ROOT}/scripts/chrome_baseline.sh" \
     --html-dir "${html_dir}" \
     --out-dir "${out_dir}" \
     --viewport "${VIEWPORT}" \

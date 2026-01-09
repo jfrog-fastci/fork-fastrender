@@ -72,6 +72,9 @@ scripts/cargo_agent.sh test --quiet --lib
 scripts/cargo_agent.sh test --test layout_tests
 scripts/cargo_agent.sh check -p fastrender
 
+# If your checkout lost executable bits (e.g. zip/tarball downloads), invoking via `bash` is fine:
+bash scripts/cargo_agent.sh check -p fastrender
+
 # WRONG — WILL DESTROY HOST:
 cargo test
 cargo build --all-targets
