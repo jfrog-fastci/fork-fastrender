@@ -129,6 +129,10 @@ const JS_BOOTSTRAP: &str = r##"
     g.__fastrender_dom_insert_before(this.__h, child.__h, refHandle);
     return child;
   };
+  Node.prototype.replaceChild = function (child, oldChild) {
+    g.__fastrender_dom_replace_child(this.__h, child.__h, oldChild.__h);
+    return oldChild;
+  };
 
   function wrap(handle) { return handle ? new Node(handle) : null; }
 
@@ -212,6 +216,17 @@ const JS_BOOTSTRAP: &str = r##"
   };
 })();
 "##;
+
+fn insertion_roots_for_dom_insert(dom: &Document, node: NodeId) -> Vec<NodeId> {
+  if matches!(dom.node(node).kind, NodeKind::DocumentFragment) {
+    dom
+      .children(node)
+      .expect("failed to read fragment children")
+      .to_vec()
+  } else {
+    vec![node]
+  }
+}
 
 struct ScriptLoaderState {
   sources: HashMap<String, String>,
@@ -429,17 +444,7 @@ impl HostState {
               let child = host
                 .resolve_node_handle(child)
                 .expect("invalid child node handle");
-              let insertion_roots: Vec<NodeId> = {
-                let dom = &host.dom;
-                if matches!(dom.node(child).kind, NodeKind::DocumentFragment) {
-                  dom
-                    .children(child)
-                    .expect("failed to read fragment children")
-                    .to_vec()
-                } else {
-                  vec![child]
-                }
-              };
+              let insertion_roots = insertion_roots_for_dom_insert(&host.dom, child);
               let changed = host
                 .dom
                 .append_child(parent, child)
@@ -478,20 +483,45 @@ impl HostState {
                 )
               };
               let insertion_roots: Vec<NodeId> = {
-                let dom = &host.dom;
-                if matches!(dom.node(child).kind, NodeKind::DocumentFragment) {
-                  dom
-                    .children(child)
-                    .expect("failed to read fragment children")
-                    .to_vec()
-                } else {
-                  vec![child]
-                }
+                insertion_roots_for_dom_insert(&host.dom, child)
               };
               let changed = host
                 .dom
                 .insert_before(parent, child, reference)
                 .expect("insertBefore failed");
+              if !changed {
+                return;
+              }
+
+              let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              for root in insertion_roots {
+                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
+                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
+              }
+              host.script_scheduler = scheduler;
+            })
+          })?,
+        )?;
+
+        globals.set(
+          "__fastrender_dom_replace_child",
+          Function::new(ctx.clone(), |parent: u32, new_child: u32, old_child: u32| {
+            with_env_mut(|host, event_loop| {
+              let parent = host
+                .resolve_node_handle(parent)
+                .expect("invalid parent node handle");
+              let new_child = host
+                .resolve_node_handle(new_child)
+                .expect("invalid child node handle");
+              let old_child = host
+                .resolve_node_handle(old_child)
+                .expect("invalid old child node handle");
+              let insertion_roots = insertion_roots_for_dom_insert(&host.dom, new_child);
+
+              let changed = host
+                .dom
+                .replace_child(parent, new_child, old_child)
+                .expect("replaceChild failed");
               if !changed {
                 return;
               }
