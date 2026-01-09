@@ -5236,6 +5236,7 @@ mod tests {
     let props = MathLayoutContext::operator_default_properties("∫", OperatorForm::Prefix);
     assert!(props.large_op, "integral should default to largeop");
     assert!(props.stretchy, "integral should default to stretchy");
+    assert!(props.movable_limits, "integral should default to movablelimits");
   }
 
   #[test]

@@ -379,32 +379,32 @@ static OPERATOR_DICT: &[OperatorDictEntry] = &[
   OperatorDictEntry {
     text: "∫",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
   OperatorDictEntry {
     text: "∬",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
   OperatorDictEntry {
     text: "∭",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
   OperatorDictEntry {
     text: "∮",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
   OperatorDictEntry {
     text: "∯",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
   OperatorDictEntry {
     text: "∰",
     form: OperatorForm::Infix,
-    props: props(false, false, true, true, false, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
+    props: props(false, false, true, true, true, MathLengthOrKeyword::Thin, MathLengthOrKeyword::Thin),
   },
 ];
 

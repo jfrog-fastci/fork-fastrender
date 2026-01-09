@@ -689,7 +689,7 @@ mod tests {
     Null,
     Bool(bool),
     Number(f64),
-    BigInt,
+    BigInt(String),
     String(String),
     BigInt,
     Object,
@@ -889,7 +889,7 @@ mod tests {
           Value::Null => CapturedConsoleArg::Null,
           Value::Bool(b) => CapturedConsoleArg::Bool(b),
           Value::Number(n) => CapturedConsoleArg::Number(n),
-          Value::BigInt(_) => CapturedConsoleArg::BigInt,
+          Value::BigInt(b) => CapturedConsoleArg::BigInt(b.to_decimal_string()),
           Value::String(s) => CapturedConsoleArg::String(
             heap
               .get_string(s)

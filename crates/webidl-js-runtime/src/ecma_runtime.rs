@@ -1393,13 +1393,15 @@ fn number_to_bigint(rt: &mut VmJsRuntime, n: f64) -> Result<JsBigInt, VmError> {
   if n.fract() != 0.0 {
     return Err(rt.throw_range_error("Cannot convert a non-integer number to a BigInt"));
   }
-
+  // BigInt does not have a distinct -0 value; treat both +0 and -0 as 0n.
+  if n == 0.0 {
+    return Ok(JsBigInt::zero());
+  }
   let negative = n.is_sign_negative();
   let abs = n.abs();
   if abs > (u128::MAX as f64) {
     return Err(rt.throw_range_error("BigInt conversion overflow"));
   }
-
   let mag = abs as u128;
   let mut out = JsBigInt::from_u128(mag);
   if negative {
@@ -1503,6 +1505,10 @@ mod tests {
     assert_eq!(rt.to_number(Value::Null).unwrap(), 0.0);
     assert_eq!(rt.to_number(Value::Bool(true)).unwrap(), 1.0);
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
+    assert!(matches!(
+      rt.to_number(Value::BigInt(JsBigInt::from_u128(1))).unwrap_err(),
+      VmError::Throw(_)
+    ));
     let s = rt.alloc_string_value("  123  ").unwrap();
     assert_eq!(rt.to_number(s).unwrap(), 123.0);
     assert!(matches!(
@@ -1570,11 +1576,20 @@ mod tests {
       Value::BigInt(JsBigInt::from_u128(42))
     );
 
-    let s = rt.alloc_string_value("-0x10").unwrap();
+    let s = rt.alloc_string_value("0x10").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(16))
+    );
+
+    let s = rt.alloc_string_value("-16").unwrap();
     assert_eq!(
       rt.to_bigint(s).unwrap(),
       Value::BigInt(JsBigInt::from_u128(16).negate())
     );
+
+    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(2))).unwrap();
+    assert_eq!(rt.to_bigint(obj).unwrap(), Value::BigInt(JsBigInt::from_u128(2)));
   }
 
   #[test]

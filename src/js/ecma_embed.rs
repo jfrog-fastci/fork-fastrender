@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vm_js::{
-  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope,
-  SourceText, StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
+  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope, SourceText,
+  StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
 };
 
 const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
