@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nested float:right uses inner containing block width even when float context is inherited</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  .outer {
+    width: 200px;
+  }
+
+  .inner {
+    width: 100px;
+    height: 10px;
+    background: #0f0;
+  }
+
+  .float {
+    float: right;
+    width: 20px;
+    height: 10px;
+    background: #f00;
+  }
+</style>
+<div class="outer"><div class="inner"><div class="float"></div></div></div>

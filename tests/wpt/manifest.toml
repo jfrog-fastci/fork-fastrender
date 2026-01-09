@@ -769,6 +769,18 @@ width = 100
 height = 20
 
 [[tests]]
+id = "layout/floats/float-inherited-width-001"
+path = "layout/floats/float-inherited-width-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 10
+
+[[tests]]
 id = "layout/floats/line-box-left-float-001"
 path = "layout/floats/line-box-left-float-001.html"
 test_type = "visual"
