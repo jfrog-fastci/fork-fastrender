@@ -3196,6 +3196,7 @@ impl GridFormattingContext {
   }
 
   fn resolve_length_px(&self, len: &Length, style: &ComputedStyle) -> Option<f32> {
+    use crate::style::values::LengthUnit::Calc;
     use crate::style::values::LengthUnit::Ch;
     use crate::style::values::LengthUnit::Cm;
     use crate::style::values::LengthUnit::Em;
@@ -3208,6 +3209,20 @@ impl GridFormattingContext {
     use crate::style::values::LengthUnit::Px;
     use crate::style::values::LengthUnit::Rem;
     match len.unit {
+      Calc => {
+        if len.has_percentage() {
+          return None;
+        }
+        resolve_length_with_percentage_metrics(
+          *len,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        )
+      }
       Percent => None,
       Px | Pt | In | Cm | Mm | Pc => Some(len.to_px()),
       Rem => Some(len.value * style.root_font_size),
