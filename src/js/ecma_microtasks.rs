@@ -131,13 +131,13 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       // host hook adapter for each run so nested jobs are queued onto the same microtask queue.
       let mut hooks = VmJsHostHooks::new(event_loop);
       let mut ctx = VmJsJobContext { host, realm };
-      let mut job = job_cell_for_closure
+      let job = job_cell_for_closure
         .borrow_mut()
         .take()
         .expect("vm-js promise job should run at most once");
-      let job_result = job
-        .run(&mut ctx, &mut hooks)
-        .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
+      let job_result =
+        job.run(&mut ctx, &mut hooks)
+          .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
       drop(ctx);
 
       let enqueue_err = hooks.finish(host);
