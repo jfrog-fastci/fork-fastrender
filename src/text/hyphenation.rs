@@ -221,7 +221,13 @@ impl SupportedLanguage {
   /// assert_eq!(SupportedLanguage::parse("de"), Some(SupportedLanguage::German));
   /// ```
   pub fn parse(code: &str) -> Option<Self> {
-    let code_lower = code.to_ascii_lowercase();
+    let mut code_lower = code.to_ascii_lowercase();
+    // Be tolerant of locale-style tags like `en_US` (underscores instead of BCP47 hyphens).
+    // Real-world pages occasionally use these in `lang=""` attributes; treating them as equivalent
+    // avoids accidentally disabling `hyphens:auto` for otherwise-supported languages.
+    if code_lower.contains('_') {
+      code_lower = code_lower.replace('_', "-");
+    }
     let code_lower = code_lower.as_str();
 
     match code_lower {
@@ -763,6 +769,10 @@ mod tests {
       Some(SupportedLanguage::EnglishUS)
     );
     assert_eq!(
+      SupportedLanguage::parse("en_US"),
+      Some(SupportedLanguage::EnglishUS)
+    );
+    assert_eq!(
       SupportedLanguage::parse("de"),
       Some(SupportedLanguage::German)
     );
@@ -781,6 +791,7 @@ mod tests {
     assert!(hyphenator.is_ok());
 
     // Non-English languages should load when their embedded patterns are enabled.
+    assert!(Hyphenator::new("en_US").is_ok());
     assert!(Hyphenator::new("en-gb").is_ok());
     assert!(Hyphenator::new("de").is_ok());
     assert!(Hyphenator::new("fr").is_ok());
