@@ -448,6 +448,36 @@ fn repaint_with_animation_composition_add_combines_filter_drop_shadow() -> Resul
 }
 
 #[test]
+fn repaint_with_animation_composition_add_combines_filter_brightness() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(64, 0, 0);
+        filter: none;
+        animation-name: f1, f2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-composition: add;
+      }
+      @keyframes f1 { from { filter: brightness(2); } to { filter: brightness(2); } }
+      @keyframes f2 { from { filter: brightness(2); } to { filter: brightness(2); } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(20, 20))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  // Two `brightness(2)` filters add against the identity `brightness(1)`, yielding `brightness(3)`.
+  assert_eq!(pixel(&mid, 5, 5), (192, 0, 0, 255));
+  assert_eq!(pixel(&mid, 15, 15), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_translate_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
@@ -819,6 +849,43 @@ fn repaint_with_animation_composition_accumulate_accumulates_filter_drop_shadow_
   // At t=1500ms we are halfway through the second iteration: 5px + (10px - 0px) = 15px.
   assert_eq!(pixel(&mid_second, 25, 15), (0, 0, 0, 255));
   assert_eq!(pixel(&mid_second, 30, 15), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_accumulate_accumulates_filter_brightness_iterations(
+) -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(64, 0, 0);
+        filter: brightness(1);
+        animation-name: bright;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes bright {
+        from { filter: brightness(1); }
+        to { filter: brightness(2); }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(20, 20))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // At t=1500ms we are halfway through the second iteration:
+  // brightness(1.5) + (brightness(2) - brightness(1)) = brightness(2.5).
+  assert_eq!(pixel(&mid_second, 5, 5), (160, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 15, 15), (255, 255, 255, 255));
   Ok(())
 }
 

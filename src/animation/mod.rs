@@ -661,6 +661,14 @@ fn resolved_filters_from_functions(filters: &[FilterFunction]) -> Vec<ResolvedFi
 fn filter_identity_like(filter: &ResolvedFilter) -> Option<ResolvedFilter> {
   Some(match filter {
     ResolvedFilter::Blur(_) => ResolvedFilter::Blur(0.0),
+    ResolvedFilter::Brightness(_) => ResolvedFilter::Brightness(1.0),
+    ResolvedFilter::Contrast(_) => ResolvedFilter::Contrast(1.0),
+    ResolvedFilter::Grayscale(_) => ResolvedFilter::Grayscale(0.0),
+    ResolvedFilter::Sepia(_) => ResolvedFilter::Sepia(0.0),
+    ResolvedFilter::Saturate(_) => ResolvedFilter::Saturate(1.0),
+    ResolvedFilter::HueRotate(_) => ResolvedFilter::HueRotate(0.0),
+    ResolvedFilter::Invert(_) => ResolvedFilter::Invert(0.0),
+    ResolvedFilter::Opacity(_) => ResolvedFilter::Opacity(1.0),
     ResolvedFilter::DropShadow(shadow) => ResolvedFilter::DropShadow(ResolvedShadow {
       offset_x: 0.0,
       offset_y: 0.0,
@@ -684,6 +692,56 @@ fn add_resolved_filter_list(a: &[ResolvedFilter], b: &[ResolvedFilter]) -> Optio
               return None;
             }
             ResolvedFilter::Blur((a + b).max(0.0))
+          }
+          (ResolvedFilter::Brightness(a), ResolvedFilter::Brightness(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            // Treat filter values as offsets from their identity value for additive composition.
+            // `brightness(1)` is the neutral filter (no-op).
+            ResolvedFilter::Brightness((a + b - 1.0).max(0.0))
+          }
+          (ResolvedFilter::Contrast(a), ResolvedFilter::Contrast(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Contrast((a + b - 1.0).max(0.0))
+          }
+          (ResolvedFilter::Grayscale(a), ResolvedFilter::Grayscale(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Grayscale((a + b).clamp(0.0, 1.0))
+          }
+          (ResolvedFilter::Sepia(a), ResolvedFilter::Sepia(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Sepia((a + b).clamp(0.0, 1.0))
+          }
+          (ResolvedFilter::Saturate(a), ResolvedFilter::Saturate(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Saturate((a + b - 1.0).max(0.0))
+          }
+          (ResolvedFilter::HueRotate(a), ResolvedFilter::HueRotate(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::HueRotate(a + b)
+          }
+          (ResolvedFilter::Invert(a), ResolvedFilter::Invert(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Invert((a + b).clamp(0.0, 1.0))
+          }
+          (ResolvedFilter::Opacity(a), ResolvedFilter::Opacity(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Opacity((a + b - 1.0).clamp(0.0, 1.0))
           }
           (ResolvedFilter::DropShadow(a), ResolvedFilter::DropShadow(b)) => {
             if !a.offset_x.is_finite()
@@ -768,6 +826,70 @@ fn accumulate_resolved_filter_list(
         }
         let delta = end - start;
         ResolvedFilter::Blur((cur + iter * delta).max(0.0))
+      }
+      (
+        ResolvedFilter::Brightness(cur),
+        ResolvedFilter::Brightness(start),
+        ResolvedFilter::Brightness(end),
+      ) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Brightness((cur + iter * delta).max(0.0))
+      }
+      (ResolvedFilter::Contrast(cur), ResolvedFilter::Contrast(start), ResolvedFilter::Contrast(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Contrast((cur + iter * delta).max(0.0))
+      }
+      (ResolvedFilter::Grayscale(cur), ResolvedFilter::Grayscale(start), ResolvedFilter::Grayscale(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Grayscale((cur + iter * delta).clamp(0.0, 1.0))
+      }
+      (ResolvedFilter::Sepia(cur), ResolvedFilter::Sepia(start), ResolvedFilter::Sepia(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Sepia((cur + iter * delta).clamp(0.0, 1.0))
+      }
+      (ResolvedFilter::Saturate(cur), ResolvedFilter::Saturate(start), ResolvedFilter::Saturate(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Saturate((cur + iter * delta).max(0.0))
+      }
+      (
+        ResolvedFilter::HueRotate(cur),
+        ResolvedFilter::HueRotate(start),
+        ResolvedFilter::HueRotate(end),
+      ) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::HueRotate(cur + iter * delta)
+      }
+      (ResolvedFilter::Invert(cur), ResolvedFilter::Invert(start), ResolvedFilter::Invert(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Invert((cur + iter * delta).clamp(0.0, 1.0))
+      }
+      (ResolvedFilter::Opacity(cur), ResolvedFilter::Opacity(start), ResolvedFilter::Opacity(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Opacity((cur + iter * delta).clamp(0.0, 1.0))
       }
       (
         ResolvedFilter::DropShadow(cur),
