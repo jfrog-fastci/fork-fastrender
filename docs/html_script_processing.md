@@ -13,25 +13,37 @@ implementers from having to “rediscover” scattered HTML Standard details whe
 module scripts/import maps later.
 
 ## Status in this repository (reality check)
-FastRender currently has **scaffolding**, but not the full parser-integrated script execution path.
-The pieces that exist today:
+FastRender now has a **streaming parse-time pipeline** for classic `<script>` discovery + scheduling,
+backed by `dom2`. The important pieces are:
 
-- `src/js/mod.rs`
-  - `ScriptType` + `determine_script_type()` implement the spec’s *script block type string* logic
-    (classic/module/importmap/unknown).
-  - `ScriptElementSpec` is a scheduler-friendly “flattened” `<script>` record.
-- `src/js/dom_scripts.rs`
-  - `extract_script_elements()` traverses a fully-parsed `crate::dom::DomNode` tree and extracts
-    `<script>` elements in document order (skipping `<template>` contents + shadow roots).
-  - Note: this is inherently **post-parse**, so it cannot model parser-blocking scripts.
-- `src/js/event_loop.rs`
-  - A minimal HTML-shaped `EventLoop` with a task queue and a microtask queue, including explicit
-    microtask checkpoint draining.
-- `src/dom2/`
-  - A mutable DOM representation (`dom2::Document`) suitable for JS bindings.
+- **HTML parsing (pause/resume at `</script>`):**
+  - `src/html/pausable_html5ever.rs`: wraps html5ever so the host can observe
+    `TokenizerResult::Script` suspension points (html5ever’s built-in driver currently loops past
+    them).
+  - `src/html/streaming_parser.rs`: streaming parser driver built on `PausableHtml5everParser`,
+    responsible for incremental feeding, pausing at script boundaries, and resuming from the exact
+    input offset.
+- **DOM construction:**
+  - `src/dom2/`: mutable DOM (`dom2::Document`) used by JS bindings and script-visible mutations.
+  - **dom2 TreeSink:** the html5ever `TreeSink` implementation for `dom2::Document` lives under
+    `src/dom2/` (search for the `impl html5ever::tree_builder::TreeSink`).
+- **Script scheduling / host orchestration:**
+  - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`)
+    integrated with the HTML-shaped `EventLoop`.
+  - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
+    script block”.
+  - `src/js/event_loop.rs`: task + microtask queues with explicit microtask checkpoint draining.
+  - `src/js/html_scripting.rs`: integration harness used by the end-to-end pipeline tests (Task
+    129).
+- **Legacy tooling (deprecated for execution):**
+  - `src/js/dom_scripts.rs` / `extract_script_elements()`: post-parse DOM scanning for tooling only
+    (not spec-correct for execution).
 
-Everything else in this doc (streaming parser pause/resume, base URL tracking during parse, script
-scheduler state machine, etc.) is the intended architecture for the **classic-script milestone**.
+### How to run tests
+The unit + integration tests for the streaming pipeline live in the `fastrender` crate’s `--lib`
+tests. Run them (scoped) with:
+
+`scripts/cargo_agent.sh test -p fastrender --lib`
 
 ---
 
@@ -84,7 +96,6 @@ we can land a correct classic-script core first:
 - `document.write()` and the “ignore-destructive-writes counter”
 - **Stylesheet-blocking scripts** (scripts that wait for render-blocking stylesheets)
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
-- `Document.currentScript` updates during execution
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
@@ -128,7 +139,7 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 - execute that script (which can mutate the DOM),
 - then resume parsing from the exact byte offset.
 
-**Proposed home:** `src/html/streaming_parser.rs` (new).
+**Home:** `src/html/streaming_parser.rs`.
 
 **Key operations (conceptual):**
 
@@ -150,8 +161,8 @@ so it cannot support correct parser-time script execution.
 
 **Existing home:** `src/dom2/` (`dom2::Document`, `NodeId`, `NodeKind`).
 
-**Missing piece:** an `html5ever::tree_builder::TreeSink` implementation backed by `dom2::Document`.
-This is the bridge between the tokenizer/tree-builder and our mutable DOM.
+**TreeSink:** `dom2` includes an `html5ever::tree_builder::TreeSink` implementation backed by
+`dom2::Document`. This is the bridge between the tokenizer/tree-builder and our mutable DOM.
 
 **Mutable DOM invariants that must always hold:**
 
@@ -190,7 +201,7 @@ resolution timing.
 - decide whether parsing must block, or whether execution is deferred/async,
 - enqueue script execution into the event loop and run microtask checkpoints afterward.
 
-**Proposed home:** `src/js/script_scheduler.rs` (new).
+**Home:** `src/js/script_scheduler.rs`.
 
 **Inputs:**
 
