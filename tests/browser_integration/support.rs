@@ -10,7 +10,11 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
+// Default per-wait timeout used by helpers/tests that don't define their own.
+//
+// Rendering tests can be CPU-heavy and integration tests run in parallel by default; use a
+// reasonably generous timeout to avoid flakiness on busy CI hosts.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);

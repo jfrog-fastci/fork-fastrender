@@ -3,14 +3,12 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-fn next_navigation_committed(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> WorkerToUi {
+fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -20,32 +18,11 @@ fn next_navigation_committed(
   .unwrap_or_else(|| panic!("timed out waiting for NavigationCommitted for tab {tab_id:?}"))
 }
 
-fn next_frame_ready(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
-
+fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
-  }
-}
-
-fn next_scroll_state_updated(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> fastrender::scroll::ScrollState {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
-
-  match msg {
-    WorkerToUi::ScrollStateUpdated { scroll, .. } => scroll,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 }
@@ -57,60 +34,57 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
   let site = support::TempSite::new();
   let page_url = site.write(
     "page.html",
-    r##"<!doctype html>
+    r#"<!doctype html>
       <html>
         <head>
           <style>
             html, body { margin: 0; padding: 0; }
-            #top { height: 40px; background: rgb(255, 0, 0); }
-            #spacer { height: 2000px; background: rgb(0, 0, 255); }
-            #target { height: 100px; background: rgb(0, 255, 0); }
+            .spacer { height: 2000px; }
+            #target { height: 20px; background: rgb(255, 0, 0); }
+            #target:target { background: rgb(0, 255, 0); }
           </style>
         </head>
         <body>
-          <div id="top"></div>
-          <div id="spacer"></div>
+          <div class="spacer"></div>
           <div id="target"></div>
+          <div class="spacer"></div>
         </body>
       </html>
-    "##,
+    "#,
   );
   let url = format!("{page_url}#target");
 
-  let handle = spawn_ui_worker("fastr-ui-worker-fragment-initial").expect("spawn ui worker");
-  let tab_id = TabId::new();
-  handle
+  let worker = spawn_ui_worker("fastr-ui-worker-fragment-initial").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
     .ui_tx
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
       cancel: Default::default(),
     })
-    .expect("create tab");
-  handle
+    .unwrap();
+  worker
     .ui_tx
     .send(UiToWorker::ViewportChanged {
       tab_id,
-      viewport_css: (200, 100),
+      viewport_css: (200, 120),
       dpr: 1.0,
     })
-    .expect("viewport");
-  handle
+    .unwrap();
+  worker
     .ui_tx
     .send(UiToWorker::Navigate {
       tab_id,
       url,
       reason: NavigationReason::TypedUrl,
     })
-    .expect("navigate");
+    .unwrap();
 
-  let msg = next_navigation_committed(&handle.ui_rx, tab_id);
+  let msg = next_navigation_committed(&worker.ui_rx, tab_id);
   match msg {
     WorkerToUi::NavigationCommitted { url, .. } => {
-      assert!(
-        url.contains("#target"),
-        "expected committed URL to include #target, got {url}"
-      );
+      assert!(url.contains("#target"), "expected committed URL to include #target, got {url}");
     }
     WorkerToUi::NavigationFailed { url, error, .. } => {
       panic!("navigation failed for {url}: {error}");
@@ -118,21 +92,19 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 
-  let frame = next_frame_ready(&handle.ui_rx, tab_id);
+  let frame = next_frame_ready(&worker.ui_rx, tab_id);
+  assert!(
+    frame.scroll_state.viewport.y > 0.0,
+    "expected first frame to be scrolled for fragment navigation, got {:?}",
+    frame.scroll_state.viewport
+  );
   assert_eq!(
     support::rgba_at(&frame.pixmap, 10, 10),
     [0, 255, 0, 255],
-    "expected first frame to be scrolled to the target element"
+    "expected :target styling + scroll to bring the green target into view"
   );
 
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
-  assert!(
-    scroll.viewport.y > 0.0,
-    "expected initial scroll.y > 0 after fragment navigation, got {:?}",
-    scroll.viewport
-  );
-
-  handle.join().expect("worker join");
+  worker.join().unwrap();
 }
 
 #[test]
@@ -148,22 +120,24 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
           <style>
             html, body { margin: 0; padding: 0; }
             #link { display: block; width: 120px; height: 40px; background: rgb(255, 0, 0); }
-            #spacer { height: 2000px; background: rgb(0, 0, 255); }
-            #target { height: 100px; background: rgb(0, 255, 0); }
+            .spacer { height: 2000px; }
+            #target { height: 20px; background: rgb(255, 0, 0); }
+            #target:target { background: rgb(0, 255, 0); }
           </style>
         </head>
         <body>
           <a href="#target" id="link">Go</a>
-          <div id="spacer"></div>
+          <div class="spacer"></div>
           <div id="target"></div>
+          <div class="spacer"></div>
         </body>
       </html>
     "##,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-fragment-same-doc").expect("spawn ui worker");
-  let tab_id = TabId::new();
-  handle
+  let worker = spawn_ui_worker("fastr-ui-worker-fragment-same-doc").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
     .ui_tx
     .send(UiToWorker::CreateTab {
       tab_id,
@@ -171,15 +145,15 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
       cancel: Default::default(),
     })
     .expect("create tab");
-  handle
+  worker
     .ui_tx
     .send(UiToWorker::ViewportChanged {
       tab_id,
-      viewport_css: (200, 100),
+      viewport_css: (200, 120),
       dpr: 1.0,
     })
     .expect("viewport");
-  handle
+  worker
     .ui_tx
     .send(UiToWorker::Navigate {
       tab_id,
@@ -189,7 +163,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     .expect("navigate");
 
   // Wait for an initial frame so hit-testing has a layout cache.
-  let initial_frame = next_frame_ready(&handle.ui_rx, tab_id);
+  let initial_frame = next_frame_ready(&worker.ui_rx, tab_id);
   assert_eq!(
     support::rgba_at(&initial_frame.pixmap, 10, 10),
     [255, 0, 0, 255],
@@ -197,9 +171,10 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   );
 
   // Drain any follow-up messages from the initial navigation.
-  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(50));
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
 
-  handle
+  // Click the link at the top-left of the page.
+  worker
     .ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
@@ -207,7 +182,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
       button: PointerButton::Primary,
     })
     .expect("pointer down");
-  handle
+  worker
     .ui_tx
     .send(UiToWorker::PointerUp {
       tab_id,
@@ -225,7 +200,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let mut captured: Vec<WorkerToUi> = Vec::new();
 
   while Instant::now() < deadline {
-    match handle.ui_rx.recv_timeout(Duration::from_millis(200)) {
+    match worker.ui_rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
         match &msg {
           WorkerToUi::NavigationFailed { tab_id: got, .. } if *got == tab_id => {
@@ -270,7 +245,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
   if committed_url.is_none() || scroll_y.is_none() || final_pixel.is_none() {
     // Drain for a moment to provide better assertion errors.
-    captured.extend(support::drain_for(&handle.ui_rx, Duration::from_millis(200)));
+    captured.extend(support::drain_for(&worker.ui_rx, Duration::from_millis(200)));
   }
 
   assert!(
@@ -300,13 +275,12 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     "expected viewport scroll y to increase after fragment navigation, got {scroll_y}; messages:\n{}",
     support::format_messages(&captured)
   );
-
   assert_eq!(
     final_pixel,
     Some([0, 255, 0, 255]),
-    "expected top pixel to show the #target background after scrolling; messages:\n{}",
+    "expected :target styling to update after fragment click; messages:\n{}",
     support::format_messages(&captured)
   );
 
-  handle.join().expect("worker join");
+  worker.join().expect("worker join");
 }

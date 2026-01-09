@@ -8,7 +8,8 @@ use fastrender::ui::{NavigationReason, TabId, UiToWorker};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-// Navigation/rendering can take a few seconds under load when tests run in parallel (CI).
+// Worker startup + navigation + rendering can take a few seconds under load when integration tests
+// run in parallel on CI. Keep this timeout generous to avoid flakiness.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {
@@ -66,6 +67,7 @@ fn simple_color_page(color: &str) -> String {
 
 #[test]
 fn history_navigation_messages_update_history_and_restore_scroll() {
+  let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url_a = site.write("a.html", &simple_color_page("rgb(255, 0, 0)"));
   let url_b = site.write("b.html", &simple_color_page("rgb(0, 0, 255)"));

@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
+// Worker startup + the first navigation can take a few seconds under load when integration tests
+// run in parallel on CI.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
 fn wait_for_navigation_committed(
   rx: &Receiver<WorkerToUi>,
   tab_id: TabId,
@@ -56,7 +60,7 @@ fn about_newtab_navigation_committed_includes_title() {
     })
     .expect("navigate");
 
-  let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, Duration::from_secs(2));
+  let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);
   assert_eq!(title, Some("New Tab".to_string()));
 
   drop(ui_tx);
@@ -96,8 +100,7 @@ fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
     })
     .expect("navigate");
 
-  let (committed_url, title) =
-    wait_for_navigation_committed(&ui_rx, tab, Duration::from_secs(2));
+  let (committed_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);
   assert_eq!(
     Url::parse(&committed_url).expect("committed url parse"),
     Url::parse(&url).expect("expected url parse")
@@ -138,7 +141,7 @@ fn missing_title_results_in_none() {
     })
     .expect("navigate");
 
-  let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, Duration::from_secs(2));
+  let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);
   assert_eq!(title, None);
 
   drop(ui_tx);

@@ -22,6 +22,7 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> Re
 
 #[test]
 fn listbox_select_click_updates_selected_option_and_rerenders() {
+  let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let html = r#"<!doctype html>
     <html>

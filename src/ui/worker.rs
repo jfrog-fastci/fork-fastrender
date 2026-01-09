@@ -518,7 +518,9 @@ fn navigate_tab(
         NavigationReason::BackForward | NavigationReason::Reload => {}
         NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(url.clone()),
       }
-      doc.set_document_url_without_invalidation(Some(url.clone()));
+      // Update the document URL (including fragment) so `:target` / `:target-within` selectors can
+      // respond. This invalidates cached style/layout so the next render reflects the new target.
+      doc.set_document_url(Some(url.clone()));
 
       if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
         let computed = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
