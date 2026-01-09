@@ -1121,7 +1121,11 @@ impl<Host: 'static> EventLoop<Host> {
     const MIN_NESTED_DELAY: Duration = Duration::from_millis(4);
     // HTML timer nesting clamping: once a chain of nested timers reaches depth 5, further timers
     // are clamped to a minimum delay of 4ms.
-    if self.timer_nesting_level > 5 {
+    // Note: `timer_nesting_level` is the nesting level of the *currently executing* timer task.
+    // When scheduling a new timer from inside a timer callback, the new timer's nesting level is
+    // `timer_nesting_level + 1`. The HTML spec clamps once the *new* nesting level exceeds 5, so
+    // we clamp when the current nesting level is already >= 5.
+    if self.timer_nesting_level >= 5 {
       requested.max(MIN_NESTED_DELAY)
     } else {
       requested
@@ -1896,11 +1900,11 @@ mod tests {
 
   #[test]
   fn nested_timeouts_are_clamped_to_minimum_delay_after_five() -> Result<()> {
-    fn schedule(event_loop: &mut EventLoop<TestHost>) -> Result<()> {
-      event_loop.set_timeout(Duration::from_millis(0), |host, event_loop| {
+    fn schedule(event_loop: &mut EventLoop<TestHost>, target: usize) -> Result<()> {
+      event_loop.set_timeout(Duration::from_millis(0), move |host, event_loop| {
         host.count += 1;
-        if host.count < 7 {
-          schedule(event_loop)?;
+        if host.count < target {
+          schedule(event_loop, target)?;
         }
         Ok(())
       })?;
@@ -1912,15 +1916,16 @@ mod tests {
     let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
     let mut host = TestHost::default();
 
-    schedule(&mut event_loop)?;
+    // Run a chain of nested 0ms timeouts. Once a chain reaches 5 levels of nesting, further timers
+    // should be clamped to at least 4ms.
+    schedule(&mut event_loop, 6)?;
 
-    // The first six timers should run immediately, but once the timer nesting level exceeds 5 the
-    // next scheduled delay should be clamped to at least 4ms (HTML spec).
+    // The first five timers should run immediately; the sixth should be clamped to 4ms.
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 6);
+    assert_eq!(host.count, 5);
     assert_eq!(event_loop.timers.len(), 1);
     let due = event_loop
       .timers
@@ -1935,14 +1940,14 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 6);
+    assert_eq!(host.count, 5);
 
     clock.advance(Duration::from_millis(4));
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 7);
+    assert_eq!(host.count, 6);
     assert_eq!(event_loop.timers.len(), 0);
     Ok(())
   }
