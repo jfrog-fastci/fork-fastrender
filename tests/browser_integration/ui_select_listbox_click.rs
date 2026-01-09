@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -92,19 +92,11 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
   let click_pos = (10.0_f32, 45.0_f32);
   worker
     .ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: click_pos,
-      button: PointerButton::Primary,
-    })
+    .send(support::pointer_down(tab_id, click_pos, PointerButton::Primary))
     .expect("PointerDown");
   worker
     .ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: click_pos,
-      button: PointerButton::Primary,
-    })
+    .send(support::pointer_up(tab_id, click_pos, PointerButton::Primary))
     .expect("PointerUp");
 
   let deadline = Instant::now() + TIMEOUT;

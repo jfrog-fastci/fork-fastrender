@@ -11,8 +11,8 @@ use fastrender::ui::{
   RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use super::support::{
-  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, TempSite,
-  DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, key_action, navigate_msg, pointer_down, pointer_up, scroll_msg,
+  text_input, viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 use std::time::Duration;
 
@@ -240,28 +240,12 @@ fn enter_submits_focused_text_input_form() {
   );
 
   let pos_css = (5.0, 5.0);
-  tx.send(UiToWorker::PointerDown {
-    tab_id,
-    pos_css,
-    button: PointerButton::Primary,
-  })
-  .unwrap();
-  tx.send(UiToWorker::PointerUp {
-    tab_id,
-    pos_css,
-    button: PointerButton::Primary,
-  })
-  .unwrap();
-  tx.send(UiToWorker::TextInput {
-    tab_id,
-    text: "a".to_string(),
-  })
-  .unwrap();
-  tx.send(UiToWorker::KeyAction {
-    tab_id,
-    key: KeyAction::Enter,
-  })
-  .unwrap();
+  tx.send(pointer_down(tab_id, pos_css, PointerButton::Primary))
+    .unwrap();
+  tx.send(pointer_up(tab_id, pos_css, PointerButton::Primary))
+    .unwrap();
+  tx.send(text_input(tab_id, "a")).unwrap();
+  tx.send(key_action(tab_id, KeyAction::Enter)).unwrap();
 
   let expected_url = "about:test-form?q=a&go=1";
   let mut saw_commit = false;

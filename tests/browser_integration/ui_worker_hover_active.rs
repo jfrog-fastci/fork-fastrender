@@ -3,7 +3,7 @@
 use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -106,22 +106,22 @@ fn pointer_move_sets_hover_and_repaints() {
 
   worker
     .ui_tx
-    .send(UiToWorker::PointerMove {
+    .send(support::pointer_move(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::None,
-    })
+      (10.0, 10.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   expect_rgb_at_css(&frame, 10, 10, (0, 255, 0));
 
   worker
     .ui_tx
-    .send(UiToWorker::PointerMove {
+    .send(support::pointer_move(
       tab_id,
-      pos_css: (200.0, 200.0),
-      button: PointerButton::None,
-    })
+      (200.0, 200.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   expect_rgb_at_css(&frame, 10, 10, (255, 0, 0));
@@ -155,33 +155,33 @@ fn pointer_down_sets_active_until_pointer_up() {
   // Make hover deterministic so PointerUp resolves to green rather than red.
   worker
     .ui_tx
-    .send(UiToWorker::PointerMove {
+    .send(support::pointer_move(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::None,
-    })
+      (10.0, 10.0),
+      PointerButton::None,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   expect_rgb_at_css(&frame, 10, 10, (0, 255, 0));
 
   worker
     .ui_tx
-    .send(UiToWorker::PointerDown {
+    .send(support::pointer_down(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   expect_rgb_at_css(&frame, 10, 10, (0, 0, 255));
 
   worker
     .ui_tx
-    .send(UiToWorker::PointerUp {
+    .send(support::pointer_up(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   expect_rgb_at_css(&frame, 10, 10, (0, 255, 0));

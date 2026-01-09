@@ -58,17 +58,17 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   while rx.try_recv().is_ok() {}
 
   // Click within the select control.
-  tx.send(UiToWorker::PointerDown {
+  tx.send(support::pointer_down(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  })
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ))
   .expect("PointerDown");
-  tx.send(UiToWorker::PointerUp {
+  tx.send(support::pointer_up(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  })
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ))
   .expect("PointerUp");
 
   let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {

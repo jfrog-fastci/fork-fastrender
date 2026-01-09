@@ -210,7 +210,9 @@ pub fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[cfg(feature = "browser_ui")]
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  KeyAction, NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
 
 #[cfg(feature = "browser_ui")]
 fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
@@ -441,6 +443,73 @@ pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32
     delta_css,
     pointer_css,
   }
+}
+
+/// Construct a `UiToWorker::Scroll` message that only affects the viewport scroll position.
+#[cfg(feature = "browser_ui")]
+pub fn scroll_viewport(tab_id: TabId, delta_css: (f32, f32)) -> UiToWorker {
+  scroll_msg(tab_id, delta_css, None)
+}
+
+/// Construct a `UiToWorker::Scroll` message scoped to the element under the pointer (if any).
+#[cfg(feature = "browser_ui")]
+pub fn scroll_at_pointer(
+  tab_id: TabId,
+  delta_css: (f32, f32),
+  pointer_css: (f32, f32),
+) -> UiToWorker {
+  scroll_msg(tab_id, delta_css, Some(pointer_css))
+}
+
+/// Construct a `UiToWorker::PointerMove` message.
+#[cfg(feature = "browser_ui")]
+pub fn pointer_move(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -> UiToWorker {
+  UiToWorker::PointerMove {
+    tab_id,
+    pos_css,
+    button,
+  }
+}
+
+/// Construct a `UiToWorker::PointerDown` message.
+#[cfg(feature = "browser_ui")]
+pub fn pointer_down(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -> UiToWorker {
+  UiToWorker::PointerDown {
+    tab_id,
+    pos_css,
+    button,
+  }
+}
+
+/// Construct a `UiToWorker::PointerUp` message.
+#[cfg(feature = "browser_ui")]
+pub fn pointer_up(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -> UiToWorker {
+  UiToWorker::PointerUp {
+    tab_id,
+    pos_css,
+    button,
+  }
+}
+
+/// Construct a `UiToWorker::TextInput` message.
+#[cfg(feature = "browser_ui")]
+pub fn text_input(tab_id: TabId, text: impl Into<String>) -> UiToWorker {
+  UiToWorker::TextInput {
+    tab_id,
+    text: text.into(),
+  }
+}
+
+/// Construct a `UiToWorker::KeyAction` message.
+#[cfg(feature = "browser_ui")]
+pub fn key_action(tab_id: TabId, key: KeyAction) -> UiToWorker {
+  UiToWorker::KeyAction { tab_id, key }
+}
+
+/// Construct a `UiToWorker::RequestRepaint` message.
+#[cfg(feature = "browser_ui")]
+pub fn request_repaint(tab_id: TabId, reason: RepaintReason) -> UiToWorker {
+  UiToWorker::RequestRepaint { tab_id, reason }
 }
 
 #[cfg(all(test, feature = "browser_ui"))]

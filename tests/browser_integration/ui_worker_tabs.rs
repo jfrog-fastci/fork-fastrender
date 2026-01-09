@@ -6,7 +6,7 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use super::support::{create_tab_msg, DEFAULT_TIMEOUT};
+use super::support::{create_tab_msg, request_repaint, DEFAULT_TIMEOUT};
 
 const TEST_TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
@@ -163,10 +163,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
     .send(UiToWorker::CloseTab { tab_id: tab1 })
     .expect("close tab1");
   ui_tx
-    .send(UiToWorker::RequestRepaint {
-      tab_id: tab1,
-      reason: RepaintReason::Explicit,
-    })
+    .send(request_repaint(tab1, RepaintReason::Explicit))
     .expect("request repaint");
 
   let deadline = Instant::now() + Duration::from_millis(500);

@@ -25,39 +25,36 @@ fn send_noise_messages(tx: &Sender<UiToWorker>, tab_id: TabId) {
       NavigationReason::TypedUrl,
     ))
     .expect("send Navigate");
-  tx.send(UiToWorker::PointerMove {
-    tab_id,
-    pos_css: (5.0, 6.0),
-    button: PointerButton::Primary,
-  })
-  .expect("send PointerMove");
-  tx.send(UiToWorker::PointerDown {
-    tab_id,
-    pos_css: (5.0, 6.0),
-    button: PointerButton::Primary,
-  })
-  .expect("send PointerDown");
-  tx.send(UiToWorker::PointerUp {
-    tab_id,
-    pos_css: (5.0, 6.0),
-    button: PointerButton::Primary,
-  })
-  .expect("send PointerUp");
-  tx.send(UiToWorker::TextInput {
-    tab_id,
-    text: "hello".to_string(),
-  })
-  .expect("send TextInput");
-  tx.send(UiToWorker::KeyAction {
-    tab_id,
-    key: KeyAction::Enter,
-  })
-  .expect("send KeyAction");
-  tx.send(UiToWorker::RequestRepaint {
-    tab_id,
-    reason: RepaintReason::Explicit,
-  })
-  .expect("send RequestRepaint");
+  tx
+    .send(support::pointer_move(
+      tab_id,
+      (5.0, 6.0),
+      PointerButton::Primary,
+    ))
+    .expect("send PointerMove");
+  tx
+    .send(support::pointer_down(
+      tab_id,
+      (5.0, 6.0),
+      PointerButton::Primary,
+    ))
+    .expect("send PointerDown");
+  tx
+    .send(support::pointer_up(
+      tab_id,
+      (5.0, 6.0),
+      PointerButton::Primary,
+    ))
+    .expect("send PointerUp");
+  tx
+    .send(support::text_input(tab_id, "hello"))
+    .expect("send TextInput");
+  tx
+    .send(support::key_action(tab_id, KeyAction::Enter))
+    .expect("send KeyAction");
+  tx
+    .send(support::request_repaint(tab_id, RepaintReason::Explicit))
+    .expect("send RequestRepaint");
 }
 
 fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
@@ -151,11 +148,9 @@ fn messages_for_unknown_tab_are_ignored_without_panic() {
 
   // Ensure the worker thread is still alive and the existing tab still repaints after ignored
   // events for another tab.
-  tx.send(UiToWorker::RequestRepaint {
-    tab_id: tab1,
-    reason: RepaintReason::Explicit,
-  })
-  .expect("send RequestRepaint(tab1)");
+  tx
+    .send(support::request_repaint(tab1, RepaintReason::Explicit))
+    .expect("send RequestRepaint(tab1)");
   wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
 
   drop(tx);

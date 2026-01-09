@@ -1,14 +1,17 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, scroll_msg, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
+};
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;
@@ -474,18 +477,10 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
   // hit-testing, this click would target the pre-scroll coordinates and fail to toggle the
   // checkbox.
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (20.0, 20.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (20.0, 20.0), PointerButton::Primary))
     .expect("PointerDown");
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (20.0, 20.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (20.0, 20.0), PointerButton::Primary))
     .expect("PointerUp");
 
   let frame = wait_for_frame_with_pixel(&ui_rx, tab_id, (20, 20), (0, 255, 0, 255));

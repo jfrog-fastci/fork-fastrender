@@ -3,7 +3,7 @@
 use fastrender::scroll::ScrollState;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use super::support::{
-  create_tab_msg, navigate_msg, rgba_at, scroll_msg, viewport_changed_msg, TempSite,
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, rgba_at, scroll_msg, viewport_changed_msg,
+  TempSite,
 };
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
@@ -217,18 +218,10 @@ fn click_after_scroll_hits_link() {
   );
 
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
     .expect("PointerDown");
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
     .expect("PointerUp");
 
   wait_for_navigation_committed(&ui_rx, tab_id, &expected_page2_url, TIMEOUT);

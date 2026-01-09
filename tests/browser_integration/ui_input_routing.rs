@@ -6,7 +6,7 @@ use fastrender::ui::messages::{PointerButton, RenderedFrame, RepaintReason, TabI
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxNode, BoxTree, Point, Result};
 
-use super::support::{self, scroll_msg};
+use super::support::{self, pointer_down, pointer_up, request_repaint, scroll_msg, text_input};
 
 fn extract_frame(messages: Vec<WorkerToUi>) -> Option<RenderedFrame> {
   messages.into_iter().rev().find_map(|msg| match msg {
@@ -103,24 +103,24 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
   )?;
 
   // Initial paint.
-  let frame0 = extract_frame(controller.handle_message(UiToWorker::RequestRepaint {
+  let frame0 = extract_frame(controller.handle_message(request_repaint(
     tab_id,
-    reason: RepaintReason::Explicit,
-  })?)
+    RepaintReason::Explicit,
+  ))?)
   .expect("expected initial FrameReady");
   let baseline_bytes = frame0.pixmap.data().to_vec();
 
   // Click checkbox (down+up).
-  let _ = controller.handle_message(UiToWorker::PointerDown {
+  let _ = controller.handle_message(pointer_down(
     tab_id,
-    pos_css: (15.0, 15.0),
-    button: PointerButton::Primary,
-  })?;
-  let frame_after_checkbox = extract_frame(controller.handle_message(UiToWorker::PointerUp {
+    (15.0, 15.0),
+    PointerButton::Primary,
+  ))?;
+  let frame_after_checkbox = extract_frame(controller.handle_message(pointer_up(
     tab_id,
-    pos_css: (15.0, 15.0),
-    button: PointerButton::Primary,
-  })?)
+    (15.0, 15.0),
+    PointerButton::Primary,
+  ))?)
   .expect("expected FrameReady after checkbox click");
   assert_ne!(
     frame_after_checkbox.pixmap.data(),
@@ -135,20 +135,17 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
   );
 
   // Focus input and type into it.
-  let _ = controller.handle_message(UiToWorker::PointerDown {
+  let _ = controller.handle_message(pointer_down(
     tab_id,
-    pos_css: (15.0, 50.0),
-    button: PointerButton::Primary,
-  })?;
-  let _ = controller.handle_message(UiToWorker::PointerUp {
+    (15.0, 50.0),
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(pointer_up(
     tab_id,
-    pos_css: (15.0, 50.0),
-    button: PointerButton::Primary,
-  })?;
-  let _ = controller.handle_message(UiToWorker::TextInput {
-    tab_id,
-    text: "hi".to_string(),
-  })?;
+    (15.0, 50.0),
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(text_input(tab_id, "hi"))?;
   let input = find_element_by_id(controller.document().dom(), "text").expect("text input element");
   assert_eq!(input.get_attribute_ref("value"), Some("hi"));
 
@@ -195,20 +192,20 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
     .expect("expected anchor scroll target to resolve")
   };
 
-  let nav_msgs = controller.handle_message(UiToWorker::PointerDown {
+  let nav_msgs = controller.handle_message(pointer_down(
     tab_id,
-    pos_css: (15.0, 75.0),
-    button: PointerButton::Primary,
-  })?;
+    (15.0, 75.0),
+    PointerButton::Primary,
+  ))?;
   assert!(
     nav_msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
     "expected pointer down to repaint active state"
   );
-  let nav_msgs = controller.handle_message(UiToWorker::PointerUp {
+  let nav_msgs = controller.handle_message(pointer_up(
     tab_id,
-    pos_css: (15.0, 75.0),
-    button: PointerButton::Primary,
-  })?;
+    (15.0, 75.0),
+    PointerButton::Primary,
+  ))?;
   assert!(
     nav_msgs
       .iter()

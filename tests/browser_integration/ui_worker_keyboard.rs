@@ -1,7 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::interaction::KeyAction;
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
+};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -211,18 +214,10 @@ fn backspace_edits_focused_input_and_repaints() {
 
   // Click the input to focus it.
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
     .expect("PointerDown");
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
     .expect("PointerUp");
   // The headless worker repaints both PointerDown and PointerUp; consume both frames so the
   // subsequent KeyAction assertion doesn't accidentally read a stale frame.
@@ -230,10 +225,7 @@ fn backspace_edits_focused_input_and_repaints() {
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   ui_tx
-    .send(UiToWorker::KeyAction {
-      tab_id,
-      key: KeyAction::Backspace,
-    })
+    .send(key_action(tab_id, KeyAction::Backspace))
     .expect("Backspace");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 0));
@@ -266,18 +258,10 @@ fn key_action_sets_focus_visible() {
   assert_pixel_rgb(&frame.pixmap, 66, 32, (0, 0, 0));
 
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
     .expect("PointerDown");
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
     .expect("PointerUp");
   // Consume PointerDown + PointerUp repaints.
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
@@ -285,12 +269,9 @@ fn key_action_sets_focus_visible() {
   assert_pixel_rgb(&frame.pixmap, 66, 32, (0, 0, 0));
 
   ui_tx
-    .send(UiToWorker::KeyAction {
-      tab_id,
-      // Use a key that is expected to keep focus on the currently focused input. `Tab` is likely
-      // to become focus traversal once implemented.
-      key: KeyAction::Backspace,
-    })
+    // Use a key that is expected to keep focus on the currently focused input. `Tab` is likely
+    // to become focus traversal once implemented.
+    .send(key_action(tab_id, KeyAction::Backspace))
     .expect("Backspace");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 66, 32, (255, 255, 0));

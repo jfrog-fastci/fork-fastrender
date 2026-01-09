@@ -2,7 +2,7 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::worker::spawn_ui_worker;
@@ -10,7 +10,10 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, text_input, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
+};
 
 // These tests spin up real UI worker threads that create renderers and rasterize frames.
 // When the test binary runs with many threads (default), CPU contention can make the first render
@@ -136,18 +139,10 @@ fn label_click_toggles_checkbox_and_repaints() {
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -206,24 +201,13 @@ fn text_input_updates_focused_input_value_and_repaints() {
 
   // Focus input.
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
     .unwrap();
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 90.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
     .unwrap();
   ui_tx
-    .send(UiToWorker::TextInput {
-      tab_id,
-      text: "abc".to_string(),
-    })
+    .send(text_input(tab_id, "abc"))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -293,18 +277,10 @@ fn link_click_triggers_navigation_to_resolved_url() {
   let _frame = recv_until_frame(&ui_rx, tab_id, Some(page1_url.as_str()), deadline);
 
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -390,18 +366,10 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
   while ui_rx.try_recv().is_ok() {}
 
   ui_tx
-    .send(UiToWorker::PointerDown {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
   ui_tx
-    .send(UiToWorker::PointerUp {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+    .send(pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;

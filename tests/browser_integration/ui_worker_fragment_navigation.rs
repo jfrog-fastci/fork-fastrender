@@ -223,19 +223,19 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   // Click the link at the top-left of the page.
   worker
     .ui_tx
-    .send(UiToWorker::PointerDown {
+    .send(support::pointer_down(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer down");
   worker
     .ui_tx
-    .send(UiToWorker::PointerUp {
+    .send(support::pointer_up(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer up");
 
   let deadline = Instant::now() + TIMEOUT;
@@ -576,19 +576,19 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   // Click the fixed-position link to jump to the fragment target.
   worker
     .ui_tx
-    .send(UiToWorker::PointerDown {
+    .send(support::pointer_down(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::PointerUp {
+    .send(support::pointer_up(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
 
   support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {

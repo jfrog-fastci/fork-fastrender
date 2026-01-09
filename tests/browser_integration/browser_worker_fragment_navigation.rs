@@ -258,19 +258,19 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 
   worker
     .tx
-    .send(UiToWorker::PointerDown {
+    .send(support::pointer_down(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer down");
   worker
     .tx
-    .send(UiToWorker::PointerUp {
+    .send(support::pointer_up(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer up");
 
   let deadline = Instant::now() + TIMEOUT;

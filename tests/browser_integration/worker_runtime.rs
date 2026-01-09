@@ -28,7 +28,6 @@ fn drain_after_frame(h: &WorkerHarness, mut events: Vec<WorkerToUiEvent>) -> Vec
 
 #[test]
 fn pointer_move_sets_hover_and_repaints() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("hover.html");
   std::fs::write(
@@ -63,22 +62,14 @@ fn pointer_move_sets_hover_and_repaints() {
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::PointerMove {
-      tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::None,
-    },
+    support::pointer_move(tab_id, (10.0, 10.0), PointerButton::None),
   );
   let _ = drain_after_frame(&h, events);
   assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [0, 255, 0, 255]);
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::PointerMove {
-      tab_id,
-      pos_css: (200.0, 200.0),
-      button: PointerButton::None,
-    },
+    support::pointer_move(tab_id, (200.0, 200.0), PointerButton::None),
   );
   let _ = drain_after_frame(&h, events);
   assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [255, 0, 0, 255]);
@@ -86,7 +77,6 @@ fn pointer_move_sets_hover_and_repaints() {
 
 #[test]
 fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("select.html");
   std::fs::write(
@@ -154,19 +144,15 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
 
   // Click within the first visible row; the selection should account for the element scroll offset.
   let click_pos = (10.0_f32, 10.0_f32);
-  h.send(UiToWorker::PointerDown {
+  h.send(support::pointer_down(
     tab_id,
-    pos_css: click_pos,
-    button: PointerButton::Primary,
-  });
+    click_pos,
+    PointerButton::Primary,
+  ));
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::PointerUp {
-      tab_id,
-      pos_css: click_pos,
-      button: PointerButton::Primary,
-    },
+    support::pointer_up(tab_id, click_pos, PointerButton::Primary),
   );
   let _ = drain_after_frame(&h, events);
 
@@ -179,7 +165,6 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
 
 #[test]
 fn navigation_about_newtab_renders_frame() {
-  let _lock = super::stage_listener_test_lock();
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (200, 140));
 
@@ -210,7 +195,6 @@ fn navigation_about_newtab_renders_frame() {
 
 #[test]
 fn navigation_file_url_emits_committed_and_frame() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("index.html");
   std::fs::write(&path, "<!doctype html><title>file</title><body>hello</body>").unwrap();
@@ -245,7 +229,6 @@ fn navigation_file_url_emits_committed_and_frame() {
 
 #[test]
 fn navigation_unsupported_scheme_rejects_with_failed() {
-  let _lock = super::stage_listener_test_lock();
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (120, 80));
 
@@ -278,7 +261,6 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
 
 #[test]
 fn history_back_forward_emits_committed_urls() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let a_path = dir.path().join("a.html");
   let b_path = dir.path().join("b.html");
@@ -331,7 +313,6 @@ fn history_back_forward_emits_committed_urls() {
 
 #[test]
 fn reload_preserves_scroll_offset() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
   std::fs::write(
@@ -386,7 +367,6 @@ fn reload_preserves_scroll_offset() {
 
 #[test]
 fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
   std::fs::write(
@@ -447,7 +427,6 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
 
 #[test]
 fn interaction_click_link_navigates() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let a_path = dir.path().join("a.html");
   let b_path = dir.path().join("b.html");
@@ -474,16 +453,16 @@ fn interaction_click_link_navigates() {
   );
   let _ = drain_after_frame(&h, events_a);
 
-  h.send(UiToWorker::PointerDown {
+  h.send(support::pointer_down(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  });
-  h.send(UiToWorker::PointerUp {
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ));
+  h.send(support::pointer_up(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  });
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ));
 
   let (_frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
   let events = drain_after_frame(&h, events);
@@ -496,7 +475,6 @@ fn interaction_click_link_navigates() {
 
 #[test]
 fn interaction_text_input_triggers_repaint_and_frame_changes() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("input.html");
   std::fs::write(
@@ -521,25 +499,22 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
   let _ = drain_after_frame(&h, events);
 
   // Focus the input; the runtime should repaint due to focus state change.
-  h.send(UiToWorker::PointerDown {
+  h.send(support::pointer_down(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  });
-  h.send(UiToWorker::PointerUp {
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ));
+  h.send(support::pointer_up(
     tab_id,
-    pos_css: (10.0, 10.0),
-    button: PointerButton::Primary,
-  });
+    (10.0, 10.0),
+    PointerButton::Primary,
+  ));
   let (focused_frame, _events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
 
   // Typing should mutate the DOM (value attribute) and trigger another repaint.
   let (typed_frame, _events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::TextInput {
-      tab_id,
-      text: "x".to_string(),
-    },
+    support::text_input(tab_id, "x"),
   );
 
   assert_ne!(
@@ -557,7 +532,6 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
 
 #[test]
 fn cancellation_rapid_scroll_coalesces_to_last_frame() {
-  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("long.html");
   std::fs::write(

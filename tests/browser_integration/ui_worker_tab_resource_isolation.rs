@@ -1,12 +1,12 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, request_repaint, viewport_changed_msg};
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let px = pixmap.pixel(x, y).unwrap();
@@ -104,10 +104,7 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
   while ui_rx.try_recv().is_ok() {}
 
   ui_tx
-    .send(UiToWorker::RequestRepaint {
-      tab_id: tab1,
-      reason: RepaintReason::Explicit,
-    })
+    .send(request_repaint(tab1, RepaintReason::Explicit))
     .expect("repaint tab1");
   let frame1_repaint = wait_for_frame(&ui_rx, tab1, Duration::from_secs(5));
   assert_eq!(pixel(&frame1_repaint.pixmap, 1, 1), (255, 0, 0, 255));

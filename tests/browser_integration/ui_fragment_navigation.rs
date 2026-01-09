@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -81,19 +81,19 @@ fn same_document_fragment_navigation_scrolls_without_fetching() {
 
   worker
     .ui_tx
-    .send(UiToWorker::PointerDown {
+    .send(support::pointer_down(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::PointerUp {
+    .send(support::pointer_up(
       tab_id,
-      pos_css: (10.0, 10.0),
-      button: PointerButton::Primary,
-    })
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .unwrap();
 
   let deadline = Instant::now() + Duration::from_secs(15);
