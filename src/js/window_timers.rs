@@ -605,6 +605,7 @@ mod tests {
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use std::sync::Arc;
+  use std::time::Duration;
   use vm_js::Realm;
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
@@ -1020,6 +1021,77 @@ mod tests {
       }
     };
     assert!(microtask_this_is_undefined);
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_parses_hex_delay_string() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      init_log(&mut scope, global);
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
+
+        let delay_s = scope.alloc_string("0x10").unwrap();
+        scope.push_root(Value::String(delay_s)).unwrap();
+        vm.call(
+          &mut scope,
+          set_timeout,
+          Value::Object(global),
+          &[Value::Object(timeout_cb), Value::String(delay_s)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert!(log.is_empty(), "expected no timeout before advancing clock, got {log:?}");
+
+    clock.advance(Duration::from_millis(15));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert!(log.is_empty(), "expected no timeout at 15ms, got {log:?}");
+
+    clock.advance(Duration::from_millis(1));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(log, vec!["t".to_string()]);
+
     Ok(())
   }
 

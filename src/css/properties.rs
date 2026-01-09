@@ -2549,8 +2549,8 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         if len.has_percentage() {
           return false;
         }
-        if len.calc.is_some() {
-          return true;
+        if let Some(calc) = len.calc {
+          return !calc.absolute_sum().is_some_and(|v| v < 0.0);
         }
         if !len.value.is_finite() || len.value < 0.0 {
           return false;

@@ -8946,13 +8946,16 @@ fn apply_declaration_with_base_internal_with_order(
         _ => parse_part(resolved_value),
       }
 
-      if invalid {
-        // Ignore invalid declarations.
+        if invalid {
+          // Ignore invalid declarations.
         } else {
           let margin = margin.unwrap_or_else(|| Length::px(0.0));
           // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
-          if margin.calc.is_none() && margin.value < 0.0 {
-            // Ignore invalid negative length.
+          if margin.calc.is_some_and(|calc| calc.absolute_sum().is_some_and(|v| v < 0.0))
+            || (margin.calc.is_none() && margin.value < 0.0)
+          {
+            // Ignore invalid negative length. For `calc()` we can only reject the cases that resolve
+            // to a negative absolute value without needing layout context.
           } else if margin.has_percentage() {
             // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`), so reject
             // percentages even when they appear inside a `calc()` expression.
