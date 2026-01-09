@@ -222,8 +222,41 @@ impl Runner {
             })
           }
           RunError::Js(msg) => {
+            // Some backends (vm-js) stash a report payload before returning an evaluation error.
+            // Prefer that payload if it exists, otherwise fall back to a synthetic harness error.
+            //
+            // We *used* to rely on `best_effort_report_uncaught_error` + `drive_backend_until_report`
+            // here, but if the JS context is too broken to run the reporting hook (or if the hook
+            // itself fails), the runner would spin until its wall-clock timeout and misclassify the
+            // test as `timed_out`.
+            if let Some(report) = backend.take_report()? {
+              let outcome = outcome_from_report(&report);
+              return Ok(RunResult {
+                outcome,
+                wpt_report: Some(report),
+              });
+            }
+
             let _ = best_effort_report_uncaught_error(&mut *backend, &msg);
-            break;
+            if let Some(report) = backend.take_report()? {
+              let outcome = outcome_from_report(&report);
+              return Ok(RunResult {
+                outcome,
+                wpt_report: Some(report),
+              });
+            }
+
+            let report = WptReport {
+              file_status: "error".to_string(),
+              harness_status: "error".to_string(),
+              message: Some(msg.clone()),
+              stack: None,
+              subtests: Vec::new(),
+            };
+            return Ok(RunResult {
+              outcome: RunOutcome::Error(msg),
+              wpt_report: Some(report),
+            });
           }
           other => return Err(other),
         }

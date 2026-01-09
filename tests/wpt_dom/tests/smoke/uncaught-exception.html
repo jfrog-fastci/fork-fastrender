@@ -4,8 +4,7 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
-  __fastrender_wpt_report({
-    file_status: "error",
-    message: "intentional uncaught exception",
-  });
+  // Intentionally throw at top-level. The runner should classify this as a harness-level error
+  // rather than spinning until the per-test timeout.
+  throw new Error("intentional uncaught exception");
 </script>
