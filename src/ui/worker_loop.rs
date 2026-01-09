@@ -616,6 +616,17 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
               navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
             }
           }
+          InteractionAction::OpenSelectDropdown {
+            select_node_id,
+            control,
+          } => {
+            let _ = ui_tx.send(WorkerToUi::OpenSelectDropdown {
+              tab_id,
+              select_node_id,
+              control,
+            });
+            repaint_if_needed(tab_id, tab, &ui_tx);
+          }
           _ => {
             repaint_if_needed(tab_id, tab, &ui_tx);
           }

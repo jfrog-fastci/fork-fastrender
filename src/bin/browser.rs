@@ -596,6 +596,7 @@ impl App {
           self.tab_textures.insert(tab_id, tex);
         }
       }
+      fastrender::ui::WorkerToUi::OpenSelectDropdown { .. } => {}
       fastrender::ui::WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.stage = Some(stage);

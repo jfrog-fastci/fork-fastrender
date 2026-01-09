@@ -1,5 +1,6 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
+use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
@@ -190,6 +191,11 @@ pub enum WorkerToUi {
   FrameReady {
     tab_id: TabId,
     frame: RenderedFrame,
+  },
+  OpenSelectDropdown {
+    tab_id: TabId,
+    select_node_id: usize,
+    control: SelectControl,
   },
   NavigationStarted {
     tab_id: TabId,

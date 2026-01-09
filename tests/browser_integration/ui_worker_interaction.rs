@@ -4,6 +4,7 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::tree::box_tree::SelectItem;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -346,6 +347,117 @@ fn link_click_triggers_navigation_to_resolved_url() {
   assert!(saw_started, "expected NavigationStarted for page2");
   assert!(saw_committed, "expected NavigationCommitted for page2");
   assert!(saw_frame, "expected FrameReady after navigation committed");
+
+  drop(ui_tx);
+  join.join().unwrap();
+}
+
+#[test]
+fn select_dropdown_click_emits_open_select_dropdown_message() {
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+  let html_path = dir.path().join("page.html");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #sel { position: absolute; left: 0; top: 0; width: 120px; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <select id="sel">
+          <option>One</option>
+          <option selected>Two</option>
+          <option>Three</option>
+        </select>
+      </body>
+    </html>
+  "#;
+  std::fs::write(&html_path, html).expect("write html");
+  let file_url = format!("file://{}", html_path.display());
+
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-interaction-select")
+    .expect("spawn ui worker")
+    .split();
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: Default::default(),
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 80),
+      dpr: 1.0,
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: file_url,
+      reason: NavigationReason::TypedUrl,
+    })
+    .unwrap();
+
+  let deadline = Instant::now() + TIMEOUT;
+  let _frame = recv_until_frame(&ui_rx, tab_id, deadline);
+  while ui_rx.try_recv().is_ok() {}
+
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut received = None;
+  while Instant::now() < deadline {
+    match ui_rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => match msg {
+        WorkerToUi::OpenSelectDropdown {
+          tab_id: msg_tab,
+          select_node_id,
+          control,
+        } if msg_tab == tab_id => {
+          received = Some((select_node_id, control));
+          break;
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  let (select_node_id, control) = received.expect("expected OpenSelectDropdown message");
+  assert!(select_node_id > 0, "expected non-zero select_node_id");
+  assert!(!control.multiple, "expected dropdown select to be single-select");
+  assert_eq!(control.size, 1);
+  assert_eq!(control.items.len(), 3);
+  assert_eq!(control.selected, vec![1]);
+
+  let labels: Vec<String> = control
+    .items
+    .iter()
+    .filter_map(|item| match item {
+      SelectItem::Option { label, .. } => Some(label.clone()),
+      _ => None,
+    })
+    .collect();
+  assert_eq!(labels, vec!["One", "Two", "Three"]);
 
   drop(ui_tx);
   join.join().unwrap();

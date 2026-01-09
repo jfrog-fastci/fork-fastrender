@@ -409,6 +409,17 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
             navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
           }
+          InteractionAction::OpenSelectDropdown {
+            select_node_id,
+            control,
+          } => {
+            let _ = tx.send(WorkerToUi::OpenSelectDropdown {
+              tab_id,
+              select_node_id,
+              control,
+            });
+            repaint_if_needed(tab_id, tab, &tx);
+          }
           _ => {
             repaint_if_needed(tab_id, tab, &tx);
           }
@@ -448,6 +459,17 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
             navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
+          }
+          InteractionAction::OpenSelectDropdown {
+            select_node_id,
+            control,
+          } => {
+            let _ = tx.send(WorkerToUi::OpenSelectDropdown {
+              tab_id,
+              select_node_id,
+              control,
+            });
+            repaint_if_needed(tab_id, tab, &tx);
           }
           _ => repaint_if_needed(tab_id, tab, &tx),
         }
