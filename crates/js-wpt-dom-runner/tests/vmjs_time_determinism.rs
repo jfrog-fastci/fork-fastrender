@@ -55,4 +55,12 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
     .wpt_report
     .unwrap_or_else(|| panic!("{id} should include report payload"));
   assert_eq!(report.file_status, "pass");
+  assert_eq!(report.harness_status, "ok");
+  assert!(
+    !report.subtests.is_empty(),
+    "{id} should produce at least one harness subtest"
+  );
+  for st in &report.subtests {
+    assert_eq!(st.status, "pass", "unexpected subtest failure: {st:?}");
+  }
 }

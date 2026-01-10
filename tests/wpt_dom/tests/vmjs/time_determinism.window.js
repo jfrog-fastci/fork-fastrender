@@ -8,7 +8,11 @@
 // Note: we schedule a long timer (1000ms) after the initial 10ms timer to ensure the backend uses
 // `idle_wait` fast-forward semantics rather than waiting in real time.
 
-function core_web_globals_exist_test() {
+// Keep state in globals so timer callbacks do not capture locals. This file must run under the
+// legacy vm-js backend which historically had issues with closures inside timer callbacks.
+var time_determinism_t = null;
+
+function core_web_globals_exist() {
   // Ensure the runner exposes spec-shaped globals as both identifiers and global properties.
   assert_true(typeof globalThis !== "undefined", "globalThis should exist");
 
@@ -50,17 +54,16 @@ function core_web_globals_exist_test() {
   );
 }
 
-test(
-  core_web_globals_exist_test,
-  "Core web globals exist as both bindings and globalThis properties"
-);
+function assert_virtual_clock(expected, context) {
+  var now_date = Date.now();
+  var now_perf = performance.now();
 
-// Keep state in globals so timer callbacks do not capture locals. This file must run under the
-// legacy vm-js backend which historically had issues with closures inside timer callbacks.
-var __time_determinism_t = null;
+  assert_equals(now_date, expected, context);
+  assert_equals(now_perf, expected, context);
+  assert_equals(now_perf, now_date, context);
+}
 
-function __time_determinism_error_message(err) {
-  // Best-effort `Error` -> string conversion without relying on engine-specific formatting.
+function time_determinism_error_message(err) {
   try {
     if (err && typeof err === "object" && typeof err.message === "string") {
       return err.message;
@@ -72,7 +75,7 @@ function __time_determinism_error_message(err) {
   return "error";
 }
 
-function __time_determinism_error_stack(err) {
+function time_determinism_error_stack(err) {
   try {
     if (err && typeof err === "object" && typeof err.stack === "string") {
       return err.stack;
@@ -81,78 +84,40 @@ function __time_determinism_error_stack(err) {
   return null;
 }
 
-function __time_determinism_fail(err) {
-  var t = __time_determinism_t;
+function time_determinism_fail(err) {
+  var t = time_determinism_t;
   if (!t || t._done === true) return;
-  t.status = 1; // FAIL
-  t.message = __time_determinism_error_message(err);
-  t.stack = __time_determinism_error_stack(err);
+  t.status = FAIL;
+  t.message = time_determinism_error_message(err);
+  t.stack = time_determinism_error_stack(err);
   t.done();
 }
 
+function on_time_determinism_timeout_1010() {
+  assert_virtual_clock(1010, "virtual clock should read 1010 in 1000ms timer callback");
+}
+
+function on_time_determinism_timeout_10() {
+  var t = time_determinism_t;
+  if (!t || t._done === true) return;
+
+  try {
+    assert_virtual_clock(10, "virtual clock should read 10 in 10ms timer callback");
+  } catch (e) {
+    time_determinism_fail(e);
+    return;
+  }
+
+  setTimeout(t.step_func_done(on_time_determinism_timeout_1010), 1000);
+}
+
 function run_time_determinism_test(t) {
-  __time_determinism_t = t;
+  time_determinism_t = t;
 
-  var start_date = globalThis.Date.now();
-  var start_perf = globalThis.performance.now();
+  core_web_globals_exist();
 
-  assert_equals(start_date, 0, "Date.now() should start at 0");
-  assert_equals(start_perf, 0, "performance.now() should start at 0");
-  assert_equals(start_perf, start_date, "performance.now() should match Date.now() at start");
-
-  globalThis.setTimeout(on_first_timeout, 10);
-}
-
-function on_first_timeout() {
-  var t = __time_determinism_t;
-  if (!t || t._done === true) return;
-
-  try {
-    var now_date = globalThis.Date.now();
-    var now_perf = globalThis.performance.now();
-
-    assert_equals(now_date, 10, "Date.now() should be 10 in setTimeout callback");
-    assert_equals(now_perf, 10, "performance.now() should be 10 in setTimeout callback");
-    assert_equals(
-      now_perf,
-      now_date,
-      "performance.now() should match Date.now() in setTimeout callback"
-    );
-
-    globalThis.setTimeout(on_second_timeout, 1000);
-  } catch (e) {
-    __time_determinism_fail(e);
-  }
-}
-
-function on_second_timeout() {
-  var t = __time_determinism_t;
-  if (!t || t._done === true) return;
-
-  try {
-    var now_date_2 = globalThis.Date.now();
-    var now_perf_2 = globalThis.performance.now();
-
-    assert_equals(
-      now_date_2,
-      1010,
-      "Date.now() should be 1010 in long setTimeout callback"
-    );
-    assert_equals(
-      now_perf_2,
-      1010,
-      "performance.now() should be 1010 in long setTimeout callback"
-    );
-    assert_equals(
-      now_perf_2,
-      now_date_2,
-      "performance.now() should match Date.now() in long setTimeout callback"
-    );
-
-    t.done();
-  } catch (e) {
-    __time_determinism_fail(e);
-  }
+  assert_virtual_clock(0, "virtual clock should start at 0");
+  setTimeout(on_time_determinism_timeout_10, 10);
 }
 
 async_test(
