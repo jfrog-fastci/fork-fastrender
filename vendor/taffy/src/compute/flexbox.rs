@@ -1942,7 +1942,10 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
         .iter()
         .map(|child| child.outer_target_size.main(constants.dir))
         .sum::<f32>();
-    let free_space = constants.inner_container_size.main(constants.dir) - used_space;
+    let mut free_space = constants.inner_container_size.main(constants.dir) - used_space;
+    if !free_space.is_finite() {
+      free_space = 0.0;
+    }
     let mut num_auto_margins = 0;
 
     for child in line.items.iter_mut() {
@@ -2190,8 +2193,11 @@ fn align_flex_lines_per_align_content(
   let num_lines = flex_lines.len();
   let gap = constants.gap.cross(constants.dir);
   let total_cross_axis_gap = sum_axis_gaps(gap, num_lines);
-  let free_space =
+  let mut free_space =
     constants.inner_container_size.cross(constants.dir) - total_cross_size - total_cross_axis_gap;
+  if !free_space.is_finite() {
+    free_space = 0.0;
+  }
   let is_safe = false; // TODO: Implement safe alignment
 
   let align_content_mode =

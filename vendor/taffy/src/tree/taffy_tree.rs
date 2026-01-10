@@ -2161,7 +2161,7 @@ mod tests {
       |_, _, _, _, _| {
         insert_dummy_subgrid_override(NodeId::new(2));
         crate::util::check_layout_abort();
-        Size::ZERO
+        Size::ZERO.into()
       },
       Some(cancel),
       1,
@@ -2217,7 +2217,7 @@ mod tests {
           .unwrap();
         assert_eq!(subgrid_overrides_len(), 1);
 
-        Size::ZERO
+        Size::ZERO.into()
       })
       .unwrap();
 
