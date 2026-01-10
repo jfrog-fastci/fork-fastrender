@@ -186,7 +186,7 @@ fn bind_identifier(
   strict: bool,
 ) -> Result<(), VmError> {
   match kind {
-    BindingKind::Var => env.set_var(scope, name, value),
+    BindingKind::Var => env.set_var(vm, scope, name, value),
     BindingKind::Let => {
       let env_rec = env.lexical_env();
       if !scope.heap().env_has_binding(env_rec, name)? {

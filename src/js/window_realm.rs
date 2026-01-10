@@ -843,6 +843,7 @@ impl Drop for ConsoleSinkGuard {
 }
 
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
+const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
@@ -1387,6 +1388,24 @@ fn location_href_get_native(
   )
 }
 
+fn window_location_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  Ok(
+    slots
+      .get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined),
+  )
+}
+
 fn request_location_navigation(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1453,6 +1472,26 @@ fn request_location_navigation(
   // termination propagates out of this native call immediately.
   vm.tick()?;
   Ok(Value::Undefined)
+}
+
+fn window_location_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let location_obj = slots.get(LOCATION_ACCESSOR_LOCATION_OBJ_SLOT).copied().and_then(|value| {
+    let Value::Object(obj) = value else {
+      return None;
+    };
+    Some(obj)
+  });
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  request_location_navigation(vm, scope, hooks, location_obj, url_value, false)
 }
 
 fn location_href_set_native(
@@ -7726,6 +7765,8 @@ fn init_window_globals(
   let global_this_key = alloc_key(&mut scope, "globalThis")?;
   let window_key = alloc_key(&mut scope, "window")?;
   let self_key = alloc_key(&mut scope, "self")?;
+  let top_key = alloc_key(&mut scope, "top")?;
+  let parent_key = alloc_key(&mut scope, "parent")?;
   let console_key = alloc_key(&mut scope, "console")?;
   let location_key = alloc_key(&mut scope, "location")?;
   let document_key = alloc_key(&mut scope, "document")?;
@@ -7994,6 +8035,41 @@ fn init_window_globals(
     },
   )?;
 
+  // Expose `window.location`/`document.location` as an accessor so assignments like
+  // `location = "/next"` trigger navigation instead of replacing the Location object.
+  let window_location_slots = [Value::Object(location_obj)];
+  let window_location_get_call_id = vm.register_native_call(window_location_get_native)?;
+  let window_location_get_name = scope.alloc_string("get window.location")?;
+  scope.push_root(Value::String(window_location_get_name))?;
+  let window_location_get_func = scope.alloc_native_function_with_slots(
+    window_location_get_call_id,
+    None,
+    window_location_get_name,
+    0,
+    &window_location_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    window_location_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(window_location_get_func))?;
+
+  let window_location_set_call_id = vm.register_native_call(window_location_set_native)?;
+  let window_location_set_name = scope.alloc_string("set window.location")?;
+  scope.push_root(Value::String(window_location_set_name))?;
+  let window_location_set_func = scope.alloc_native_function_with_slots(
+    window_location_set_call_id,
+    None,
+    window_location_set_name,
+    1,
+    &window_location_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    window_location_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(window_location_set_func))?;
+
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
@@ -8001,7 +8077,14 @@ fn init_window_globals(
   scope.define_property(
     document_obj,
     document_location_key,
-    data_desc(Value::Object(location_obj)),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(window_location_get_func),
+        set: Value::Object(window_location_set_func),
+      },
+    },
   )?;
 
   // Backreference used by DOM event dispatch to map `EventTargetId::Window` back into the JS realm.
@@ -9717,8 +9800,21 @@ fn init_window_globals(
   scope.define_property(global, global_this_key, data_desc(Value::Object(global)))?;
   scope.define_property(global, window_key, data_desc(Value::Object(global)))?;
   scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
+  scope.define_property(global, top_key, data_desc(Value::Object(global)))?;
+  scope.define_property(global, parent_key, data_desc(Value::Object(global)))?;
 
-  scope.define_property(global, location_key, data_desc(Value::Object(location_obj)))?;
+  scope.define_property(
+    global,
+    location_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(window_location_get_func),
+        set: Value::Object(window_location_set_func),
+      },
+    },
+  )?;
   scope.define_property(global, document_key, data_desc(Value::Object(document_obj)))?;
   scope.define_property(global, console_key, data_desc(Value::Object(console_obj)))?;
 

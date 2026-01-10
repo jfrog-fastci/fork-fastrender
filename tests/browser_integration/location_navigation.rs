@@ -1,76 +1,8 @@
-use fastrender::dom2::NodeId;
-use fastrender::js::{
-  EventLoop, LocationNavigationRequest, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig,
-};
-use fastrender::{
-  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result,
-};
+use fastrender::api::VmJsBrowserTabExecutor;
+use fastrender::js::RunLimits;
+use fastrender::{BrowserTab, RenderOptions, Result};
 
 use super::support::{rgba_at, TempSite};
-
-struct VmJsLocationExecutor {
-  realm: Option<WindowRealm>,
-  realm_document_url: String,
-  pending_navigation: Option<LocationNavigationRequest>,
-}
-
-impl VmJsLocationExecutor {
-  fn new() -> Result<Self> {
-    Ok(Self {
-      realm: None,
-      realm_document_url: "about:blank".to_string(),
-      pending_navigation: None,
-    })
-  }
-
-  fn ensure_realm(&mut self) -> Result<&mut WindowRealm> {
-    if self.realm.is_none() {
-      self.realm = Some(
-        WindowRealm::new(WindowRealmConfig::new(self.realm_document_url.clone()))
-          .map_err(|err| Error::Other(err.to_string()))?,
-      );
-    }
-    Ok(self.realm.as_mut().expect("realm should be initialized"))
-  }
-}
-
-impl BrowserTabJsExecutor for VmJsLocationExecutor {
-  fn execute_classic_script(
-    &mut self,
-    script_text: &str,
-    spec: &ScriptElementSpec,
-    _current_script: Option<NodeId>,
-    _document: &mut BrowserDocumentDom2,
-    _event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()> {
-    let realm = self.ensure_realm()?;
-    realm.set_base_url(spec.base_url.clone());
-
-    match realm.exec_script(script_text) {
-      Ok(_) => Ok(()),
-      Err(err) => {
-        if let Some(req) = realm.take_pending_navigation_request() {
-          // Clear the interrupt flag so the realm can be reused if the embedding chooses to keep
-          // executing (e.g. navigation fails and scripts continue running).
-          realm.reset_interrupt();
-          self.pending_navigation = Some(req);
-          return Ok(());
-        }
-        Err(Error::Other(err.to_string()))
-      }
-    }
-  }
-
-  fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
-    self.pending_navigation.take()
-  }
-
-  fn on_navigation_committed(&mut self, document_url: Option<&str>) {
-    self.realm_document_url = document_url.unwrap_or("about:blank").to_string();
-    self.realm = None;
-    self.pending_navigation = None;
-  }
-}
 
 #[test]
 fn location_href_navigates_to_new_document() -> Result<()> {
@@ -113,7 +45,7 @@ fn location_href_navigates_to_new_document() -> Result<()> {
   );
 
   let options = RenderOptions::new().with_viewport(64, 64);
-  let executor = VmJsLocationExecutor::new()?;
+  let executor = VmJsBrowserTabExecutor::new();
   let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
 
   tab.navigate_to_url(&page1_url, options.clone())?;
@@ -166,7 +98,7 @@ fn location_href_navigates_from_deferred_script_task() -> Result<()> {
   );
 
   let options = RenderOptions::new().with_viewport(64, 64);
-  let executor = VmJsLocationExecutor::new()?;
+  let executor = VmJsBrowserTabExecutor::new();
   let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
 
   tab.navigate_to_url(&page1_url, options.clone())?;

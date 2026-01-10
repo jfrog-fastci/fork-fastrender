@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::js::window_realm::{register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig};
-use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, ScriptElementSpec};
+use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
 use vm_js::HeapLimits;
 use std::ptr::NonNull;
@@ -15,6 +15,7 @@ use super::{BrowserTabHost, BrowserTabJsExecutor};
 pub struct VmJsBrowserTabExecutor {
   dom_source_id: Option<u64>,
   realm: Option<WindowRealm>,
+  pending_navigation: Option<LocationNavigationRequest>,
 }
 
 impl VmJsBrowserTabExecutor {
@@ -22,6 +23,7 @@ impl VmJsBrowserTabExecutor {
     Self {
       dom_source_id: None,
       realm: None,
+      pending_navigation: None,
     }
   }
 
@@ -62,6 +64,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     current_script: &CurrentScriptStateHandle,
     js_execution_options: JsExecutionOptions,
   ) -> Result<()> {
+    self.pending_navigation = None;
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.
     self.realm = None;
@@ -98,15 +101,29 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
       ));
     };
+    realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
     let source_name = spec
       .src
       .as_deref()
       .unwrap_or("source=inline");
-    realm
-      .exec_script_with_name(source_name, script_text)
-      .map(|_| ())
-      .map_err(|err| Error::Other(err.to_string()))
+    match realm.exec_script_with_name(source_name, script_text) {
+      Ok(_) => Ok(()),
+      Err(err) => {
+        if let Some(req) = realm.take_pending_navigation_request() {
+          // Clear the interrupt flag so the realm can be reused if the embedding chooses to keep
+          // executing (e.g. navigation fails and scripts continue running).
+          realm.reset_interrupt();
+          self.pending_navigation = Some(req);
+          return Ok(());
+        }
+        Err(Error::Other(err.to_string()))
+      }
+    }
+  }
+
+  fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+    self.pending_navigation.take()
   }
 
   fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: &Event) -> Result<()> {
@@ -132,6 +149,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     );
 
     realm.reset_interrupt();
-    realm.exec_script(&source).map(|_| ()).map_err(|err| Error::Other(err.to_string()))
+    match realm.exec_script(&source) {
+      Ok(_) => Ok(()),
+      Err(err) => {
+        if let Some(req) = realm.take_pending_navigation_request() {
+          realm.reset_interrupt();
+          self.pending_navigation = Some(req);
+          return Ok(());
+        }
+        Err(Error::Other(err.to_string()))
+      }
+    }
   }
 }

@@ -415,7 +415,16 @@ impl RuntimeEnv {
           return Ok(());
         }
         PropertyKind::Accessor { .. } => {
-          return Err(VmError::Unimplemented("accessor properties"));
+          let receiver = Value::Object(global_object);
+          let ok = key_scope.ordinary_set(vm, global_object, key, value, receiver)?;
+          if ok {
+            return Ok(());
+          }
+          if strict {
+            let msg = format!("Cannot assign to read only property '{name}'");
+            return Err(throw_type_error(vm, &mut key_scope, &msg)?);
+          }
+          return Ok(());
         }
       }
     }
@@ -427,6 +436,7 @@ impl RuntimeEnv {
 
   pub(crate) fn set_var(
     &mut self,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     name: &str,
     value: Value,
@@ -463,7 +473,14 @@ impl RuntimeEnv {
               ));
             }
             PropertyKind::Accessor { .. } => {
-              return Err(VmError::Unimplemented("accessor properties"));
+              let receiver = Value::Object(global_object);
+              let ok = key_scope.ordinary_set(vm, global_object, key, value, receiver)?;
+              if ok {
+                return Ok(());
+              }
+              return Err(VmError::Unimplemented(
+                "assignment to non-writable global property",
+              ));
             }
           }
         }
@@ -1344,9 +1361,8 @@ impl<'a> Evaluator<'a> {
 
     let mut assign_scope = scope.reborrow();
     assign_scope.push_root(Value::Object(func_obj))?;
-    self
-      .env
-      .set_var(&mut assign_scope, &name.stx.name, Value::Object(func_obj))?;
+    let (vm, env) = (&mut self.vm, &mut self.env);
+    env.set_var(vm, &mut assign_scope, &name.stx.name, Value::Object(func_obj))?;
     Ok(())
   }
 

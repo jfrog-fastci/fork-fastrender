@@ -277,7 +277,16 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
     let (vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
 
-    let location = get_data_prop(&mut scope, global, "location");
+    let location_key_s = scope
+      .alloc_string("location")
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::String(location_key_s))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    let location_key = PropertyKey::from_string(location_key_s);
+    let location = vm
+      .get(&mut scope, global, location_key)
+      .map_err(|e| Error::Other(e.to_string()))?;
     let Value::Object(location_obj) = location else {
       panic!("expected location to be an object");
     };
@@ -350,13 +359,63 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
 }
 
 #[test]
+fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let err = realm
+    .exec_script("location = '/a'")
+    .expect_err("expected assignment to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/a");
+  assert!(!req.replace);
+
+  let err = realm
+    .exec_script("window.location = '/b'")
+    .expect_err("expected assignment to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/b");
+  assert!(!req.replace);
+
+  let err = realm
+    .exec_script("document.location = '/c'")
+    .expect_err("expected assignment to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/c");
+  assert!(!req.replace);
+
+  Ok(())
+}
+
+#[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
-    .exec_script("window === globalThis && self === window")
+    .exec_script("window === globalThis && self === window && top === window && parent === window")
     .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(value, Value::Bool(true));
 

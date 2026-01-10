@@ -1041,7 +1041,15 @@ impl DocumentLifecycleHost for BrowserTabHost {
     target: crate::web::events::EventTargetId,
     event: crate::web::events::Event,
   ) -> Result<()> {
-    self.executor.dispatch_lifecycle_event(target, &event)
+    let result = self.executor.dispatch_lifecycle_event(target, &event);
+    if let Some(req) = self.executor.take_navigation_request() {
+      self.pending_navigation = Some(req);
+    }
+    match result {
+      Ok(()) => Ok(()),
+      Err(err) if self.pending_navigation.is_some() => Ok(()),
+      Err(err) => Err(err),
+    }
   }
 
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
