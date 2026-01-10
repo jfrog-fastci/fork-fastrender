@@ -10854,6 +10854,7 @@ mod tests {
     assert_eq!(realm.exec_script("typeof Date === 'function'")?, Value::Bool(true));
     assert_eq!(realm.exec_script("typeof Date.now === 'function'")?, Value::Bool(true));
     assert_eq!(realm.exec_script("new Date(123).getTime()")?, Value::Number(123.0));
+    assert_eq!(realm.exec_script("new Date().getTime()")?, Value::Number(1_000.0));
     assert_eq!(
       realm.exec_script("performance.timeOrigin")?,
       Value::Number(web_time.time_origin_unix_ms as f64)
@@ -10864,6 +10865,7 @@ mod tests {
     // Advance to a deterministic non-integer millisecond.
     clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
     assert_eq!(realm.exec_script("Date.now()")?, Value::Number(2_234.0));
+    assert_eq!(realm.exec_script("new Date().getTime()")?, Value::Number(2_234.0));
     let Value::Number(perf_now) = realm.exec_script("performance.now()")? else {
       panic!("expected performance.now() to return a number");
     };

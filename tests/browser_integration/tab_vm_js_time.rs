@@ -22,6 +22,7 @@ fn tab_vm_js_time_apis_follow_event_loop_clock() -> Result<()> {
           m.setAttribute("data-origin", String(performance.timeOrigin));
           m.setAttribute("data-now", String(performance.now()));
           m.setAttribute("data-date", String(Date.now()));
+          m.setAttribute("data-new-date", String(new Date().getTime()));
         </script>
       </body>
     </html>"#;
@@ -58,6 +59,10 @@ fn tab_vm_js_time_apis_follow_event_loop_clock() -> Result<()> {
     Some("5000"),
     "Date.now() must use the tab event loop clock (origin defaults to 0 in tests)"
   );
+  assert_eq!(
+    attr(tab.dom(), marker, "data-new-date")?.as_deref(),
+    Some("5000"),
+    "new Date().getTime() must use the tab event loop clock (origin defaults to 0 in tests)"
+  );
   Ok(())
 }
-

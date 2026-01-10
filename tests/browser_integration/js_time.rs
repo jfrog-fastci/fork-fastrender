@@ -19,10 +19,12 @@ fn window_host_time_apis_are_deterministic_and_match_event_loop_clock() -> Resul
   assert_eq!(host.exec_script("performance.timeOrigin")?, Value::Number(0.0));
   assert_eq!(host.exec_script("performance.now()")?, Value::Number(0.0));
   assert_eq!(host.exec_script("Date.now()")?, Value::Number(0.0));
+  assert_eq!(host.exec_script("new Date().getTime()")?, Value::Number(0.0));
 
   clock.advance(Duration::from_millis(5));
   assert_eq!(host.exec_script("performance.now()")?, Value::Number(5.0));
   assert_eq!(host.exec_script("Date.now()")?, Value::Number(5.0));
+  assert_eq!(host.exec_script("new Date().getTime()")?, Value::Number(5.0));
 
   // Ensure timer scheduling observes the same clock as `performance.now()`.
   clock.set_now(Duration::from_millis(0));
@@ -47,4 +49,3 @@ fn window_host_time_apis_are_deterministic_and_match_event_loop_clock() -> Resul
 
   Ok(())
 }
-

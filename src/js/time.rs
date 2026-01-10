@@ -135,14 +135,15 @@ pub fn install_time_bindings(
     let global = realm.global_object();
     scope.push_root(Value::Object(global))?;
 
-    // --- Date.now() ---
+    // --- Date ---
     let date_key_s = scope.alloc_string("Date")?;
     scope.push_root(Value::String(date_key_s))?;
     let date_key = PropertyKey::from_string(date_key_s);
-    // Prefer patching the existing `%Date%` constructor installed by `vm-js` intrinsics rather
-    // than replacing it with a stub object. Many real pages construct `new Date()` or access other
-    // `Date.*` APIs; overriding the global binding would regress compatibility.
-    let date_obj = match vm.get(&mut scope, global, date_key)? {
+    // `vm-js` provides a minimal `%Date%` constructor, but `new Date()` currently defaults to the
+    // epoch (`0`) instead of "now". Many real pages still do `new Date().getTime()`, so install a
+    // thin wrapper that delegates to the intrinsic constructor while mapping the zero-arg case to
+    // the deterministic host clock.
+    let intrinsic_date = match vm.get(&mut scope, global, date_key)? {
       Value::Object(obj) => obj,
       _ => {
         // Fall back to creating a minimal object if the realm doesn't provide `Date`.
@@ -152,7 +153,72 @@ pub fn install_time_bindings(
         date
       }
     };
+    scope.push_root(Value::Object(intrinsic_date))?;
 
+    let date_obj = if scope
+      .heap()
+      .is_constructor(Value::Object(intrinsic_date))?
+    {
+      let date_call_id = vm.register_native_call(date_constructor_call_native)?;
+      let date_construct_id = vm.register_native_construct(date_constructor_construct_native)?;
+      let date_name = scope.alloc_string("Date")?;
+      scope.push_root(Value::String(date_name))?;
+      let date_wrapper = scope.alloc_native_function_with_slots(
+        date_call_id,
+        Some(date_construct_id),
+        date_name,
+        7,
+        &[Value::Object(intrinsic_date)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(date_wrapper, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(date_wrapper))?;
+
+      // Ensure `Date.prototype` is the intrinsic Date prototype so `instanceof Date` works and the
+      // realm keeps the minimal methods (`toString`, `valueOf`, ...).
+      let date_prototype = realm.intrinsics().date_prototype();
+      scope.push_root(Value::Object(date_prototype))?;
+      let prototype_key_s = scope.alloc_string("prototype")?;
+      scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let set_ok = scope.ordinary_set(
+        vm,
+        date_wrapper,
+        prototype_key,
+        Value::Object(date_prototype),
+        Value::Object(date_wrapper),
+      )?;
+      if !set_ok {
+        return Err(VmError::Unimplemented("failed to set Date.prototype"));
+      }
+
+      // `Date.prototype.constructor` should point back to the wrapper `Date` function so
+      // `Date.prototype.constructor === Date` holds.
+      let constructor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(constructor_key_s))?;
+      let constructor_key = PropertyKey::from_string(constructor_key_s);
+      let _ = scope.ordinary_set(
+        vm,
+        date_prototype,
+        constructor_key,
+        Value::Object(date_wrapper),
+        Value::Object(date_prototype),
+      )?;
+
+      // Replace the global binding so `new Date()` hits the wrapper.
+      scope.define_property(
+        global,
+        date_key,
+        global_data_desc(Value::Object(date_wrapper)),
+      )?;
+
+      date_wrapper
+    } else {
+      intrinsic_date
+    };
+
+    // --- Date.now() ---
     let date_now_id = vm.register_native_call(date_now_native)?;
     let date_now_name = scope.alloc_string("now")?;
     let date_now = scope.alloc_native_function(date_now_id, None, date_now_name, 0)?;
@@ -286,6 +352,65 @@ fn with_time_context<T>(
     "time bindings not installed for this heap",
   ))?;
   Ok(f(ctx))
+}
+
+fn date_constructor_call_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Keep vm-js's minimal `Date()` behavior: return a deterministic placeholder string.
+  //
+  // Real pages typically use `Date.now()` / `new Date()` rather than calling `Date()` as a
+  // function; returning a stable placeholder avoids relying on wall-clock time without attempting
+  // to format a full date string.
+  Ok(Value::String(scope.alloc_string("[object Date]")?))
+}
+
+fn date_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(intrinsic_date)) = slots.first().copied() else {
+    return Err(VmError::Unimplemented(
+      "Date wrapper missing intrinsic Date constructor slot",
+    ));
+  };
+
+  if args.is_empty() {
+    let (web_time, clock) = with_time_context(scope, |ctx| (ctx.web_time, ctx.clock.clone()))?;
+    let now_ms = web_time
+      .time_origin_unix_ms
+      .saturating_add(duration_to_millis_i64(clock.now()));
+    let args = [Value::Number(now_ms as f64)];
+    return vm.construct_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      Value::Object(intrinsic_date),
+      &args,
+      new_target,
+    );
+  }
+
+  vm.construct_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(intrinsic_date),
+    args,
+    new_target,
+  )
 }
 
 fn date_now_native(
