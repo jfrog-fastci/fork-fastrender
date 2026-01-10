@@ -6,6 +6,7 @@ use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use super::{
   determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent,
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
+  trim_ascii_whitespace,
 };
 
 fn trim_ascii_whitespace(value: &str) -> &str {
