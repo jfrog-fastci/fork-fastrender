@@ -139,6 +139,10 @@ impl BrowserDocumentDom2 {
     self.renderer.resource_fetcher()
   }
 
+  pub fn options(&self) -> &RenderOptions {
+    &self.options
+  }
+
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
     *self.dom = dom;

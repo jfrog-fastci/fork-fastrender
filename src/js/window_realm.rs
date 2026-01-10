@@ -48,6 +48,16 @@ pub struct WindowRealmConfig {
   pub heap_limits: HeapLimits,
 }
 
+/// Navigation request emitted by `window.location` APIs (`href`, `assign`, `replace`).
+///
+/// WindowRealm itself does not perform document loading/navigation; it records a pending request and
+/// interrupts the currently running script so the embedding can commit the navigation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocationNavigationRequest {
+  pub url: String,
+  pub replace: bool,
+}
+
 impl WindowRealmConfig {
   pub fn new(document_url: impl Into<String>) -> Self {
     Self {
@@ -91,6 +101,8 @@ pub struct WindowRealm {
 
 struct WindowRealmUserData {
   document_url: String,
+  base_url: Option<String>,
+  pending_navigation: Option<LocationNavigationRequest>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
 }
@@ -108,6 +120,8 @@ impl std::fmt::Debug for WindowRealmUserData {
 impl WindowRealmUserData {
   fn new(document_url: String) -> Self {
     Self {
+      base_url: Some(document_url.clone()),
+      pending_navigation: None,
       document_url,
       cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
@@ -211,6 +225,26 @@ impl WindowRealm {
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
       data.cookie_fetcher = Some(fetcher);
     }
+  }
+
+  /// Updates the current document base URL used for resolving relative URLs.
+  ///
+  /// Embeddings should call this before executing classic scripts so APIs like `fetch()` and
+  /// `location.href = ...` resolve relative inputs consistently with the HTML base URL tracking
+  /// rules.
+  pub fn set_base_url(&mut self, base_url: Option<String>) {
+    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.base_url = base_url;
+    }
+  }
+
+  /// Returns and clears any `window.location` navigation request emitted by scripts.
+  pub fn take_pending_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+    self
+      .runtime
+      .vm
+      .user_data_mut::<WindowRealmUserData>()
+      .and_then(|data| data.pending_navigation.take())
   }
 
   /// Execute a classic script in this window realm.
@@ -349,6 +383,35 @@ fn data_desc(value: Value) -> PropertyDescriptor {
       value,
       writable: true,
     },
+  }
+}
+
+fn create_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  ctor: GcObject,
+  message: &str,
+) -> Result<Value, VmError> {
+  let msg = scope.alloc_string(message)?;
+  scope.push_root(Value::String(msg))?;
+  vm.construct_with_host(
+    scope,
+    hooks,
+    Value::Object(ctor),
+    &[Value::String(msg)],
+    Value::Object(ctor),
+  )
+}
+
+fn throw_type_error(vm: &mut Vm, scope: &mut Scope<'_>, hooks: &mut dyn VmHostHooks, message: &str) -> VmError {
+  let intr = match vm.intrinsics() {
+    Some(intr) => intr,
+    None => return VmError::TypeError("TypeError requires intrinsics (create a Realm first)"),
+  };
+  match create_error(vm, scope, hooks, intr.type_error(), message) {
+    Ok(err) => VmError::Throw(err),
+    Err(_) => VmError::Throw(Value::Undefined),
   }
 }
 
@@ -1232,18 +1295,120 @@ fn location_href_get_native(
   )
 }
 
-fn location_href_set_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
+fn request_location_navigation(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  location_obj: Option<GcObject>,
+  url_value: Value,
+  replace: bool,
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "Navigation via location.href is not implemented yet",
-  ))
+  let base_url = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+    data.base_url.clone()
+  };
+
+  let url_value = match url_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(url_value))?;
+  let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
+
+  let resolved = crate::js::url_resolve::resolve_url(&url_input, base_url.as_deref())
+    .map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+
+  let parsed =
+    Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+  match parsed.scheme() {
+    "http" | "https" | "file" | "data" | "about" => {}
+    other => {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        hooks,
+        &format!("Navigation to {other}: URLs is not supported"),
+      ));
+    }
+  }
+
+  if let Some(location_obj) = location_obj {
+    // Keep the resolved URL on the location object so `location.href` immediately reflects the new
+    // target.
+    let key = alloc_key(scope, LOCATION_URL_KEY)?;
+    let resolved_s = scope.alloc_string(&resolved)?;
+    scope.push_root(Value::String(resolved_s))?;
+    scope.define_property(location_obj, key, data_desc(Value::String(resolved_s)))?;
+  }
+
+  {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+    data.pending_navigation = Some(LocationNavigationRequest { url: resolved, replace });
+  }
+
+  // Abort the currently running script so the embedding can commit navigation synchronously (e.g.
+  // cancel streaming HTML parsing and replace the document).
+  vm.interrupt_handle().interrupt();
+  // `InterruptHandle` is only observed at `Vm::tick()` boundaries; force a tick now so the
+  // termination propagates out of this native call immediately.
+  vm.tick()?;
+  Ok(Value::Undefined)
+}
+
+fn location_href_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, false)
+}
+
+fn location_assign_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, false)
+}
+
+fn location_replace_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, true)
 }
 
 fn location_set_unimplemented_native(
@@ -6532,6 +6697,8 @@ fn init_window_globals(
   let local_storage_key = alloc_key(&mut scope, "localStorage")?;
 
   let href_key = alloc_key(&mut scope, "href")?;
+  let assign_key = alloc_key(&mut scope, "assign")?;
+  let replace_key = alloc_key(&mut scope, "replace")?;
   let protocol_key = alloc_key(&mut scope, "protocol")?;
   let host_key = alloc_key(&mut scope, "host")?;
   let hostname_key = alloc_key(&mut scope, "hostname")?;
@@ -6590,6 +6757,26 @@ fn init_window_globals(
       },
     },
   )?;
+
+  let assign_call_id = vm.register_native_call(location_assign_native)?;
+  let assign_name = scope.alloc_string("assign")?;
+  scope.push_root(Value::String(assign_name))?;
+  let assign_func = scope.alloc_native_function(assign_call_id, None, assign_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(assign_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(assign_func))?;
+  scope.define_property(location_obj, assign_key, data_desc(Value::Object(assign_func)))?;
+
+  let replace_call_id = vm.register_native_call(location_replace_native)?;
+  let replace_name = scope.alloc_string("replace")?;
+  scope.push_root(Value::String(replace_name))?;
+  let replace_func = scope.alloc_native_function(replace_call_id, None, replace_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(replace_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(replace_func))?;
+  scope.define_property(location_obj, replace_key, data_desc(Value::Object(replace_func)))?;
 
   let location_set_call_id = vm.register_native_call(location_set_unimplemented_native)?;
   let location_set_name = scope.alloc_string("set location")?;

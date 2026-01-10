@@ -70,6 +70,7 @@ mod select_dropdown_pick;
 mod select_listbox_click_scrolled;
 mod select_listbox_wheel_scroll;
 mod js_rendering;
+mod location_navigation;
 mod support;
 mod tab;
 mod ui_clipboard;

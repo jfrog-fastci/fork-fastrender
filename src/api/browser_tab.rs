@@ -10,6 +10,7 @@ use crate::js::{
   DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
   RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec, ScriptId,
   ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  LocationNavigationRequest,
 };
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{FetchDestination, FetchRequest};
@@ -33,6 +34,18 @@ pub trait BrowserTabJsExecutor {
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()>;
+
+  /// Returns and clears any navigation request emitted by the JS embedding (for example via
+  /// `window.location.href = ...`).
+  fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+    None
+  }
+
+  /// Notifies the executor that a new document has been committed.
+  ///
+  /// Implementations can use this to reset per-document JS state (e.g. recreate a JS realm with the
+  /// updated `document.URL`).
+  fn on_navigation_committed(&mut self, _document_url: Option<&str>) {}
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +91,7 @@ pub struct BrowserTabHost {
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
+  pending_navigation: Option<LocationNavigationRequest>,
   external_script_sources: HashMap<String, String>,
   js_execution_options: JsExecutionOptions,
   js_execution_depth: Rc<Cell<usize>>,
@@ -103,6 +117,7 @@ impl BrowserTabHost {
       executed: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
+      pending_navigation: None,
       external_script_sources: HashMap::new(),
       js_execution_options,
       js_execution_depth: Rc::new(Cell::new(0)),
@@ -139,6 +154,8 @@ impl BrowserTabHost {
     self.executed.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url;
+    self.pending_navigation = None;
+    self.executor.on_navigation_committed(self.document_url.as_deref());
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
   }
@@ -312,6 +329,9 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     for action in actions {
+      if self.pending_navigation.is_some() {
+        break;
+      }
       match action {
         ScriptSchedulerAction::StartFetch { script_id, url, .. } => {
           self.start_fetch(script_id, url, event_loop)?;
@@ -431,14 +451,17 @@ impl BrowserTabHost {
         span.arg_bool("parser_inserted", self.spec.parser_inserted);
 
         let current_script = host.current_script_node();
-        let (document, executor) = (&mut host.document, &mut host.executor);
-        executor.execute_classic_script(
+        let result = host.executor.execute_classic_script(
           self.source_text,
           self.spec,
           current_script,
-          document,
+          &mut host.document,
           self.event_loop,
-        )
+        );
+        if let Some(req) = host.executor.take_navigation_request() {
+          host.pending_navigation = Some(req);
+        }
+        result
       }
     }
 
@@ -683,6 +706,11 @@ impl BrowserTab {
             let base_url_at_discovery = spec.base_url.clone();
             self.on_parser_discovered_script(script, spec, base_url_at_discovery)?;
 
+            if self.host.pending_navigation.is_some() {
+              // Abort the current parse/execution; the caller will commit the navigation.
+              return Ok(parser.current_base_url());
+            }
+
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
             let updated = self.host.dom().clone_with_events();
@@ -732,6 +760,11 @@ impl BrowserTab {
             crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(self.host.dom(), script, &base);
           let base_url_at_discovery = spec.base_url.clone();
           self.on_parser_discovered_script(script, spec, base_url_at_discovery)?;
+
+          if self.host.pending_navigation.is_some() {
+            // Abort the current parse/execution; the caller will commit the navigation.
+            return Ok(parser.current_base_url());
+          }
 
           // Sync any DOM mutations from the executed script back into the streaming parser's live
           // DOM before resuming parsing.
@@ -825,6 +858,9 @@ impl BrowserTab {
     };
     tab.host.reset_scripting_state(None);
     let _ = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
+    if let Some(req) = tab.host.pending_navigation.take() {
+      tab.navigate_to_url(&req.url, options.clone())?;
+    }
     Ok(tab)
   }
 
@@ -893,6 +929,9 @@ impl BrowserTab {
     self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(None);
     let _ = self.parse_html_streaming_and_schedule_scripts(html, None, &options_for_parse)?;
+    if let Some(req) = self.host.pending_navigation.take() {
+      self.navigate_to_url(&req.url, options_for_parse.clone())?;
+    }
     Ok(())
   }
 
@@ -901,6 +940,8 @@ impl BrowserTab {
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
 
+    let mut target_url = url.to_string();
+    loop {
     // Replace the document DOM with an empty tree before streaming in the new navigation HTML.
     //
     // Unlike `BrowserDocumentDom2::navigate_url` (which goes through `FastRender::prepare_url`), this
@@ -910,7 +951,7 @@ impl BrowserTab {
     self
       .host
       .document
-      .reset_with_dom(Document::new(QuirksMode::NoQuirks), options);
+      .reset_with_dom(Document::new(QuirksMode::NoQuirks), options.clone());
     self.reset_event_loop();
     self.host.trace = self.trace.clone();
 
@@ -922,8 +963,11 @@ impl BrowserTab {
     });
 
     let fetcher = self.host.document.fetcher();
-    let fetched = fetcher.fetch_with_request(FetchRequest::document(url))?;
-    let final_url = fetched.final_url.clone().unwrap_or_else(|| url.to_string());
+    let fetched = fetcher.fetch_with_request(FetchRequest::document(&target_url))?;
+    let final_url = fetched
+      .final_url
+      .clone()
+      .unwrap_or_else(|| target_url.clone());
 
     // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
     // document URL is used for referrer/origin semantics and must remain stable even if `<base
@@ -943,6 +987,11 @@ impl BrowserTab {
       &options_for_parse,
     )?;
 
+    if let Some(req) = self.host.pending_navigation.take() {
+      target_url = req.url;
+      continue;
+    }
+
     // Update the renderer's base URL hint to match the parse-time base URL after processing the
     // full document.
     let renderer = self.host.document.renderer_mut();
@@ -951,7 +1000,8 @@ impl BrowserTab {
       None => renderer.clear_base_url(),
     }
 
-    Ok(())
+    return Ok(());
+    }
   }
 
   fn run_event_loop_until_idle_with_render_hook(
@@ -1163,6 +1213,9 @@ impl BrowserTab {
       self
         .host
         .register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut self.event_loop)?;
+      if self.host.pending_navigation.is_some() {
+        return Ok(());
+      }
     }
 
     self.on_parsing_completed()

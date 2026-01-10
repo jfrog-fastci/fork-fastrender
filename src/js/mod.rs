@@ -117,7 +117,9 @@ pub use window_fetch::{
 };
 pub use window_timers::install_window_timers_bindings;
 pub use window_url::install_window_url_bindings;
-pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
+pub use window_realm::{
+  ConsoleSink, LocationNavigationRequest, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
 pub use window::{WindowHost, WindowHostState};
 pub use vm_host::JsVmHost;
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;

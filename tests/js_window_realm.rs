@@ -13,7 +13,7 @@ use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vm_js::{Heap, PropertyKey, Scope, Value, Vm, VmError};
+use vm_js::{Heap, PropertyKey, Scope, TerminationReason, Value, Vm, VmError};
 
 fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &mut EventLoop<Host>) {
   fn drain<Host: WindowRealmHost>(host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
@@ -268,37 +268,84 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 }
 
 #[test]
-fn location_href_setter_errors_deterministically() -> Result<()> {
+fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let global = realm.global_object();
-  let (vm, heap) = realm.vm_and_heap_mut();
-  let mut scope = heap.scope();
+  let err = {
+    let global = realm.global_object();
+    let (vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
 
-  let location = get_data_prop(&mut scope, global, "location");
-  let Value::Object(location_obj) = location else {
-    panic!("expected location to be an object");
+    let location = get_data_prop(&mut scope, global, "location");
+    let Value::Object(location_obj) = location else {
+      panic!("expected location to be an object");
+    };
+
+    let href_key_s = scope.alloc_string("href").map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::String(href_key_s))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    let href_key = PropertyKey::from_string(href_key_s);
+
+    let new_url_s = scope
+      .alloc_string("https://example.com/next")
+      .map_err(|e| Error::Other(e.to_string()))?;
+    let new_value = Value::String(new_url_s);
+
+    scope
+      .ordinary_set(vm, location_obj, href_key, new_value, Value::Object(location_obj))
+      .expect_err("expected location.href setter to interrupt execution")
   };
-
-  let href_key_s = scope.alloc_string("href").map_err(|e| Error::Other(e.to_string()))?;
-  scope
-    .push_root(Value::String(href_key_s))
-    .map_err(|e| Error::Other(e.to_string()))?;
-  let href_key = PropertyKey::from_string(href_key_s);
-
-  let new_url_s = scope
-    .alloc_string("https://example.com/next")
-    .map_err(|e| Error::Other(e.to_string()))?;
-  let new_value = Value::String(new_url_s);
-
-  let err = scope
-    .ordinary_set(vm, location_obj, href_key, new_value, Value::Object(location_obj))
-    .expect_err("expected location.href setter to fail");
   assert!(
-    matches!(err, VmError::TypeError(msg) if msg == "Navigation via location.href is not implemented yet"),
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
     "unexpected error: {err:?}"
   );
+
+  // Reset the interrupt flag so subsequent scripts could run in this realm if desired.
+  realm.reset_interrupt();
+
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/next");
+  assert!(!req.replace);
+  assert!(realm.take_pending_navigation_request().is_none());
+  Ok(())
+}
+
+#[test]
+fn location_assign_and_replace_request_navigation() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let err = realm
+    .exec_script("location.assign('/a')")
+    .expect_err("expected assign() to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/a");
+  assert!(!req.replace);
+
+  let err = realm
+    .exec_script("location.replace('/b')")
+    .expect_err("expected replace() to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/b");
+  assert!(req.replace);
   Ok(())
 }
 
