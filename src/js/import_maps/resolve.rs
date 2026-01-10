@@ -91,7 +91,7 @@ pub fn add_module_to_resolved_module_set(
     Some(_) => SpecifierAsUrlKind::NonSpecial,
   };
 
-  state.resolved_module_set.push(SpecifierResolutionRecord {
+  state.resolved_module_set.push_record(SpecifierResolutionRecord {
     serialized_base_url: Some(serialized_base_url),
     specifier: normalized_specifier,
     as_url_kind,

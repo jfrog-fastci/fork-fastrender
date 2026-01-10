@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
+use std::ops::Deref;
 
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 use url::Url;
 
@@ -26,8 +28,150 @@ pub struct SpecifierResolutionRecord {
   pub as_url_kind: SpecifierAsUrlKind,
 }
 
+#[derive(Debug, Clone)]
+struct SpecifierPrefixTrie {
+  terminals: Vec<bool>,
+  edges: FxHashMap<u64, usize>,
+}
+
+impl Default for SpecifierPrefixTrie {
+  fn default() -> Self {
+    Self {
+      terminals: vec![false],
+      edges: FxHashMap::default(),
+    }
+  }
+}
+
+impl SpecifierPrefixTrie {
+  #[inline]
+  fn edge_key(node: usize, byte: u8) -> u64 {
+    ((node as u64) << 8) | (byte as u64)
+  }
+
+  fn insert(&mut self, s: &str) {
+    let mut node = 0usize;
+    for &b in s.as_bytes() {
+      let key = Self::edge_key(node, b);
+      let next = if let Some(&next) = self.edges.get(&key) {
+        next
+      } else {
+        let next = self.terminals.len();
+        self.terminals.push(false);
+        self.edges.insert(key, next);
+        next
+      };
+      node = next;
+    }
+    self.terminals[node] = true;
+  }
+
+  fn has_prefix_of(&self, s: &str) -> bool {
+    let mut node = 0usize;
+    for &b in s.as_bytes() {
+      let key = Self::edge_key(node, b);
+      let Some(&next) = self.edges.get(&key) else {
+        return false;
+      };
+      node = next;
+      if self.terminals[node] {
+        return true;
+      }
+    }
+    false
+  }
+}
+
+/// An index over the global object's "resolved module set" records.
+///
+/// The HTML Standard's import map merging algorithm needs to efficiently determine which new map
+/// entries would impact already-resolved modules. The spec explicitly notes that implementations
+/// should avoid naive nested scans over the resolved module set.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedModuleSetIndex {
+  records: Vec<SpecifierResolutionRecord>,
+  /// `(serialized_base_url, record_idx)` entries sorted lexicographically by base URL.
+  ///
+  /// This supports quickly finding records matching a scope prefix:
+  /// - exact match, OR
+  /// - if the scope prefix ends with `/`, prefix match.
+  base_url_index: Vec<(String, usize)>,
+  /// Fast "does any resolved specifier prefix this key?" check for top-level import filtering.
+  specifier_prefix_trie: SpecifierPrefixTrie,
+}
+
+impl Deref for ResolvedModuleSetIndex {
+  type Target = [SpecifierResolutionRecord];
+
+  fn deref(&self) -> &Self::Target {
+    &self.records
+  }
+}
+
+impl ResolvedModuleSetIndex {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn from_records(records: Vec<SpecifierResolutionRecord>) -> Self {
+    let mut base_url_index = Vec::new();
+    let mut specifier_prefix_trie = SpecifierPrefixTrie::default();
+
+    for (idx, record) in records.iter().enumerate() {
+      if let Some(base_url) = record.serialized_base_url.as_ref() {
+        base_url_index.push((base_url.clone(), idx));
+      }
+      specifier_prefix_trie.insert(record.specifier.as_str());
+    }
+
+    base_url_index.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    Self {
+      records,
+      base_url_index,
+      specifier_prefix_trie,
+    }
+  }
+
+  pub fn push_record(&mut self, record: SpecifierResolutionRecord) {
+    let idx = self.records.len();
+    if let Some(base_url) = record.serialized_base_url.as_ref() {
+      let pos = self
+        .base_url_index
+        .partition_point(|(existing, _)| existing.as_str() < base_url.as_str());
+      self.base_url_index.insert(pos, (base_url.clone(), idx));
+    }
+    self.specifier_prefix_trie.insert(record.specifier.as_str());
+    self.records.push(record);
+  }
+
+  pub(crate) fn iter_records_matching_scope_prefix<'a>(
+    &'a self,
+    scope_prefix: &'a str,
+  ) -> impl Iterator<Item = &'a SpecifierResolutionRecord> + 'a {
+    let scope_prefix_ends_with_slash = scope_prefix.ends_with('/');
+    let start = self
+      .base_url_index
+      .partition_point(|(base_url, _)| base_url.as_str() < scope_prefix);
+    self.base_url_index[start..]
+      .iter()
+      .take_while(move |(base_url, _)| {
+        if scope_prefix_ends_with_slash {
+          base_url.starts_with(scope_prefix)
+        } else {
+          base_url == scope_prefix
+        }
+      })
+      .map(move |(_base_url, idx)| &self.records[*idx])
+  }
+
+  pub(crate) fn new_import_key_impacts_resolved_module(&self, specifier: &str) -> bool {
+    self.specifier_prefix_trie.has_prefix_of(specifier)
+  }
+}
+
 /// The global object's "resolved module set".
-pub type ResolvedModuleSet = Vec<SpecifierResolutionRecord>;
+pub type ResolvedModuleSet = ResolvedModuleSetIndex;
 
 /// Host-side global state for import map resolution/merging.
 #[derive(Debug, Clone, Default)]

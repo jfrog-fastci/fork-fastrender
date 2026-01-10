@@ -45,8 +45,8 @@ pub use resolve::{add_module_to_resolved_module_set, resolve_imports_match, reso
 pub use limits::ImportMapLimits;
 pub use types::{
   ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
-  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap, ScopesMap,
-  SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ResolvedModuleSetIndex,
+  ScopeMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 #[cfg(test)]

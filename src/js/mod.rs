@@ -163,8 +163,8 @@ pub use orchestrator::{
 };
 pub use import_maps::{
   ImportMap, ImportMapError, ImportMapLimits, ImportMapParseResult, ImportMapState, ImportMapWarning,
-  ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap,
-  ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet,
+  ResolvedModuleSetIndex, ScopeMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use dom_bindings::DomJsRealm;

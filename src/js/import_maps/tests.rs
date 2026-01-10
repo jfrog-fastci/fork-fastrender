@@ -3,11 +3,11 @@ use super::{
   merge_existing_and_new_import_maps_with_limits, parse_import_map_string, register_import_map,
   register_import_map_with_limits, resolve_module_integrity_metadata, resolve_module_specifier, ImportMap,
   ImportMapError, ImportMapLimits, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
-  SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ResolvedModuleSetIndex, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
+use super::merge::{merge_existing_and_new_import_maps_impl_instrumented, MergeStats};
 use super::types::code_unit_cmp;
-
 use url::Url;
 
 fn parse_map(json: &str, base: &str) -> ImportMap {
@@ -591,7 +591,7 @@ fn resolve_module_integrity_metadata_returns_match_or_empty() {
 
   let state = ImportMapState {
     import_map,
-    resolved_module_set: Vec::new(),
+    resolved_module_set: ResolvedModuleSetIndex::default(),
   };
 
   let a = Url::parse("https://example.com/a.js").unwrap();
@@ -650,12 +650,13 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
   let base_url = "https://example.com/app/main.js".to_string();
   let scope_prefix = "https://example.com/app/".to_string();
 
-  let mut state = ImportMapState::default();
+  // Build the resolved module set as a batch so we don't benchmark index maintenance here.
+  let mut resolved_records: Vec<SpecifierResolutionRecord> = Vec::with_capacity(N * 2 + 1);
 
   // Resolved module set entries that will block new top-level imports whose key starts with
   // `imp{i}`.
   for i in 0..N {
-    state.resolved_module_set.push(SpecifierResolutionRecord {
+    resolved_records.push(SpecifierResolutionRecord {
       serialized_base_url: Some(base_url.clone()),
       specifier: format!("imp{i}"),
       as_url_kind: SpecifierAsUrlKind::NotUrl,
@@ -665,7 +666,7 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
   // Resolved module set entries that will block scoped rules with keys `sc{i}/` (prefix) and
   // `sc{i}/sub` (exact).
   for i in 0..N {
-    state.resolved_module_set.push(SpecifierResolutionRecord {
+    resolved_records.push(SpecifierResolutionRecord {
       serialized_base_url: Some(base_url.clone()),
       specifier: format!("sc{i}/sub"),
       as_url_kind: SpecifierAsUrlKind::NotUrl,
@@ -673,11 +674,16 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
   }
 
   // Non-special URL-like resolved specifier: should *not* cause scoped prefix filtering.
-  state.resolved_module_set.push(SpecifierResolutionRecord {
+  resolved_records.push(SpecifierResolutionRecord {
     serialized_base_url: Some(base_url.clone()),
     specifier: "blob:https://example.com/uuid".to_string(),
     as_url_kind: SpecifierAsUrlKind::NonSpecial,
   });
+
+  let mut state = ImportMapState {
+    resolved_module_set: ResolvedModuleSetIndex::from_records(resolved_records),
+    ..Default::default()
+  };
 
   let mut new_imports = Vec::with_capacity(N * 3);
   for i in 0..N {
@@ -745,6 +751,85 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
   assert!(
     merged_scope.contains_key("blob:https://example.com/"),
     "expected prefix rule to remain for non-special URL-like resolved specifier"
+  );
+}
+
+#[test]
+fn merge_large_resolved_module_set_is_linearish() {
+  // Regression test for the HTML spec's note that resolved-module-set filtering should avoid naive
+  // nested scans when the resolved module set grows large.
+  let n: usize = 5_000;
+
+  let mut records = Vec::with_capacity(n);
+  for i in 0..n {
+    records.push(SpecifierResolutionRecord {
+      serialized_base_url: Some(format!("https://example.com/scope/{i}.mjs")),
+      specifier: format!("pkg{i}/module"),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    });
+  }
+
+  let mut state = ImportMapState {
+    import_map: ImportMap::default(),
+    resolved_module_set: ResolvedModuleSetIndex::from_records(records),
+  };
+
+  let mut scope_imports = ModuleSpecifierMap {
+    entries: (0..n)
+      .map(|i| {
+        (
+          format!("pkg{i}/"),
+          Some(Url::parse(&format!("https://cdn.example.com/pkg{i}/")).unwrap()),
+        )
+      })
+      .collect(),
+  };
+  scope_imports
+    .entries
+    .sort_by(|(a, _), (b, _)| code_unit_cmp(b.as_str(), a.as_str()));
+
+  let mut imports = ModuleSpecifierMap {
+    entries: (0..n)
+      .map(|i| {
+        (
+          format!("pkg{i}/module/sub"),
+          Some(Url::parse(&format!("https://cdn.example.com/pkg{i}/module/sub.mjs")).unwrap()),
+        )
+      })
+      .collect(),
+  };
+  imports
+    .entries
+    .sort_by(|(a, _), (b, _)| code_unit_cmp(b.as_str(), a.as_str()));
+
+  let new_import_map = ImportMap {
+    imports,
+    scopes: ScopesMap {
+      entries: vec![("https://example.com/scope/".to_string(), scope_imports)],
+    },
+    integrity: ModuleIntegrityMap::default(),
+  };
+
+  let mut stats = MergeStats::default();
+  merge_existing_and_new_import_maps_impl_instrumented(
+    &mut state.import_map,
+    &state.resolved_module_set,
+    &new_import_map,
+    &mut stats,
+  );
+
+  // The merge should not do per-record-per-key work.
+  assert!(
+    stats.scope_records_scanned <= n + 10,
+    "unexpected number of scope record scans: {stats:?}"
+  );
+  assert!(
+    stats.scope_keys_checked <= n + 10,
+    "unexpected number of scope key checks: {stats:?}"
+  );
+  assert!(
+    stats.top_level_import_keys_checked <= n + 10,
+    "unexpected number of top-level import key checks: {stats:?}"
   );
 }
 
