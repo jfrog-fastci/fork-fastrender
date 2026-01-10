@@ -451,8 +451,13 @@ where
 ///   - non-parser-inserted, not async-like: execute in insertion order as soon as possible (HTML
 ///     "in-order-asap" list).
 ///   - async-like: execute ASAP on fetch completion, not ordered.
-/// - Module scripts (`type="module"`) execute asynchronously (as tasks) and are deferred-by-default
-///   for parser-inserted scripts unless `async` is set.
+/// - Module scripts (`type="module"`):
+///   - never block parsing (even when parser-inserted),
+///   - async-like when `async` is present or the per-element "force async" flag is set,
+///   - otherwise, parser-inserted module scripts execute after parsing completes, in document
+///     order (deferred-by-default),
+///   - otherwise, non-parser-inserted module scripts execute in insertion order as soon as possible
+///     (HTML "in-order-asap" list).
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
@@ -1923,6 +1928,12 @@ mod state_machine_tests {
     }
   }
 
+  fn module_external(src: &str, async_attr: bool) -> ScriptElementSpec {
+    let mut spec = classic_external(src, async_attr, /* defer_attr */ false);
+    spec.script_type = ScriptType::Module;
+    spec
+  }
+
   fn module_external_dynamic(src: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
     ScriptElementSpec {
       base_url: None,
@@ -2491,6 +2502,125 @@ mod state_machine_tests {
       !module.is_suppressed_by_nomodule(&options),
       "nomodule must not block module scripts"
     );
+  }
+
+  #[test]
+  fn module_scripts_are_ignored_when_module_scripts_not_supported() -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover(module_external("https://example.com/a.js", false))?;
+    assert!(
+      h.started_fetches.is_empty(),
+      "expected module scripts to be ignored when supports_module_scripts is false"
+    );
+    assert!(h.blocked_parser_on.is_none());
+    assert!(h.host.log.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_with_empty_src_queue_error_and_do_not_break_defer_queue() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    h.discover(module_external("", false))?;
+    assert!(
+      h.started_fetches.is_empty(),
+      "expected empty-src module scripts to not start fetch"
+    );
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, vec!["event:error".to_string()]);
+
+    let script_id = h.discover(module_external("https://example.com/a.js", false))?;
+    assert_eq!(h.started_fetches.len(), 1);
+    h.fetch_complete(script_id, "A")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["event:error".to_string()],
+      "deferred module scripts must not execute before parsing_completed"
+    );
+
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "event:error".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_module_scripts_are_deferred_by_default_and_use_scriptcors() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let script_id = h.discover(module_external("https://example.com/a.js", false))?;
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "module scripts must not block parsing"
+    );
+
+    h.fetch_complete(script_id, "A")?;
+    h.run_event_loop()?;
+    assert!(
+      h.host.log.is_empty(),
+      "deferred module scripts must not execute before parsing_completed"
+    );
+
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:A".to_string(), "microtask:A".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn async_module_scripts_execute_asap_without_waiting_for_parsing_completed() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let script_id = h.discover(module_external("https://example.com/a.js", true))?;
+    assert_eq!(h.started_fetches.len(), 1);
+    assert!(
+      h.started_fetches[0].3 == FetchDestination::ScriptCors,
+      "module scripts must fetch with ScriptCors"
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "module scripts must not block parsing"
+    );
+
+    h.fetch_complete(script_id, "A")?;
+    assert!(
+      h.host.log.is_empty(),
+      "async module scripts should not execute synchronously on fetch completion"
+    );
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:A".to_string(), "microtask:A".to_string()]
+    );
+    Ok(())
   }
 
   #[test]
