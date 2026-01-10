@@ -343,7 +343,22 @@ impl WindowRealm {
 }
 
 pub trait WindowRealmHost {
-  fn window_realm(&mut self) -> &mut WindowRealm;
+  /// Borrow-splits the host into:
+  /// - a mutable `VmHost` context for native calls, and
+  /// - a mutable `WindowRealm` for script/job execution.
+  ///
+  /// Implementations must ensure these borrows do not alias.
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm);
+
+  fn window_realm(&mut self) -> &mut WindowRealm {
+    let (_, realm) = self.vm_host_and_window_realm();
+    realm
+  }
+
+  fn vm_host(&mut self) -> &mut dyn VmHost {
+    let (host, _) = self.vm_host_and_window_realm();
+    host
+  }
 }
 
 impl Drop for WindowRealm {

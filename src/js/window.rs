@@ -351,8 +351,9 @@ impl CurrentScriptHost for WindowHostState {
 }
 
 impl WindowRealmHost for WindowHostState {
-  fn window_realm(&mut self) -> &mut WindowRealm {
-    &mut self.window
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    let WindowHostState { document, window, .. } = self;
+    (document.as_mut(), window)
   }
 }
 
@@ -593,8 +594,30 @@ mod tests {
         .expect("define global native function");
     }
 
-    let value = host.exec_script("__fr_is_document_host()")?;
-    assert!(matches!(value, Value::Bool(true)));
+    host.exec_script(
+      r#"
+      var g = this;
+      g.__immediate = __fr_is_document_host();
+      g.__microtask = null;
+      Promise.resolve().then(function () { g.__microtask = __fr_is_document_host(); });
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__immediate"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__microtask"),
+      Value::Null
+    ));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__microtask"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 

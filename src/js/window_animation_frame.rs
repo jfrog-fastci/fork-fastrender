@@ -174,23 +174,33 @@ impl VmJobContext for HeapRootContext<'_> {
 
 struct WindowRealmJobContext<'a> {
   window_realm: &'a mut crate::js::window_realm::WindowRealm,
+  host: &'a mut dyn VmHost,
   realm: Option<RealmId>,
 }
 
 impl<'a> WindowRealmJobContext<'a> {
-  fn new(window_realm: &'a mut crate::js::window_realm::WindowRealm, realm: Option<RealmId>) -> Self {
-    Self { window_realm, realm }
+  fn new(
+    window_realm: &'a mut crate::js::window_realm::WindowRealm,
+    host: &'a mut dyn VmHost,
+    realm: Option<RealmId>,
+  ) -> Self {
+    Self {
+      window_realm,
+      host,
+      realm,
+    }
   }
 }
 
 impl VmJobContext for WindowRealmJobContext<'_> {
   fn call(
     &mut self,
-    host: &mut dyn VmHostHooks,
+    host_hooks: &mut dyn VmHostHooks,
     callee: Value,
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    let host = &mut *self.host;
     let (vm, heap) = self.window_realm.vm_and_heap_mut();
     let mut scope = heap.scope();
     if let Some(realm) = self.realm {
@@ -198,19 +208,20 @@ impl VmJobContext for WindowRealmJobContext<'_> {
         realm,
         script_or_module: None,
       });
-      vm.call_with_host(&mut scope, host, callee, this, args)
+      vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
     } else {
-      vm.call_with_host(&mut scope, host, callee, this, args)
+      vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
-    host: &mut dyn VmHostHooks,
+    host_hooks: &mut dyn VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
+    let host = &mut *self.host;
     let (vm, heap) = self.window_realm.vm_and_heap_mut();
     let mut scope = heap.scope();
     if let Some(realm) = self.realm {
@@ -218,9 +229,9 @@ impl VmJobContext for WindowRealmJobContext<'_> {
         realm,
         script_or_module: None,
       });
-      vm.construct_with_host(&mut scope, host, callee, args, new_target)
+      vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     } else {
-      vm.construct_with_host(&mut scope, host, callee, args, new_target)
+      vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     }
   }
 
@@ -282,7 +293,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           return Ok(());
         };
 
-        let window_realm = host.window_realm();
+        // Borrow-split the host so we can pass both a real `VmHost` context and a mutable
+        // `WindowRealm` when executing the job.
+        let (host_ctx, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
 
         with_event_loop(event_loop, || {
@@ -293,11 +306,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           let mut hooks = VmJsEventLoopHooks::<Host>::new();
           let job_result = match tick_result {
             Ok(()) => {
-              let mut ctx = WindowRealmJobContext::new(window_realm, realm);
+              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
               job.run(&mut ctx, &mut hooks)
             }
             Err(err) => {
-              let mut ctx = WindowRealmJobContext::new(window_realm, realm);
+              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
               job.discard(&mut ctx);
               Err(err)
             }
@@ -428,7 +441,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         ));
       };
 
-      let window_realm = host.window_realm();
+      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let (vm, heap) = window_realm.vm_and_heap_mut();
 
@@ -450,7 +463,8 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
                 .unwrap_or(Value::Undefined)
             };
             // The callback is invoked with the global object as `this` and the timestamp argument.
-            let _ = vm.call_with_host(
+            let _ = vm.call_with_host_and_hooks(
+              host_ctx,
               &mut scope,
               &mut hooks,
               callback_value,
@@ -588,19 +602,24 @@ mod tests {
   const CALLBACK_JOB_KEY: &str = "__test_job_cb";
 
   struct Host {
+    host_ctx: (),
     window: WindowRealm,
   }
 
   impl Host {
     fn new() -> Self {
       let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
-      Self { window }
+      Self {
+        host_ctx: (),
+        window,
+      }
     }
   }
 
   impl WindowRealmHost for Host {
-    fn window_realm(&mut self) -> &mut WindowRealm {
-      &mut self.window
+    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      let Host { host_ctx, window } = self;
+      (host_ctx, window)
     }
   }
 
