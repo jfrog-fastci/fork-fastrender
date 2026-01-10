@@ -270,12 +270,12 @@ fn offline_corpus_is_valid() {
 
     // After harness migration, corpus tests must use `testharness.js` and the reporter script
     // under `tests/wpt_dom/resources/`. Direct calls from test files bypass subtest collection and
-    // diverge from standard WPT semantics. We intentionally allow these strings in `resources/`
-    // because the harness plumbing lives there.
-    if path.strip_prefix(&tests_root).is_ok()
-      && (source.contains("__fastrender_wpt_report(")
-        || source.contains("__fastrender_wpt_report_json"))
-    {
+    // diverge from standard WPT semantics.
+    //
+    // We intentionally allow this string in `resources/` because the harness plumbing lives there.
+    // In `tests/`, forbid *any* reference so callers can't bypass the check with e.g.
+    // `globalThis["__fastrender_wpt_report"](payload)`.
+    if path.strip_prefix(&tests_root).is_ok() && source.contains("__fastrender_wpt_report") {
       let rel = path
         .strip_prefix(&corpus_root)
         .unwrap_or(path)
