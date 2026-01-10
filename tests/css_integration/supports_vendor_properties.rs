@@ -10,10 +10,14 @@ fn supports_declaration_accepts_targeted_vendor_properties() {
   assert!(supports_declaration("-moz-orient", "inline"));
   assert!(supports_declaration("-MoZ-OrIeNt", "inline"));
   assert!(supports_declaration("-webkit-appearance", "none"));
-  assert!(!supports_declaration("-moz-appearance", "none"));
-  assert!(!supports_declaration("-ms-appearance", "none"));
-  assert!(!supports_declaration("-o-appearance", "none"));
+  assert!(supports_declaration("-moz-appearance", "none"));
+  assert!(supports_declaration("-ms-appearance", "none"));
+  assert!(supports_declaration("-o-appearance", "none"));
   assert!(!supports_declaration("-webkit-not-a-real-prop", "none"));
+  assert!(!supports_declaration("-moz-not-a-real-prop", "none"));
+  assert!(!supports_declaration("-ms-not-a-real-prop", "none"));
+  assert!(!supports_declaration("-o-not-a-real-prop", "none"));
+  assert!(!supports_declaration("-ms-grid-row", "1"));
 }
 
 #[test]
@@ -61,7 +65,10 @@ fn supports_vendor_properties_prevent_pruning_tailwind_reset_blocks() {
 #[test]
 fn supports_not_vendor_properties_do_not_invert_feature_queries() {
   let css = r#"
-    @supports (-webkit-appearance: none) and (not (-moz-appearance: none)) and (text-size-adjust: none) {
+    @supports (-webkit-appearance: none)
+      and (not (-moz-not-a-real-prop: none))
+      and (not (-ms-grid-row: 1))
+      and (text-size-adjust: none) {
       .a { color: red; }
     }
   "#;
@@ -80,10 +87,7 @@ fn supports_not_vendor_properties_do_not_invert_feature_queries() {
     })
     .expect("@supports block should not be pruned");
 
-  assert!(
-    supports_rule.condition.matches(),
-    "@supports condition should evaluate true when -moz-prefixed properties are unsupported"
-  );
+  assert!(supports_rule.condition.matches());
   assert!(
     supports_rule
       .rules
