@@ -204,6 +204,14 @@ fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Resu
     .exec_script_with_hooks(&mut hooks, "inc();")
     .expect_err("expected dummy host context to fail Host downcast");
   assert!(matches!(err, VmError::Unimplemented(_)));
+
+  let err = rt
+    .exec_script_source_with_hooks(
+      &mut hooks,
+      Arc::new(SourceText::new("<inline>", "inc();")),
+    )
+    .expect_err("expected dummy host context to fail Host downcast");
+  assert!(matches!(err, VmError::Unimplemented(_)));
   Ok(())
 }
 
