@@ -38,6 +38,7 @@ struct Prototypes {
   object: Value,
   event_target: Value,
   node: Value,
+  document_fragment: Value,
   element: Value,
   document: Value,
   event: Value,
@@ -123,6 +124,8 @@ impl DomJsRealm {
     let _ = rt.heap_mut().add_root(event_target_proto)?;
     let node_proto = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(node_proto)?;
+    let document_fragment_proto = rt.alloc_object_value()?;
+    let _ = rt.heap_mut().add_root(document_fragment_proto)?;
     let element_proto = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(element_proto)?;
     let document_proto = rt.alloc_object_value()?;
@@ -137,6 +140,7 @@ impl DomJsRealm {
     rt.set_prototype(object_proto, None)?;
     rt.set_prototype(event_target_proto, Some(object_proto))?;
     rt.set_prototype(node_proto, Some(event_target_proto))?;
+    rt.set_prototype(document_fragment_proto, Some(node_proto))?;
     rt.set_prototype(element_proto, Some(node_proto))?;
     rt.set_prototype(document_proto, Some(node_proto))?;
     rt.set_prototype(event_proto, Some(object_proto))?;
@@ -147,6 +151,7 @@ impl DomJsRealm {
       object: object_proto,
       event_target: event_target_proto,
       node: node_proto,
+      document_fragment: document_fragment_proto,
       element: element_proto,
       document: document_proto,
       event: event_proto,
@@ -1023,6 +1028,10 @@ fn wrap_node(
         prototypes.element,
         PlatformObjectKind::Node { node_id },
       ),
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => (
+        prototypes.document_fragment,
+        PlatformObjectKind::Node { node_id },
+      ),
       _ => (prototypes.node, PlatformObjectKind::Node { node_id }),
     }
   };
@@ -1081,16 +1090,26 @@ fn install_constructors(
   // EventTarget / Node / Element / Document constructors: non-constructable stubs.
   let event_target_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "EventTarget"))?;
   let node_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Node"))?;
+  let document_fragment_ctor =
+    rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "DocumentFragment"))?;
   let element_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Element"))?;
   let document_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "Document"))?;
 
   define_data_property_str(rt, event_target_ctor, "prototype", prototypes.event_target, false)?;
   define_data_property_str(rt, node_ctor, "prototype", prototypes.node, false)?;
+  define_data_property_str(
+    rt,
+    document_fragment_ctor,
+    "prototype",
+    prototypes.document_fragment,
+    false,
+  )?;
   define_data_property_str(rt, element_ctor, "prototype", prototypes.element, false)?;
   define_data_property_str(rt, document_ctor, "prototype", prototypes.document, false)?;
 
   define_data_property_str(rt, global, "EventTarget", event_target_ctor, false)?;
   define_data_property_str(rt, global, "Node", node_ctor, false)?;
+  define_data_property_str(rt, global, "DocumentFragment", document_fragment_ctor, false)?;
   define_data_property_str(rt, global, "Element", element_ctor, false)?;
   define_data_property_str(rt, global, "Document", document_ctor, false)?;
 
@@ -2682,6 +2701,108 @@ fn install_constructors(
     })?;
     define_accessor(rt, prototypes.element, "innerText", inner_text_get, inner_text_set)?;
 
+    // innerHTML
+    let dom_for_inner_html_get = dom.clone();
+    let platform_objects_for_inner_html_get = platform_objects.clone();
+    let inner_html_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_inner_html_get, this)?;
+      let dom_ref = dom_for_inner_html_get.borrow();
+      match &dom_ref.node(node_id).kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+        _ => return Err(rt.throw_type_error("innerHTML: receiver is not an Element")),
+      }
+      let html = dom_ref
+        .inner_html(node_id)
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      rt.alloc_string_value(&html)
+    })?;
+
+    let dom_for_inner_html_set = dom.clone();
+    let platform_objects_for_inner_html_set = platform_objects.clone();
+    let node_wrapper_cache_for_inner_html_set = node_wrapper_cache.clone();
+    let inner_html_set = rt.alloc_function_value(move |rt, this, args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_inner_html_set, this)?;
+      {
+        let dom_ref = dom_for_inner_html_set.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("innerHTML: receiver is not an Element")),
+        }
+      }
+      let html = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+      dom_for_inner_html_set
+        .borrow_mut()
+        .set_inner_html(node_id, &html)
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_inner_html_set,
+        &platform_objects_for_inner_html_set,
+        &node_wrapper_cache_for_inner_html_set,
+        document_node_id,
+        document,
+        prototypes,
+        node_id,
+      )?;
+      Ok(Value::Undefined)
+    })?;
+    define_accessor(rt, prototypes.element, "innerHTML", inner_html_get, inner_html_set)?;
+
+    // outerHTML
+    let dom_for_outer_html_get = dom.clone();
+    let platform_objects_for_outer_html_get = platform_objects.clone();
+    let outer_html_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_outer_html_get, this)?;
+      let dom_ref = dom_for_outer_html_get.borrow();
+      match &dom_ref.node(node_id).kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+        _ => return Err(rt.throw_type_error("outerHTML: receiver is not an Element")),
+      }
+      let html = dom_ref
+        .outer_html(node_id)
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      rt.alloc_string_value(&html)
+    })?;
+
+    let dom_for_outer_html_set = dom.clone();
+    let platform_objects_for_outer_html_set = platform_objects.clone();
+    let node_wrapper_cache_for_outer_html_set = node_wrapper_cache.clone();
+    let outer_html_set = rt.alloc_function_value(move |rt, this, args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_outer_html_set, this)?;
+      let html = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+      // Capture parent before mutation so we can refresh cached childNodes arrays.
+      let parent = {
+        let dom_ref = dom_for_outer_html_set.borrow();
+        match &dom_ref.node(node_id).kind {
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+          _ => return Err(rt.throw_type_error("outerHTML: receiver is not an Element")),
+        }
+        dom_ref.node(node_id).parent
+      };
+
+      dom_for_outer_html_set
+        .borrow_mut()
+        .set_outer_html(node_id, &html)
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+
+      if let Some(parent_id) = parent {
+        maybe_refresh_cached_child_nodes(
+          rt,
+          &dom_for_outer_html_set,
+          &platform_objects_for_outer_html_set,
+          &node_wrapper_cache_for_outer_html_set,
+          document_node_id,
+          document,
+          prototypes,
+          parent_id,
+        )?;
+      }
+      Ok(Value::Undefined)
+    })?;
+    define_accessor(rt, prototypes.element, "outerHTML", outer_html_get, outer_html_set)?;
+
     let dom_for_get_attribute = dom.clone();
     let platform_objects_for_get_attribute = platform_objects.clone();
     let get_attribute = rt.alloc_function_value(move |rt, this, args| {
@@ -3979,6 +4100,54 @@ mod tests {
   }
 
   #[test]
+  fn document_create_document_fragment_returns_document_fragment_wrapper() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm
+      .rt
+      .get(document, create_fragment_key)
+      .expect("Document.createDocumentFragment should exist");
+    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let Value::Object(fragment_obj) = fragment else {
+      panic!("expected DocumentFragment to be an object");
+    };
+
+    let proto = realm
+      .rt
+      .heap()
+      .object_prototype(fragment_obj)
+      .unwrap()
+      .expect("DocumentFragment wrapper should have a prototype");
+    let Value::Object(expected_proto) = realm.prototypes.document_fragment else {
+      panic!("expected DocumentFragment.prototype to be an object");
+    };
+    assert_eq!(proto, expected_proto);
+
+    // Ensure `DocumentFragment` exists on the global object with the right `.prototype`.
+    let ctor_key = pk(&mut realm.rt, "DocumentFragment");
+    let ctor = realm.rt.get(realm.window(), ctor_key).unwrap();
+    let proto_key = pk(&mut realm.rt, "prototype");
+    assert_eq!(
+      realm.rt.get(ctor, proto_key).unwrap(),
+      realm.prototypes.document_fragment
+    );
+
+    // DocumentFragment.prototype should inherit from Node.prototype.
+    let node_proto = realm.prototypes.node;
+    let df_proto_parent = realm
+      .rt
+      .heap()
+      .object_prototype(expected_proto)
+      .unwrap()
+      .map(Value::Object)
+      .unwrap_or(Value::Null);
+    assert_eq!(df_proto_parent, node_proto);
+  }
+
+  #[test]
   fn create_document_fragment_inserts_children_transparently() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut realm = DomJsRealm::new(dom).unwrap();
@@ -4025,6 +4194,263 @@ mod tests {
     assert_eq!(dom_ref.parent(span_id).unwrap(), Some(div_id));
     assert_eq!(dom_ref.parent(p_id).unwrap(), Some(div_id));
     assert_eq!(dom_ref.parent(fragment_id).unwrap(), None);
+  }
+
+  #[test]
+  fn element_inner_html_and_outer_html_basic_set_get() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let el = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let inner_html_key = pk(&mut realm.rt, "innerHTML");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, inner_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.innerHTML");
+    let set_inner = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm.rt.alloc_string_value("<span>hi</span>").unwrap();
+    realm.rt.call_function(set_inner, el, &[html]).unwrap();
+
+    let got_inner = realm.rt.get(el, inner_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got_inner), "<span>hi</span>");
+
+    let outer_html_key = pk(&mut realm.rt, "outerHTML");
+    let got_outer = realm.rt.get(el, outer_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got_outer), "<div><span>hi</span></div>");
+  }
+
+  #[test]
+  fn element_inner_html_escapes_ampersand_on_serialization() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let el = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let inner_html_key = pk(&mut realm.rt, "innerHTML");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, inner_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.innerHTML");
+    let set_inner = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm.rt.alloc_string_value("a & b").unwrap();
+    realm.rt.call_function(set_inner, el, &[html]).unwrap();
+
+    let got = realm.rt.get(el, inner_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "a &amp; b");
+  }
+
+  #[test]
+  fn element_outer_html_setter_replaces_node_with_parsed_fragment() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let parent = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let child = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let parent_append = realm.rt.get(parent, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(parent_append, parent, &[child])
+      .unwrap();
+
+    let outer_html_key = pk(&mut realm.rt, "outerHTML");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, outer_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.outerHTML");
+    let set_outer = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm.rt.alloc_string_value("<p>one</p><p>two</p>").unwrap();
+    realm.rt.call_function(set_outer, child, &[html]).unwrap();
+
+    let inner_html_key = pk(&mut realm.rt, "innerHTML");
+    let got = realm.rt.get(parent, inner_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "<p>one</p><p>two</p>");
+
+    let parent_node_key = pk(&mut realm.rt, "parentNode");
+    assert_eq!(realm.rt.get(child, parent_node_key).unwrap(), Value::Null);
+  }
+
+  #[test]
+  fn element_outer_html_setter_replaces_node_when_parent_is_document_fragment() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+
+    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let frag_append = realm.rt.get(fragment, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(frag_append, fragment, &[span])
+      .unwrap();
+
+    // Cache `childNodes` so we can verify it updates in place.
+    let child_nodes_key = pk(&mut realm.rt, "childNodes");
+    let nodes = realm.rt.get(fragment, child_nodes_key).unwrap();
+    let length_key = pk(&mut realm.rt, "length");
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(1.0));
+
+    let outer_html_key = pk(&mut realm.rt, "outerHTML");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, outer_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.outerHTML");
+    let set_outer = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm.rt.alloc_string_value("<div></div>").unwrap();
+    realm.rt.call_function(set_outer, span, &[html]).unwrap();
+
+    // The cached NodeList should update in place and remain stable.
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(fragment, child_nodes_key).unwrap(), nodes);
+
+    let first_child_key = pk(&mut realm.rt, "firstChild");
+    let first = realm.rt.get(fragment, first_child_key).unwrap();
+    let tag_name_key = pk(&mut realm.rt, "tagName");
+    let tag = realm.rt.get(first, tag_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, tag), "DIV");
+    let got_outer = realm.rt.get(first, outer_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got_outer), "<div></div>");
+
+    let parent_node_key = pk(&mut realm.rt, "parentNode");
+    assert_eq!(realm.rt.get(span, parent_node_key).unwrap(), Value::Null);
+  }
+
+  #[test]
+  fn element_outer_html_setter_is_no_op_for_detached_elements() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+
+    let p_tag = realm.rt.alloc_string_value("p").unwrap();
+    let el = realm
+      .rt
+      .call_function(create_element, document, &[p_tag])
+      .unwrap();
+
+    let outer_html_key = pk(&mut realm.rt, "outerHTML");
+    let before = realm.rt.get(el, outer_html_key).unwrap();
+
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, outer_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.outerHTML");
+    let set_outer = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm.rt.alloc_string_value("<span></span>").unwrap();
+    realm.rt.call_function(set_outer, el, &[html]).unwrap();
+
+    let after = realm.rt.get(el, outer_html_key).unwrap();
+    assert_eq!(as_str(&realm.rt, after), as_str(&realm.rt, before));
+    let parent_node_key = pk(&mut realm.rt, "parentNode");
+    assert_eq!(realm.rt.get(el, parent_node_key).unwrap(), Value::Null);
+  }
+
+  #[test]
+  fn inner_html_marks_script_elements_as_already_started() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let div_id = extract_node_id(&mut realm.rt, &realm.platform_objects, div).unwrap();
+
+    let inner_html_key = pk(&mut realm.rt, "innerHTML");
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.element, inner_html_key)
+      .unwrap()
+      .expect("expected Element.prototype.innerHTML");
+    let set_inner = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+    let html = realm
+      .rt
+      .alloc_string_value("<script>globalThis.__inner_html_test = 1;</script>")
+      .unwrap();
+    realm.rt.call_function(set_inner, div, &[html]).unwrap();
+
+    let dom_ref = realm.dom.borrow();
+    let children = dom_ref.children(div_id).unwrap();
+    assert_eq!(children.len(), 1);
+    let script_id = children[0];
+    assert!(
+      matches!(&dom_ref.node(script_id).kind, NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script")),
+      "expected inserted node to be a <script> element"
+    );
+    assert!(
+      dom_ref.node(script_id).script_already_started,
+      "scripts inserted via innerHTML must be marked script_already_started"
+    );
   }
 
   #[test]
