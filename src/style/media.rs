@@ -3177,8 +3177,8 @@ impl MediaContext {
       // access to the document's actual font tables, so approximate them in terms of `em`:
       // - cap ≈ 0.7em (cap-height)
       // - ic ≈ 1.0em (ideograph advance)
-      // - rex/rch/rcap/ric/rlh use the root metrics, which we likewise approximate from the
-      //   query context's base font size.
+      // - rex/rch/rcap/ric use the root metrics, which we likewise approximate from the query
+      //   context's base font size.
       LengthUnit::Cap => Some(length.value * (base_font * 0.7)),
       LengthUnit::Ic => Some(length.value * base_font),
       LengthUnit::Rex | LengthUnit::Rch => Some(length.value * (base_font * 0.5)),
