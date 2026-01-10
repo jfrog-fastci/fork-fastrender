@@ -942,7 +942,7 @@ impl Vm {
   /// parsing a module (or have failed to do so). It performs `FinishLoadingImportedModule` and then
   /// dispatches to the appropriate continuation based on `payload`:
   /// - `ContinueModuleLoading` for static module graph loading, or
-  /// - `ContinueDynamicImport` for `import()` (currently unimplemented).
+  /// - `ContinueDynamicImport` for dynamic `import()`.
   #[inline]
   pub fn finish_loading_imported_module(
     &mut self,
