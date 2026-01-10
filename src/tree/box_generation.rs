@@ -1134,6 +1134,7 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
 
 fn svg_inlined_presentation_attr(name: &str) -> bool {
   name.eq_ignore_ascii_case("fill")
+    || name.eq_ignore_ascii_case("color")
     || name.eq_ignore_ascii_case("stroke")
     || name.eq_ignore_ascii_case("stroke-width")
     || name.eq_ignore_ascii_case("fill-rule")
@@ -2044,6 +2045,29 @@ fn svg_text_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opti
   any.then_some(out)
 }
 
+fn svg_color_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
+  let parent = parent?;
+  (style.color != parent.color).then(|| format!("color: {}", format_css_color(style.color)))
+}
+
+fn svg_fill_from_root_current_color_injection(
+  style: &ComputedStyle,
+  parent: Option<&ComputedStyle>,
+  root_injection_active: bool,
+  is_root: bool,
+) -> Option<String> {
+  if !root_injection_active || style.svg_fill.is_some() {
+    return None;
+  }
+
+  if is_root {
+    return Some(format!("fill: {}", format_css_color(style.color)));
+  }
+
+  let parent = parent?;
+  (style.color != parent.color).then(|| format!("fill: {}", format_css_color(style.color)))
+}
+
 fn serialize_svg_mask_subtree_with_namespaces(
   styled: &StyledNode,
   inherited_xmlns: &[(String, String)],
@@ -2212,6 +2236,11 @@ fn serialize_svg_mask_subtree_with_namespaces(
       }
 
       if current_ns == SVG_NAMESPACE {
+        if is_root {
+          merge_style_attribute(&mut attrs, &format!("color: {}", format_css_color(styled.styles.color)));
+        } else if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
         if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
@@ -3409,6 +3438,7 @@ fn serialize_svg_subtree(
     parent_svg_styles: Option<&ComputedStyle>,
     svg_viewport: Option<SvgViewportSize>,
     needs_xmlns_xlink: bool,
+    root_fill_current_color_injection: bool,
     is_root: bool,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -3426,6 +3456,7 @@ fn serialize_svg_subtree(
             parent_svg_styles,
             svg_viewport,
             needs_xmlns_xlink,
+            root_fill_current_color_injection,
             false,
             out,
             fallback_out,
@@ -3444,6 +3475,7 @@ fn serialize_svg_subtree(
             parent_svg_styles,
             svg_viewport,
             needs_xmlns_xlink,
+            root_fill_current_color_injection,
             false,
             out,
             fallback_out,
@@ -3479,9 +3511,16 @@ fn serialize_svg_subtree(
           parent_svg_styles
         };
 
+        let root_fill_current_color_injection = if is_root && current_ns == SVG_NAMESPACE {
+          // Only apply the SVG root `fill: currentColor` hack when the author did not specify any
+          // fill paint server via CSS/attributes. (SVG defaults to black.)
+          styled.styles.svg_fill.is_none() && root_style_includes_fill_current_color(attributes)
+        } else {
+          root_fill_current_color_injection
+        };
+
         let mut owned_attrs: Option<Vec<(String, String)>> = None;
         if is_root {
-          let include_fill_current_color = root_style_includes_fill_current_color(attributes);
           let mut attrs = attributes.clone();
           if current_ns == SVG_NAMESPACE {
             // If the authored SVG root has a `transform` attribute, it participates in the CSS
@@ -3512,9 +3551,13 @@ fn serialize_svg_subtree(
 
           let style_attr = root_style_base(&styled.styles);
           merge_style_attribute(&mut attrs, &style_attr);
-          if include_fill_current_color {
-            // Make unstyled shapes pick up the computed text color (common for icon SVGs).
-            merge_style_attribute(&mut attrs, "fill: currentColor");
+          if let Some(extra) = svg_fill_from_root_current_color_injection(
+            &styled.styles,
+            parent_svg_styles,
+            root_fill_current_color_injection,
+            true,
+          ) {
+            merge_style_attribute(&mut attrs, &extra);
           }
           owned_attrs = Some(attrs);
         } else if !current_ns.is_empty() && parent_ns != Some(current_ns) {
@@ -3528,12 +3571,28 @@ fn serialize_svg_subtree(
           }
         }
 
-        if current_ns == SVG_NAMESPACE && attrs_need_svg_inlined_presentation_stripping(attributes) {
+        if !is_root
+          && current_ns == SVG_NAMESPACE
+          && attrs_need_svg_inlined_presentation_stripping(attributes)
+        {
           let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
           strip_svg_inlined_presentation_attrs(attrs_mut);
         }
 
         if current_ns == SVG_NAMESPACE {
+          if let Some(extra) = svg_fill_from_root_current_color_injection(
+            &styled.styles,
+            parent_svg_styles,
+            root_fill_current_color_injection,
+            false,
+          ) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
+          if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             merge_style_attribute(attrs_mut, &extra);
@@ -3674,6 +3733,7 @@ fn serialize_svg_subtree(
             next_parent_svg_styles,
             next_svg_viewport,
             needs_xmlns_xlink,
+            root_fill_current_color_injection,
             false,
             out,
             fallback_out,
@@ -3710,6 +3770,7 @@ fn serialize_svg_subtree(
     None,
     None,
     needs_xmlns_xlink,
+    false,
     true,
     &mut out,
     &mut fallback_out,

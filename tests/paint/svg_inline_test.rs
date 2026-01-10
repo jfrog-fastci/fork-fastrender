@@ -107,6 +107,77 @@ fn inline_svg_currentcolor_resolves_after_color_even_when_color_declared_later()
 }
 
 #[test]
+fn inline_svg_nested_color_affects_unstyled_shapes_via_root_fill_current_color_injection_when_document_css_injection_disabled(
+) {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; color: rgb(0, 128, 0); }
+        .red { color: rgb(255, 0, 0); }
+      </style>
+      <svg width="40" height="20" viewBox="0 0 40 20">
+        <rect x="0" y="0" width="20" height="20"></rect>
+        <g class="red">
+          <rect x="20" y="0" width="20" height="20"></rect>
+        </g>
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [0, 128, 0, 255],
+        "rect outside group should render with the root computed color"
+      );
+      assert_eq!(
+        pixel(&pixmap, 30, 10),
+        [255, 0, 0, 255],
+        "rect inside group should inherit currentColor from the group's computed color"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_css_color_overrides_color_presentation_attribute_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; color: rgb(0, 128, 0); }
+        .red { color: rgb(255, 0, 0); }
+      </style>
+      <svg width="40" height="20" viewBox="0 0 40 20">
+        <rect x="0" y="0" width="20" height="20"></rect>
+        <g class="red" color="blue">
+          <rect x="20" y="0" width="20" height="20"></rect>
+        </g>
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
+      assert_eq!(
+        pixel(&pixmap, 30, 10),
+        [255, 0, 0, 255],
+        "computed CSS color should override the stale color presentation attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_respects_display_none_when_document_css_injection_disabled_display_list_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
