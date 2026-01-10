@@ -223,6 +223,23 @@ pub fn install_time_bindings(
   Ok(TimeBindings { heap_key })
 }
 
+/// Updates the clock used by previously installed time bindings for a given `vm-js` heap.
+///
+/// This is useful for embeddings that create the JS realm before they have access to the final
+/// event loop instance (and its clock), but still want `Date.now()` / `performance.now()` to track
+/// the event loop clock once scripts execute.
+pub(crate) fn update_time_bindings_clock(heap: &Heap, clock: Arc<dyn Clock>) -> Result<(), VmError> {
+  let heap_key = heap as *const Heap as usize;
+  let mut map = time_contexts()
+    .lock()
+    .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
+  let ctx = map.get_mut(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
+  ctx.clock = clock;
+  Ok(())
+}
+
 fn with_time_context<T>(
   scope: &Scope<'_>,
   f: impl FnOnce(&TimeContext) -> T,

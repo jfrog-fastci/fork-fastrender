@@ -624,7 +624,6 @@ impl JsRuntime {
       Arc::new(SourceText::new("<inline>", source)),
     )
   }
-
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
   /// embedder host context.
   pub fn exec_script_with_host(

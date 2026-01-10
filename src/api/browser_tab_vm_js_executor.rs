@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::js::window_realm::{register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig};
+use crate::js::time::update_time_bindings_clock;
 use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
 use vm_js::HeapLimits;
@@ -101,13 +102,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     spec: &ScriptElementSpec,
     _current_script: Option<crate::dom2::NodeId>,
     _document: &mut BrowserDocumentDom2,
-    _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let Some(realm) = self.realm.as_mut() else {
       return Err(Error::Other(
         "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
       ));
     };
+    update_time_bindings_clock(realm.heap(), event_loop.clock())
+      .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
     let source_name = spec
