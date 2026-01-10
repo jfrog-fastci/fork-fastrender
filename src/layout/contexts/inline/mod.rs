@@ -1742,7 +1742,7 @@ impl InlineFormattingContext {
         }
         _ => {
           if float {
-            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
               child.style.vertical_align,
@@ -1760,7 +1760,7 @@ impl InlineFormattingContext {
             };
             current_items.push(InlineItem::Floating(floating));
             whitespace.note_ignorable();
-            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+            maybe_push_footnote_anchor(&mut current_items, whitespace);
             continue;
           }
           if is_inline_level {

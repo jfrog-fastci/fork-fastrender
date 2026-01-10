@@ -269,6 +269,19 @@ fn document_charset_properties_are_exposed() -> Result<()> {
 }
 
 #[test]
+fn document_title_is_exposed_and_writable() -> Result<()> {
+  let url = "https://example.com/";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script("document.title === '' && (document.title = 'hello') && document.title === 'hello'")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
   struct RecordingExecutor {

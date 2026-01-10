@@ -11997,6 +11997,27 @@ fn init_window_globals(
     },
   )?;
 
+  // Document.title.
+  //
+  // Many real-world scripts read and write this value (e.g. analytics metadata, SPA routing).
+  // FastRender does not yet sync the title back into the DOM tree; expose a writable string slot so
+  // scripts do not crash when accessing `document.title`.
+  let title_key = alloc_key(&mut scope, "title")?;
+  let title_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(title_s))?;
+  scope.define_property(
+    document_obj,
+    title_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(title_s),
+        writable: true,
+      },
+    },
+  )?;
+
   // Document.characterSet / Document.charset / Document.inputEncoding.
   //
   // Real-world scripts often use these to decide on encoding-sensitive behaviour. FastRender always
