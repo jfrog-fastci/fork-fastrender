@@ -345,6 +345,69 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
   }
 }
 
+/// Remove previously synthesized area line names (`<name>-start`/`<name>-end`) from the style.
+///
+/// `grid-template-areas` can be overridden (e.g. by later rules or media queries). The implicit
+/// area line names are derived from the *current* template and therefore must not accumulate across
+/// overrides. Otherwise, named-line resolution will see multiple occurrences of the same implicit
+/// line name and may resolve `grid-area: <name>` to stale lines from an earlier template.
+///
+/// We remove only the implicit line names at the line indices implied by the currently stored
+/// `grid_template_areas` matrix. This preserves author-specified line names that happen to share
+/// the same `<name>-start`/`<name>-end` spelling but appear at different indices.
+fn remove_synthesized_area_line_names(styles: &mut ComputedStyle) {
+  if styles.grid_template_areas.is_empty() {
+    return;
+  }
+
+  let Some(bounds) = crate::style::grid::validate_area_rectangles(&styles.grid_template_areas)
+  else {
+    return;
+  };
+
+  fn remove_from_line_names(lines: &mut Vec<Vec<String>>, idx: usize, name: &str) {
+    let Some(line) = lines.get_mut(idx) else { return };
+    line.retain(|existing| existing != name);
+  }
+
+  fn remove_from_named_line_map(map: &mut HashMap<String, Vec<usize>>, name: &str, idx: usize) {
+    let Some(indices) = map.get_mut(name) else { return };
+    indices.retain(|existing| *existing != idx);
+    if indices.is_empty() {
+      map.remove(name);
+    }
+  }
+
+  for (name, (top, bottom, left, right)) in bounds {
+    let col_start = left;
+    let col_end = right + 1;
+    let row_start = top;
+    let row_end = bottom + 1;
+
+    let start_name = format!("{name}-start");
+    let end_name = format!("{name}-end");
+
+    remove_from_line_names(&mut styles.grid_column_line_names, col_start, &start_name);
+    remove_from_line_names(&mut styles.grid_column_line_names, col_end, &end_name);
+    remove_from_line_names(&mut styles.grid_row_line_names, row_start, &start_name);
+    remove_from_line_names(&mut styles.grid_row_line_names, row_end, &end_name);
+
+    if styles.grid_column_subgrid {
+      remove_from_line_names(&mut styles.subgrid_column_line_names, col_start, &start_name);
+      remove_from_line_names(&mut styles.subgrid_column_line_names, col_end, &end_name);
+    }
+    if styles.grid_row_subgrid {
+      remove_from_line_names(&mut styles.subgrid_row_line_names, row_start, &start_name);
+      remove_from_line_names(&mut styles.subgrid_row_line_names, row_end, &end_name);
+    }
+
+    remove_from_named_line_map(&mut styles.grid_column_names, &start_name, col_start);
+    remove_from_named_line_map(&mut styles.grid_column_names, &end_name, col_end);
+    remove_from_named_line_map(&mut styles.grid_row_names, &start_name, row_start);
+    remove_from_named_line_map(&mut styles.grid_row_names, &end_name, row_end);
+  }
+}
+
 fn split_layers(tokens: &[PropertyValue]) -> Vec<Vec<PropertyValue>> {
   // CSS layer lists (e.g. `background-image`, `background-repeat`, etc.) are comma-separated
   // lists where *empty* items are invalid. For example: `url(a),` must not be treated as
@@ -11865,6 +11928,7 @@ fn apply_declaration_with_base_internal_with_order(
           // `grid-template-rows`/`grid-template-columns` to specify the same number of tracks.
           //
           // https://www.w3.org/TR/css-grid-2/#explicit-grids
+          remove_synthesized_area_line_names(styles);
           styles.grid_template_areas = areas;
           synthesize_area_line_names(styles);
         }
@@ -11884,6 +11948,7 @@ fn apply_declaration_with_base_internal_with_order(
             col_subgrid_line_names,
           } = parsed;
 
+          remove_synthesized_area_line_names(styles);
           styles.grid_template_areas = areas.unwrap_or_default();
 
           if row_is_subgrid {
@@ -11932,6 +11997,7 @@ fn apply_declaration_with_base_internal_with_order(
               col_subgrid_line_names,
             } = template;
 
+            remove_synthesized_area_line_names(styles);
             styles.grid_template_areas = areas.unwrap_or_default();
             if row_is_subgrid {
               let names = row_subgrid_line_names.unwrap_or_default();
@@ -29596,6 +29662,70 @@ mod tests {
       assert_eq!(style.grid_column_line_names[0], expected_start);
       assert_eq!(style.grid_column_line_names[1], expected_end);
     }
+  }
+
+  #[test]
+  fn grid_template_areas_overrides_remove_stale_implicit_line_names() {
+    fn decl(property: &'static str, value: &str) -> Declaration {
+      Declaration {
+        property: property.into(),
+        value: PropertyValue::Keyword(value.to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      }
+    }
+
+    let parent = ComputedStyle::default();
+    let mut style = ComputedStyle::default();
+
+    // Initial template where "b" spans every row (and is therefore implicitly anchored at the
+    // first row line).
+    apply_declaration(&mut style, &decl("grid-template-areas", "\"a a b\" \"c c b\" \". . b\""), &parent, 16.0, 16.0);
+    apply_declaration(
+      &mut style,
+      &decl("grid-template-columns", "repeat(3, 1fr)"),
+      &parent,
+      16.0,
+      16.0,
+    );
+
+    assert!(
+      style
+        .grid_row_line_names
+        .get(0)
+        .is_some_and(|line| line.iter().any(|name| name == "b-start")),
+      "expected initial implicit b-start line name on row line 0"
+    );
+    assert_eq!(style.grid_row_names.get("b-start"), Some(&vec![0]));
+
+    // Override template where "b" only appears on the last row. The implicit b-start/b-end line
+    // names must not accumulate; stale indices would cause named-line placement to resolve to the
+    // earlier (now invalid) occurrence.
+    apply_declaration(&mut style, &decl("grid-template-areas", "\"a a\" \"c c\" \"b b\""), &parent, 16.0, 16.0);
+    apply_declaration(
+      &mut style,
+      &decl("grid-template-columns", "repeat(2, 1fr)"),
+      &parent,
+      16.0,
+      16.0,
+    );
+
+    assert!(
+      style
+        .grid_row_line_names
+        .get(0)
+        .is_some_and(|line| line.iter().all(|name| name != "b-start")),
+      "stale b-start must be removed from row line 0 after overriding grid-template-areas"
+    );
+    assert!(
+      style
+        .grid_row_line_names
+        .get(2)
+        .is_some_and(|line| line.iter().any(|name| name == "b-start")),
+      "expected updated implicit b-start line name on row line 2"
+    );
+    assert_eq!(style.grid_row_names.get("b-start"), Some(&vec![2]));
   }
 
   #[test]
