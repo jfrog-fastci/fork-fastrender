@@ -2174,14 +2174,54 @@ fn apply_face_variations(face: &mut ttf_parser::Face<'_>, variations: &[(Tag, f3
 
 #[inline]
 fn select_css_line_metrics(face: &ttf_parser::Face<'_>) -> (i16, i16, i16) {
-  // Use the same line metric selection as the shaping backend (FreeType).
+  // Use the same line metric selection as the shaping backend (FreeType) and browser engines:
   //
-  // In particular, when the OS/2 `USE_TYPO_METRICS` bit is unset, FreeType prefers `hhea` line
-  // metrics over OS/2 typographic metrics. This matches browser behavior in practice, and avoids
-  // surprising line-height differences for common system fonts.
-  let ascent = face.ascender();
-  let descent = face.descender();
+  // - When the OS/2 `USE_TYPO_METRICS` bit (fsSelection bit 7) is **set**, prefer OS/2
+  //   `sTypoAscender`, `sTypoDescender`, and `sTypoLineGap`.
+  // - Otherwise prefer `hhea` metrics (`ascender`, `descender`, `lineGap`).
+  //
+  // In practice this matches Chrome/FreeType and avoids surprising line-height differences for
+  // common system fonts.
+  //
+  // Reference:
+  // - CSS Inline 3 § Line Gap Metrics: <https://www.w3.org/TR/css-inline-3/#line-gap-metrics>
+  // - OpenType OS/2 table: <https://learn.microsoft.com/en-us/typography/opentype/spec/os2>
+
+  #[inline]
+  fn read_be_u16(data: &[u8], offset: usize) -> Option<u16> {
+    let bytes = data.get(offset..offset + 2)?;
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+  }
+
+  #[inline]
+  fn read_be_i16(data: &[u8], offset: usize) -> Option<i16> {
+    let bytes = data.get(offset..offset + 2)?;
+    Some(i16::from_be_bytes([bytes[0], bytes[1]]))
+  }
+
+  // Default to hhea metrics.
+  let mut ascent = face.ascender();
+  let mut descent = face.descender();
   let mut line_gap = face.line_gap();
+
+  // OS/2 selection when USE_TYPO_METRICS is set.
+  if let Some(os2) = face.raw_face().table(Tag::from_bytes(b"OS/2")) {
+    // fsSelection @ byte offset 62, sTypo* metrics start at byte offset 68.
+    if let Some(fs_selection) = read_be_u16(os2, 62) {
+      const USE_TYPO_METRICS: u16 = 1 << 7;
+      if fs_selection & USE_TYPO_METRICS != 0 {
+        if let (Some(os2_ascent), Some(os2_descent), Some(os2_line_gap)) = (
+          read_be_i16(os2, 68),
+          read_be_i16(os2, 70),
+          read_be_i16(os2, 72),
+        ) {
+          ascent = os2_ascent;
+          descent = os2_descent;
+          line_gap = os2_line_gap;
+        }
+      }
+    }
+  }
 
   // CSS Inline 3 § Line Gap Metrics: negative line-gap values are treated as 0.
   if line_gap < 0 {

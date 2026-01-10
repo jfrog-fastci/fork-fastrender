@@ -657,11 +657,25 @@ impl BlockFormattingContext {
     // Only allow percentage heights to resolve when this block container has a definite block
     // size. In practice this means it has a non-auto physical size (height/width depending on
     // writing mode) or a parent layout algorithm has already forced a used border-box size.
-    let parent_block_size_is_auto = if inline_is_horizontal {
-      parent.style.height.is_none() && parent.style.height_keyword.is_none()
+    // Percentage block sizes on in-flow children resolve against the used size of the containing
+    // block’s content box (CSS2.1 §10.5). This matters even when the parent itself was laid out
+    // with an indefinite available height (the common block-flow case): a fixed-height parent like
+    // `height: 28px` must still provide a definite percentage base for descendants (`height:100%`)
+    // even though its own *available* height is `auto`.
+    let parent_block_size_length = if inline_is_horizontal {
+      parent.style.height
     } else {
-      parent.style.width.is_none() && parent.style.width_keyword.is_none()
+      parent.style.width
     };
+    let parent_block_size_keyword = if inline_is_horizontal {
+      parent.style.height_keyword
+    } else {
+      parent.style.width_keyword
+    };
+    let parent_block_size_is_auto = parent_block_size_length.is_none() && parent_block_size_keyword.is_none();
+    // When the parent formatting context already computed a final used border-box size for this
+    // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
+    // percentage basis after converting it to a content-box size.
     let parent_used_border_box_block_size = if inline_is_horizontal {
       constraints.used_border_box_height
     } else {
@@ -671,7 +685,55 @@ impl BlockFormattingContext {
       if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
         None
       } else {
-        containing_height.or(parent_used_border_box_block_size)
+        let parent_axis_edges = if inline_is_horizontal {
+          vertical_padding_and_borders(&parent.style, containing_width, self.viewport_size, &self.font_context)
+        } else {
+          horizontal_padding_and_borders(&parent.style, containing_width, self.viewport_size, &self.font_context)
+        };
+        let parent_content_block_size = if let Some(border_box) = parent_used_border_box_block_size {
+          Some((border_box - parent_axis_edges).max(0.0))
+        } else if let Some(block_len) = parent_block_size_length {
+          resolve_length_with_percentage_metrics(
+            block_len,
+            containing_height,
+            self.viewport_size,
+            parent.style.font_size,
+            parent.style.root_font_size,
+            Some(&parent.style),
+            Some(&self.font_context),
+          )
+          .map(|resolved| {
+            let mut content =
+              content_size_from_box_sizing(resolved, parent_axis_edges, parent.style.box_sizing);
+            // Stable scrollbar gutters consume space from the content box even when
+            // `box-sizing: content-box` (mirrors the adjustment in this function when computing
+            // the parent's own used block size).
+            if parent.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+              let reserve_gutter = if inline_is_horizontal {
+                parent.style.scrollbar_gutter.stable
+                  && matches!(parent.style.overflow_x, Overflow::Hidden | Overflow::Auto | Overflow::Scroll)
+              } else {
+                parent.style.scrollbar_gutter.stable
+                  && matches!(parent.style.overflow_y, Overflow::Hidden | Overflow::Auto | Overflow::Scroll)
+              };
+              if reserve_gutter {
+                let gutter = resolve_scrollbar_width(&parent.style);
+                if gutter > 0.0 {
+                  let delta = if parent.style.scrollbar_gutter.both_edges {
+                    gutter * 2.0
+                  } else {
+                    gutter
+                  };
+                  content = (content - delta).max(0.0);
+                }
+              }
+            }
+            content.max(0.0)
+          })
+        } else {
+          None
+        };
+        parent_content_block_size.filter(|value| value.is_finite())
       };
 
     // Handle block-axis margins (resolve em/rem units with font-size)
@@ -5119,9 +5181,35 @@ impl BlockFormattingContext {
         // shrink-to-fit (CSS 2.1 §10.3.5). Passing the used content width as the constraint would
         // incorrectly resolve percentage padding/borders against the float's own content box.
         let width_auto = specified_width.is_none();
+        // Floats establish their own formatting context roots, so their percentage block sizes (for
+        // example `height: 100%`) resolve against the containing block provided by the caller.
+        //
+        // Use the parent's resolved block size as the "available height" only when the parent has
+        // a definite block-size percentage base. This avoids incorrectly resolving percentages
+        // against an unrelated ancestor's available height (e.g. the viewport) when the containing
+        // block's height is `auto` (CSS2.1 §10.5).
+        let parent_block_size_is_auto = if inline_is_horizontal {
+          parent.style.height.is_none() && parent.style.height_keyword.is_none()
+        } else {
+          parent.style.width.is_none() && parent.style.width_keyword.is_none()
+        };
+        let parent_used_border_box_block_size = if inline_is_horizontal {
+          constraints.used_border_box_height
+        } else {
+          constraints.used_border_box_width
+        };
+        let float_height_space =
+          if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
+            AvailableSpace::Indefinite
+          } else {
+            match block_space {
+              AvailableSpace::Definite(value) => AvailableSpace::Definite(value),
+              _ => AvailableSpace::Indefinite,
+            }
+          };
         let child_constraints = LayoutConstraints::new(
           AvailableSpace::Definite(containing_width),
-          AvailableSpace::Indefinite,
+          float_height_space,
         )
         .with_used_border_box_size(width_auto.then_some(used_border_box), None);
         let mut fragment = child_bfc.layout(child, &child_constraints)?;
@@ -11728,6 +11816,106 @@ mod tests {
     let fragment = bfc.layout(&root, &constraints).unwrap();
     let child_fragment = fragment.children.first().expect("child fragment");
     assert_eq!(child_fragment.bounds.height(), 0.0);
+  }
+
+  #[test]
+  fn float_percentage_height_uses_definite_containing_block() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width = Some(Length::px(50.0));
+    float_style.width_keyword = None;
+    float_style.height = Some(Length::percent(100.0));
+    float_style.height_keyword = None;
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(40.0));
+    inner_style.height_keyword = None;
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+    let float_node = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.height = Some(Length::px(28.0));
+    root_style.height_keyword = None;
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = bfc.layout(&root, &constraints).unwrap();
+
+    let float_fragment = fragment
+      .children
+      .iter()
+      .find(|child| child.style.as_ref().is_some_and(|style| style.float.is_floating()))
+      .expect("float fragment");
+
+    assert!(
+      (float_fragment.bounds.height() - 28.0).abs() < 0.1,
+      "expected float height to resolve height:100% against containing block height; got {}",
+      float_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn float_percentage_height_without_base_falls_back_to_auto() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width = Some(Length::px(50.0));
+    float_style.width_keyword = None;
+    float_style.height = Some(Length::percent(100.0));
+    float_style.height_keyword = None;
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(40.0));
+    inner_style.height_keyword = None;
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+    let float_node = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    // Root has `height:auto`, but is laid out with a definite available height. Percentage heights
+    // on descendants must not resolve against that unrelated available height (CSS2.1 §10.5).
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = bfc.layout(&root, &constraints).unwrap();
+
+    let float_fragment = fragment
+      .children
+      .iter()
+      .find(|child| child.style.as_ref().is_some_and(|style| style.float.is_floating()))
+      .expect("float fragment");
+
+    assert!(
+      (float_fragment.bounds.height() - 40.0).abs() < 0.1,
+      "expected float height percentage without a base to fall back to auto (content height); got {}",
+      float_fragment.bounds.height()
+    );
   }
 
   #[test]

@@ -6059,6 +6059,16 @@ impl ImageCache {
     format: ImageFormat,
     url: &str,
   ) -> Result<DynamicImage> {
+    if format == ImageFormat::Jpeg {
+      // The `image` crate's JPEG backend (zune-jpeg) can produce pixel values that differ
+      // substantially from Chrome/libjpeg, which shows up as large fixture diffs even when the
+      // rendered geometry is correct. Decode JPEGs with `jpeg-decoder` instead to match
+      // browser output more closely.
+      if let Ok(img) = self.decode_jpeg(bytes, url) {
+        return Ok(img);
+      }
+      // Fall back to `image` if the JPEG payload uses an unsupported colorspace.
+    }
     if format == ImageFormat::Png {
       // Decode PNG via the `png` crate so output buffers are allocated fallibly (avoiding process
       // aborts on OOM inside `image`'s decoders). Keep render deadlines responsive by reading
@@ -6347,6 +6357,173 @@ impl ImageCache {
           "image decode panicked: {}",
           panic_payload_to_reason(&*panic)
         ),
+      })),
+    }
+  }
+
+  fn decode_jpeg(&self, bytes: &[u8], url: &str) -> Result<DynamicImage> {
+    use jpeg_decoder::{Decoder, PixelFormat};
+
+    // Decode through `DeadlineCursor` so long-running JPEGs still respect render deadlines.
+    let mut decoder = Decoder::new(DeadlineCursor::new(bytes));
+    let pixels = decoder.decode().map_err(|err| {
+      Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: err.to_string(),
+      })
+    })?;
+    let Some(info) = decoder.info() else {
+      return Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: "JPEG decoder did not expose image info".to_string(),
+      }));
+    };
+    let (width, height) = (u32::from(info.width), u32::from(info.height));
+    if width == 0 || height == 0 {
+      return Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("JPEG image size is zero ({width}x{height})"),
+      }));
+    }
+    self.enforce_decode_limits(width, height, url)?;
+
+    match info.pixel_format {
+      PixelFormat::RGB24 => {
+        let expected = u64::from(width)
+          .checked_mul(u64::from(height))
+          .and_then(|px| px.checked_mul(3))
+          .ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "JPEG RGB byte size overflow".to_string(),
+            })
+          })? as usize;
+        if pixels.len() != expected {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!(
+              "JPEG RGB output length mismatch (expected {expected} bytes, got {})",
+              pixels.len()
+            ),
+          }));
+        }
+
+        let rgba_len = u64::from(width)
+          .checked_mul(u64::from(height))
+          .and_then(|px| px.checked_mul(4))
+          .ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "JPEG RGBA byte size overflow".to_string(),
+            })
+          })?;
+        if rgba_len > MAX_PIXMAP_BYTES {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!(
+              "JPEG decoded image {width}x{height} is {rgba_len} bytes (limit {MAX_PIXMAP_BYTES})"
+            ),
+          }));
+        }
+        let rgba_len = usize::try_from(rgba_len).map_err(|_| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "JPEG RGBA byte size does not fit in usize".to_string(),
+          })
+        })?;
+
+        let mut out = Vec::new();
+        out.try_reserve_exact(rgba_len).map_err(|err| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!("JPEG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
+          })
+        })?;
+        out.resize(rgba_len, 0);
+        for (in_px, out_px) in pixels.chunks_exact(3).zip(out.chunks_exact_mut(4)) {
+          out_px[0] = in_px[0];
+          out_px[1] = in_px[1];
+          out_px[2] = in_px[2];
+          out_px[3] = 255;
+        }
+        let rgba = RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "JPEG RGB->RGBA buffer was invalid".to_string(),
+          })
+        })?;
+        Ok(DynamicImage::ImageRgba8(rgba))
+      }
+      PixelFormat::L8 => {
+        let expected = u64::from(width)
+          .checked_mul(u64::from(height))
+          .ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "JPEG luma byte size overflow".to_string(),
+            })
+          })? as usize;
+        if pixels.len() != expected {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!(
+              "JPEG luma output length mismatch (expected {expected} bytes, got {})",
+              pixels.len()
+            ),
+          }));
+        }
+
+        let rgba_len = u64::from(width)
+          .checked_mul(u64::from(height))
+          .and_then(|px| px.checked_mul(4))
+          .ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "JPEG RGBA byte size overflow".to_string(),
+            })
+          })?;
+        if rgba_len > MAX_PIXMAP_BYTES {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!(
+              "JPEG decoded image {width}x{height} is {rgba_len} bytes (limit {MAX_PIXMAP_BYTES})"
+            ),
+          }));
+        }
+        let rgba_len = usize::try_from(rgba_len).map_err(|_| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "JPEG RGBA byte size does not fit in usize".to_string(),
+          })
+        })?;
+
+        let mut out = Vec::new();
+        out.try_reserve_exact(rgba_len).map_err(|err| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!("JPEG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
+          })
+        })?;
+        out.resize(rgba_len, 0);
+        for (gray, out_px) in pixels.iter().zip(out.chunks_exact_mut(4)) {
+          out_px[0] = *gray;
+          out_px[1] = *gray;
+          out_px[2] = *gray;
+          out_px[3] = 255;
+        }
+        let rgba = RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "JPEG grayscale->RGBA buffer was invalid".to_string(),
+          })
+        })?;
+        Ok(DynamicImage::ImageRgba8(rgba))
+      }
+      // CMYK/YCCK JPEGs are rare on the web. Fall back to the `image` crate for those so we keep
+      // existing support without having to reimplement the colorspace conversion here.
+      _ => Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("Unsupported JPEG pixel format {:?}", info.pixel_format),
       })),
     }
   }
@@ -11331,6 +11508,22 @@ mod tests {
         flip_x: false
       })
     );
+  }
+
+  #[test]
+  fn jpeg_decode_matches_chrome_pixel_values() {
+    // Regression test: JPEG decoding should match Chrome/libjpeg output closely. Even small
+    // per-channel differences show up as huge fixture diffs because the page-loop diffing uses
+    // tolerance=0.
+    let cache = ImageCache::new();
+    let image = cache
+      .load("tests/fixtures/image_orientation/orientation-6.jpg")
+      .expect("load oriented image");
+    assert_eq!(image.width(), 2);
+    assert_eq!(image.height(), 1);
+    let rgba = image.image.to_rgba8();
+    assert_eq!(rgba.get_pixel(0, 0).0, [254, 0, 0, 255]);
+    assert_eq!(rgba.get_pixel(1, 0).0, [0, 255, 1, 255]);
   }
 
   #[test]

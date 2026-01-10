@@ -14,15 +14,31 @@
     "layout": 283.97722319999997,
     "paint": 209.98315799999995
   },
-  "notes": "",
+  "notes": "Remaining diff largely from pixel-level image/text rasterization differences vs Chrome (resampling + antialiasing); cascade is still the main hotspot.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 515934,
-    "diff_percent": 53.7431,
-    "perceptual": 0.24,
+    "diff_pixels": 241461,
+    "diff_percent": 25.1522,
+    "perceptual": 0.0213,
+    "first_mismatch": {
+      "x": 396,
+      "y": 3,
+      "baseline_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "rendered_rgba": [
+        170,
+        187,
+        223,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "5ee44a0c8de83711fa0761886ffca200944f9a1a"
+    "computed_at_commit": "b2ae46f536f1ef9725c17630df5b34c6067c0d3f"
   },
   "hotspot": "cascade",
   "failure_stage": null,

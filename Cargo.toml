@@ -67,6 +67,7 @@ html5ever = "0.35"
  # pageset content in multiple languages.
  hyphenation = { version = "0.8", features = ["embed_all"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+jpeg-decoder = "0.3"
 libwebp-sys = "0.9.6"
 lru = "0.12"
 kamadak-exif = "0.6"

@@ -8,6 +8,14 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_PROGRESS_DIR: &str = "progress/pages";
 const DEFAULT_OUT_DIR: &str = "target/refresh_progress_accuracy";
+// Pageset progress accuracy is computed against Chrome screenshots rendered at 1200×800 (see
+// `progress/pages/README.md`). Keep `refresh-progress-accuracy` aligned with that so syncing metrics
+// does not accidentally switch the viewport and invalidate historical comparisons.
+const DEFAULT_VIEWPORT: &str = "1200x800";
+// Some pageset fixtures (notably large news sites like dailymail.co.uk) can take tens of seconds to
+// render; use the same generous timeout as `xtask page-loop` so accuracy refreshes do not spuriously
+// time out.
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Args, Debug)]
 pub struct RefreshProgressAccuracyArgs {
@@ -175,8 +183,10 @@ fn print_plan(
       }
     }
   } else {
-    println!("  selection: default fixture set (pages_regression)");
+  println!("  selection: default fixture set (pages_regression)");
   }
+  println!("  viewport: {DEFAULT_VIEWPORT} (pageset progress baseline)");
+  println!("  timeout: {DEFAULT_TIMEOUT_SECS}s");
   println!(
     "  diff: tolerance={} max_diff_percent={} ignore_alpha={} max_perceptual_distance={}",
     args.tolerance,
@@ -210,6 +220,11 @@ fn build_fixture_chrome_diff_args(
   let mut argv: Vec<OsString> = vec!["xtask".into(), "fixture-chrome-diff".into()];
   argv.push("--out-dir".into());
   argv.push(args.out_dir.as_os_str().to_os_string());
+
+  argv.push("--viewport".into());
+  argv.push(DEFAULT_VIEWPORT.into());
+  argv.push("--timeout".into());
+  argv.push(DEFAULT_TIMEOUT_SECS.to_string().into());
 
   if let Some(fixtures) = &args.fixtures {
     argv.push("--fixtures".into());

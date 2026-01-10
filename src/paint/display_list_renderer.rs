@@ -4567,12 +4567,44 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn is_translation_only_transform(transform: Transform) -> bool {
+    let eps = 1e-6;
+    (transform.sx - 1.0).abs() <= eps
+      && (transform.sy - 1.0).abs() <= eps
+      && transform.kx.abs() <= eps
+      && transform.ky.abs() <= eps
+      && transform.tx.is_finite()
+      && transform.ty.is_finite()
+  }
+
+  #[inline]
+  fn snap_rect_origin_to_device_pixels_with_translation(rect: Rect, transform: Transform) -> Rect {
+    // `rect` is in "world" coordinates which will be transformed by `transform` during rasterization.
+    // When the transform is a pure translation (e.g. paint tiling offsets), snap the *transformed*
+    // origin to integer device pixels and then undo the translation so the caller can keep passing
+    // world-space rectangles.
+    let eff_x = rect.x() + transform.tx;
+    let eff_y = rect.y() + transform.ty;
+    Rect::from_xywh(
+      eff_x.trunc() - transform.tx,
+      eff_y.trunc() - transform.ty,
+      rect.width(),
+      rect.height(),
+    )
+  }
+
+  #[inline]
   fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect, radii: Option<BorderRadii>) -> Rect {
     // tiny-skia uses floating-point transforms for `draw_pixmap` / mask rasterization. For
     // axis-aligned integer-sized clips, snapping the origin to integer device pixels matches
     // the legacy painter (which truncates to `i32`) and tends to align better with Chrome's
     // pixel grid behavior.
-    if self.canvas.transform() != Transform::identity() {
+    let transform = self.canvas.transform();
+    if transform != Transform::identity()
+      && (!Self::is_translation_only_transform(transform)
+        || !Self::is_near_integer(transform.tx)
+        || !Self::is_near_integer(transform.ty))
+    {
       return rect;
     }
     if radii.is_some_and(|r| !r.is_zero()) {
@@ -4590,7 +4622,11 @@ impl DisplayListRenderer {
     if !Self::is_near_integer(rect.width()) || !Self::is_near_integer(rect.height()) {
       return rect;
     }
-    Self::snap_rect_origin_to_device_pixels(rect)
+    if transform == Transform::identity() {
+      Self::snap_rect_origin_to_device_pixels(rect)
+    } else {
+      Self::snap_rect_origin_to_device_pixels_with_translation(rect, transform)
+    }
   }
 
   #[inline]
@@ -4599,7 +4635,12 @@ impl DisplayListRenderer {
     dest_rect: Rect,
     pixmap: &Pixmap,
   ) -> Rect {
-    if self.canvas.transform() != Transform::identity() {
+    let transform = self.canvas.transform();
+    if transform != Transform::identity()
+      && (!Self::is_translation_only_transform(transform)
+        || !Self::is_near_integer(transform.tx)
+        || !Self::is_near_integer(transform.ty))
+    {
       return dest_rect;
     }
     if dest_rect.width() <= 0.0
@@ -4629,7 +4670,11 @@ impl DisplayListRenderer {
       return dest_rect;
     }
 
-    Self::snap_rect_origin_to_device_pixels(dest_rect)
+    if transform == Transform::identity() {
+      Self::snap_rect_origin_to_device_pixels(dest_rect)
+    } else {
+      Self::snap_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
+    }
   }
 
   #[inline]
@@ -21315,6 +21360,70 @@ mod tests {
       report.pixmap.data(),
       serial.data(),
       "parallel and serial output should match for isolated mix-blend-mode"
+    );
+  }
+
+  #[test]
+  fn parallel_tiling_snaps_axis_aligned_clip_and_unscaled_image_origins_under_translation() {
+    // Parallel tiling renders each tile into a smaller pixmap by translating the canvas transform.
+    // We still want axis-aligned, integer-sized clips and unscaled (1:1) images to snap to integer
+    // *device* pixels, matching the serial path.
+    let y = 64.994_140_625; // Exact binary fraction (64 + 1018/1024) similar to real-page layouts.
+    let rect = Rect::from_xywh(0.0, y, 10.0, 10.0);
+
+    let pixels = vec![255u8, 0, 0, 255]
+      .into_iter()
+      .cycle()
+      .take(10 * 10 * 4)
+      .collect::<Vec<_>>();
+    let image = Arc::new(ImageData::new_pixels(10, 10, pixels));
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect, radii: None },
+    }));
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: rect,
+      image,
+      filter_quality: ImageFilterQuality::Nearest,
+      src_rect: None,
+    }));
+    list.push(DisplayItem::PopClip);
+
+    let serial = DisplayListRenderer::new(128, 128, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .unwrap();
+
+    let parallelism = PaintParallelism {
+      tile_size: 64,
+      log_timing: false,
+      min_display_items: 1,
+      min_tiles: 1,
+      min_build_fragments: 1,
+      build_chunk_size: 1,
+      max_threads: None,
+      mode: PaintParallelismMode::Enabled,
+    };
+
+    let one_thread = ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build()
+      .expect("single-thread rayon pool");
+    let report = one_thread.install(|| {
+      DisplayListRenderer::new(128, 128, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .with_parallelism(parallelism)
+        .render_with_report(&list)
+        .unwrap()
+    });
+
+    assert!(report.parallel_used, "expected parallel tiling to run");
+    assert_eq!(
+      report.pixmap.data(),
+      serial.data(),
+      "parallel and serial output should match for snapped clip+image"
     );
   }
 
