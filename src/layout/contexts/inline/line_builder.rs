@@ -6787,6 +6787,69 @@ mod tests {
   }
 
   #[test]
+  fn find_break_point_allows_small_subpixel_overflow_to_avoid_extra_wrap() {
+    use crate::text::line_break::BreakOpportunityKind;
+    use crate::text::line_break::BreakType;
+
+    // Regresses: `TextItem::find_break_point` could round down the fitting offset and select an
+    // earlier break opportunity when the available width was just shy of the true advance by
+    // <1px. This can force an extra wrapped line for large headings (e.g. BBC hero headline).
+    let item = make_text_item("aaa bbb ccc", 1000.0);
+
+    // Ensure the expected normal break opportunities exist.
+    let normal_breaks: Vec<usize> = item
+      .break_opportunities
+      .iter()
+      .filter(|b| matches!(b.break_type, BreakType::Allowed) && b.kind == BreakOpportunityKind::Normal)
+      .map(|b| b.byte_offset)
+      .collect();
+    assert!(
+      normal_breaks.contains(&4) && normal_breaks.contains(&8),
+      "expected breaks at offsets 4 and 8, got {normal_breaks:?}"
+    );
+
+    let target_offset = 8;
+    let target_advance = item.advance_at_offset(target_offset);
+    let width = target_advance - 0.25;
+
+    let brk = item
+      .find_break_point(width)
+      .expect("expected a fitting break point");
+    assert_eq!(brk.byte_offset, target_offset);
+  }
+
+  #[test]
+  fn find_break_point_ignores_trimmed_trailing_spaces_for_collapsible_whitespace() {
+    // When `white-space` collapses spaces, the trailing space at the chosen wrap opportunity is
+    // removed from the line box. Selecting the wrap point must therefore be based on the width
+    // excluding that trimmed whitespace, otherwise line breaking can prematurely fall back to an
+    // earlier break and produce an extra wrapped line.
+    let item = make_text_item("hello world", 11.0);
+
+    // Fits "hello" (offset 5), but not "hello " (offset 6).
+    let width_without_space = item.advance_at_offset(5);
+    let width_with_space = item.advance_at_offset(6);
+    assert!(width_without_space < width_with_space);
+
+    let max_width = width_without_space + 0.1;
+    assert!(max_width < width_with_space);
+
+    let brk = item
+      .find_break_point(max_width)
+      .expect("expected break at the space");
+    assert_eq!(brk.byte_offset, 6);
+
+    // If whitespace is preserved, the trailing space counts toward fitting and the break shouldn't
+    // be accepted when it would overflow.
+    let mut prewrap = item.clone();
+    Arc::make_mut(&mut prewrap.style).white_space = WhiteSpace::PreWrap;
+    assert!(
+      prewrap.find_break_point(max_width).is_none(),
+      "pre-wrap should not ignore trailing space width for fitting"
+    );
+  }
+
+  #[test]
   fn add_breaks_at_clusters_preserves_existing_hyphen_breaks() {
     use crate::text::line_break::{BreakOpportunity, BreakType};
 

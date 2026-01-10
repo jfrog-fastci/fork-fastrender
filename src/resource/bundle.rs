@@ -3666,10 +3666,10 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
-      fetch_profile: BundleFetchProfile {
-        user_agent: "Foo/1.0".to_string(),
-        accept_language: super::super::DEFAULT_ACCEPT_LANGUAGE.to_string(),
-      },
+        fetch_profile: BundleFetchProfile {
+          user_agent: "Foo/1.0".to_string(),
+          accept_language: super::super::DEFAULT_ACCEPT_LANGUAGE.to_string(),
+        },
       resources: BTreeMap::from([
         (
           key_foo,

@@ -1176,24 +1176,10 @@ impl BlockFormattingContext {
       };
       specified_height = Some((used_border_box - vertical_edges).max(0.0));
     }
-    // `LayoutConstraints::used_border_box_*` represents the *final* used size computed by the
-    // parent formatting context (e.g. flex/grid, or the absolute positioning relayout pass).
-    //
-    // Previously this override was only applied for `height:auto`, but per CSS2.1 percentage sizes
-    // can compute to `auto` when their percentage base is indefinite. In that situation
-    // `specified_height` is `None` even though the authored value was non-auto (e.g. `height:100%`)
-    // and we still need to honor the parent-forced used size so descendants (notably absolutely
-    // positioned replaced elements) can resolve percentage heights against the correct padding box.
-    if specified_height.is_none() {
-      let used_border_box = if inline_is_horizontal {
-        constraints.used_border_box_height
-      } else {
-        constraints.used_border_box_width
-      };
-      if let Some(used_border_box) = used_border_box {
-        specified_height = Some((used_border_box - vertical_edges).max(0.0));
-      }
-    }
+    // `LayoutConstraints::used_border_box_*` describes the containing block's own used size (as
+    // computed by its parent formatting context). It is not a sizing constraint for this in-flow
+    // child: block-level in-flow boxes can overflow a definite-height containing block (CSS2.1
+    // §10.6.3), and should not be forced to fill its used block size.
     if specified_height.is_none()
       && height_auto
       && block_axis_is_horizontal(style.writing_mode)
@@ -2068,36 +2054,38 @@ impl BlockFormattingContext {
           } else {
             (used_border_box_block, Some(used_border_box_inline))
           };
-          // When delegating to a non-block formatting context (flex/grid/table), keep the
-          // *available size* in the block axis consistent with what block layout would pass to a
-          // normal child: only constrain it when the element has a definite block-size
-          // (`height`/`width` in the logical block axis, or a used-size override).
+           // When delegating to a non-block formatting context (flex/grid/table), keep the
+           // *available size* in the block axis consistent with what block layout would pass to a
+           // normal child: only constrain it when the element has a definite block-size
+           // (`height`/`width` in the logical block axis, or a used-size override).
           //
           // Passing the parent's available height here (e.g. the viewport height for the root
           // element) incorrectly forces auto-sized flex/grid containers to fill the viewport,
           // pulling later siblings upward (notably visible on `walmart.com` where the footer would
           // appear in the initial viewport).
-          let fc_constraints = if inline_is_horizontal {
-            // Block formatting contexts do not constrain in-flow children in the block axis.
-            // A definite available height may still be present (e.g. the viewport height), but
-            // treating it as an actual sizing constraint causes nested flex/grid/table layout
-            // to incorrectly resolve percentage heights and stretch auto-sized containers.
-            //
-            // Only preserve a definite available block-size when we're in a real fragmentation
-            // context; otherwise treat it as indefinite.
-            let mut available_height = constraints.available_height;
-            if crate::layout::formatting_context::fragmentainer_block_size_hint().is_none()
-              && containing_height_for_percentages.is_none()
-              && matches!(available_height, AvailableSpace::Definite(_))
-            {
-              available_height = AvailableSpace::Indefinite;
-            }
-            LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
-          } else {
-            LayoutConstraints::new(
-              child_height_space,
-              AvailableSpace::Definite(containing_width),
-            )
+           let fc_constraints = if inline_is_horizontal {
+             // Block formatting contexts do not constrain in-flow children in the block axis.
+             // A definite available height may still be present (e.g. the viewport height), but
+             // treating it as an actual sizing constraint causes nested flex/grid/table layout
+             // to incorrectly stretch auto-sized containers (notably when `align-content: stretch`,
+             // which is common and the initial value for grid containers).
+             //
+             // Use the same block-axis available size we'd pass to a normal block child
+             // (`child_height_space`) when we're in scrollable layout. Percentage heights still
+             // resolve via `block_percentage_base` (see `containing_height_for_percentages`), so we
+             // can drop the definite available height without losing percentage resolution.
+             let mut available_height = constraints.available_height;
+             if crate::layout::formatting_context::fragmentainer_block_size_hint().is_none()
+               && matches!(available_height, AvailableSpace::Definite(_))
+             {
+               available_height = child_height_space;
+             }
+             LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
+           } else {
+             LayoutConstraints::new(
+               child_height_space,
+                AvailableSpace::Definite(containing_width),
+              )
           }
           .with_inline_percentage_base(Some(containing_width))
           .with_block_percentage_base(containing_height_for_percentages)

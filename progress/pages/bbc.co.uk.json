@@ -17,11 +17,11 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 364841,
-    "diff_percent": 38.0043,
-    "perceptual": 0.2831,
+    "diff_pixels": 378543,
+    "diff_percent": 29.3535,
+    "perceptual": 0.1265,
     "first_mismatch": {
-      "x": 112,
+      "x": 32,
       "y": 16,
       "baseline_rgba": [
         0,

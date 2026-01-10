@@ -1234,6 +1234,182 @@ impl GridFormattingContext {
     .unwrap_or(0.0)
   }
 
+  /// Auto-sized grid containers in normal flow should size to their grid tracks and can overflow
+  /// a definite-height containing block (CSS2.1 §10.6.3).
+  ///
+  /// FastRender represents this by passing `AvailableSpace::Indefinite` in the block axis for
+  /// in-flow children, while still threading a definite percentage base via
+  /// `LayoutConstraints::block_percentage_base` so percentage heights can resolve when appropriate.
+  ///
+  /// Taffy sometimes returns a grid container size equal to the viewport (or other unrelated
+  /// percentage base) when the block-axis available space is indefinite, leaving large empty space
+  /// inside the grid and vertically centering the in-flow items. This is visible on `bbc.co.uk`
+  /// where the hero grid becomes as tall as the viewport.
+  ///
+  /// When the grid container has `height:auto` (and no min/max-height) and we're in scrollable
+  /// layout (no fragmentation), shrink the used block size down to the in-flow content extent and
+  /// remove any extra leading space by translating children toward the block-start edge.
+  fn maybe_trim_auto_block_size_in_scrollable_layout(
+    &self,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+    fragment: &mut FragmentNode,
+  ) {
+    if fragmentainer_block_size_hint().is_some() {
+      return;
+    }
+
+    let axes = FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
+    let available_block = match axes.block_axis() {
+      PhysicalAxis::Y => constraints.available_height,
+      PhysicalAxis::X => constraints.available_width,
+    };
+    if !matches!(available_block, CrateAvailableSpace::Indefinite) {
+      return;
+    }
+
+    let (block_is_auto, has_used_override, has_block_min, has_block_max) = match axes.block_axis() {
+      PhysicalAxis::Y => (
+        physical_height_is_auto(style),
+        constraints.used_border_box_height.is_some(),
+        style.min_height.is_some() || style.min_height_keyword.is_some(),
+        style.max_height.is_some() || style.max_height_keyword.is_some(),
+      ),
+      PhysicalAxis::X => (
+        physical_width_is_auto(style),
+        constraints.used_border_box_width.is_some(),
+        style.min_width.is_some() || style.min_width_keyword.is_some(),
+        style.max_width.is_some() || style.max_width_keyword.is_some(),
+      ),
+    };
+
+    if !block_is_auto || has_used_override || has_block_min || has_block_max {
+      return;
+    }
+
+    let container_block_size = axes.block_size(&fragment.bounds);
+    if !container_block_size.is_finite() || container_block_size <= 0.0 {
+      return;
+    }
+
+    // Percentages on padding/border resolve against the containing block width (CSS2.1).
+    let percentage_base = constraints
+      .inline_percentage_base
+      .or_else(|| constraints.width())
+      .unwrap_or(fragment.bounds.width())
+      .max(0.0);
+    let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
+    let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
+    let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+    let padding_bottom = self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+    let border_left =
+      self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+    let border_right =
+      self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+    let border_top =
+      self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+    let border_bottom =
+      self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+
+    let (block_start_inset, block_end_inset) = match axes.block_axis() {
+      PhysicalAxis::Y => (border_top + padding_top, border_bottom + padding_bottom),
+      PhysicalAxis::X => {
+        if axes.block_positive() {
+          (border_left + padding_left, border_right + padding_right)
+        } else {
+          (border_right + padding_right, border_left + padding_left)
+        }
+      }
+    };
+
+    let mut min_start = f32::INFINITY;
+    let mut max_end = f32::NEG_INFINITY;
+    for child in fragment.children.iter() {
+      match child.content {
+        FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => continue,
+        _ => {}
+      }
+      let Some(child_style) = child.style.as_deref() else {
+        continue;
+      };
+      if !child_style.position.is_in_flow() {
+        continue;
+      }
+      let start = axes.block_start(&child.bounds, container_block_size);
+      let end = start + axes.block_size(&child.bounds);
+      if start.is_finite() && end.is_finite() {
+        min_start = min_start.min(start);
+        max_end = max_end.max(end);
+      }
+    }
+
+    let (delta, desired_block_size) = if min_start.is_finite() && max_end.is_finite() {
+      // Only translate toward block-start (negative delta) to remove unwanted leading free space.
+      let delta = (block_start_inset - min_start).min(0.0);
+      (delta, (max_end + delta + block_end_inset).max(0.0))
+    } else {
+      (0.0, (block_start_inset + block_end_inset).max(0.0))
+    };
+
+    let eps = 0.5;
+    if !(desired_block_size.is_finite() && desired_block_size + eps < container_block_size) {
+      return;
+    }
+
+    if delta.abs() > 0.01 {
+      let offset = axes.block_offset(delta);
+      for child in fragment.children_mut().iter_mut() {
+        let Some(child_style) = child.style.as_deref() else {
+          continue;
+        };
+        if !child_style.position.is_in_flow() {
+          continue;
+        }
+        child.translate_root_in_place(offset);
+      }
+
+      if let Some(tracks) = fragment.grid_tracks.as_mut() {
+        let tracks = Arc::make_mut(tracks);
+        match axes.block_axis() {
+          PhysicalAxis::Y => {
+            for range in tracks.rows.iter_mut() {
+              range.0 += offset.y;
+              range.1 += offset.y;
+            }
+          }
+          PhysicalAxis::X => {
+            for range in tracks.columns.iter_mut() {
+              range.0 += offset.x;
+              range.1 += offset.x;
+            }
+          }
+        }
+      }
+    }
+
+    match axes.block_axis() {
+      PhysicalAxis::Y => {
+        fragment.bounds.size.height = desired_block_size;
+        if let Some(logical) = fragment.logical_override.as_mut() {
+          logical.size.height = desired_block_size;
+        }
+      }
+      PhysicalAxis::X => {
+        if !axes.block_positive() {
+          fragment.bounds.origin.x =
+            fragment.bounds.origin.x + fragment.bounds.size.width - desired_block_size;
+        }
+        fragment.bounds.size.width = desired_block_size;
+        if let Some(logical) = fragment.logical_override.as_mut() {
+          if !axes.block_positive() {
+            logical.origin.x = logical.origin.x + logical.size.width - desired_block_size;
+          }
+          logical.size.width = desired_block_size;
+        }
+      }
+    }
+  }
+
   fn resolve_length_px_with_base(
     &self,
     length: Length,
@@ -12510,6 +12686,8 @@ impl FormattingContext for GridFormattingContext {
         );
       }
     }
+
+    ctx.maybe_trim_auto_block_size_in_scrollable_layout(style, constraints, &mut fragment);
 
     // Position out-of-flow children against the appropriate containing block.
     if !positioned_children.is_empty() {
