@@ -4,6 +4,11 @@
 //! in local variables across allocations. `vm-js` GC handles are *not* automatically rooted, so this
 //! adapter conservatively roots values it produces/consumes for the lifetime of the conversion
 //! context using a long-lived [`Scope`].
+//!
+//! FastRender vendors `ecma-rs` under `vendor/ecma-rs/`, which also contains an upstream crate named
+//! `webidl-vm-js`. FastRender keeps a workspace-local copy of that crate here so it can be used as a
+//! normal workspace member (and carry embedder-specific adjustments) without depending on the
+//! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, JsBigInt, PropertyKey as VmPropertyKey, Scope, Value, Vm,

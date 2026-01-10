@@ -77,6 +77,22 @@ If changes to `vendor/ecma-rs` break compilation with errors around `Vm::call` a
 handler signatures, update both FastRender's native handlers and any engine-internal callers like
 `webidl-vm-js`.
 
+## FastRender workspace-local copy: `crates/webidl-vm-js`
+
+Upstream `ecma-rs` includes a `webidl-vm-js` crate under `vendor/ecma-rs/webidl-vm-js`, but
+FastRender uses a **workspace-local copy** at `crates/webidl-vm-js`.
+
+This avoids ambiguity about which adapter FastRender should depend on (and keeps FastRender’s Cargo
+workspace decoupled from the vendored `ecma-rs` workspace), while still allowing small FastRender
+patches (for example: using `Vm::call_without_host` from within iterator helpers).
+
+When updating `vendor/ecma-rs`, sync any relevant upstream changes into `crates/webidl-vm-js` and
+validate with:
+
+```bash
+bash scripts/cargo_agent.sh test -p webidl-vm-js
+```
+
 ## Common integration gotcha: `vm-js` Promise job / microtask GC safety (FastRender requirement)
 
 FastRender's HTML-shaped `EventLoop` owns the microtask queue. That queue is **not traced** by the

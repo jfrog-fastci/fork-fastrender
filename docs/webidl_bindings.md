@@ -17,7 +17,8 @@ how to update it.
     `JsRuntime` trait boundary those helpers are defined against.
   - FastRender re-exports this API surface as `fastrender::js::webidl` so generated bindings can
     depend on a single path and we do not fork/duplicate WebIDL algorithms between repos.
-  - The `vm-js` embedding adapter lives in `vendor/ecma-rs/webidl-vm-js`.
+  - FastRender’s `vm-js` embedding adapter lives in `crates/webidl-vm-js` (a workspace-local copy of
+    `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`).
 - **Binding installation / host scaffolding (temporary)**: `crates/webidl-js-runtime`
   - This provides a minimal `vm-js`-backed value/object model (`VmJsRuntime`) and a host-facing
     trait (`WebIdlBindingsRuntime`) used by early generated bindings to install functions onto a

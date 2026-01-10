@@ -75,6 +75,7 @@ mod logical_shorthand_parsing_test;
 mod map_hidden;
 mod meta_viewport_test;
 mod url_client_redirects;
+mod webidl_vm_js_workspace_guard;
 mod no_merge_markers;
 mod offset_anchor_parsing_test;
 mod pages_multilingual_fixture_test;
