@@ -924,10 +924,13 @@ fn grid_continuation_reduces_available_block_size_for_items() {
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::Grid;
   grid_style.width = Some(Length::px(100.0));
-  grid_style.height = Some(Length::px(200.0));
+  // Use three rows so the target item starts part-way into a continuation fragment (y=120px).
+  // With a 100px fragmentainer height, that leaves 80px remaining.
+  grid_style.height = Some(Length::px(220.0));
   grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
   grid_style.grid_template_rows = vec![
-    GridTrack::Length(Length::px(100.0)),
+    GridTrack::Length(Length::px(60.0)),
+    GridTrack::Length(Length::px(60.0)),
     GridTrack::Length(Length::px(100.0)),
   ];
 
@@ -937,16 +940,22 @@ fn grid_continuation_reduces_available_block_size_for_items() {
     vec![],
   );
 
-  let mut item2_style = ComputedStyle::default();
-  item2_style.min_height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+  let item2 = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut item3_style = ComputedStyle::default();
+  item3_style.height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
   let inner_style = Arc::new({
     let mut style = ComputedStyle::default();
     style.height = Some(Length::px(10.0));
     style
   });
   let inner = BoxNode::new_block(inner_style, FormattingContextType::Block, vec![]);
-  let item2 = BoxNode::new_block(
-    Arc::new(item2_style),
+  let item3 = BoxNode::new_block(
+    Arc::new(item3_style),
     FormattingContextType::Block,
     vec![inner],
   );
@@ -954,10 +963,10 @@ fn grid_continuation_reduces_available_block_size_for_items() {
   let root_box = BoxNode::new_block(
     Arc::new(grid_style),
     FormattingContextType::Grid,
-    vec![item1, item2],
+    vec![item1, item2, item3],
   );
   let box_tree = BoxTree::new(root_box);
-  let item2_id = box_tree.root.children.get(1).expect("second grid item").id;
+  let item3_id = box_tree.root.children.get(2).expect("third grid item").id;
 
   let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(100.0, 100.0), 0.0));
   let fragments = engine.layout_tree(&box_tree).expect("layout");
@@ -965,26 +974,132 @@ fn grid_continuation_reduces_available_block_size_for_items() {
   // Sanity-check the unfragmented flow positions so the continuation heuristic has stable inputs.
   let unfragmented_engine = LayoutEngine::new(LayoutConfig::for_viewport(Size::new(100.0, 100.0)));
   let unfragmented = unfragmented_engine.layout_tree(&box_tree).expect("layout");
-  let unfragmented_item2 = fragments_with_id(&unfragmented.root, item2_id);
-  assert_eq!(unfragmented_item2.len(), 1);
+  let unfragmented_item3 = fragments_with_id(&unfragmented.root, item3_id);
+  assert_eq!(unfragmented_item3.len(), 1);
   assert!(
-    (unfragmented_item2[0].bounds.y() - 100.0).abs() < 0.1,
-    "expected grid item 2 to start in the second row (got y={})",
-    unfragmented_item2[0].bounds.y()
+    (unfragmented_item3[0].bounds.y() - 120.0).abs() < 0.1,
+    "expected grid item 3 to start in the third row (got y={})",
+    unfragmented_item3[0].bounds.y()
+  );
+  assert!(
+    (unfragmented_item3[0].bounds.height() - 100.0).abs() < 0.1,
+    "expected grid item 3 to fill its 100px row track before pagination (got height={})",
+    unfragmented_item3[0].bounds.height()
   );
 
-  assert_eq!(
-    fragments.additional_fragments.len(),
-    1,
-    "grid should paginate across two pages"
-  );
-  let second_page = &fragments.additional_fragments[0];
-  let item2_fragments = fragments_with_id(second_page, item2_id);
-  assert_eq!(item2_fragments.len(), 1);
-  let item2_height = item2_fragments[0].bounds.height();
+  let mut item3_fragment = None;
+  for page in &fragments.additional_fragments {
+    let matches = fragments_with_id(page, item3_id);
+    if let Some(found) = matches.first() {
+      item3_fragment = Some(*found);
+      break;
+    }
+  }
+  let item3_fragment = item3_fragment.expect("grid item 3 should appear in a continuation page");
   assert!(
-    (item2_height - 10.0).abs() < 0.1,
-    "expected continuation grid item to shrink under reduced available space (got {item2_height})"
+    (item3_fragment.bounds.height() - 80.0).abs() < 0.1,
+    "expected continuation grid item to shrink to the remaining 80px of the fragmentainer (got {})",
+    item3_fragment.bounds.height()
+  );
+  assert!(
+    (item3_fragment.bounds.width() - 100.0).abs() < 0.1,
+    "expected continuation grid item width to remain unchanged (got {})",
+    item3_fragment.bounds.width()
+  );
+}
+
+#[test]
+fn vertical_writing_mode_grid_continuation_reduces_available_block_size_in_physical_x() {
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.writing_mode = WritingMode::VerticalLr;
+  // Use three rows so the target item starts part-way into a continuation fragment (x=120px).
+  // With a 100px fragmentainer block size, that leaves 80px remaining.
+  grid_style.width = Some(Length::px(220.0));
+  grid_style.height = Some(Length::px(100.0));
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(60.0)),
+    GridTrack::Length(Length::px(60.0)),
+    GridTrack::Length(Length::px(100.0)),
+  ];
+
+  let item1_style = Arc::new({
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalLr;
+    style
+  });
+  let item1 = BoxNode::new_block(
+    item1_style,
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let item2_style = Arc::new({
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalLr;
+    style
+  });
+  let item2 = BoxNode::new_block(item2_style, FormattingContextType::Block, vec![]);
+
+  // Tests build `ComputedStyle` objects manually, so inheritance is not automatic. Grid items
+  // inherit `writing-mode`, so set it explicitly to ensure the item's own layout uses the same
+  // physical block axis as the grid container.
+  let mut item3_style = ComputedStyle::default();
+  item3_style.writing_mode = WritingMode::VerticalLr;
+  item3_style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+  item3_style.height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+  let item3 = BoxNode::new_block(
+    Arc::new(item3_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let root_box = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item1, item2, item3],
+  );
+  let box_tree = BoxTree::new(root_box);
+  let item3_id = box_tree.root.children.get(2).expect("third grid item").id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(100.0, 100.0), 0.0));
+  let fragments = engine.layout_tree(&box_tree).expect("layout");
+
+  // Sanity-check the unfragmented flow positions so the continuation heuristic has stable inputs.
+  let unfragmented_engine = LayoutEngine::new(LayoutConfig::for_viewport(Size::new(100.0, 100.0)));
+  let unfragmented = unfragmented_engine.layout_tree(&box_tree).expect("layout");
+  let unfragmented_item3 = fragments_with_id(&unfragmented.root, item3_id);
+  assert_eq!(unfragmented_item3.len(), 1);
+  let unfragmented_width = unfragmented_item3[0].bounds.width();
+  assert!(
+    (unfragmented_width - 100.0).abs() < 0.1,
+    "expected grid item 3 to fill the 100px row track before pagination (got width={unfragmented_width})"
+  );
+  assert!(
+    (unfragmented_item3[0].bounds.x() - 120.0).abs() < 0.1,
+    "expected grid item 3 to start in the third row (got x={})",
+    unfragmented_item3[0].bounds.x()
+  );
+
+  let mut item3_fragment = None;
+  for page in &fragments.additional_fragments {
+    let matches = fragments_with_id(page, item3_id);
+    if let Some(found) = matches.first() {
+      item3_fragment = Some(*found);
+      break;
+    }
+  }
+  let item3_fragment = item3_fragment.expect("grid item 3 should appear in a continuation page");
+  let item3_width = item3_fragment.bounds.width();
+  let item3_height = item3_fragment.bounds.height();
+  assert!(
+    (item3_width - 80.0).abs() < 0.1,
+    "expected continuation grid item to shrink to the remaining 80px of the fragmentainer (got {item3_width})"
+  );
+  assert!(
+    (item3_height - 100.0).abs() < 0.1,
+    "expected continuation grid item to retain its height when only block-axis width is reduced (got {item3_height})"
   );
 }
 
