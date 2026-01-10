@@ -111,6 +111,9 @@ pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,
   ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler, ScriptSchedulerAction,
 };
+pub use html_script_scheduler::{
+  HtmlDiscoveredScript, HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork,
+};
 pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
@@ -173,6 +176,11 @@ pub struct ScriptElementSpec {
   pub async_attr: bool,
   /// Whether the `defer` boolean attribute is present.
   pub defer_attr: bool,
+  /// Whether the `nomodule` boolean attribute is present.
+  ///
+  /// HTML uses this to disable classic scripts in module-capable user agents when the attribute is
+  /// present.
+  pub nomodule_attr: bool,
   /// Parsed `crossorigin` attribute state (CORS settings attribute).
   ///
   /// When `None`, classic scripts are fetched in `no-cors` mode (no CORS enforcement).

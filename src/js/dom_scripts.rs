@@ -70,6 +70,7 @@ pub fn extract_script_elements(
         let base_url = base_url_tracker.current_base_url();
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
+        let nomodule_attr = node.get_attribute_ref("nomodule").is_some();
         let crossorigin = node
           .get_attribute_ref("crossorigin")
           .map(|value| {
@@ -105,6 +106,7 @@ pub fn extract_script_elements(
           inline_text,
           async_attr,
           defer_attr,
+          nomodule_attr,
           crossorigin,
           integrity,
           referrer_policy,

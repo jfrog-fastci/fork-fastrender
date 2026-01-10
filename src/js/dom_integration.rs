@@ -141,6 +141,8 @@ fn collect_html_script_elements(dom: &Document, node: NodeId, out: &mut Vec<Node
 fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> ScriptElementSpec {
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
+  let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
+
   let crossorigin = dom
     .get_attribute(script, "crossorigin")
     .ok()
@@ -185,6 +187,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     inline_text,
     async_attr,
     defer_attr,
+    nomodule_attr,
     crossorigin,
     integrity,
     referrer_policy,

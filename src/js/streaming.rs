@@ -25,6 +25,7 @@ pub fn build_parser_inserted_script_element_spec(
   let base_url_ref = base_url_at_this_point.as_deref();
   let async_attr = script.get_attribute_ref("async").is_some();
   let defer_attr = script.get_attribute_ref("defer").is_some();
+  let nomodule_attr = script.get_attribute_ref("nomodule").is_some();
   let crossorigin = script
     .get_attribute_ref("crossorigin")
     .map(|value| {
@@ -60,6 +61,7 @@ pub fn build_parser_inserted_script_element_spec(
     inline_text,
     async_attr,
     defer_attr,
+    nomodule_attr,
     crossorigin,
     integrity,
     referrer_policy,

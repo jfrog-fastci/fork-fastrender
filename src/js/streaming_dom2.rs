@@ -37,6 +37,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      nomodule_attr: false,
       crossorigin: None,
       integrity: None,
       referrer_policy: None,
@@ -58,6 +59,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      nomodule_attr: false,
       crossorigin: None,
       integrity: None,
       referrer_policy: None,
@@ -81,6 +83,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      nomodule_attr: false,
       crossorigin: None,
       integrity: None,
       referrer_policy: None,
@@ -93,6 +96,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
 
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
+  let nomodule_attr = doc.has_attribute(script, "nomodule").unwrap_or(false);
   let crossorigin = doc
     .get_attribute(script, "crossorigin")
     .ok()
@@ -134,6 +138,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     inline_text,
     async_attr,
     defer_attr,
+    nomodule_attr,
     crossorigin,
     integrity,
     referrer_policy,

@@ -302,6 +302,7 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
@@ -323,6 +324,7 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
@@ -342,6 +344,7 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
@@ -354,6 +357,7 @@ impl ClassicScriptPipelineState {
 
     let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
     let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
+    let nomodule_attr = dom.has_attribute(script_node_id, "nomodule").unwrap_or(false);
     let crossorigin = dom
       .get_attribute(script_node_id, "crossorigin")
       .ok()
@@ -406,6 +410,7 @@ impl ClassicScriptPipelineState {
       inline_text,
       async_attr,
       defer_attr,
+      nomodule_attr,
       crossorigin,
       integrity,
       referrer_policy,

@@ -1,9 +1,13 @@
 use crate::dom2::NodeId;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::js::event_loop::{EventLoop, TaskSource};
 use crate::js::{ScriptElementSpec, ScriptType};
 
-use super::html_script_scheduler::{HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, ScriptEventKind};
+use super::html_script_scheduler::{
+  HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptEventKind,
+};
+
+use std::collections::HashMap;
 
 /// Host hook for firing DOM `load` / `error` events at `<script>` elements.
 ///
@@ -18,6 +22,21 @@ pub trait ScriptElementEventHost {
 pub trait HtmlScriptPipelineHost: ScriptElementEventHost + Sized + 'static {
   /// Begin fetching an external script resource.
   fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()>;
+
+  /// Begin building/fetching the module graph for an inline module script.
+  ///
+  /// Most hosts can ignore this hook if they don't support module scripts yet; unit tests can use it
+  /// to observe the scheduler's `StartInlineModuleGraphFetch` action without immediately completing
+  /// the module graph.
+  fn start_inline_module_graph_fetch(
+    &mut self,
+    _script_id: HtmlScriptId,
+    _source_text: &str,
+    _base_url: Option<&str>,
+    _element: &ScriptElementSpec,
+  ) -> Result<()> {
+    Ok(())
+  }
 
   /// Execute a classic/module script block.
   ///
@@ -37,9 +56,11 @@ pub trait HtmlScriptPipelineHost: ScriptElementEventHost + Sized + 'static {
 /// This is an early, deterministic harness intended for unit tests and for plumbing script element
 /// event dispatch through the HTML task queue model.
 pub struct HtmlScriptPipeline<Host: HtmlScriptPipelineHost> {
-  scheduler: HtmlScriptScheduler,
+  scheduler: HtmlScriptScheduler<NodeId>,
   event_loop: EventLoop<Host>,
   registered_import_map_count: usize,
+  script_type_by_id: HashMap<HtmlScriptId, ScriptType>,
+  external_file_by_id: HashMap<HtmlScriptId, bool>,
 }
 
 impl<Host: HtmlScriptPipelineHost> Default for HtmlScriptPipeline<Host> {
@@ -48,6 +69,8 @@ impl<Host: HtmlScriptPipelineHost> Default for HtmlScriptPipeline<Host> {
       scheduler: HtmlScriptScheduler::new(),
       event_loop: EventLoop::new(),
       registered_import_map_count: 0,
+      script_type_by_id: HashMap::new(),
+      external_file_by_id: HashMap::new(),
     }
   }
 }
@@ -71,19 +94,58 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     node_id: NodeId,
     spec: ScriptElementSpec,
   ) -> Result<HtmlScriptId> {
-    let discovered = self.scheduler.discovered_parser_script(spec, node_id)?;
+    let script_type = spec.script_type;
+    let external_file = spec.src_attr_present;
+    let base_url_at_discovery = spec.base_url.clone();
+    let discovered = self
+      .scheduler
+      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
     let script_id = discovered.id;
+    self.script_type_by_id.insert(script_id, script_type);
+    self.external_file_by_id.insert(script_id, external_file);
     self.apply_actions(host, discovered.actions)?;
     Ok(script_id)
   }
 
   pub fn fetch_completed(&mut self, host: &mut Host, script_id: HtmlScriptId, source_text: String) -> Result<()> {
-    let actions = self.scheduler.fetch_completed(script_id, source_text)?;
+    let Some(script_type) = self.script_type_by_id.get(&script_id).copied() else {
+      return Err(Error::Other(format!(
+        "fetch_completed called for unknown script_id={}",
+        script_id.as_u64()
+      )));
+    };
+
+    let actions = match script_type {
+      ScriptType::Classic => self.scheduler.classic_fetch_completed(script_id, source_text)?,
+      ScriptType::Module => self.scheduler.module_graph_completed(script_id, source_text)?,
+      other => {
+        return Err(Error::Other(format!(
+          "fetch_completed is not supported for script type {other:?} (script_id={})",
+          script_id.as_u64()
+        )));
+      }
+    };
     self.apply_actions(host, actions)
   }
 
   pub fn fetch_failed(&mut self, host: &mut Host, script_id: HtmlScriptId) -> Result<()> {
-    let actions = self.scheduler.fetch_failed(script_id)?;
+    let Some(script_type) = self.script_type_by_id.get(&script_id).copied() else {
+      return Err(Error::Other(format!(
+        "fetch_failed called for unknown script_id={}",
+        script_id.as_u64()
+      )));
+    };
+
+    let actions = match script_type {
+      ScriptType::Classic => self.scheduler.classic_fetch_failed(script_id)?,
+      ScriptType::Module => self.scheduler.module_graph_failed(script_id)?,
+      other => {
+        return Err(Error::Other(format!(
+          "fetch_failed is not supported for script type {other:?} (script_id={})",
+          script_id.as_u64()
+        )));
+      }
+    };
     self.apply_actions(host, actions)
   }
 
@@ -112,22 +174,57 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     })
   }
 
-  fn apply_actions(&mut self, host: &mut Host, actions: Vec<HtmlScriptSchedulerAction>) -> Result<()> {
+  fn apply_actions(
+    &mut self,
+    host: &mut Host,
+    actions: Vec<HtmlScriptSchedulerAction<NodeId>>,
+  ) -> Result<()> {
     for action in actions {
       match action {
-        HtmlScriptSchedulerAction::StartFetch { script_id, url, .. } => {
+        HtmlScriptSchedulerAction::StartClassicFetch { script_id, url, .. } => {
           host.start_fetch(script_id, &url)?;
+        }
+        HtmlScriptSchedulerAction::StartModuleGraphFetch {
+          script_id, url, element: _, ..
+        } => {
+          host.start_fetch(script_id, &url)?;
+        }
+        HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
+          script_id,
+          source_text,
+          base_url,
+          element,
+          ..
+        } => {
+          host.start_inline_module_graph_fetch(
+            script_id,
+            &source_text,
+            base_url.as_deref(),
+            &element,
+          )?;
         }
         HtmlScriptSchedulerAction::BlockParserUntilExecuted { .. } => {
           // Parser integration is out of scope for this harness.
         }
         HtmlScriptSchedulerAction::ExecuteNow {
+          script_id,
           node_id,
-          script_type,
-          external_file,
-          source_text,
-          ..
+          work,
         } => {
+          let external_file = *self.external_file_by_id.get(&script_id).unwrap_or(&false);
+
+          let (script_type, source_text) = match &work {
+            HtmlScriptWork::Classic { source_text } => (ScriptType::Classic, source_text.as_deref()),
+            HtmlScriptWork::Module { source_text } => (ScriptType::Module, source_text.as_deref()),
+            HtmlScriptWork::ImportMap { source_text, .. } => {
+              (ScriptType::ImportMap, Some(source_text.as_str()))
+            }
+          };
+
+          if script_type == ScriptType::ImportMap {
+            self.registered_import_map_count += 1;
+          }
+
           let event_kind = external_file.then(|| {
             if source_text.is_some() {
               ScriptEventKind::Load
@@ -136,24 +233,28 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
             }
           });
 
-          host.execute_script(
-            node_id,
-            script_type,
-            source_text.as_deref(),
-            &mut self.event_loop,
-          )?;
+          host.execute_script(node_id, script_type, source_text, &mut self.event_loop)?;
 
           if let Some(event_kind) = event_kind {
             self.queue_script_event_task(node_id, event_kind)?;
           }
         }
         HtmlScriptSchedulerAction::QueueTask {
+          script_id,
           node_id,
-          script_type,
-          external_file,
-          source_text,
-          ..
+          work,
         } => {
+          let external_file = *self.external_file_by_id.get(&script_id).unwrap_or(&false);
+
+          let (script_type, source_text) = match work {
+            HtmlScriptWork::Classic { source_text } => (ScriptType::Classic, source_text),
+            HtmlScriptWork::Module { source_text } => (ScriptType::Module, source_text),
+            HtmlScriptWork::ImportMap { source_text, .. } => {
+              self.registered_import_map_count += 1;
+              (ScriptType::ImportMap, Some(source_text))
+            }
+          };
+
           let event_kind = external_file.then(|| {
             if source_text.is_some() {
               ScriptEventKind::Load
@@ -182,7 +283,7 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
             Ok(())
           })?;
         }
-        HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event } => {
+        HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
           self.queue_script_event_task(node_id, event)?;
         }
       }
@@ -260,10 +361,12 @@ mod tests {
         inline_text: "{}".to_string(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script),
         script_type: ScriptType::ImportMap,
       },
@@ -304,10 +407,12 @@ mod tests {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script),
         script_type: ScriptType::Module,
       },
@@ -350,10 +455,12 @@ mod tests {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        nomodule_attr: false,
         crossorigin: None,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script),
         script_type: ScriptType::Module,
       },
