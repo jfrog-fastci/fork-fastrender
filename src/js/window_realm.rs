@@ -128,9 +128,9 @@ pub struct WindowRealm {
   interrupt_flag: Arc<AtomicBool>,
 }
 
-struct WindowRealmUserData {
+pub(crate) struct WindowRealmUserData {
   document_url: String,
-  base_url: Option<String>,
+  pub(crate) base_url: Option<String>,
   pending_navigation: Option<LocationNavigationRequest>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
@@ -140,6 +140,7 @@ impl std::fmt::Debug for WindowRealmUserData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("WindowRealmUserData")
       .field("document_url", &self.document_url)
+      .field("base_url", &self.base_url)
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .finish()
@@ -257,11 +258,8 @@ impl WindowRealm {
     }
   }
 
-  /// Updates the current document base URL used for resolving relative URLs.
-  ///
-  /// Embeddings should call this before executing classic scripts so APIs like `fetch()` and
-  /// `location.href = ...` resolve relative inputs consistently with the HTML base URL tracking
-  /// rules.
+  /// Update the document base URL used for resolving relative URLs in JS (e.g. `fetch("rel")` and
+  /// `document.baseURI`).
   pub fn set_base_url(&mut self, base_url: Option<String>) {
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
       data.base_url = base_url;
@@ -7698,6 +7696,22 @@ fn document_ready_state_get_native(
   Ok(Value::String(scope.alloc_string(dom.ready_state().as_str())?))
 }
 
+fn document_base_uri_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let base_url = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .and_then(|data| data.base_url.clone())
+    .unwrap_or_default();
+  Ok(Value::String(scope.alloc_string(&base_url)?))
+}
+
 fn document_cookie_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -8073,6 +8087,33 @@ fn init_window_globals(
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
+
+  // Document.baseURI (read-only): the document base URL used for resolving relative URLs.
+  //
+  // This is distinct from `document.URL` and can change when `<base href>` elements are parsed or
+  // inserted.
+  let base_uri_key = alloc_key(&mut scope, "baseURI")?;
+  let base_uri_call_id = vm.register_native_call(document_base_uri_get_native)?;
+  let base_uri_name = scope.alloc_string("get baseURI")?;
+  scope.push_root(Value::String(base_uri_name))?;
+  let base_uri_func = scope.alloc_native_function(base_uri_call_id, None, base_uri_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(base_uri_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(base_uri_func))?;
+  scope.define_property(
+    document_obj,
+    base_uri_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(base_uri_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
   let document_location_key = alloc_key(&mut scope, "location")?;
   scope.define_property(
     document_obj,

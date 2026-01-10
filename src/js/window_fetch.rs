@@ -15,7 +15,7 @@ use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
-use crate::js::window_realm::{WindowRealm, WindowRealmHost};
+use crate::js::window_realm::{WindowRealm, WindowRealmHost, WindowRealmUserData};
 use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
@@ -221,6 +221,11 @@ fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<Property
   scope.push_root(Value::String(s))?;
   let sym = scope.heap_mut().symbol_for(s)?;
   Ok(PropertyKey::from_symbol(sym))
+}
+
+fn current_document_base_url(vm: &mut Vm) -> Option<String> {
+  vm.user_data_mut::<WindowRealmUserData>()
+    .and_then(|data| data.base_url.clone())
 }
 
 fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
@@ -1905,7 +1910,7 @@ fn request_ctor_construct(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let base_url = current_document_base_url(vm);
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
@@ -2270,7 +2275,7 @@ fn response_redirect_native(
     max_url_bytes,
     FETCH_URL_TOO_LONG_ERROR,
   )?;
-  let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+  let base_url = current_document_base_url(vm);
   let resolved_url = match resolve_url(&url_input, base_url.as_deref()) {
     Ok(url) => url,
     Err(UrlResolveError::RelativeUrlWithoutBase) => {
@@ -2816,7 +2821,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let base_url = current_document_base_url(vm);
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)

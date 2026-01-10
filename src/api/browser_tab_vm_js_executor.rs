@@ -57,6 +57,13 @@ impl Drop for VmJsBrowserTabExecutor {
 }
 
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
+  fn on_document_base_url_updated(&mut self, base_url: Option<&str>) {
+    let Some(realm) = self.realm.as_mut() else {
+      return;
+    };
+    realm.set_base_url(base_url.map(|s| s.to_string()));
+  }
+
   fn reset_for_navigation(
     &mut self,
     document_url: Option<&str>,

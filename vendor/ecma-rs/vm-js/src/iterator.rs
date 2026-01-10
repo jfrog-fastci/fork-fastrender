@@ -76,16 +76,56 @@ fn get_method(
   obj: Value,
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  let Value::Object(obj) = obj else {
-    return Err(throw_type_error(vm, scope, "GetMethod on non-object")?);
+  // `GetMethod(V, P)` uses `GetV`, which performs `ToObject` on `V` before the property lookup.
+  //
+  // `vm-js` doesn't have a dedicated `ToObject` implementation yet; treat the intrinsic `Object`
+  // constructor as a converter for primitives (matching the strategy used in `for..in`).
+  let mut scope = scope.reborrow();
+  let (obj, receiver) = match obj {
+    Value::Object(obj) => {
+      scope.push_root(Value::Object(obj))?;
+      (obj, Value::Object(obj))
+    }
+    Value::Null | Value::Undefined => {
+      return Err(throw_type_error(
+        vm,
+        &mut scope,
+        "GetMethod: cannot convert null/undefined to object",
+      )?);
+    }
+    other => {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let object_ctor = Value::Object(intr.object_constructor());
+
+      let roots = [other, object_ctor];
+      scope.push_roots(&roots)?;
+
+      let wrapped = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        object_ctor,
+        Value::Undefined,
+        &[other],
+      )?;
+      let Value::Object(wrapped_obj) = wrapped else {
+        return Err(VmError::InvariantViolation(
+          "Object(..) conversion returned non-object",
+        ));
+      };
+      scope.push_root(wrapped)?;
+      (wrapped_obj, wrapped)
+    }
   };
 
-  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)?;
   if matches!(func, Value::Undefined | Value::Null) {
     return Ok(None);
   }
   if !scope.heap().is_callable(func)? {
-    return Err(throw_type_error(vm, scope, "GetMethod: target is not callable")?);
+    return Err(throw_type_error(vm, &mut scope, "GetMethod: target is not callable")?);
   }
   Ok(Some(func))
 }
@@ -160,7 +200,11 @@ pub fn get_iterator_from_method(
     Value::Object(iterator_obj),
   )?;
   if !next_scope.heap().is_callable(next)? {
-    return Err(throw_type_error(vm, &mut next_scope, "Iterator.next is not callable")?);
+    return Err(throw_type_error(
+      vm,
+      &mut next_scope,
+      "GetIteratorFromMethod: iterator.next is not callable",
+    )?);
   }
 
   Ok(IteratorRecord {
@@ -198,7 +242,12 @@ pub fn iterator_complete(
   iter_result: Value,
 ) -> Result<bool, VmError> {
   let Value::Object(obj) = iter_result else {
-    return Err(VmError::Unimplemented(
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    return Err(crate::throw_type_error(
+      scope,
+      intr,
       "IteratorComplete: iterator result is not an object",
     ));
   };
@@ -216,7 +265,12 @@ pub fn iterator_value(
   iter_result: Value,
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = iter_result else {
-    return Err(VmError::Unimplemented(
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    return Err(crate::throw_type_error(
+      scope,
+      intr,
       "IteratorValue: iterator result is not an object",
     ));
   };

@@ -1,4 +1,5 @@
 use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
+use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::{
   EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
@@ -98,6 +99,18 @@ fn find_script_elements(dom: &Dom2Document) -> Vec<NodeId> {
     .subtree_preorder(dom.root())
     .filter(|&id| matches!(&dom.node(id).kind, NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script")))
     .collect()
+}
+
+fn inline_script_text(dom: &Dom2Document, script: NodeId) -> String {
+  let node = dom.node(script);
+  node
+    .children
+    .iter()
+    .filter_map(|&child| match &dom.node(child).kind {
+      NodeKind::Text { content } => Some(content.as_str()),
+      _ => None,
+    })
+    .collect::<String>()
 }
 
 fn get_current_script(vm: &mut Vm, heap: &mut Heap, document_obj: vm_js::GcObject) -> Result<Value> {
@@ -1563,6 +1576,7 @@ struct StubResponse {
 #[derive(Debug)]
 struct InMemoryFetcher {
   routes: HashMap<String, StubResponse>,
+  request_urls: Mutex<Vec<String>>,
   last_request_headers: Mutex<Vec<(String, String)>>,
   last_request_body: Mutex<Option<Vec<u8>>>,
   last_request_credentials_mode: Mutex<Option<FetchCredentialsMode>>,
@@ -1572,6 +1586,7 @@ impl InMemoryFetcher {
   fn new() -> Self {
     Self {
       routes: HashMap::new(),
+      request_urls: Mutex::new(Vec::new()),
       last_request_headers: Mutex::new(Vec::new()),
       last_request_body: Mutex::new(None),
       last_request_credentials_mode: Mutex::new(None),
@@ -1600,6 +1615,14 @@ impl InMemoryFetcher {
   fn last_request_headers(&self) -> Vec<(String, String)> {
     self
       .last_request_headers
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone()
+  }
+
+  fn request_urls(&self) -> Vec<String> {
+    self
+      .request_urls
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .clone()
@@ -1638,6 +1661,13 @@ impl ResourceFetcher for InMemoryFetcher {
   }
 
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    {
+      let mut lock = self
+        .request_urls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock.push(req.fetch.url.to_string());
+    }
     {
       let mut lock = self
         .last_request_headers
@@ -1717,6 +1747,118 @@ impl WindowRealmHost for FetchOnlyHost {
   fn window_realm(&mut self) -> &mut WindowRealm {
     &mut self.window
   }
+}
+
+fn parse_and_exec_streaming_html(
+  html: &str,
+  document_url: &str,
+  host: &mut WindowHostState,
+  event_loop: &mut EventLoop<WindowHostState>,
+) -> Result<()> {
+  let mut parser = StreamingHtmlParser::new(Some(document_url));
+  parser.push_str(html);
+  parser.set_eof();
+
+  loop {
+    match parser.pump()? {
+      StreamingParserYield::Script {
+        script,
+        base_url_at_this_point,
+      } => {
+        let source_text = {
+          let doc = parser
+            .document()
+            .expect("document should be available while parsing");
+          inline_script_text(&doc, script)
+        };
+
+        // Update the JS realm's base URL so `fetch("rel")` uses the document base URL at the time
+        // the script runs.
+        host.window_mut().set_base_url(base_url_at_this_point.clone());
+        host.exec_script_with_name_in_event_loop(event_loop, "<inline script>", source_text)?;
+      }
+      StreamingParserYield::NeedMoreInput => {
+        return Err(Error::Other(
+          "StreamingHtmlParser unexpectedly requested more input after EOF".to_string(),
+        ))
+      }
+      StreamingParserYield::Finished { .. } => {
+        // Keep any queued tasks consistent with the final `<base href>` result.
+        host.window_mut().set_base_url(parser.current_base_url());
+        break;
+      }
+    }
+  }
+
+  Ok(())
+}
+
+#[test]
+fn fetch_resolves_relative_url_against_document_base_href() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://ex/base/a", b"ok", 200),
+  );
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://ex/doc.html",
+    fetcher.clone(),
+  )?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  parse_and_exec_streaming_html(
+    r#"<!doctype html><head><base href="https://ex/base/"></head><body><script>fetch("a");</script></body>"#,
+    "https://ex/doc.html",
+    &mut host,
+    &mut event_loop,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.request_urls(),
+    vec!["https://ex/base/a".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn fetch_base_url_updates_between_scripts() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new()
+      .with_response("https://ex/a", b"ok1", 200)
+      .with_response("https://ex/base/a", b"ok2", 200),
+  );
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://ex/doc.html",
+    fetcher.clone(),
+  )?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  parse_and_exec_streaming_html(
+    r#"<!doctype html><head>
+      <script>fetch("a");</script>
+      <base href="https://ex/base/">
+      <script>fetch("a");</script>
+    </head>"#,
+    "https://ex/doc.html",
+    &mut host,
+    &mut event_loop,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.request_urls(),
+    vec!["https://ex/a".to_string(), "https://ex/base/a".to_string()]
+  );
+  Ok(())
 }
 
 #[test]

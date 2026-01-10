@@ -81,6 +81,61 @@ impl BrowserTabJsExecutor for NoopExecutor {
 }
 
 #[test]
+fn browser_tab_script_src_uses_base_url_at_discovery() -> Result<()> {
+  #[derive(Clone)]
+  struct RecordingExecutor {
+    executed: Arc<Mutex<Vec<String>>>,
+  }
+
+  impl BrowserTabJsExecutor for RecordingExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &fastrender::js::ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut fastrender::BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .executed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(script_text.to_string());
+      Ok(())
+    }
+  }
+
+  let executed = Arc::new(Mutex::new(Vec::<String>::new()));
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <script async src="a.js"></script>
+        <base href="https://ex/base/">
+      </head>
+    </html>"#;
+
+  let mut tab = BrowserTab::from_html(
+    html,
+    options,
+    RecordingExecutor {
+      executed: Arc::clone(&executed),
+    },
+  )?;
+  tab.register_script_source("a.js", "A");
+  tab.register_script_source("https://ex/base/a.js", "B");
+
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  let log = executed
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+  assert_eq!(log, vec!["A".to_string()]);
+  Ok(())
+}
+
+#[test]
 fn browser_tab_parses_with_scripting_enabled_semantics() -> Result<()> {
   let html = r#"<!doctype html>
     <html>

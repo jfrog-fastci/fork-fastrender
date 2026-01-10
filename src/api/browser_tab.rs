@@ -55,6 +55,13 @@ pub trait BrowserTabJsExecutor {
     None
   }
 
+  /// Notify the executor that the document base URL (`Document.baseURI`) has changed.
+  ///
+  /// Hosts call this during streaming HTML parsing when a `<base href>` element is encountered so
+  /// subsequent JS-visible URL resolution (`fetch("rel")`, `location.href="rel"`, etc) uses the
+  /// updated base.
+  fn on_document_base_url_updated(&mut self, _base_url: Option<&str>) {}
+
   /// Notifies the executor that a new document has been committed.
   ///
   /// Implementations can use this to reset per-document JS state (e.g. recreate a JS realm with the
@@ -133,6 +140,15 @@ pub struct BrowserTabHost {
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
+  /// Current document base URL used for resolving *JS-visible* relative URLs.
+  ///
+  /// This reflects HTML's "document base URL" concept and updates when `<base href>` elements are
+  /// encountered during streaming parsing.
+  ///
+  /// Note: this is intentionally distinct from `document_url`:
+  /// - `document_url` is the stable URL used for referrer/origin semantics.
+  /// - `base_url` is the mutable base used for resolving relative URLs in scripts.
+  base_url: Option<String>,
   document_origin: Option<crate::resource::DocumentOrigin>,
   document_referrer_policy: ReferrerPolicy,
   pending_navigation: Option<LocationNavigationRequest>,
@@ -166,6 +182,7 @@ impl BrowserTabHost {
       executed: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
+      base_url: None,
       document_origin: None,
       document_referrer_policy: ReferrerPolicy::default(),
       pending_navigation: None,
@@ -213,7 +230,8 @@ impl BrowserTabHost {
     self.deferred_scripts.clear();
     self.executed.clear();
     self.parser_blocked_on = None;
-    self.document_url = document_url;
+    self.document_url = document_url.clone();
+    self.base_url = document_url;
     self.document_origin = self
       .document_url
       .as_deref()
@@ -233,6 +251,11 @@ impl BrowserTabHost {
       &self.current_script,
       self.js_execution_options,
     )?;
+    // Ensure the executor's JS realm starts with a base URL consistent with the new navigation
+    // (document URL by default, unless later updated by `<base href>`).
+    self
+      .executor
+      .on_document_base_url_updated(self.base_url.as_deref());
     Ok(())
   }
 
@@ -532,7 +555,10 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn discover_scripts_best_effort(&self, document_url: Option<&str>) -> Vec<(NodeId, ScriptElementSpec)> {
+  fn discover_scripts_best_effort(
+    &mut self,
+    document_url: Option<&str>,
+  ) -> Vec<(NodeId, ScriptElementSpec)> {
     fn is_html_namespace(namespace: &str) -> bool {
       namespace.is_empty() || namespace == HTML_NAMESPACE
     }
@@ -621,6 +647,11 @@ impl BrowserTabHost {
       }
     }
 
+    // Persist the final base URL so subsequent JS-visible URL resolution uses it.
+    self.base_url = base_url_tracker.current_base_url();
+    self
+      .executor
+      .on_document_base_url_updated(self.base_url.as_deref());
     out
   }
 
@@ -1154,13 +1185,22 @@ impl BrowserTab {
               ((), true)
             });
 
+            // Keep the host's base URL in sync with the parser state so any JS executed at this pause
+            // point (including microtasks drained before script execution) resolves relative URLs
+            // against the correct base.
+            self.host.base_url = base_url_at_this_point.clone();
+            self
+              .host
+              .executor
+              .on_document_base_url_updated(self.host.base_url.as_deref());
+
             let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-             let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-               self.host.dom(),
-               script,
-               &base,
-             );
-             let base_url_at_discovery = spec.base_url.clone();
+            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+              self.host.dom(),
+              script,
+              &base,
+            );
+            let base_url_at_discovery = spec.base_url.clone();
             with_active_streaming_parser(&parser, || {
               self.on_parser_discovered_script(script, spec, base_url_at_discovery)
             })?;
@@ -1214,9 +1254,20 @@ impl BrowserTab {
             ((), true)
           });
 
+          // Keep the host's base URL in sync with the parser state so any JS executed at this pause
+          // point (including microtasks drained before script execution) resolves relative URLs
+          // against the correct base.
+          self.host.base_url = base_url_at_this_point.clone();
+          self
+            .host
+            .executor
+            .on_document_base_url_updated(self.host.base_url.as_deref());
           let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-          let spec =
-            crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(self.host.dom(), script, &base);
+          let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+            self.host.dom(),
+            script,
+            &base,
+          );
           let base_url_at_discovery = spec.base_url.clone();
           with_active_streaming_parser(&parser, || {
             self.on_parser_discovered_script(script, spec, base_url_at_discovery)
@@ -1246,6 +1297,13 @@ impl BrowserTab {
         }
         StreamingParserYield::Finished { document } => {
           let final_base_url = parser.current_base_url();
+          // Persist the final base URL after parsing completes so any later JS-visible URL
+          // resolution uses the post-parse `<base href>` result.
+          self.host.base_url = final_base_url.clone();
+          self
+            .host
+            .executor
+            .on_document_base_url_updated(self.host.base_url.as_deref());
           self.host.mutate_dom(|dom| {
             *dom = document;
             ((), true)
