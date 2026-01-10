@@ -4557,6 +4557,159 @@ impl GridFormattingContext {
     }
   }
 
+  fn grid_item_calc_percentage_margin_offset(
+    &self,
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    style: &ComputedStyle,
+    taffy_style: &taffy::style::Style,
+  ) -> Option<(f32, f32)> {
+    let has_calc_percentage_margins = style
+      .margin_left
+      .as_ref()
+      .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_right
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_top
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_bottom
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage);
+    if !has_calc_percentage_margins {
+      return None;
+    }
+
+    let parent_id = taffy.parent(node_id)?;
+    let parent_style = taffy.style(parent_id).ok()?;
+    if parent_style.display != Display::Grid {
+      return None;
+    }
+
+    // Percentages in margins (including block-axis margins) resolve against the containing block's
+    // *width*, which for grid items is the physical width of the grid area.
+    let base_width = {
+      let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
+        return None;
+      };
+      let parent_layout = taffy.layout(parent_id).ok()?;
+      let child_ids = taffy.children(parent_id).ok()?;
+      let idx = child_ids.iter().position(|id| *id == node_id)?;
+      let item = info.items.get(idx)?;
+
+      let col_offsets = compute_track_offsets(
+        &info.columns,
+        parent_layout.size.width,
+        parent_layout.padding.left,
+        parent_layout.padding.right,
+        parent_layout.border.left,
+        parent_layout.border.right,
+        parent_style
+          .justify_content
+          .unwrap_or(TaffyAlignContent::Stretch),
+      );
+      let (start, end) = grid_area_for_item(&col_offsets, item.column_start, item.column_end)?;
+      let width = (end - start).max(0.0);
+      if width.is_finite() && width > 1.0 {
+        width
+      } else {
+        return None;
+      }
+    };
+
+    let resolve_actual = |value: Option<Length>| {
+      value.map(|len| self.resolve_length_for_width(len, base_width, style))
+    };
+    let resolve_taffy = |value: LengthPercentageAuto| {
+      let raw = value.into_raw();
+      match raw.tag() {
+        CompactLength::LENGTH_TAG => Some(raw.value()),
+        CompactLength::PERCENT_TAG => Some(raw.value() * base_width),
+        CompactLength::AUTO_TAG => None,
+        _ => None,
+      }
+    };
+
+    let calc_left = style
+      .margin_left
+      .as_ref()
+      .is_some_and(Self::length_has_calc_percentage);
+    let calc_right = style
+      .margin_right
+      .as_ref()
+      .is_some_and(Self::length_has_calc_percentage);
+    let calc_top = style
+      .margin_top
+      .as_ref()
+      .is_some_and(Self::length_has_calc_percentage);
+    let calc_bottom = style
+      .margin_bottom
+      .as_ref()
+      .is_some_and(Self::length_has_calc_percentage);
+
+    let dl = if calc_left {
+      let actual = resolve_actual(style.margin_left).unwrap_or(0.0);
+      let taffy_margin = resolve_taffy(taffy_style.margin.left).unwrap_or(0.0);
+      actual - taffy_margin
+    } else {
+      0.0
+    };
+    let dr = if calc_right {
+      let actual = resolve_actual(style.margin_right).unwrap_or(0.0);
+      let taffy = resolve_taffy(taffy_style.margin.right).unwrap_or(0.0);
+      actual - taffy
+    } else {
+      0.0
+    };
+    let dt = if calc_top {
+      let actual = resolve_actual(style.margin_top).unwrap_or(0.0);
+      let taffy = resolve_taffy(taffy_style.margin.top).unwrap_or(0.0);
+      actual - taffy
+    } else {
+      0.0
+    };
+    let db = if calc_bottom {
+      let actual = resolve_actual(style.margin_bottom).unwrap_or(0.0);
+      let taffy = resolve_taffy(taffy_style.margin.bottom).unwrap_or(0.0);
+      actual - taffy
+    } else {
+      0.0
+    };
+
+    let dl = if dl.is_finite() { dl } else { 0.0 };
+    let dr = if dr.is_finite() { dr } else { 0.0 };
+    let dt = if dt.is_finite() { dt } else { 0.0 };
+    let db = if db.is_finite() { db } else { 0.0 };
+
+    let align_x = taffy_style
+      .justify_self
+      .unwrap_or(taffy::style::AlignItems::Stretch);
+    let align_y = taffy_style
+      .align_self
+      .unwrap_or(taffy::style::AlignItems::Stretch);
+
+    let dx = match align_x {
+      taffy::style::AlignItems::End | taffy::style::AlignItems::FlexEnd => -dr,
+      taffy::style::AlignItems::Center => (dl - dr) / 2.0,
+      _ => dl,
+    };
+    let dy = match align_y {
+      taffy::style::AlignItems::End | taffy::style::AlignItems::FlexEnd => -db,
+      taffy::style::AlignItems::Center => (dt - db) / 2.0,
+      _ => dt,
+    };
+
+    if dx == 0.0 && dy == 0.0 {
+      None
+    } else {
+      Some((dx, dy))
+    }
+  }
+
   fn take_matching_measured_fragment(
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     keys: &[MeasureKey],
@@ -4647,19 +4800,34 @@ impl GridFormattingContext {
           ))));
         }
       };
-      let bounds = Rect::from_xywh(
+      let mut bounds = Rect::from_xywh(
         layout.location.x,
         layout.location.y,
         layout.size.width,
         layout.size.height,
       );
+      let child = in_flow_children[idx];
+      let style_override = style_override_for(child.id);
+      let style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| child.style.as_ref());
+      if let Ok(taffy_style) = taffy.style(child_id) {
+        if let Some((dx, dy)) =
+          self.grid_item_calc_percentage_margin_offset(taffy, child_id, style, taffy_style)
+        {
+          let x = bounds.x() + dx;
+          let y = bounds.y() + dy;
+          if x.is_finite() && y.is_finite() {
+            bounds = Rect::from_xywh(x, y, bounds.width(), bounds.height());
+          }
+        }
+      }
       child_bounds.push(bounds);
       child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
         bounds,
         constraints,
         container_block_size,
       );
-      let child = in_flow_children[idx];
       let skip_contents = match child.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
         crate::style::types::ContentVisibility::Auto => {
@@ -4900,11 +5068,9 @@ impl GridFormattingContext {
               },
             )?;
             let mut translate_deadline_counter = 0usize;
-            translate_fragment_tree(
-              &mut laid_out,
-              Point::new(bounds.x(), bounds.y()),
-              &mut translate_deadline_counter,
-            )?;
+            let delta =
+              Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
+            translate_fragment_tree(&mut laid_out, delta, &mut translate_deadline_counter)?;
             laid_out.content = FragmentContent::Block {
               box_id: Some(child.id),
             };
@@ -5042,11 +5208,9 @@ impl GridFormattingContext {
             };
 
             let mut translate_deadline_counter = 0usize;
-            translate_fragment_tree(
-              &mut laid_out,
-              Point::new(bounds.x(), bounds.y()),
-              &mut translate_deadline_counter,
-            )?;
+            let delta =
+              Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
+            translate_fragment_tree(&mut laid_out, delta, &mut translate_deadline_counter)?;
             laid_out.content = FragmentContent::Block {
               box_id: Some(child.id),
             };
@@ -5214,8 +5378,9 @@ impl GridFormattingContext {
       .children(node_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
 
-    let taffy_style = taffy.style(node_id).ok();
-    let is_grid_style = matches!(taffy_style.as_ref().map(|s| s.display), Some(Display::Grid));
+    let node_taffy_style = taffy.style(node_id).ok();
+    let is_grid_style =
+      matches!(node_taffy_style.as_ref().map(|s| s.display), Some(Display::Grid));
     let node_axis_style = if is_grid_style {
       taffy
         .get_node_context(node_id)
@@ -5250,7 +5415,7 @@ impl GridFormattingContext {
     }
 
     // Create fragment bounds from Taffy layout.
-    let bounds = Rect::from_xywh(
+    let mut bounds = Rect::from_xywh(
       layout.location.x,
       layout.location.y,
       layout.size.width,
@@ -5260,6 +5425,21 @@ impl GridFormattingContext {
     // Get style from node context if available
     if let Some(&box_node_ptr) = taffy.get_node_context(node_id) {
       let box_node = unsafe { &*box_node_ptr };
+      let style_override = style_override_for(box_node.id);
+      let style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| box_node.style.as_ref());
+      if let Some(taffy_style) = node_taffy_style {
+        if let Some((dx, dy)) =
+          self.grid_item_calc_percentage_margin_offset(taffy, node_id, style, taffy_style)
+        {
+          let x = bounds.x() + dx;
+          let y = bounds.y() + dy;
+          if x.is_finite() && y.is_finite() {
+            bounds = Rect::from_xywh(x, y, bounds.width(), bounds.height());
+          }
+        }
+      }
       let fc_type = box_node
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
@@ -5292,7 +5472,7 @@ impl GridFormattingContext {
               deadline_counter,
             )?;
           }
-          if let (Some(container_style), Some(axis_style)) = (taffy_style, node_axis_style) {
+          if let (Some(container_style), Some(axis_style)) = (node_taffy_style, node_axis_style) {
             fragment.grid_tracks = grid_track_ranges_for_container(
               taffy,
               node_id,
@@ -5562,11 +5742,8 @@ impl GridFormattingContext {
           }
         },
       )?;
-      translate_fragment_tree(
-        &mut laid_out,
-        Point::new(bounds.x(), bounds.y()),
-        deadline_counter,
-      )?;
+      let delta = Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
+      translate_fragment_tree(&mut laid_out, delta, deadline_counter)?;
       laid_out.content = FragmentContent::Block {
         box_id: Some(box_node.id),
       };
