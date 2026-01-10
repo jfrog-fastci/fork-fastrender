@@ -575,10 +575,10 @@ pub fn error_constructor_call(
 }
 
 pub fn error_constructor_construct(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -622,7 +622,7 @@ pub fn error_constructor_construct(
 
   let message_string = match message_arg {
     Some(Value::Undefined) | None => scope.alloc_string("")?,
-    Some(other) => scope.heap_mut().to_string(other)?,
+    Some(other) => scope.to_string(vm, host, hooks, other)?,
   };
   scope.push_root(Value::String(message_string))?;
 
@@ -3091,8 +3091,8 @@ pub fn array_prototype_map(
 pub fn array_prototype_join(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -3106,7 +3106,7 @@ pub fn array_prototype_join(
 
   let sep = match args.first().copied() {
     None | Some(Value::Undefined) => scope.alloc_string(",")?,
-    Some(v) => scope.heap_mut().to_string(v)?,
+    Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
   scope.push_root(Value::String(sep))?;
   let sep_slice = scope.heap().get_string(sep)?.as_code_units();
@@ -3138,7 +3138,7 @@ pub fn array_prototype_join(
     let value = get_data_property_value(scope, this_obj, &key)?.unwrap_or(Value::Undefined);
     let part = match value {
       Value::Undefined | Value::Null => empty,
-      other => scope.heap_mut().to_string(other)?,
+      other => scope.to_string(vm, host, hooks, other)?,
     };
 
     let units = scope.heap().get_string(part)?.as_code_units();
@@ -3154,17 +3154,17 @@ pub fn array_prototype_join(
 
 /// `String` constructor called as a function.
 pub fn string_constructor_call(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let s = match args.first().copied() {
     None => scope.alloc_string("")?,
-    Some(v) => scope.heap_mut().to_string(v)?,
+    Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
   Ok(Value::String(s))
 }
@@ -3173,8 +3173,8 @@ pub fn string_constructor_call(
 pub fn string_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -3182,7 +3182,7 @@ pub fn string_constructor_construct(
   let intr = require_intrinsics(vm)?;
   let prim = match args.first().copied() {
     None => scope.alloc_string("")?,
-    Some(v) => scope.heap_mut().to_string(v)?,
+    Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
   scope.push_root(Value::String(prim))?;
 
@@ -3240,17 +3240,17 @@ pub fn string_prototype_to_string(
 
 /// `Number` constructor called as a function.
 pub fn number_constructor_call(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let n = match args.first().copied() {
     None => 0.0,
-    Some(v) => scope.heap_mut().to_number(v)?,
+    Some(v) => scope.to_number(vm, host, hooks, v)?,
   };
   Ok(Value::Number(n))
 }
@@ -3259,8 +3259,8 @@ pub fn number_constructor_call(
 pub fn number_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -3268,7 +3268,7 @@ pub fn number_constructor_construct(
   let intr = require_intrinsics(vm)?;
   let prim = match args.first().copied() {
     None => 0.0,
-    Some(v) => scope.heap_mut().to_number(v)?,
+    Some(v) => scope.to_number(vm, host, hooks, v)?,
   };
 
   let obj = scope.alloc_object()?;
@@ -3464,16 +3464,16 @@ pub fn symbol_prototype_value_of(
 
 /// Global `isNaN(x)` (minimal).
 pub fn global_is_nan(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let v = args.first().copied().unwrap_or(Value::Undefined);
-  let n = scope.heap_mut().to_number(v)?;
+  let n = scope.to_number(vm, host, hooks, v)?;
   Ok(Value::Bool(n.is_nan()))
 }
 
@@ -3496,8 +3496,8 @@ pub fn date_constructor_call(
 pub fn date_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -3505,7 +3505,7 @@ pub fn date_constructor_construct(
   let intr = require_intrinsics(vm)?;
   let time = match args.first().copied() {
     None => 0.0,
-    Some(v) => scope.heap_mut().to_number(v)?,
+    Some(v) => scope.to_number(vm, host, hooks, v)?,
   };
 
   let obj = scope.alloc_object()?;
@@ -3595,17 +3595,17 @@ pub fn date_prototype_to_primitive(
 
 /// `Symbol(description)`.
 pub fn symbol_constructor_call(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let desc = match args.first().copied() {
     None | Some(Value::Undefined) => None,
-    Some(v) => Some(scope.heap_mut().to_string(v)?),
+    Some(v) => Some(scope.to_string(vm, host, hooks, v)?),
   };
   let sym = scope.new_symbol(desc)?;
   Ok(Value::Symbol(sym))
@@ -3625,10 +3625,10 @@ fn concat_with_colon_space(name: &[u16], message: &[u16]) -> Result<Vec<u16>, Vm
 
 /// `Error.prototype.toString` (minimal).
 pub fn error_prototype_to_string(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -3647,13 +3647,13 @@ pub fn error_prototype_to_string(
 
   let name = match name_value {
     Value::Undefined => scope.alloc_string("Error")?,
-    other => scope.heap_mut().to_string(other)?,
+    other => scope.to_string(vm, host, hooks, other)?,
   };
   scope.push_root(Value::String(name))?;
 
   let message = match message_value {
     Value::Undefined => scope.alloc_string("")?,
-    other => scope.heap_mut().to_string(other)?,
+    other => scope.to_string(vm, host, hooks, other)?,
   };
   scope.push_root(Value::String(message))?;
 

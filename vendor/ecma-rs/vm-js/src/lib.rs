@@ -114,6 +114,7 @@
 mod agent;
 mod builtins;
 mod code;
+mod conversion_ops;
 mod env;
 mod error;
 mod error_object;
@@ -196,6 +197,7 @@ pub use crate::heap::HostSlots;
 pub use crate::heap::MAX_PROTOTYPE_CHAIN;
 pub use crate::heap::PersistentRoot;
 pub use crate::heap::Scope;
+pub use crate::conversion_ops::ToPrimitiveHint;
 pub use crate::import_meta::create_import_meta_object;
 pub use crate::import_meta::ImportMetaProperty;
 pub use crate::import_meta::VmImportMetaHostHooks;

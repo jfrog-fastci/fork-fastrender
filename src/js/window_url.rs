@@ -130,7 +130,7 @@ fn with_realm_state_mut<R>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   callee: GcObject,
-  f: impl FnOnce(&mut UrlRealmState, &mut Scope<'_>) -> Result<R, VmError>,
+  f: impl FnOnce(&mut Vm, &mut UrlRealmState, &mut Scope<'_>) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
@@ -152,7 +152,7 @@ fn with_realm_state_mut<R>(
       state.params.retain(|k, _| k.upgrade(heap).is_some());
     }
 
-    f(state, scope)
+    f(vm, state, scope)
   })
 }
 
@@ -212,31 +212,15 @@ fn js_string_to_rust_string_limited(
 }
 
 fn value_to_limited_string(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  state: &UrlRealmState,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   value: Value,
   max_bytes: usize,
   err: &'static str,
 ) -> Result<String, VmError> {
-  let s: GcString = match value {
-    Value::String(s) => s,
-    Value::Object(obj) => {
-      // `vm-js` does not yet implement full object-to-string coercion for host objects. Special-case
-      // URL wrappers so `new URL(rel, baseUrlObj)` behaves like browsers.
-      if let Some(url) = state.urls.get(&WeakGcObject::from(obj)) {
-        let href = url.href().map_err(map_url_error)?;
-        let s = scope.alloc_string(&href)?;
-        scope.push_root(Value::String(s))?;
-        s
-      } else {
-        // Fall back to the VM's minimal `ToString`. This currently rejects arbitrary objects until a
-        // full `ToPrimitive` implementation lands upstream.
-        scope.heap_mut().to_string(value)?
-      }
-    }
-    other => scope.heap_mut().to_string(other)?,
-  };
-
+  let s: GcString = scope.to_string(vm, host, hooks, value)?;
   js_string_to_rust_string_limited(scope, s, max_bytes, err)
 }
 
@@ -347,36 +331,42 @@ fn url_call_without_new_native(
 fn url_construct_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   _new_target: Value,
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
-    let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
-    let input = value_to_limited_string(
+  let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
+
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    input_value,
+    limits.max_input_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+
+  let base = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(value_to_limited_string(
+      vm,
       scope,
-      state,
-      input_value,
-      state.limits.max_input_bytes,
-      URL_INPUT_TOO_LONG_ERROR,
-    )?;
+      host,
+      hooks,
+      v,
+      limits.max_input_bytes,
+      URL_BASE_TOO_LONG_ERROR,
+    )?),
+  };
 
-    let base = match args.get(1).copied() {
-      None | Some(Value::Undefined) => None,
-      Some(v) => Some(value_to_limited_string(
-        scope,
-        state,
-        v,
-        state.limits.max_input_bytes,
-        URL_BASE_TOO_LONG_ERROR,
-      )?),
-    };
+  let url =
+    Url::parse_without_diagnostics(&input, base.as_deref(), &limits).map_err(map_url_error)?;
 
-    let url = Url::parse_without_diagnostics(&input, base.as_deref(), &state.limits)
-      .map_err(map_url_error)?;
-
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let obj = scope.alloc_object()?;
     scope
       .heap_mut()
@@ -395,7 +385,7 @@ fn url_href_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let href = url.href().map_err(map_url_error)?;
     let s = scope.alloc_string(&href)?;
@@ -406,24 +396,28 @@ fn url_href_get_native(
 fn url_href_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let url = require_url(state, this)?;
-    let value = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URL_INPUT_TOO_LONG_ERROR,
-    )?;
-    url.set_href(&value).map_err(map_url_error)?;
-    Ok(Value::Undefined)
-  })
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  url.set_href(&value).map_err(map_url_error)?;
+  Ok(Value::Undefined)
 }
 
 fn url_origin_get_native(
@@ -435,7 +429,7 @@ fn url_origin_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let origin = url.origin();
     let s = scope.alloc_string(&origin)?;
@@ -452,7 +446,7 @@ fn url_protocol_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let protocol = url.protocol().map_err(map_url_error)?;
     let s = scope.alloc_string(&protocol)?;
@@ -469,7 +463,7 @@ fn url_host_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let host = url.host().map_err(map_url_error)?;
     let s = scope.alloc_string(&host)?;
@@ -486,7 +480,7 @@ fn url_hostname_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let hostname = url.hostname().map_err(map_url_error)?;
     let s = scope.alloc_string(&hostname)?;
@@ -503,7 +497,7 @@ fn url_port_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let port = url.port().map_err(map_url_error)?;
     let s = scope.alloc_string(&port)?;
@@ -520,7 +514,7 @@ fn url_pathname_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let pathname = url.pathname().map_err(map_url_error)?;
     let s = scope.alloc_string(&pathname)?;
@@ -537,7 +531,7 @@ fn url_search_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let search = url.search().map_err(map_url_error)?;
     let s = scope.alloc_string(&search)?;
@@ -548,24 +542,28 @@ fn url_search_get_native(
 fn url_search_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let url = require_url(state, this)?;
-    let value = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URL_INPUT_TOO_LONG_ERROR,
-    )?;
-    ignore_setter_failure(url.set_search(&value))?;
-    Ok(Value::Undefined)
-  })
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_search(&value))?;
+  Ok(Value::Undefined)
 }
 
 fn url_hash_get_native(
@@ -577,7 +575,7 @@ fn url_hash_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let hash = url.hash().map_err(map_url_error)?;
     let s = scope.alloc_string(&hash)?;
@@ -588,24 +586,28 @@ fn url_hash_get_native(
 fn url_hash_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let url = require_url(state, this)?;
-    let value = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URL_INPUT_TOO_LONG_ERROR,
-    )?;
-    ignore_setter_failure(url.set_hash(&value))?;
-    Ok(Value::Undefined)
-  })
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_hash(&value))?;
+  Ok(Value::Undefined)
 }
 
 fn url_search_params_get_native(
@@ -617,7 +619,7 @@ fn url_search_params_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let Value::Object(url_obj) = this else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
@@ -676,7 +678,7 @@ fn url_to_string_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let url = require_url(state, this)?;
     let href = url.href().map_err(map_url_error)?;
     let s = scope.alloc_string(&href)?;
@@ -712,30 +714,34 @@ fn urlsp_call_without_new_native(
 fn urlsp_construct_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   _new_target: Value,
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
-    let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
-    let init = match init_value {
-      Value::Undefined => None,
-      v => Some(value_to_limited_string(
-        scope,
-        state,
-        v,
-        state.limits.max_input_bytes,
-        URLSP_INIT_TOO_LONG_ERROR,
-      )?),
-    };
+  let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
 
-    let params = match init {
-      None => UrlSearchParams::new(&state.limits),
-      Some(s) => UrlSearchParams::parse(&s, &state.limits).map_err(map_url_error)?,
-    };
+  let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let init = match init_value {
+    Value::Undefined => None,
+    v => Some(value_to_limited_string(
+      vm,
+      scope,
+      host,
+      hooks,
+      v,
+      limits.max_input_bytes,
+      URLSP_INIT_TOO_LONG_ERROR,
+    )?),
+  };
 
+  let params = match init {
+    None => UrlSearchParams::new(&limits),
+    Some(s) => UrlSearchParams::parse(&s, &limits).map_err(map_url_error)?,
+  };
+
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let obj = scope.alloc_object()?;
     scope
       .heap_mut()
@@ -748,101 +754,117 @@ fn urlsp_construct_native(
 fn urlsp_append_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    let value = value_to_limited_string(
-      scope,
-      state,
-      args.get(1).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    params.append(&name, &value).map_err(map_url_error)?;
-    Ok(Value::Undefined)
-  })
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(1).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  params.append(&name, &value).map_err(map_url_error)?;
+  Ok(Value::Undefined)
 }
 
 fn urlsp_delete_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  let value = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(value_to_limited_string(
+      vm,
       scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
+      host,
+      hooks,
+      v,
+      max_bytes,
       URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    let value = match args.get(1).copied() {
-      None | Some(Value::Undefined) => None,
-      Some(v) => Some(value_to_limited_string(
-        scope,
-        state,
-        v,
-        state.limits.max_input_bytes,
-        URLSP_ARG_TOO_LONG_ERROR,
-      )?),
-    };
-    params
-      .delete(&name, value.as_deref())
-      .map_err(map_url_error)?;
-    Ok(Value::Undefined)
-  })
+    )?),
+  };
+  params
+    .delete(&name, value.as_deref())
+    .map_err(map_url_error)?;
+  Ok(Value::Undefined)
 }
 
 fn urlsp_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    match params.get(&name).map_err(map_url_error)? {
-      None => Ok(Value::Null),
-      Some(v) => {
-        let s = scope.alloc_string(&v)?;
-        Ok(Value::String(s))
-      }
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  match params.get(&name).map_err(map_url_error)? {
+    None => Ok(Value::Null),
+    Some(v) => {
+      let s = scope.alloc_string(&v)?;
+      Ok(Value::String(s))
     }
-  })
+  }
 }
 
 fn urlsp_get_all_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
@@ -850,102 +872,118 @@ fn urlsp_get_all_native(
   let intrinsics = vm
     .intrinsics()
     .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    let values = params.get_all(&name).map_err(map_url_error)?;
-    let arr = scope.alloc_array(values.len())?;
-    scope
-      .heap_mut()
-      .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
-    for (idx, value) in values.into_iter().enumerate() {
-      let idx_u32: u32 = idx.try_into().map_err(|_| VmError::Unimplemented("array too large"))?;
-      let key = alloc_key(scope, &idx_u32.to_string())?;
-      let s = scope.alloc_string(&value)?;
-      scope.define_property(
-        arr,
-        key,
-        PropertyDescriptor {
-          enumerable: true,
-          configurable: true,
-          kind: PropertyKind::Data {
-            value: Value::String(s),
-            writable: true,
-          },
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  let values = params.get_all(&name).map_err(map_url_error)?;
+  let arr = scope.alloc_array(values.len())?;
+  scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
+  for (idx, value) in values.into_iter().enumerate() {
+    let idx_u32: u32 = idx.try_into().map_err(|_| VmError::Unimplemented("array too large"))?;
+    let key = alloc_key(scope, &idx_u32.to_string())?;
+    let s = scope.alloc_string(&value)?;
+    scope.define_property(
+      arr,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(s),
+          writable: true,
         },
-      )?;
-    }
-    Ok(Value::Object(arr))
-  })
+      },
+    )?;
+  }
+  Ok(Value::Object(arr))
 }
 
 fn urlsp_has_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  let value = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(value_to_limited_string(
+      vm,
       scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
+      host,
+      hooks,
+      v,
+      max_bytes,
       URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    let value = match args.get(1).copied() {
-      None | Some(Value::Undefined) => None,
-      Some(v) => Some(value_to_limited_string(
-        scope,
-        state,
-        v,
-        state.limits.max_input_bytes,
-        URLSP_ARG_TOO_LONG_ERROR,
-      )?),
-    };
-    let has = params.has(&name, value.as_deref()).map_err(map_url_error)?;
-    Ok(Value::Bool(has))
-  })
+    )?),
+  };
+  let has = params.has(&name, value.as_deref()).map_err(map_url_error)?;
+  Ok(Value::Bool(has))
 }
 
 fn urlsp_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  let (params, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
     let params = require_params(state, this)?;
-    let name = value_to_limited_string(
-      scope,
-      state,
-      args.get(0).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    let value = value_to_limited_string(
-      scope,
-      state,
-      args.get(1).copied().unwrap_or(Value::Undefined),
-      state.limits.max_input_bytes,
-      URLSP_ARG_TOO_LONG_ERROR,
-    )?;
-    params.set(&name, &value).map_err(map_url_error)?;
-    Ok(Value::Undefined)
-  })
+    Ok((params, state.limits.max_input_bytes))
+  })?;
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(1).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URLSP_ARG_TOO_LONG_ERROR,
+  )?;
+  params.set(&name, &value).map_err(map_url_error)?;
+  Ok(Value::Undefined)
 }
 
 fn urlsp_to_string_native(
@@ -957,7 +995,7 @@ fn urlsp_to_string_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, scope| {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let params = require_params(state, this)?;
     let s = params.serialize().map_err(map_url_error)?;
     let out = scope.alloc_string(&s)?;

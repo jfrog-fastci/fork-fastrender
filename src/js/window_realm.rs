@@ -8685,6 +8685,28 @@ mod tests {
   }
 
   #[test]
+  fn url_objects_coerce_via_string_constructor_and_to_string() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // `String(urlObj)` should invoke `ToString`, which for objects uses `ToPrimitive` and then
+    // calls the URL wrapper's `toString()` method.
+    let s = realm.exec_script("String(new URL('https://example.com/'))")?;
+    assert_eq!(get_string(realm.heap(), s), "https://example.com/");
+
+    // `new URL(rel, baseUrlObj)` should accept a URL object as the base (via `ToString(base)`).
+    let href = realm.exec_script(
+      "(() => {\n\
+        const base = new URL('https://example.com/dir/');\n\
+        const u = new URL('file', base);\n\
+        return u.href;\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), href), "https://example.com/dir/file");
+
+    Ok(())
+  }
+
+  #[test]
   fn document_state_properties_exist() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
