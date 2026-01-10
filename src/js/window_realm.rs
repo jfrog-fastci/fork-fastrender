@@ -4953,6 +4953,56 @@ fn init_window_globals(
     data_desc(Value::Object(location_obj)),
   )?;
 
+  // Document state shims.
+  //
+  // These are frequently read by real-world scripts (e.g. to decide whether to run animations) and
+  // should exist even though FastRender does not currently model lifecycle state transitions.
+  let ready_state_key = alloc_key(&mut scope, "readyState")?;
+  let ready_state_s = scope.alloc_string("complete")?;
+  scope.push_root(Value::String(ready_state_s))?;
+  scope.define_property(
+    document_obj,
+    ready_state_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(ready_state_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  let visibility_state_key = alloc_key(&mut scope, "visibilityState")?;
+  let visibility_state_s = scope.alloc_string("visible")?;
+  scope.push_root(Value::String(visibility_state_s))?;
+  scope.define_property(
+    document_obj,
+    visibility_state_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(visibility_state_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  let hidden_key = alloc_key(&mut scope, "hidden")?;
+  scope.define_property(
+    document_obj,
+    hidden_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Bool(false),
+        writable: false,
+      },
+    },
+  )?;
+
   // document.currentScript
   let current_script_key = alloc_key(&mut scope, "currentScript")?;
   let current_script_call_id = vm.register_native_call(document_current_script_get_native)?;
@@ -6191,6 +6241,21 @@ mod tests {
     assert_eq!(get_string(realm.heap(), s), "s");
     let l = realm.exec_script("localStorage.getItem('x')")?;
     assert_eq!(get_string(realm.heap(), l), "l");
+
+    Ok(())
+  }
+
+  #[test]
+  fn document_state_properties_exist() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ready_state = realm.exec_script("document.readyState")?;
+    assert_eq!(get_string(realm.heap(), ready_state), "complete");
+
+    let visibility = realm.exec_script("document.visibilityState")?;
+    assert_eq!(get_string(realm.heap(), visibility), "visible");
+
+    assert_eq!(realm.exec_script("document.hidden")?, Value::Bool(false));
 
     Ok(())
   }
