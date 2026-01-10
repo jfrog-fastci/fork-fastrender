@@ -6,10 +6,12 @@
 //! context using a long-lived [`Scope`].
 
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, PropertyKey as VmPropertyKey, Scope, Value, Vm, VmError,
+  GcObject, GcString, GcSymbol, Heap, JsBigInt, PropertyKey as VmPropertyKey, Scope, Value, Vm,
+  VmError,
 };
 use webidl::{
-  InterfaceId, IteratorResult, JsRuntime, PropertyKey, WebIdlHooks, WebIdlLimits, WellKnownSymbol,
+  InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, PropertyKey,
+  WebIdlHooks, WebIdlJsRuntime, WebIdlLimits, WellKnownSymbol,
 };
 
 /// `webidl` conversion context backed by `vm-js`.
@@ -23,20 +25,29 @@ pub struct VmJsWebIdlCx<'a> {
 }
 
 impl<'a> VmJsWebIdlCx<'a> {
+  pub fn from_scope(
+    vm: &'a mut Vm,
+    scope: Scope<'a>,
+    limits: WebIdlLimits,
+    hooks: &'a dyn WebIdlHooks<Value>,
+  ) -> Self {
+    Self {
+      vm,
+      scope,
+      limits,
+      hooks,
+      well_known_iterator: None,
+      well_known_async_iterator: None,
+    }
+  }
+
   pub fn new(
     vm: &'a mut Vm,
     heap: &'a mut Heap,
     limits: WebIdlLimits,
     hooks: &'a dyn WebIdlHooks<Value>,
   ) -> Self {
-    Self {
-      vm,
-      scope: heap.scope(),
-      limits,
-      hooks,
-      well_known_iterator: None,
-      well_known_async_iterator: None,
-    }
+    Self::from_scope(vm, heap.scope(), limits, hooks)
   }
 
   /// Convenience helper: `hooks.is_platform_object`.
@@ -370,6 +381,187 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
   }
 }
 
+impl WebIdlJsRuntime for VmJsWebIdlCx<'_> {
+  fn is_callable(&self, value: Self::Value) -> bool {
+    self.scope.heap().is_callable(value).unwrap_or(false)
+  }
+
+  fn is_bigint(&self, value: Self::Value) -> bool {
+    matches!(value, Value::BigInt(_))
+  }
+
+  fn to_bigint(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error> {
+    // Minimal ECMAScript `ToBigInt`: support BigInt, boolean, and integral finite numbers.
+    let out = match value {
+      Value::BigInt(_) => value,
+      Value::Bool(b) => Value::BigInt(if b { JsBigInt::from_u128(1) } else { JsBigInt::zero() }),
+      Value::Number(n) => {
+        if !n.is_finite() {
+          return Err(self.throw_range_error("Cannot convert non-finite number to a BigInt"));
+        }
+        if n.fract() != 0.0 {
+          return Err(self.throw_range_error("Cannot convert non-integer number to a BigInt"));
+        }
+
+        let abs = n.abs();
+        if abs > (u128::MAX as f64) {
+          return Err(self.throw_range_error("BigInt value is out of range"));
+        }
+        let mag = abs as u128;
+        let mut bi = JsBigInt::from_u128(mag);
+        if n.is_sign_negative() {
+          bi = bi.negate();
+        }
+        Value::BigInt(bi)
+      }
+      Value::String(s) => {
+        // Parse a base-10/0x/0o/0b BigInt string. We accept leading/trailing whitespace.
+        let raw = self.scope.heap().get_string(s)?.to_utf8_lossy();
+        let trimmed = raw.trim();
+        let Some(first) = trimmed.chars().next() else {
+          return Err(self.throw_type_error("Cannot convert empty string to a BigInt"));
+        };
+
+        let (negative, digits) = match first {
+          '+' => (false, &trimmed[1..]),
+          '-' => (true, &trimmed[1..]),
+          _ => (false, trimmed),
+        };
+
+        let (radix, digits) = if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+          (16u32, rest)
+        } else if let Some(rest) = digits.strip_prefix("0o").or_else(|| digits.strip_prefix("0O")) {
+          (8u32, rest)
+        } else if let Some(rest) = digits.strip_prefix("0b").or_else(|| digits.strip_prefix("0B")) {
+          (2u32, rest)
+        } else {
+          (10u32, digits)
+        };
+
+        if digits.is_empty() {
+          return Err(self.throw_type_error("Cannot convert string to a BigInt"));
+        }
+
+        let mag = u128::from_str_radix(digits, radix)
+          .map_err(|_| self.throw_type_error("Cannot convert string to a BigInt"))?;
+        let mut bi = JsBigInt::from_u128(mag);
+        if negative {
+          bi = bi.negate();
+        }
+        Value::BigInt(bi)
+      }
+      _ => return Err(self.throw_type_error("Cannot convert value to a BigInt")),
+    };
+
+    self.root(out)?;
+    Ok(out)
+  }
+
+  fn to_numeric(&mut self, value: Self::Value) -> Result<Self::Value, Self::Error> {
+    let out = match value {
+      Value::BigInt(_) => value,
+      other => match self.scope.heap_mut().to_number(other) {
+        Ok(n) => Value::Number(n),
+        Err(VmError::TypeError(msg)) => return Err(self.throw_type_error(msg)),
+        Err(err) => return Err(err),
+      },
+    };
+
+    self.root(out)?;
+    Ok(out)
+  }
+
+  fn get_own_property(
+    &mut self,
+    object: Self::Object,
+    key: PropertyKey<Self::String, Self::Symbol>,
+  ) -> Result<Option<JsOwnPropertyDescriptor<Self::Value>>, Self::Error> {
+    self.root(Value::Object(object))?;
+    match key {
+      PropertyKey::String(s) => self.root(Value::String(s))?,
+      PropertyKey::Symbol(s) => self.root(Value::Symbol(s))?,
+    };
+
+    let key = Self::to_vm_property_key(key);
+    let Some(desc) = self
+      .scope
+      .heap()
+      .object_get_own_property(object, &key)?
+    else {
+      return Ok(None);
+    };
+
+    let enumerable = desc.enumerable;
+    let kind = match desc.kind {
+      vm_js::PropertyKind::Data { value, .. } => {
+        self.root(value)?;
+        JsPropertyKind::Data { value }
+      }
+      vm_js::PropertyKind::Accessor { get, set } => {
+        self.root(get)?;
+        self.root(set)?;
+        JsPropertyKind::Accessor { get, set }
+      }
+    };
+
+    Ok(Some(JsOwnPropertyDescriptor { enumerable, kind }))
+  }
+
+  fn throw_type_error(&mut self, message: &str) -> Self::Error {
+    let Some(intr) = self.vm.intrinsics() else {
+      return VmError::Unimplemented("intrinsics not initialized");
+    };
+
+    match vm_js::new_error(
+      &mut self.scope,
+      intr.type_error_prototype(),
+      "TypeError",
+      message,
+    ) {
+      Ok(value) => match self.root(value) {
+        Ok(()) => VmError::Throw(value),
+        Err(err) => err,
+      },
+      Err(err) => err,
+    }
+  }
+
+  fn throw_range_error(&mut self, message: &str) -> Self::Error {
+    let Some(intr) = self.vm.intrinsics() else {
+      return VmError::Unimplemented("intrinsics not initialized");
+    };
+
+    match vm_js::new_error(
+      &mut self.scope,
+      intr.range_error_prototype(),
+      "RangeError",
+      message,
+    ) {
+      Ok(value) => match self.root(value) {
+        Ok(()) => VmError::Throw(value),
+        Err(err) => err,
+      },
+      Err(err) => err,
+    }
+  }
+
+  fn is_array_buffer(&self, _value: Self::Value) -> bool {
+    false
+  }
+
+  fn is_shared_array_buffer(&self, _value: Self::Value) -> bool {
+    false
+  }
+
+  fn is_data_view(&self, _value: Self::Value) -> bool {
+    false
+  }
+
+  fn typed_array_name(&self, _value: Self::Value) -> Option<&'static str> {
+    None
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::VmJsWebIdlCx;
@@ -380,7 +572,7 @@ mod tests {
   use webidl::{
     conversions, index_to_property_key, record_to_js_object, sequence_to_js_array, DomString,
     IdlRecord, InterfaceId, JsRuntime, PropertyKey as WebIdlPropertyKey, ToJsValue, WebIdlHooks,
-    WebIdlLimits,
+    WebIdlJsRuntime, WebIdlLimits,
   };
 
   struct NoHooks;
@@ -1011,6 +1203,224 @@ mod tests {
     }
 
     assert_eq!(out, vec!["a", "b", "c"]);
+    Ok(())
+  }
+
+  #[test]
+  fn from_scope_roots_values_across_allocations() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    // Stress rooting: force a GC before each allocation.
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+
+    let mut outer = heap.scope();
+    {
+      let mut cx = VmJsWebIdlCx::from_scope(&mut vm, outer.reborrow(), limits, &hooks);
+
+      let units: Vec<u16> = "hello".encode_utf16().collect();
+      let s = cx.alloc_string_from_code_units(&units)?;
+
+      // Perform many allocations that will trigger GC; `s` must remain valid via rooting.
+      for i in 0..128usize {
+        let _ = cx.scope.alloc_string(&format!("tmp{i}"))?;
+        let _ = cx.scope.alloc_object()?;
+      }
+
+      assert_eq!(cx.scope.heap().get_string(s)?.to_utf8_lossy(), "hello");
+    }
+
+    Ok(())
+  }
+
+  fn assert_error_object(
+    scope: &mut Scope<'_>,
+    prototype: GcObject,
+    value: Value,
+    expected_name: &str,
+    expected_message: &str,
+  ) -> Result<(), VmError> {
+    let Value::Object(obj) = value else {
+      return Err(VmError::TypeError("expected thrown object"));
+    };
+    scope.push_root(Value::Object(obj))?;
+
+    assert_eq!(scope.object_get_prototype(obj)?, Some(prototype));
+
+    // name
+    let name_key_s = scope.alloc_string("name")?;
+    scope.push_root(Value::String(name_key_s))?;
+    let name_key = VmPropertyKey::from_string(name_key_s);
+    let name_desc = scope
+      .heap()
+      .object_get_own_property(obj, &name_key)?
+      .ok_or(VmError::TypeError("missing name property"))?;
+    assert!(!name_desc.enumerable);
+    let PropertyKind::Data { value: name_v, .. } = name_desc.kind else {
+      return Err(VmError::TypeError("name is not a data property"));
+    };
+    let Value::String(name_s) = name_v else {
+      return Err(VmError::TypeError("name is not a string"));
+    };
+    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), expected_name);
+
+    // message
+    let msg_key_s = scope.alloc_string("message")?;
+    scope.push_root(Value::String(msg_key_s))?;
+    let msg_key = VmPropertyKey::from_string(msg_key_s);
+    let msg_desc = scope
+      .heap()
+      .object_get_own_property(obj, &msg_key)?
+      .ok_or(VmError::TypeError("missing message property"))?;
+    assert!(!msg_desc.enumerable);
+    let PropertyKind::Data { value: msg_v, .. } = msg_desc.kind else {
+      return Err(VmError::TypeError("message is not a data property"));
+    };
+    let Value::String(msg_s) = msg_v else {
+      return Err(VmError::TypeError("message is not a string"));
+    };
+    assert_eq!(
+      scope.heap().get_string(msg_s)?.to_utf8_lossy(),
+      expected_message
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn throw_type_error_creates_realm_error_object() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let intr = *realm.intrinsics();
+
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut cx = VmJsWebIdlCx::new(&mut vm, &mut heap, limits, &hooks);
+
+    let err = cx.throw_type_error("boom");
+    let VmError::Throw(value) = err else {
+      return Err(VmError::TypeError("expected VmError::Throw"));
+    };
+
+    {
+      let mut inspect = cx.scope.reborrow();
+      assert_error_object(
+        &mut inspect,
+        intr.type_error_prototype(),
+        value,
+        "TypeError",
+        "boom",
+      )?;
+    }
+
+    drop(cx);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn throw_range_error_creates_realm_error_object() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let intr = *realm.intrinsics();
+
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut cx = VmJsWebIdlCx::new(&mut vm, &mut heap, limits, &hooks);
+
+    let err = cx.throw_range_error("nope");
+    let VmError::Throw(value) = err else {
+      return Err(VmError::TypeError("expected VmError::Throw"));
+    };
+
+    {
+      let mut inspect = cx.scope.reborrow();
+      assert_error_object(
+        &mut inspect,
+        intr.range_error_prototype(),
+        value,
+        "RangeError",
+        "nope",
+      )?;
+    }
+
+    drop(cx);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn get_own_property_reports_data_and_accessor_descriptors() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut cx = VmJsWebIdlCx::new(&mut vm, &mut heap, limits, &hooks);
+
+    let getter_name = cx.scope.alloc_string("g")?;
+    cx.scope.push_root(Value::String(getter_name))?;
+    let noop_id: NativeFunctionId = cx.vm.register_native_call(noop_call_handler)?;
+    let getter = cx
+      .scope
+      .alloc_native_function(noop_id, None, getter_name, 0)?;
+    cx.scope.push_root(Value::Object(getter))?;
+
+    let obj = cx.scope.alloc_object()?;
+    cx.scope.push_root(Value::Object(obj))?;
+
+    // data property: enumerable
+    let data_key = VmPropertyKey::from_string(cx.scope.alloc_string("data")?);
+    cx.scope.define_property(
+      obj,
+      data_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(1.0),
+          writable: true,
+        },
+      },
+    )?;
+
+    // accessor property: non-enumerable
+    let acc_key = VmPropertyKey::from_string(cx.scope.alloc_string("acc")?);
+    cx.scope.define_property(
+      obj,
+      acc_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(getter),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let data_key_s = cx.scope.alloc_string("data")?;
+    let data_desc = cx
+      .get_own_property(obj, WebIdlPropertyKey::String(data_key_s))?
+      .expect("data property exists");
+    assert!(data_desc.enumerable);
+    let webidl::JsPropertyKind::Data { value } = data_desc.kind else {
+      return Err(VmError::TypeError("expected data descriptor"));
+    };
+    assert_eq!(value, Value::Number(1.0));
+
+    let acc_key_s = cx.scope.alloc_string("acc")?;
+    let acc_desc = cx
+      .get_own_property(obj, WebIdlPropertyKey::String(acc_key_s))?
+      .expect("acc property exists");
+    assert!(!acc_desc.enumerable);
+    let webidl::JsPropertyKind::Accessor { get, set } = acc_desc.kind else {
+      return Err(VmError::TypeError("expected accessor descriptor"));
+    };
+    assert_eq!(get, Value::Object(getter));
+    assert_eq!(set, Value::Undefined);
+
     Ok(())
   }
 }
