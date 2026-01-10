@@ -3,9 +3,10 @@ use crate::error_object::new_error;
 use crate::iterator;
 use crate::ops::{abstract_equality, to_number};
 use crate::{
-  EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleId, PropertyDescriptor,
-  PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule,
-  SourceText, StackFrame, Value, Vm, VmError, NativeCall, VmHost, VmHostHooks, VmJobContext,
+  EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
+  PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm, RealmId, RootId,
+  Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, NativeCall, VmHost, VmHostHooks,
+  VmJobContext,
 };
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -16,7 +17,7 @@ use parse_js::ast::expr::lit::{
 use parse_js::ast::expr::pat::{IdPat, Pat};
 use parse_js::ast::expr::{
   ArrowFuncExpr, BinaryExpr, CallExpr, ComputedMemberExpr, CondExpr, Expr, FuncExpr, IdExpr,
-  MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
+  ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
 };
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{literal_string_code_units, Node, ParenthesizedExpr};
@@ -31,7 +32,7 @@ use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
 use std::mem;
 use std::sync::Arc;
- 
+
 use crate::function::ThisMode;
 use crate::vm::EcmaFunctionKind;
 
@@ -509,6 +510,7 @@ pub struct JsRuntime {
   pub heap: Heap,
   realm: Realm,
   env: RuntimeEnv,
+  modules: ModuleGraph,
 }
 
 impl JsRuntime {
@@ -522,6 +524,7 @@ impl JsRuntime {
       heap,
       realm,
       env,
+      modules: ModuleGraph::new(),
     })
   }
 
@@ -545,12 +548,30 @@ impl JsRuntime {
     (vm, realm, heap)
   }
 
+  /// Borrow-split the runtime into its core components: the VM, the module graph, and the heap.
+  pub fn vm_modules_and_heap_mut(&mut self) -> (&mut Vm, &mut ModuleGraph, &mut Heap) {
+    let vm = &mut self.vm;
+    let modules = &mut self.modules;
+    let heap = &mut self.heap;
+    (vm, modules, heap)
+  }
+
   pub fn heap(&self) -> &Heap {
     &self.heap
   }
 
   pub fn heap_mut(&mut self) -> &mut Heap {
     &mut self.heap
+  }
+
+  /// Returns this runtime's module graph.
+  pub fn modules(&self) -> &ModuleGraph {
+    &self.modules
+  }
+
+  /// Borrows this runtime's module graph mutably.
+  pub fn modules_mut(&mut self) -> &mut ModuleGraph {
+    &mut self.modules
   }
 
   /// Registers a native call handler and exposes it as a global binding.
@@ -692,6 +713,7 @@ impl JsRuntime {
         vm: &mut *vm_frame,
         host,
         hooks: &mut hooks,
+        modules: Some(&mut self.modules),
         env: &mut self.env,
         strict,
         this: global_this,
@@ -777,6 +799,7 @@ impl JsRuntime {
         vm: &mut *vm_frame,
         host,
         hooks,
+        modules: Some(&mut self.modules),
         env: &mut self.env,
         strict,
         this: global_this,
@@ -880,6 +903,7 @@ struct Evaluator<'a> {
   vm: &'a mut Vm,
   host: &'a mut dyn VmHost,
   hooks: &'a mut dyn VmHostHooks,
+  modules: Option<&'a mut ModuleGraph>,
   env: &'a mut RuntimeEnv,
   strict: bool,
   this: Value,
@@ -3090,6 +3114,7 @@ impl<'a> Evaluator<'a> {
       Expr::Id(node) => self.eval_id(scope, &node.stx),
       Expr::ImportMeta(_) => self.eval_import_meta(scope),
       Expr::Call(node) => self.eval_call(scope, &node.stx),
+      Expr::Import(node) => self.eval_import(scope, &node.stx),
       Expr::Func(node) => self.eval_func_expr(scope, node),
       Expr::ArrowFunc(node) => self.eval_arrow_func_expr(scope, node),
       Expr::Member(node) => self.eval_member(scope, &node.stx),
@@ -3105,6 +3130,42 @@ impl<'a> Evaluator<'a> {
 
       _ => Err(VmError::Unimplemented("expression type")),
     }
+  }
+
+  fn eval_import(&mut self, scope: &mut Scope<'_>, expr: &ImportExpr) -> Result<Value, VmError> {
+    // Dynamic `import()` expression.
+    //
+    // This delegates to the spec-shaped implementation in `module_loading::start_dynamic_import`.
+    // Evaluate the specifier expression, then the optional `options` argument.
+    //
+    // Root the intermediate values while evaluating the second argument and while entering the
+    // module loading algorithm, which may allocate and trigger GC.
+    let mut import_scope = scope.reborrow();
+    let specifier = self.eval_expr(&mut import_scope, &expr.module)?;
+    import_scope.push_root(specifier)?;
+
+    let options = match expr.attributes.as_ref() {
+      Some(options_expr) => {
+        let v = self.eval_expr(&mut import_scope, options_expr)?;
+        v
+      }
+      None => Value::Undefined,
+    };
+    import_scope.push_root(options)?;
+
+    let modules = self.modules.as_deref_mut().ok_or(VmError::Unimplemented(
+      "dynamic import requires a module graph",
+    ))?;
+
+    crate::start_dynamic_import(
+      self.vm,
+      &mut import_scope,
+      modules,
+      &mut *self.hooks,
+      self.env.global_object(),
+      specifier,
+      options,
+    )
   }
 
   fn eval_member(&mut self, scope: &mut Scope<'_>, expr: &MemberExpr) -> Result<Value, VmError> {
@@ -5264,21 +5325,22 @@ pub(crate) fn run_ecma_function(
   if func.stx.async_ || func.stx.generator {
     return Err(VmError::Unimplemented("async/generator functions"));
   }
-    env.set_source_info(source, base_offset, prefix_len);
+  env.set_source_info(source, base_offset, prefix_len);
 
-    let Some(body) = &func.stx.body else {
-      return Err(VmError::Unimplemented("function without body"));
-    };
+  let Some(body) = &func.stx.body else {
+    return Err(VmError::Unimplemented("function without body"));
+  };
 
-    let mut evaluator = Evaluator {
-      vm,
-      host,
-      hooks,
-      env,
-      strict,
-      this,
-      new_target,
-    };
+  let mut evaluator = Evaluator {
+    vm,
+    host,
+    hooks,
+    modules: None,
+    env,
+    strict,
+    this,
+    new_target,
+  };
   evaluator.instantiate_function(scope, func, args)?;
 
   match body {
@@ -5345,6 +5407,7 @@ pub(crate) fn instantiate_module_decls(
     vm,
     host: &mut dummy_host,
     hooks: &mut dummy_hooks,
+    modules: None,
     env: &mut env,
     // Modules are always strict mode.
     strict: true,
@@ -5396,6 +5459,7 @@ pub(crate) fn run_module(
         vm: &mut *vm_frame,
         host,
         hooks,
+        modules: None,
         env: &mut env,
         strict: true,
         // Per ECMA-262, module top-level `this` is `undefined`.
@@ -5441,6 +5505,7 @@ pub(crate) fn eval_expr(
     vm,
     host,
     hooks,
+    modules: None,
     env,
     strict,
     this,

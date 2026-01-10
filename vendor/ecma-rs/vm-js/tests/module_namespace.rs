@@ -22,11 +22,12 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
   graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
 
   let mut scope = heap.scope();
+  let intrinsics = vm.intrinsics().expect("realm should initialize intrinsics");
   let ns1 = graph.get_module_namespace(module, &mut vm, &mut scope)?;
   let ns2 = graph.get_module_namespace(module, &mut vm, &mut scope)?;
   assert_eq!(ns1, ns2, "namespace object should be cached");
 
-  let key = PropertyKey::Symbol(realm.well_known_symbols().to_string_tag);
+  let key = PropertyKey::Symbol(intrinsics.well_known_symbols().to_string_tag);
   let desc = scope
     .heap()
     .object_get_own_property(ns1, &key)?

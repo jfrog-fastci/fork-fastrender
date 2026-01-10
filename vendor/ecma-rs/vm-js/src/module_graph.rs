@@ -308,6 +308,22 @@ impl ModuleGraph {
     Ok((obj, sorted_exports))
   }
 
+  /// Links a module using an existing [`Scope`].
+  ///
+  /// This is a lower-level variant of [`ModuleGraph::link`] for callers that already hold a `Scope`
+  /// (e.g. module loading continuations).
+  pub fn link_with_scope(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    module: ModuleId,
+  ) -> Result<(), VmError> {
+    // Use a nested scope so any temporary stack roots are popped before returning to the caller.
+    let mut link_scope = scope.reborrow();
+    self.link_inner(vm, &mut link_scope, global_object, module)
+  }
+
   pub fn link(
     &mut self,
     vm: &mut Vm,
@@ -316,7 +332,7 @@ impl ModuleGraph {
     module: ModuleId,
   ) -> Result<(), VmError> {
     let mut scope = heap.scope();
-    self.link_inner(vm, &mut scope, global_object, module)
+    self.link_with_scope(vm, &mut scope, global_object, module)
   }
 
   fn link_inner(
@@ -452,6 +468,90 @@ impl ModuleGraph {
     Ok(())
   }
 
+  /// Evaluates a module using an existing [`Scope`].
+  ///
+  /// This is a lower-level variant of [`ModuleGraph::evaluate`] that avoids creating a fresh scope
+  /// (which is not possible when the caller already holds one).
+  pub fn evaluate_with_scope(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    realm_id: RealmId,
+    module: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<Value, VmError> {
+    self.link_with_scope(vm, scope, global_object, module)?;
+
+    let mut eval_scope = scope.reborrow();
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+    let cap = crate::builtins::new_promise_capability(
+      vm,
+      &mut eval_scope,
+      hooks,
+      Value::Object(intr.promise()),
+    )?;
+
+    let promise = cap.promise;
+    let roots = [cap.promise, cap.resolve, cap.reject];
+    eval_scope.push_roots(&roots)?;
+
+    let result = if self.modules[module_index(module)].has_tla {
+      Err(VmError::Unimplemented("top-level await"))
+    } else {
+      self.eval_inner(
+        vm,
+        &mut eval_scope,
+        global_object,
+        realm_id,
+        module,
+        host,
+        hooks,
+      )
+    };
+
+    match result {
+      Ok(()) => {
+        eval_scope.push_root(cap.resolve)?;
+        let _ = vm.call_with_host_and_hooks(
+          host,
+          &mut eval_scope,
+          hooks,
+          cap.resolve,
+          Value::Undefined,
+          &[Value::Undefined],
+        )?;
+      }
+      Err(err) => {
+        // For JS throw completions, reject with the thrown value. For internal VM errors (OOM,
+        // InvalidHandle, unimplemented paths), prefer rejecting with an `Error` object so callers
+        // have some debugging signal instead of a bare `undefined`.
+        let reason = if let Some(thrown) = err.thrown_value() {
+          thrown
+        } else {
+          let message = err.to_string();
+          crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
+            .unwrap_or(Value::Undefined)
+        };
+        eval_scope.push_root(cap.reject)?;
+        eval_scope.push_root(reason)?;
+        let _ = vm.call_with_host_and_hooks(
+          host,
+          &mut eval_scope,
+          hooks,
+          cap.reject,
+          Value::Undefined,
+          &[reason],
+        )?;
+      }
+    }
+
+    Ok(promise)
+  }
+
   pub fn evaluate(
     &mut self,
     vm: &mut Vm,
@@ -462,47 +562,8 @@ impl ModuleGraph {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
   ) -> Result<Value, VmError> {
-    self.link(vm, heap, global_object, module)?;
-
     let mut scope = heap.scope();
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-    let cap = crate::builtins::new_promise_capability(vm, &mut scope, hooks, Value::Object(intr.promise()))?;
-
-    let promise = cap.promise;
-    let roots = [cap.promise, cap.resolve, cap.reject];
-    scope.push_roots(&roots)?;
-
-    let result = if self.modules[module_index(module)].has_tla {
-      Err(VmError::Unimplemented("top-level await"))
-    } else {
-      self.eval_inner(vm, &mut scope, global_object, realm_id, module, host, hooks)
-    };
-
-    match result {
-      Ok(()) => {
-        scope.push_root(cap.resolve)?;
-        let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, cap.resolve, Value::Undefined, &[Value::Undefined])?;
-      }
-      Err(err) => {
-        // For JS throw completions, reject with the thrown value. For internal VM errors (OOM,
-        // InvalidHandle, unimplemented paths), prefer rejecting with an `Error` object so callers
-        // have some debugging signal instead of a bare `undefined`.
-        let reason = if let Some(thrown) = err.thrown_value() {
-          thrown
-        } else {
-          let message = err.to_string();
-          crate::new_error(&mut scope, intr.error_prototype(), "Error", &message)
-            .unwrap_or(Value::Undefined)
-        };
-        scope.push_root(cap.reject)?;
-        scope.push_root(reason)?;
-        let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, cap.reject, Value::Undefined, &[reason])?;
-      }
-    }
-
-    Ok(promise)
+    self.evaluate_with_scope(vm, &mut scope, global_object, realm_id, module, host, hooks)
   }
 
   fn eval_inner(

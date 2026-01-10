@@ -23,8 +23,8 @@ use crate::module_record::ModuleStatus;
 use crate::property::PropertyKey;
 use crate::promise::PromiseCapability;
 use crate::{
-  GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, RealmId, RootId, Scope,
-  ScriptId, Value, Vm, VmError,
+  GcObject, GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, PromiseState,
+  RealmId, RootId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -112,10 +112,42 @@ struct PromiseCapabilityRoots {
   reject: RootId,
 }
 
+fn root_promise_capability(
+  scope: &mut Scope<'_>,
+  cap: PromiseCapability,
+) -> Result<PromiseCapabilityRoots, VmError> {
+  // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
+  let values = [cap.promise, cap.resolve, cap.reject];
+  scope.push_roots(&values)?;
+
+  let mut roots: Vec<RootId> = Vec::new();
+  roots
+    .try_reserve_exact(values.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &value in &values {
+    match scope.heap_mut().add_root(value) {
+      Ok(id) => roots.push(id),
+      Err(e) => {
+        for root in roots.drain(..) {
+          scope.heap_mut().remove_root(root);
+        }
+        return Err(e);
+      }
+    }
+  }
+
+  Ok(PromiseCapabilityRoots {
+    promise: roots[0],
+    resolve: roots[1],
+    reject: roots[2],
+  })
+}
+
 #[derive(Debug)]
 struct GraphLoadingStateInner {
   promise_capability: PromiseCapability,
   promise_roots: Option<PromiseCapabilityRoots>,
+  dynamic_import: Option<DynamicImportContinuation>,
   is_loading: bool,
   pending_modules_count: usize,
   visited: Vec<ModuleId>,
@@ -129,7 +161,7 @@ impl Drop for GraphLoadingStateInner {
       return;
     }
     debug_assert!(
-      self.promise_roots.is_none(),
+      self.promise_roots.is_none() && self.dynamic_import.is_none(),
       "GraphLoadingState dropped with leaked persistent roots; ensure the graph-loading promise is settled"
     );
   }
@@ -167,32 +199,7 @@ impl GraphLoadingState {
     let (cap, promise_roots) = {
       let mut root_scope = scope.reborrow();
       let cap = crate::promise_ops::new_promise_capability(vm, &mut root_scope, host)?;
-
-      // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
-      let values = [cap.promise, cap.resolve, cap.reject];
-      root_scope.push_roots(&values)?;
-
-      let mut roots: Vec<RootId> = Vec::new();
-      roots
-        .try_reserve_exact(values.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      for &value in &values {
-        match root_scope.heap_mut().add_root(value) {
-          Ok(id) => roots.push(id),
-          Err(e) => {
-            for root in roots.drain(..) {
-              root_scope.heap_mut().remove_root(root);
-            }
-            return Err(e);
-          }
-        }
-      }
-
-      let promise_roots = PromiseCapabilityRoots {
-        promise: roots[0],
-        resolve: roots[1],
-        reject: roots[2],
-      };
+      let promise_roots = root_promise_capability(&mut root_scope, cap)?;
       Ok((cap, promise_roots))
     }?;
 
@@ -200,6 +207,7 @@ impl GraphLoadingState {
       Self(Rc::new(RefCell::new(GraphLoadingStateInner {
         promise_capability: cap,
         promise_roots: Some(promise_roots),
+        dynamic_import: None,
         is_loading: true,
         pending_modules_count: 1,
         visited: Vec::new(),
@@ -207,6 +215,17 @@ impl GraphLoadingState {
       }))),
       cap.promise,
     ))
+  }
+
+  fn set_dynamic_import(&self, state: DynamicImportState, module: ModuleId) -> Result<(), VmError> {
+    let mut inner = self.0.borrow_mut();
+    if inner.dynamic_import.is_some() {
+      return Err(VmError::InvariantViolation(
+        "GraphLoadingState already has a dynamic import continuation",
+      ));
+    }
+    inner.dynamic_import = Some(DynamicImportContinuation { state, module });
+    Ok(())
   }
 
   fn is_loading(&self) -> bool {
@@ -254,15 +273,25 @@ impl GraphLoadingState {
     &self,
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
     host: &mut dyn crate::VmHostHooks,
   ) -> Result<(), VmError> {
-    let (cap, roots) = {
+    let (cap, roots, dynamic_import) = {
       let mut state = self.0.borrow_mut();
-      (state.promise_capability, state.promise_roots.take())
+      (
+        state.promise_capability,
+        state.promise_roots.take(),
+        state.dynamic_import.take(),
+      )
     };
 
     // Settlement is best-effort: if roots are already dropped, treat it as a no-op.
     let Some(roots) = roots else {
+      if let Some(dynamic_import) = dynamic_import {
+        dynamic_import
+          .state
+          .teardown_roots(scope.heap_mut());
+      }
       return Ok(());
     };
 
@@ -280,10 +309,86 @@ impl GraphLoadingState {
       )?;
       Ok(())
     })();
+
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
     scope.heap_mut().remove_root(roots.reject);
-    result
+
+    if let Err(err) = result {
+      if let Some(dynamic_import) = dynamic_import {
+        dynamic_import
+          .state
+          .teardown_roots(scope.heap_mut());
+      }
+      return Err(err);
+    }
+
+    if let Some(dynamic_import) = dynamic_import {
+      let global_object = dynamic_import.state.global_object();
+      let realm_id = dynamic_import.state.realm_id();
+
+      let mut dummy_host = ();
+      let eval_promise = match modules.evaluate_with_scope(
+        vm,
+        scope,
+        global_object,
+        realm_id,
+        dynamic_import.module,
+        &mut dummy_host,
+        host,
+      ) {
+        Ok(promise) => promise,
+        Err(err) => {
+          if let Some(reason) = err.thrown_value() {
+            dynamic_import.state.reject(vm, scope, host, reason)?;
+            return Ok(());
+          }
+          dynamic_import.state.teardown_roots(scope.heap_mut());
+          return Err(err);
+        }
+      };
+
+      let mut eval_scope = scope.reborrow();
+      eval_scope.push_root(eval_promise)?;
+      let Value::Object(eval_promise_obj) = eval_promise else {
+        dynamic_import.state.teardown_roots(eval_scope.heap_mut());
+        return Err(VmError::InvariantViolation(
+          "module evaluation did not return a promise object",
+        ));
+      };
+
+      match eval_scope.heap().promise_state(eval_promise_obj)? {
+        PromiseState::Fulfilled => {
+          let ns = match modules.get_module_namespace(dynamic_import.module, vm, &mut eval_scope) {
+            Ok(ns) => ns,
+            Err(err) => {
+              dynamic_import.state.teardown_roots(eval_scope.heap_mut());
+              return Err(err);
+            }
+          };
+          dynamic_import
+            .state
+            .resolve(vm, &mut eval_scope, host, Value::Object(ns))?;
+        }
+        PromiseState::Rejected => {
+          let reason = eval_scope
+            .heap()
+            .promise_result(eval_promise_obj)?
+            .unwrap_or(Value::Undefined);
+          dynamic_import
+            .state
+            .reject(vm, &mut eval_scope, host, reason)?;
+        }
+        PromiseState::Pending => {
+          dynamic_import.state.teardown_roots(eval_scope.heap_mut());
+          return Err(VmError::Unimplemented(
+            "dynamic import: module evaluation returned a pending promise",
+          ));
+        }
+      }
+    }
+
+    Ok(())
   }
 
   fn reject_promise(
@@ -293,16 +398,175 @@ impl GraphLoadingState {
     host: &mut dyn crate::VmHostHooks,
     err: VmError,
   ) -> Result<(), VmError> {
-    let (cap, roots) = {
+    let (cap, roots, dynamic_import) = {
       let mut state = self.0.borrow_mut();
-      (state.promise_capability, state.promise_roots.take())
+      (
+        state.promise_capability,
+        state.promise_roots.take(),
+        state.dynamic_import.take(),
+      )
     };
 
     let Some(roots) = roots else {
+      if let Some(dynamic_import) = dynamic_import {
+        dynamic_import
+          .state
+          .teardown_roots(scope.heap_mut());
+      }
       return Ok(());
     };
 
     let reason = err.thrown_value().unwrap_or(Value::Undefined);
+
+    // Ensure we always release the persistent roots even if calling the reject function fails.
+    let result = (|| {
+      let mut call_scope = scope.reborrow();
+      call_scope.push_root(cap.reject)?;
+      call_scope.push_root(reason)?;
+      let _ = vm.call_with_host(&mut call_scope, host, cap.reject, Value::Undefined, &[reason])?;
+      Ok(())
+    })();
+
+    scope.heap_mut().remove_root(roots.promise);
+    scope.heap_mut().remove_root(roots.resolve);
+    scope.heap_mut().remove_root(roots.reject);
+
+    if let Err(err) = result {
+      if let Some(dynamic_import) = dynamic_import {
+        dynamic_import
+          .state
+          .teardown_roots(scope.heap_mut());
+      }
+      return Err(err);
+    }
+
+    if let Some(dynamic_import) = dynamic_import {
+      dynamic_import
+        .state
+        .reject(vm, scope, host, reason)?;
+    }
+
+    Ok(())
+  }
+
+  fn teardown_roots(&self, heap: &mut crate::Heap) {
+    let (roots, dynamic_import) = {
+      let mut inner = self.0.borrow_mut();
+      (inner.promise_roots.take(), inner.dynamic_import.take())
+    };
+    if let Some(roots) = roots {
+      heap.remove_root(roots.promise);
+      heap.remove_root(roots.resolve);
+      heap.remove_root(roots.reject);
+    }
+    if let Some(dynamic_import) = dynamic_import {
+      dynamic_import.state.teardown_roots(heap);
+    }
+  }
+}
+
+#[derive(Debug)]
+struct DynamicImportContinuation {
+  state: DynamicImportState,
+  module: ModuleId,
+}
+
+#[derive(Debug)]
+struct DynamicImportStateInner {
+  promise_capability: PromiseCapability,
+  promise_roots: Option<PromiseCapabilityRoots>,
+  realm_id: RealmId,
+  global_object: GcObject,
+}
+
+/// Promise capability payload used by dynamic `import()` (`EvaluateImportCall` / `ContinueDynamicImport`).
+///
+/// This is stored in [`ModuleLoadPayload`] and therefore may live across asynchronous host
+/// boundaries. It roots the promise + resolving functions in the heap so they remain valid even if
+/// the host stores the payload in non-traced memory.
+#[derive(Clone)]
+pub(crate) struct DynamicImportState(Rc<RefCell<DynamicImportStateInner>>);
+
+impl fmt::Debug for DynamicImportState {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    // Treat as opaque to hosts.
+    let _ = &self.0;
+    f.write_str("DynamicImportState(..)")
+  }
+}
+
+impl DynamicImportState {
+  fn new(
+    scope: &mut Scope<'_>,
+    cap: PromiseCapability,
+    realm_id: RealmId,
+    global_object: GcObject,
+  ) -> Result<Self, VmError> {
+    // Use a nested scope so temporary stack roots created while registering persistent roots are
+    // popped before we return.
+    let roots = {
+      let mut root_scope = scope.reborrow();
+      root_promise_capability(&mut root_scope, cap)?
+    };
+    Ok(Self(Rc::new(RefCell::new(DynamicImportStateInner {
+      promise_capability: cap,
+      promise_roots: Some(roots),
+      realm_id,
+      global_object,
+    }))))
+  }
+
+  fn realm_id(&self) -> RealmId {
+    self.0.borrow().realm_id
+  }
+
+  fn global_object(&self) -> GcObject {
+    self.0.borrow().global_object
+  }
+
+  fn resolve(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn crate::VmHostHooks,
+    value: Value,
+  ) -> Result<(), VmError> {
+    let (cap, roots) = {
+      let mut inner = self.0.borrow_mut();
+      (inner.promise_capability, inner.promise_roots.take())
+    };
+    let Some(roots) = roots else {
+      return Ok(());
+    };
+
+    let result = (|| {
+      let mut call_scope = scope.reborrow();
+      call_scope.push_root(cap.resolve)?;
+      call_scope.push_root(value)?;
+      let _ = vm.call_with_host(&mut call_scope, host, cap.resolve, Value::Undefined, &[value])?;
+      Ok(())
+    })();
+
+    scope.heap_mut().remove_root(roots.promise);
+    scope.heap_mut().remove_root(roots.resolve);
+    scope.heap_mut().remove_root(roots.reject);
+    result
+  }
+
+  fn reject(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn crate::VmHostHooks,
+    reason: Value,
+  ) -> Result<(), VmError> {
+    let (cap, roots) = {
+      let mut inner = self.0.borrow_mut();
+      (inner.promise_capability, inner.promise_roots.take())
+    };
+    let Some(roots) = roots else {
+      return Ok(());
+    };
 
     let result = (|| {
       let mut call_scope = scope.reborrow();
@@ -311,10 +575,21 @@ impl GraphLoadingState {
       let _ = vm.call_with_host(&mut call_scope, host, cap.reject, Value::Undefined, &[reason])?;
       Ok(())
     })();
+
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
     scope.heap_mut().remove_root(roots.reject);
     result
+  }
+
+  fn teardown_roots(&self, heap: &mut crate::Heap) {
+    let roots = self.0.borrow_mut().promise_roots.take();
+    let Some(roots) = roots else {
+      return;
+    };
+    heap.remove_root(roots.promise);
+    heap.remove_root(roots.resolve);
+    heap.remove_root(roots.reject);
   }
 }
 
@@ -344,7 +619,7 @@ pub struct ModuleLoadPayload(ModuleLoadPayloadInner);
 #[allow(dead_code)]
 enum ModuleLoadPayloadInner {
   GraphLoadingState(GraphLoadingState),
-  PromiseCapability(PromiseCapability),
+  PromiseCapability(DynamicImportState),
 }
 
 impl fmt::Debug for ModuleLoadPayload {
@@ -364,9 +639,33 @@ impl ModuleLoadPayload {
 
   #[inline]
   #[allow(dead_code)]
-  pub(crate) fn promise_capability(capability: PromiseCapability) -> Self {
-    Self(ModuleLoadPayloadInner::PromiseCapability(capability))
+  pub(crate) fn promise_capability(state: DynamicImportState) -> Self {
+    Self(ModuleLoadPayloadInner::PromiseCapability(state))
   }
+
+  pub(crate) fn kind(&self) -> ModuleLoadPayloadKind {
+    match &self.0 {
+      ModuleLoadPayloadInner::GraphLoadingState(_) => ModuleLoadPayloadKind::GraphLoadingState,
+      ModuleLoadPayloadInner::PromiseCapability(_) => ModuleLoadPayloadKind::PromiseCapability,
+    }
+  }
+
+  /// Removes any persistent roots held by this payload (best-effort).
+  ///
+  /// This is intended for embedder/runtime teardown paths to avoid leaking roots if module loading
+  /// is abandoned mid-flight.
+  pub(crate) fn teardown_roots(&self, heap: &mut crate::Heap) {
+    match &self.0 {
+      ModuleLoadPayloadInner::GraphLoadingState(state) => state.teardown_roots(heap),
+      ModuleLoadPayloadInner::PromiseCapability(state) => state.teardown_roots(heap),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModuleLoadPayloadKind {
+  GraphLoadingState,
+  PromiseCapability,
 }
 
 /// The completion record passed to `FinishLoadingImportedModule` continuations.
@@ -555,7 +854,7 @@ pub fn inner_module_loading(
       }
     }
   }
-  state.resolve_promise(vm, scope, host)?;
+  state.resolve_promise(vm, scope, modules, host)?;
   Ok(())
 }
 
@@ -623,10 +922,14 @@ pub fn finish_loading_imported_module(
       ModuleLoadPayload::graph_loading_state(state),
       result,
     ),
-    ModuleLoadPayloadInner::PromiseCapability(capability) => {
-      // Placeholder until dynamic import is implemented.
-      continue_dynamic_import(capability, result)
-    }
+    ModuleLoadPayloadInner::PromiseCapability(state) => continue_dynamic_import(
+      vm,
+      scope,
+      modules,
+      host,
+      ModuleLoadPayload::promise_capability(state),
+      result,
+    ),
   }
 }
 
@@ -895,26 +1198,177 @@ pub fn all_import_attributes_supported(supported_keys: &[&str], attributes: &[Im
 }
 
 /// Spec-shaped dynamic import entry point (EvaluateImportCall).
-///
-/// This function currently returns [`VmError::Unimplemented`] because `vm-js` does not yet provide
-/// dynamic import (`import()`) module fetching/linking/evaluation.
-#[allow(unused_variables)]
 pub fn start_dynamic_import(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
   host: &mut dyn crate::VmHostHooks,
+  global_object: GcObject,
   specifier: Value,
   options: Value,
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("dynamic import"))
+  // Root the arguments while evaluating options and calling host hooks: the algorithm may allocate
+  // and trigger GC.
+  let mut import_scope = scope.reborrow();
+  import_scope.push_root(specifier)?;
+  import_scope.push_root(options)?;
+
+  // 1. Let promiseCapability be ? NewPromiseCapability(%Promise%).
+  let (state, promise, realm_id) = {
+    let mut root_scope = import_scope.reborrow();
+    let cap = crate::promise_ops::new_promise_capability(vm, &mut root_scope, host)?;
+    let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
+      "dynamic import requires an active Realm (push an ExecutionContext)",
+    ))?;
+    let state = DynamicImportState::new(&mut root_scope, cap, realm_id, global_object)?;
+    Ok::<_, VmError>((state, cap.promise, realm_id))
+  }?;
+
+  // 2. Let specifierString be ? ToString(specifier).
+  let specifier_string = match import_scope.heap_mut().to_string(specifier) {
+    Ok(s) => clone_heap_string_to_string(import_scope.heap(), s)?,
+    Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
+      state.reject(vm, &mut import_scope, host, value)?;
+      return Ok(promise);
+    }
+    Err(VmError::TypeError(message)) => {
+      let Some(intr) = vm.intrinsics() else {
+        state.teardown_roots(import_scope.heap_mut());
+        return Err(VmError::Unimplemented(
+          "dynamic import requires intrinsics (create a Realm first)",
+        ));
+      };
+      let err_value = crate::new_error(
+        &mut import_scope,
+        intr.type_error_prototype(),
+        "TypeError",
+        message,
+      )?;
+      state.reject(vm, &mut import_scope, host, err_value)?;
+      return Ok(promise);
+    }
+    Err(e) => {
+      state.teardown_roots(import_scope.heap_mut());
+      return Err(e);
+    }
+  };
+
+  // 3. Extract import attributes from options (reject on validation errors).
+  let supported = host.host_get_supported_import_attributes();
+  let attributes = match import_attributes_from_options(vm, &mut import_scope, options, supported) {
+    Ok(attrs) => attrs,
+    Err(ImportCallError::TypeError(kind)) => {
+      let Some(intr) = vm.intrinsics() else {
+        state.teardown_roots(import_scope.heap_mut());
+        return Err(VmError::Unimplemented(
+          "dynamic import requires intrinsics (create a Realm first)",
+        ));
+      };
+
+      let message = match kind {
+        ImportCallTypeError::OptionsNotObject => "import() options must be an object",
+        ImportCallTypeError::AttributesNotObject => "import() options.with must be an object",
+        ImportCallTypeError::AttributeValueNotString => "import() attribute values must be strings",
+        ImportCallTypeError::UnsupportedImportAttribute { key } => {
+          return {
+            let msg = format!("Unsupported import attribute: {key}");
+            let err_value = crate::new_error(
+              &mut import_scope,
+              intr.type_error_prototype(),
+              "TypeError",
+              &msg,
+            )?;
+            state.reject(vm, &mut import_scope, host, err_value)?;
+            Ok(promise)
+          };
+        }
+      };
+
+      let err_value =
+        crate::new_error(&mut import_scope, intr.type_error_prototype(), "TypeError", message)?;
+      state.reject(vm, &mut import_scope, host, err_value)?;
+      return Ok(promise);
+    }
+    Err(ImportCallError::Vm(err)) => {
+      if let Some(reason) = err.thrown_value() {
+        state.reject(vm, &mut import_scope, host, reason)?;
+        return Ok(promise);
+      }
+      state.teardown_roots(import_scope.heap_mut());
+      return Err(err);
+    }
+  };
+
+  let module_request = ModuleRequest::new(specifier_string, attributes);
+
+  // 4. Let referrer be GetActiveScriptOrModule(). If null, use the current Realm.
+  let referrer = match vm.get_active_script_or_module() {
+    Some(ScriptOrModule::Script(id)) => ModuleReferrer::Script(id),
+    Some(ScriptOrModule::Module(id)) => ModuleReferrer::Module(id),
+    None => ModuleReferrer::Realm(realm_id),
+  };
+
+  // 5. HostLoadImportedModule(referrer, moduleRequest, empty, promiseCapability)
+  let payload = ModuleLoadPayload::promise_capability(state.clone());
+  if let Err(err) = host.host_load_imported_module(
+    vm,
+    &mut import_scope,
+    modules,
+    referrer,
+    module_request,
+    HostDefined::default(),
+    payload,
+  ) {
+    if let Some(reason) = err.thrown_value() {
+      state.reject(vm, &mut import_scope, host, reason)?;
+      return Ok(promise);
+    }
+    state.teardown_roots(import_scope.heap_mut());
+    return Err(err);
+  }
+
+  // 6. Return promiseCapability.[[Promise]].
+  Ok(promise)
 }
 
-/// Placeholder for the dynamic import continuation (`ContinueDynamicImport`).
+/// Implements ECMA-262 `ContinueDynamicImport`.
+///
 pub fn continue_dynamic_import(
-  _promise_capability: PromiseCapability,
-  _module_completion: ModuleCompletion,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host: &mut dyn crate::VmHostHooks,
+  payload: ModuleLoadPayload,
+  module_completion: ModuleCompletion,
 ) -> Result<(), VmError> {
-  Err(VmError::Unimplemented("ContinueDynamicImport"))
+  let ModuleLoadPayloadInner::PromiseCapability(state) = payload.0 else {
+    return Err(VmError::InvariantViolation(
+      "ContinueDynamicImport called with non-PromiseCapability payload",
+    ));
+  };
+
+  match module_completion {
+    Err(err) => {
+      if let Some(reason) = err.thrown_value() {
+        state.reject(vm, scope, host, reason)?;
+        return Ok(());
+      }
+      state.teardown_roots(scope.heap_mut());
+      Err(err)
+    }
+    Ok(module) => {
+      // Start `LoadRequestedModules` for the newly-loaded module. The dynamic import promise is
+      // resolved once the graph-loading promise settles (via the `GraphLoadingState` continuation).
+      let (graph_state, _promise) = GraphLoadingState::new(vm, scope, host, HostDefined::default())?;
+      graph_state.set_dynamic_import(state, module)?;
+      if let Err(err) = inner_module_loading(vm, scope, modules, host, &graph_state, module) {
+        graph_state.set_is_loading(false);
+        let _ = graph_state.reject_promise(vm, scope, host, err.clone());
+        return Err(err);
+      }
+      Ok(())
+    }
+  }
 }
 
 #[cfg(test)]
@@ -1057,14 +1511,39 @@ mod tests {
   }
 
   #[test]
-  fn continue_dynamic_import_is_stub() {
-    let cap = PromiseCapability {
-      promise: Value::Undefined,
-      resolve: Value::Undefined,
-      reject: Value::Undefined,
-    };
-    let err = continue_dynamic_import(cap, Ok(ModuleId::from_raw(1))).unwrap_err();
-    assert!(matches!(err, VmError::Unimplemented("ContinueDynamicImport")));
+  fn continue_dynamic_import_rejects_on_invalid_payload() {
+    let payload = ModuleLoadPayload::graph_loading_state(GraphLoadingState(Rc::new(RefCell::new(
+      GraphLoadingStateInner {
+        promise_capability: PromiseCapability {
+          promise: Value::Undefined,
+          resolve: Value::Undefined,
+          reject: Value::Undefined,
+        },
+        promise_roots: None,
+        dynamic_import: None,
+        is_loading: false,
+        pending_modules_count: 0,
+        visited: Vec::new(),
+        host_defined: HostDefined::default(),
+      },
+    ))));
+
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+    let mut vm = Vm::new(VmOptions::default());
+    let mut modules = ModuleGraph::new();
+
+    let mut host = MicrotaskQueue::new();
+    let err = continue_dynamic_import(
+      &mut vm,
+      &mut scope,
+      &mut modules,
+      &mut host,
+      payload,
+      Ok(ModuleId::from_raw(1)),
+    )
+      .unwrap_err();
+    assert!(matches!(err, VmError::InvariantViolation(_)));
   }
 
   #[test]
@@ -1089,6 +1568,7 @@ mod tests {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let mut host = Host;
       let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
       let (state, _promise) =
         GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
 
@@ -1114,7 +1594,7 @@ mod tests {
       });
 
       let err = state
-        .resolve_promise(&mut vm, &mut scope, &mut host)
+        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host)
         .unwrap_err();
       assert!(matches!(err, VmError::Termination(_)));
 
@@ -1219,6 +1699,7 @@ mod tests {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let mut host = Host;
       let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
 
       let roots_before = (
         scope.heap().root_stack.len(),
@@ -1238,7 +1719,9 @@ mod tests {
         scope.heap().root_stack.len(),
         scope.heap().env_root_stack.len(),
       );
-      state.resolve_promise(&mut vm, &mut scope, &mut host).unwrap();
+      state
+        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host)
+        .unwrap();
       assert_eq!(
         (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
         roots_before_resolve
