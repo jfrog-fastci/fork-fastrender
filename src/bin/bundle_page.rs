@@ -2540,6 +2540,26 @@ fn discover_css_urls_with_destination(
 ) -> Vec<(String, FetchDestination)> {
   use cssparser::{Parser, ParserInput, Token};
 
+  fn font_face_url_is_decodable(url: &str) -> bool {
+    // Match `prefetch_assets`/renderer behavior: skip legacy font formats we cannot decode.
+    //
+    // In particular, many real-world `@font-face src:` lists include EOT (for old IE) and SVG
+    // fonts. These are not used by our renderer, and `prefetch_assets` intentionally does not warm
+    // them into the disk cache, so attempting to fetch them during `bundle_page cache` causes
+    // spurious cache misses (or placeholder insertion under `--allow-missing`).
+    let lower_owned = url.to_ascii_lowercase();
+    let lower = lower_owned.as_str();
+    let mut end = lower.len();
+    if let Some(idx) = lower.find('#') {
+      end = end.min(idx);
+    }
+    if let Some(idx) = lower.find('?') {
+      end = end.min(idx);
+    }
+    let lower = &lower[..end];
+    !(lower.ends_with(".eot") || lower.ends_with(".svg") || lower.ends_with(".svgz"))
+  }
+
   fn record(
     out: &mut Vec<(String, FetchDestination)>,
     base_url: &str,
@@ -2551,12 +2571,15 @@ fn discover_css_urls_with_destination(
       if should_skip_crawl_url(&resolved) {
         return;
       }
+      if in_font_face && !font_face_url_is_decodable(&resolved) {
+        return;
+      }
       let destination = if from_import {
         FetchDestination::Style
       } else if in_font_face {
-        // Treat all URLs inside `@font-face { ... }` blocks as fonts, regardless of file
-        // extension. Legacy sources (e.g. SVG fonts) and extensionless font URLs are common on the
-        // pageset; classifying these as images causes false disk-cache misses.
+        // URLs inside `@font-face { ... }` blocks should be treated as fonts, regardless of file
+        // extension. Extensionless font URLs are common on the pageset; classifying these as
+        // images causes false disk-cache misses.
         FetchDestination::Font
       } else {
         // `url(...)` tokens in CSS are overwhelmingly image-like resources (backgrounds, cursors,
@@ -2663,10 +2686,28 @@ fn discover_css_urls_with_destination(
         }
         Token::CurlyBracketBlock => {
           let nested_font_face = in_font_face || next_font_face_block;
-          let _ = parser.parse_nested_block(|nested| {
-            scan(nested, base_url, out, nested_font_face);
-            Ok::<_, cssparser::ParseError<'i, ()>>(())
-          });
+          // `@font-face` rules often include multiple `src:` URLs (woff2/woff/EOT/SVG fallbacks).
+          // Fetching every candidate makes offline bundle capture unnecessarily strict and causes
+          // spurious cache misses in `bundle_page cache` because the disk cache warmers only fetch
+          // the first supported source (matching browser semantics).
+          if next_font_face_block {
+            let mut face_urls: Vec<(String, FetchDestination)> = Vec::new();
+            let _ = parser.parse_nested_block(|nested| {
+              scan(nested, base_url, &mut face_urls, nested_font_face);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            if let Some((url, dest)) = face_urls
+              .into_iter()
+              .find(|(_, dest)| *dest == FetchDestination::Font)
+            {
+              out.push((url, dest));
+            }
+          } else {
+            let _ = parser.parse_nested_block(|nested| {
+              scan(nested, base_url, out, nested_font_face);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+          }
           next_font_face_block = false;
         }
         Token::Function(_) | Token::ParenthesisBlock | Token::SquareBracketBlock => {
@@ -4451,15 +4492,15 @@ mod tests {
             Some(req.url.to_string()),
           )),
           "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
-            b"@font-face { font-family: X; src: url('/font.svg'); } body { background: url('/bg.png'); }"
+            b"@font-face { font-family: X; src: url('/font'); } body { background: url('/bg.png'); }"
               .to_vec(),
             Some("text/css".to_string()),
             Some(req.url.to_string()),
           )),
-          "https://example.com/font.svg" => {
+          "https://example.com/font" => {
             let mut res = FetchedResource::with_final_url(
-              b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec(),
-              Some("image/svg+xml".to_string()),
+              b"font".to_vec(),
+              Some("font/woff2".to_string()),
               Some(req.url.to_string()),
             );
             res.status = Some(200);
@@ -4502,7 +4543,7 @@ mod tests {
     let calls = inner.calls();
     assert!(
       calls.iter().any(|(url, dest, _)| {
-        url == "https://example.com/font.svg" && *dest == FetchDestination::Font
+        url == "https://example.com/font" && *dest == FetchDestination::Font
       }),
       "expected @font-face URL to be fetched as a font"
     );
@@ -4511,6 +4552,119 @@ mod tests {
         |(url, dest, _)| url == "https://example.com/bg.png" && *dest == FetchDestination::Image
       ),
       "expected non-font CSS url() asset to be fetched as an image"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_font_face_only_fetches_first_decodable_source() -> Result<()> {
+    #[derive(Default)]
+    struct FontFaceFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl FontFaceFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for FontFaceFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer_url.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css"></head><body></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
+            b"@font-face{font-family:X;src:url('/font.eot');src:url('/font.woff2') format('woff2'),url('/font.woff') format('woff');} body{background:url('/bg.png');}"
+              .to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          // `bundle_page` should choose the first decodable source from `@font-face` and avoid
+          // crawling legacy/unused fallbacks (EOT/WOFF here).
+          "https://example.com/font.woff2" => {
+            let mut res = FetchedResource::with_final_url(
+              b"font".to_vec(),
+              Some("font/woff2".to_string()),
+              Some(req.url.to_string()),
+            );
+            res.status = Some(200);
+            Ok(res)
+          }
+          "https://example.com/font.woff" | "https://example.com/font.eot" => Err(
+            fastrender::Error::Other(format!("unexpected fetch: {}", req.url)),
+          ),
+          "https://example.com/bg.png" => {
+            let mut res = FetchedResource::with_final_url(
+              offline_placeholder_png_bytes().to_vec(),
+              Some("image/png".to_string()),
+              Some(req.url.to_string()),
+            );
+            res.status = Some(200);
+            Ok(res)
+          }
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(FontFaceFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls
+        .iter()
+        .any(|(url, dest, _)| url == "https://example.com/font.woff2" && *dest == FetchDestination::Font),
+      "expected woff2 font URL to be fetched as a font, got: {calls:?}"
+    );
+    assert!(
+      !calls
+        .iter()
+        .any(|(url, _, _)| url == "https://example.com/font.woff"),
+      "expected woff fallback URL to not be fetched, got: {calls:?}"
+    );
+    assert!(
+      !calls
+        .iter()
+        .any(|(url, _, _)| url == "https://example.com/font.eot"),
+      "expected EOT fallback URL to not be fetched, got: {calls:?}"
     );
 
     Ok(())
