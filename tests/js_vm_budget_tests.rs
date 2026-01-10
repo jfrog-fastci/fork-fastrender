@@ -1,6 +1,8 @@
+use fastrender::api::{BrowserTab, RenderOptions, VmJsBrowserTabExecutor};
 use fastrender::dom2;
 use fastrender::js::{JsExecutionOptions, WindowHost};
 use fastrender::js::window_realm::{WindowRealm, WindowRealmConfig};
+use fastrender::js::RunLimits;
 use selectors::context::QuirksMode;
 use std::time::Duration;
 
@@ -76,4 +78,55 @@ fn window_realm_exec_script_deadline_budget_can_terminate_immediately() {
     msg.contains("deadline exceeded"),
     "expected DeadlineExceeded termination, got: {msg}"
   );
+}
+
+#[test]
+fn module_script_budget_deadline_is_refreshed_relative_to_execution_time() -> fastrender::Result<()> {
+  let mut opts = JsExecutionOptions::default();
+  opts.supports_module_scripts = true;
+  // Ensure this test remains stable even if defaults change.
+  opts.max_instruction_count = Some(1_000_000);
+  // Keep the per-spin deadline short so the realm's construction-time deadline expires before the
+  // module script is executed.
+  opts.event_loop_run_limits.max_wall_time = Some(Duration::from_millis(50));
+
+  let mut tab = BrowserTab::from_html_with_js_execution_options(
+    r#"<!doctype html><body>
+      <script type="module">
+        let acc = 0;
+        for (let i = 0; i < 200; i++) {
+          acc += i;
+        }
+        // Only write the marker after enough ticks that the stale construction-time deadline would
+        // have been checked.
+        document.body.setAttribute("data-module-ran", "1");
+      </script>
+    </body>"#,
+    RenderOptions::default(),
+    VmJsBrowserTabExecutor::default(),
+    opts,
+  )?;
+
+  let dom = tab.dom();
+  let body = dom.body().expect("body should exist");
+  assert_eq!(
+    dom.get_attribute(body, "data-module-ran")
+      .expect("get_attribute should succeed"),
+    None
+  );
+
+  // Sleep long enough that the VM's default deadline (set at realm creation time) is guaranteed to
+  // be in the past.
+  std::thread::sleep(Duration::from_millis(100));
+
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  let dom = tab.dom();
+  let body = dom.body().expect("body should exist");
+  assert_eq!(
+    dom.get_attribute(body, "data-module-ran")
+      .expect("get_attribute should succeed"),
+    Some("1")
+  );
+  Ok(())
 }

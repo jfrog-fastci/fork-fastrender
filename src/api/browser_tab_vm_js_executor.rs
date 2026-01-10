@@ -315,12 +315,21 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let result: std::result::Result<(), VmError> = with_event_loop(event_loop, || {
+      // Apply a fresh per-run VM budget (fuel + deadline) for module loading/evaluation.
+      //
+      // Module scripts are executed from event loop tasks (like classic scripts) and must be
+      // interruptible. In particular, the VM's construction-time default deadline is relative to
+      // realm creation, so we must reset the budget so deadlines are relative to "now".
+      let budget = realm.vm_budget_now();
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut vm = vm.push_budget(budget);
+      // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
+      vm.tick()?;
       let mut scope = heap.scope();
 
       // Load all modules in the static import graph.
       let load_promise = vm_js::load_requested_modules(
-        vm,
+        &mut vm,
         &mut scope,
         module_graph,
         &mut hooks,
@@ -332,7 +341,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       // Link + evaluate the entry module.
       let eval_promise = module_graph.evaluate(
-        vm,
+        &mut vm,
         scope.heap_mut(),
         realm_ref.global_object(),
         realm_ref.id(),
