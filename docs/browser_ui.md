@@ -66,6 +66,12 @@ running on very high-DPI displays), the browser UI also clamps viewport/DPR base
 - `FASTR_BROWSER_MAX_PIXELS`
 - `FASTR_BROWSER_MAX_DIM_PX`
 - `FASTR_BROWSER_MAX_DPR`
+If the windowed UI fails to start due to `wgpu` adapter/device creation issues (common under remote
+desktop, VMs, or systems without a working GPU stack), you can force a software adapter and/or
+backend:
+
+- `browser --wgpu-fallback` / `FASTR_BROWSER_WGPU_FALLBACK=1`
+- `browser --wgpu-backend gl` / `FASTR_BROWSER_WGPU_BACKENDS=gl`
 
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
 hooks to exercise startup and UI↔worker wiring without creating a window:

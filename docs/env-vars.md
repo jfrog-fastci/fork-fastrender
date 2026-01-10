@@ -68,6 +68,12 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - Default: `10.0` (matches the renderer’s built-in clamp).
   - Values are clamped to the renderer’s supported DPR range.
   - Accepts `_` separators.
+- `FASTR_BROWSER_WGPU_FALLBACK=1` – force `wgpu` to use a fallback (software) adapter when creating the windowed UI.
+  - CLI equivalent: `browser --wgpu-fallback`.
+  - This can help in environments without a discrete GPU, under remote desktop, or when GPU driver setup is incomplete.
+- `FASTR_BROWSER_WGPU_BACKENDS=<backend[,backend...]>` – select `wgpu` backend(s) used by the `browser` UI.
+  - CLI equivalent: `browser --wgpu-backend <backend>` / `browser --wgpu-backends <backend[,backend...]>`.
+  - Accepted values: `vulkan`, `metal`, `dx12`, `dx11`, `gl`, `all` (aliases: `auto`, `default`).
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 

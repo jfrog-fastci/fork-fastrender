@@ -71,8 +71,14 @@ struct BrowserCliArgs {
   )]
   power_preference: CliPowerPreference,
 
-  /// Force a fallback adapter (e.g. software rasterizer) during wgpu adapter selection
-  #[arg(long = "force-fallback-adapter", action = clap::ArgAction::SetTrue)]
+  /// Force a fallback adapter (e.g. software rasterizer) during wgpu adapter selection.
+  ///
+  /// Equivalent env: `FASTR_BROWSER_WGPU_FALLBACK=1`.
+  #[arg(
+    long = "force-fallback-adapter",
+    alias = "wgpu-fallback",
+    action = clap::ArgAction::SetTrue
+  )]
   force_fallback_adapter: bool,
 
   /// Restrict the wgpu backend set used for instance/adapter creation (comma-separated)
@@ -80,7 +86,15 @@ struct BrowserCliArgs {
   /// Examples:
   ///   --wgpu-backends vulkan
   ///   --wgpu-backends vulkan,gl
-  #[arg(long = "wgpu-backends", value_delimiter = ',', value_enum, value_name = "BACKEND")]
+  ///
+  /// Equivalent env: `FASTR_BROWSER_WGPU_BACKENDS=...`.
+  #[arg(
+    long = "wgpu-backends",
+    alias = "wgpu-backend",
+    value_delimiter = ',',
+    value_enum,
+    value_name = "BACKEND"
+  )]
   wgpu_backends: Option<Vec<CliWgpuBackend>>,
 
   /// Run a minimal headless startup smoke test (no window / wgpu init)
@@ -289,27 +303,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
-  let mut wgpu_backends = match cli.wgpu_backends.as_deref() {
-    Some(backends) => {
+  let wgpu_init = {
+    let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
       let mut out = wgpu::Backends::empty();
       for backend in backends {
         out |= backend.to_wgpu();
       }
       out
-    }
-    None => wgpu::Backends::all(),
-  };
-  if wgpu_backends.is_empty() {
-    // This should be unreachable (clap rejects empty lists), but keep a defensive fallback so we
-    // never try to create a wgpu instance with no backends.
-    wgpu_backends = wgpu::Backends::all();
-  }
-  let wgpu_init = WgpuInitOptions {
-    backends: wgpu_backends,
-    power_preference: cli.power_preference.to_wgpu(),
-    force_fallback_adapter: cli.force_fallback_adapter,
-  };
+    });
 
+    let env_fallback = std::env::var(fastrender::ui::browser_cli::ENV_WGPU_FALLBACK).ok();
+    let env_backends = std::env::var(fastrender::ui::browser_cli::ENV_WGPU_BACKENDS).ok();
+    let wgpu_options = fastrender::ui::browser_cli::resolve_wgpu_options(
+      cli.force_fallback_adapter,
+      cli_backends,
+      env_fallback.as_deref(),
+      env_backends.as_deref(),
+    )?;
+    let mut backends = wgpu_options.backends;
+    if backends.is_empty() {
+      // Defensive fallback: never attempt to create a wgpu instance with no backends.
+      backends = wgpu::Backends::all();
+    }
+
+    WgpuInitOptions {
+      backends,
+      power_preference: cli.power_preference.to_wgpu(),
+      force_fallback_adapter: wgpu_options.force_fallback_adapter,
+    }
+  };
   let mut app = pollster::block_on(App::new(
     window,
     &event_loop,
@@ -850,6 +872,7 @@ impl App {
       ..Default::default()
     });
     let surface = unsafe { instance.create_surface(&window) }?;
+
     let adapter_options = wgpu::RequestAdapterOptions {
       power_preference: wgpu_init.power_preference,
       compatible_surface: Some(&surface),
@@ -870,23 +893,39 @@ impl App {
           available.join(", ")
         };
 
-        let msg = format!(
+        let mut msg = format!(
           "wgpu adapter selection failed.\n\
 requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
-available adapters (instance.enumerate_adapters): {available}\n\
-hint: if you're running in a headless environment, try `browser --headless-smoke` (skips window + wgpu)",
+available adapters (instance.enumerate_adapters): {available}",
           wgpu_init.backends,
           wgpu_init.power_preference,
           wgpu_init.force_fallback_adapter,
         );
+
+        if !wgpu_init.force_fallback_adapter {
+          msg.push_str(&format!(
+            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
+            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
+          ));
+        }
+
+        msg.push_str(&format!(
+          "\nHint: Try forcing a backend set with `--wgpu-backends gl` or `{}`=gl.",
+          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
+        ));
+
+        msg.push_str(
+          "\nHint: If you're running in a headless environment, try `browser --headless-smoke` (skips window + wgpu).",
+        );
+
         std::io::Error::new(std::io::ErrorKind::Other, msg)
       })?;
 
+    let adapter_info = adapter.get_info();
     // Populate `about:gpu` with the adapter selected by the windowed front-end.
-    let info = adapter.get_info();
     fastrender::ui::about_pages::set_gpu_info(
-      info.name,
-      format!("{:?}", info.backend),
+      adapter_info.name.clone(),
+      format!("{:?}", adapter_info.backend),
       format!("{:?}", wgpu_init.power_preference),
       wgpu_init.force_fallback_adapter,
       format!("{:?}", wgpu_init.backends),
@@ -901,7 +940,28 @@ hint: if you're running in a headless environment, try `browser --headless-smoke
         },
         None,
       )
-      .await?;
+      .await
+      .map_err(|err| {
+        let mut msg = format!(
+          "wgpu device request failed for adapter {adapter_info:?}.\n\
+requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
+error: {err}",
+          wgpu_init.backends,
+          wgpu_init.power_preference,
+          wgpu_init.force_fallback_adapter,
+        );
+        if !wgpu_init.force_fallback_adapter {
+          msg.push_str(&format!(
+            "\nHint: Try enabling the software adapter with `--wgpu-fallback` or `{}`=1.",
+            fastrender::ui::browser_cli::ENV_WGPU_FALLBACK
+          ));
+        }
+        msg.push_str(&format!(
+          "\nHint: Try forcing a different backend set with `--wgpu-backends gl` or `{}`=gl.",
+          fastrender::ui::browser_cli::ENV_WGPU_BACKENDS
+        ));
+        std::io::Error::new(std::io::ErrorKind::Other, msg)
+      })?;
 
     let surface_caps = surface.get_capabilities(&adapter);
     let surface_format = surface_caps

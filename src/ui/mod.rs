@@ -31,6 +31,10 @@ pub mod chrome;
 #[cfg(feature = "browser_ui")]
 pub mod session;
 
+// CLI parsing and wgpu-adapter selection knobs for the `browser` binary.
+#[cfg(feature = "browser_ui")]
+pub mod browser_cli;
+
 pub use messages::{
   CursorKind, NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId,
   UiToWorker, WorkerToUi,
