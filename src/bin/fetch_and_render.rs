@@ -225,28 +225,23 @@ fn render_page(
     let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
     let factory = render_pool.factory();
-    let mut renderer = factory.build_renderer()?;
+    let renderer = factory.build_renderer()?;
 
-    // For `file://` fixtures loaded from disk caches, keep parity with the non-JS CLI path: honor
-    // optional `.meta` sidecar URL hints as the base URL used for relative subresource resolution.
-    let file_base_hint = if url.starts_with("file://") {
-      let path = url.strip_prefix("file://").unwrap_or(url);
-      let cached = read_cached_document(Path::new(path))?;
-      Some(cached.document.base_hint)
-    } else {
-      None
-    };
-
-    // Apply an explicit base URL override when present; otherwise, use the cached HTML base hint.
-    if let Some(base_url) = base_url_override
-      .as_deref()
-      .map(str::trim)
-      .filter(|v| !v.is_empty())
-    {
-      renderer.set_base_url(base_url.to_string());
-    } else if let Some(base_hint) = file_base_hint.as_deref() {
-      renderer.set_base_url(base_hint.to_string());
-    }
+    // For `file://` HTML loaded from disk caches, keep parity with the non-JS CLI path:
+    // honor optional `.meta` sidecar URL hints as the document URL/base URL used for resolving
+    // relative subresources (scripts, stylesheets, images, ...).
+    //
+    // We do this by registering the HTML body as an in-memory navigation target at the desired
+    // document URL and then navigating to that URL via the normal `BrowserTab::navigate_to_url`
+    // pipeline. This keeps script scheduling/ordering identical while allowing the document URL
+    // hint to differ from the physical cache file path.
+    let cached_file_document = url
+      .starts_with("file://")
+      .then(|| {
+        let path = url.strip_prefix("file://").unwrap_or(url);
+        read_cached_document(Path::new(path))
+      })
+      .transpose()?;
 
     let executor = VmJsBrowserTabExecutor::default();
     let mut tab = BrowserTab::with_renderer_and_js_execution_options(
@@ -256,8 +251,24 @@ fn render_page(
       js_execution_options,
     )?;
 
-    println!("Fetching HTML from: {url}");
-    tab.navigate_to_url(url, options.clone())?;
+    // Apply the base URL override (or `.meta` base hint) when the HTML is sourced from disk.
+    // For non-file navigations, `BrowserTab::navigate_to_url` uses the actual navigation URL as the
+    // document URL hint (browser-like behavior).
+    let mut navigation_url = None::<String>;
+    if let Some(cached) = cached_file_document {
+      let desired_document_url = base_url_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| cached.document.base_hint.clone());
+      tab.register_html_source(desired_document_url.clone(), cached.document.html);
+      navigation_url = Some(desired_document_url);
+    }
+
+    let navigation_url = navigation_url.as_deref().unwrap_or(url);
+    println!("Fetching HTML from: {navigation_url}");
+    tab.navigate_to_url(navigation_url, options.clone())?;
 
     // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
     // cannot hang the CLI indefinitely even if they keep scheduling work.

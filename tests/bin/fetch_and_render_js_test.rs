@@ -248,6 +248,57 @@ html.js-saw-after body { background: rgb(0, 255, 0); }
 }
 
 #[test]
+fn js_flag_honors_cached_html_meta_base_hint_for_relative_script_fetches() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let origin_dir = tmp.path().join("origin");
+  let cache_dir = tmp.path().join("cache");
+  fs::create_dir_all(&origin_dir).expect("create origin dir");
+  fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+  // Only create the script in the "origin" dir. The cached HTML lives elsewhere, but the `.meta`
+  // base hint should cause relative URLs (script.js) to resolve against `origin_dir`.
+  let origin_script = origin_dir.join("script.js");
+  fs::write(&origin_script, "document.documentElement.className = 'js-enabled';")
+    .expect("write origin script");
+
+  let cached_html_path = cache_dir.join("page.html");
+  fs::write(
+    &cached_html_path,
+    r#"<!doctype html><html class="no-js"><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+html.no-js body { background: rgb(255, 0, 0); }
+html.js-enabled body { background: rgb(0, 255, 0); }
+</style>
+<script src="script.js"></script>
+</head><body></body></html>"#,
+  )
+  .expect("write cached html fixture");
+
+  // `read_cached_document` looks for a `page.html.meta` sidecar.
+  let meta_path = cache_dir.join("page.html.meta");
+  let base_hint_url = url::Url::from_file_path(origin_dir.join("page.html"))
+    .unwrap()
+    .to_string();
+  fs::write(&meta_path, format!("url: {base_hint_url}\n")).expect("write meta sidecar");
+
+  let cache_url = url::Url::from_file_path(&cached_html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&cache_url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&cache_url, &js_png, /* js */ true);
+
+  assert_red(
+    no_js_pixel,
+    "baseline run should keep the red background from html.no-js",
+  );
+  assert_green(
+    js_pixel,
+    "JS run should honor cached HTML .meta base hints when resolving <script src> URLs",
+  );
+}
+
+#[test]
 fn js_flag_executes_module_script_and_mutates_dom() {
   let fixture_dir =
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_simple");
