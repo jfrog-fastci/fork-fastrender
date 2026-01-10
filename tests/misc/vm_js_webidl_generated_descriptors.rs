@@ -95,13 +95,13 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
     "expected URLSearchParams.prototype.constructor to be non-enumerable"
   );
   assert!(
-    ctor_prop_desc.configurable,
-    "expected URLSearchParams.prototype.constructor to be configurable"
+    !ctor_prop_desc.configurable,
+    "expected URLSearchParams.prototype.constructor to be non-configurable"
   );
   match ctor_prop_desc.kind {
     PropertyKind::Data {
       value,
-      writable: true,
+      writable: false,
     } => assert_eq!(
       value, ctor_value,
       "expected URLSearchParams.prototype.constructor to point at the URLSearchParams constructor"
@@ -116,8 +116,8 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
     .object_get_own_property(proto_obj, &append_key)?
     .expect("missing URLSearchParams.prototype.append");
   assert!(
-    append_desc.enumerable,
-    "expected URLSearchParams.prototype.append to be enumerable"
+    !append_desc.enumerable,
+    "expected URLSearchParams.prototype.append to be non-enumerable"
   );
   assert!(
     append_desc.configurable,
