@@ -112,7 +112,6 @@ pub struct Node {
   pub inert_subtree: bool,
   pub script_force_async: bool,
   pub script_already_started: bool,
-  pub script_force_async: bool,
   pub script_parser_document: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
