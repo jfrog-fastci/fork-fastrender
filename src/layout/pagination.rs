@@ -2322,6 +2322,7 @@ enum MarginBoxPlanContent {
 fn substitute_running_element_placeholders(
   root: &mut FragmentNode,
   element_placeholders: &HashMap<usize, FragmentNode>,
+  placeholder_style: &Arc<ComputedStyle>,
 ) {
   if element_placeholders.is_empty() {
     return;
@@ -2332,13 +2333,24 @@ fn substitute_running_element_placeholders(
     unsafe {
       let node = &mut *node_ptr;
       if let FragmentContent::Replaced { box_id: Some(id), .. } = &node.content {
-        if let Some(snapshot) = element_placeholders.get(id) {
+        // Box IDs are only unique within a single box tree. Running element snapshots originate from
+        // the *document* box tree, while margin box content is laid out from a separate synthetic
+        // box tree whose IDs start at 1. Guard the substitution by ensuring we only match the
+        // placeholder fragments produced from the margin box's own box tree (identified via the
+        // exact shared style pointer for that tree).
+        if node
+          .style
+          .as_ref()
+          .is_some_and(|style| Arc::ptr_eq(style, placeholder_style))
+        {
+          if let Some(snapshot) = element_placeholders.get(id) {
           let mut inserted = snapshot.clone();
           inserted.translate_root_in_place(Point::new(node.bounds.x(), node.bounds.y()));
           inserted.fragmentainer_index = node.fragmentainer_index;
           inserted.fragmentainer = node.fragmentainer;
           inserted.slice_info = node.slice_info;
           *node = inserted;
+          }
         }
       }
 
@@ -2529,7 +2541,7 @@ fn build_margin_box_fragments(
             tree.root.scroll_overflow.width().max(bounds.width()),
             tree.root.scroll_overflow.height().max(bounds.height()),
           );
-          substitute_running_element_placeholders(&mut tree.root, element_placeholders);
+          substitute_running_element_placeholders(&mut tree.root, element_placeholders, &plan.style);
           translate_fragment(&mut tree.root, bounds.x(), bounds.y());
           tree
             .root
