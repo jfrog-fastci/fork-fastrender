@@ -71,6 +71,7 @@ mod select_dropdown_pick;
 mod select_listbox_click_scrolled;
 mod select_listbox_wheel_scroll;
 mod js_rendering;
+mod navigation_streaming;
 mod location_navigation;
 mod js_time;
 mod tab_vm_js_time;

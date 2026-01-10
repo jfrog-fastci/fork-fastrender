@@ -1917,8 +1917,18 @@ impl BrowserTab {
 
       // Fetch the document first so a failed request doesn't clobber the existing navigation's
       // committed DOM.
-      let fetcher = self.host.document.fetcher();
-      let resource = fetcher.fetch_with_request(FetchRequest::document(&target_url))?;
+      let resource = {
+        let fetcher = self.host.document.fetcher();
+        let mut req = FetchRequest::document(&target_url);
+        if let Some(referrer) = self.host.document_url.as_deref() {
+          req = req.with_referrer_url(referrer);
+        }
+        if let Some(origin) = self.host.document_origin.as_ref() {
+          req = req.with_client_origin(origin);
+        }
+        req = req.with_referrer_policy(self.host.document_referrer_policy);
+        fetcher.fetch_with_request(req)?
+      };
       let header_csp = CspPolicy::from_response_headers(&resource);
       let hint = resource
         .final_url
