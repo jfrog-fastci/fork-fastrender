@@ -418,6 +418,79 @@ Promise.resolve().then(() => { globalThis.__ran = true; });
 }
 
 #[test]
+fn promise_any_resolves_first_fulfilled_value() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__result = "";
+Promise.any(["a", "b"]).then(
+  function (v) { globalThis.__result = v; },
+  function () { globalThis.__result = "rejected"; }
+);
+"#,
+  )?;
+
+  let before = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__result");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(before, "");
+
+  host.perform_microtask_checkpoint()?;
+
+  let after = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__result");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(after, "a");
+  Ok(())
+}
+
+#[test]
+fn promise_any_rejects_with_aggregate_error_when_all_reject() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__err_name = "";
+globalThis.__err0 = "";
+Promise.any([Promise.reject("x"), Promise.reject("y")]).then(
+  function () { globalThis.__err_name = "resolved"; },
+  function (e) {
+    globalThis.__err_name = e && e.name;
+    globalThis.__err0 = e && e.errors && e.errors[0];
+  }
+);
+"#,
+  )?;
+
+  host.perform_microtask_checkpoint()?;
+
+  let (name, err0) = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let name = get_data_prop(&mut scope, global, "__err_name");
+    let err0 = get_data_prop(&mut scope, global, "__err0");
+    (get_string(scope.heap(), name), get_string(scope.heap(), err0))
+  };
+
+  assert_eq!(name, "AggregateError");
+  assert_eq!(err0, "x");
+  Ok(())
+}
+
+#[test]
 fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let url = "https://example.com:8080/path/to/page?query=1#hash";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
