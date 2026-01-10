@@ -24,6 +24,11 @@ status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
 
 [[expectations]]
+id = "smoke/infinite_loop_timeout.window.js"
+status = "xfail"
+reason = "Intentional infinite loop used to validate timeout classification."
+
+[[expectations]]
 glob = "url/**"
 backend = "quickjs"
 status = "skip"

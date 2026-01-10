@@ -8,63 +8,51 @@
 // Note: we schedule a long timer (1000ms) after the initial 10ms timer to ensure the backend uses
 // `idle_wait` fast-forward semantics rather than waiting in real time.
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
+async_test((t) => {
+  const start_date = Date.now();
+  const start_perf = performance.now();
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
+  assert_equals(start_date, 0, "Date.now() should start at 0");
+  assert_equals(start_perf, 0, "performance.now() should start at 0");
+  assert_equals(start_perf, start_date, "performance.now() should match Date.now() at start");
 
-var start_date = globalThis.Date.now();
-var start_perf = globalThis.performance.now();
+  setTimeout(
+    t.step_func(() => {
+      const now_date = Date.now();
+      const now_perf = performance.now();
 
-function on_timeout_1010() {
-  var now_date = globalThis.Date.now();
-  var now_perf = globalThis.performance.now();
+      assert_equals(now_date, 10, "Date.now() should be 10 in setTimeout callback");
+      assert_equals(now_perf, 10, "performance.now() should be 10 in setTimeout callback");
+      assert_equals(
+        now_perf,
+        now_date,
+        "performance.now() should match Date.now() in setTimeout callback"
+      );
 
-  if (now_date !== 1010) {
-    report_fail("Date.now() should be 1010 in long setTimeout callback");
-    return;
-  }
-  if (now_perf !== 1010) {
-    report_fail("performance.now() should be 1010 in long setTimeout callback");
-    return;
-  }
-  if (now_perf !== now_date) {
-    report_fail("performance.now() should match Date.now() in long setTimeout callback");
-    return;
-  }
+      setTimeout(
+        t.step_func_done(() => {
+          const now_date_2 = Date.now();
+          const now_perf_2 = performance.now();
 
-  report_pass();
-}
-
-function on_timeout_10() {
-  var now_date = globalThis.Date.now();
-  var now_perf = globalThis.performance.now();
-
-  if (now_date !== 10) {
-    report_fail("Date.now() should be 10 in setTimeout callback");
-    return;
-  }
-  if (now_perf !== 10) {
-    report_fail("performance.now() should be 10 in setTimeout callback");
-    return;
-  }
-  if (now_perf !== now_date) {
-    report_fail("performance.now() should match Date.now() in setTimeout callback");
-    return;
-  }
-
-  globalThis.setTimeout(on_timeout_1010, 1000);
-}
-
-if (start_date !== 0) {
-  report_fail("Date.now() should start at 0");
-} else if (start_perf !== 0) {
-  report_fail("performance.now() should start at 0");
-} else if (start_perf !== start_date) {
-  report_fail("performance.now() should match Date.now() at start");
-} else {
-  globalThis.setTimeout(on_timeout_10, 10);
-}
+          assert_equals(
+            now_date_2,
+            1010,
+            "Date.now() should be 1010 in long setTimeout callback"
+          );
+          assert_equals(
+            now_perf_2,
+            1010,
+            "performance.now() should be 1010 in long setTimeout callback"
+          );
+          assert_equals(
+            now_perf_2,
+            now_date_2,
+            "performance.now() should match Date.now() in long setTimeout callback"
+          );
+        }),
+        1000
+      );
+    }),
+    10
+  );
+}, "Date.now()/performance.now() advance with vm-js virtual time (no wall-clock sleeps)");
