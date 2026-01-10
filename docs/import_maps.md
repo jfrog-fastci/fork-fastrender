@@ -417,7 +417,9 @@ let base_url = Url::parse("https://example.com/base/page.html").unwrap();
 let (map, _warnings) = parse_import_map_string(r#"{ "imports": { "pkg/": "/static/pkg/" } }"#, &base_url)
     .unwrap();
 
-let as_url = Url::parse("https://example.com/app.js").ok();
+// `as_url` is the spec’s "specifier as a URL" (computed from the specifier itself).
+// For a bare specifier like "pkg/util.js", it is null.
+let as_url: Option<Url> = None;
 let normalized_specifier = "pkg/util.js";
 let resolved = resolve_imports_match(normalized_specifier, as_url.as_ref(), &map.imports);
 
@@ -588,7 +590,7 @@ When resolving, `resolve_imports_match(...)` will treat any match against that k
 These matter when implementing “resolve an imports match”, and are enforced by
 `resolve_imports_match(...)` today:
 
-* Prefix mappings (keys ending in `/`) only apply when the referrer is bare (`as_url == None`) or
+* Prefix mappings (keys ending in `/`) only apply when the specifier is bare (`as_url == None`) or
   when `as_url` has a **special** scheme (`http`, `https`, `file`, `ftp`, `ws`, `wss`).
 * Backtracking protection: after resolving `afterPrefix` relative to the mapped URL, the resulting
   URL must still have the mapped base URL serialization as a prefix.
