@@ -49,81 +49,111 @@ pub mod window {
     }
   }
 
-  #[allow(dead_code)]
+  #[allow(dead_code, unused_variables)]
   fn js_to_dict_add_event_listener_options<Host, R>(
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
+    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let _ = host;
-    if rt.is_undefined(value) || rt.is_null(value) {
-      return Ok(BindingValue::Dictionary(BTreeMap::new()));
+    let is_missing = rt.is_undefined(value) || rt.is_null(value);
+    if is_missing && !allow_missing {
+      return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
-    if !rt.is_object(value) {
+    if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
     let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
     {
-      let key = rt.property_key("capture")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("capture")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("capture".to_string(), converted);
+      } else {
+        out_dict.insert("capture".to_string(), BindingValue::Bool(false));
       }
     }
     {
-      let key = rt.property_key("passive")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
-        out_dict.insert("passive".to_string(), converted);
-      }
-    }
-    {
-      let key = rt.property_key("once")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("once")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("once".to_string(), converted);
+      } else {
+        out_dict.insert("once".to_string(), BindingValue::Bool(false));
       }
     }
     {
-      let key = rt.property_key("signal")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Object(v);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("passive")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
+        out_dict.insert("passive".to_string(), converted);
+      } else {
+      }
+    }
+    {
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("signal")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Object(js_member_value);
         out_dict.insert("signal".to_string(), converted);
+      } else {
       }
     }
     Ok(BindingValue::Dictionary(out_dict))
   }
 
-  #[allow(dead_code)]
+  #[allow(dead_code, unused_variables)]
   fn js_to_dict_event_listener_options<Host, R>(
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
+    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let _ = host;
-    if rt.is_undefined(value) || rt.is_null(value) {
-      return Ok(BindingValue::Dictionary(BTreeMap::new()));
+    let is_missing = rt.is_undefined(value) || rt.is_null(value);
+    if is_missing && !allow_missing {
+      return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
-    if !rt.is_object(value) {
+    if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
     let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
     {
-      let key = rt.property_key("capture")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("capture")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("capture".to_string(), converted);
+      } else {
+        out_dict.insert("capture".to_string(), BindingValue::Bool(false));
       }
     }
     Ok(BindingValue::Dictionary(out_dict))
@@ -1098,81 +1128,111 @@ pub mod worker {
     }
   }
 
-  #[allow(dead_code)]
+  #[allow(dead_code, unused_variables)]
   fn js_to_dict_add_event_listener_options<Host, R>(
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
+    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let _ = host;
-    if rt.is_undefined(value) || rt.is_null(value) {
-      return Ok(BindingValue::Dictionary(BTreeMap::new()));
+    let is_missing = rt.is_undefined(value) || rt.is_null(value);
+    if is_missing && !allow_missing {
+      return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
-    if !rt.is_object(value) {
+    if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
     let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
     {
-      let key = rt.property_key("capture")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("capture")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("capture".to_string(), converted);
+      } else {
+        out_dict.insert("capture".to_string(), BindingValue::Bool(false));
       }
     }
     {
-      let key = rt.property_key("passive")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
-        out_dict.insert("passive".to_string(), converted);
-      }
-    }
-    {
-      let key = rt.property_key("once")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("once")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("once".to_string(), converted);
+      } else {
+        out_dict.insert("once".to_string(), BindingValue::Bool(false));
       }
     }
     {
-      let key = rt.property_key("signal")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Object(v);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("passive")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
+        out_dict.insert("passive".to_string(), converted);
+      } else {
+      }
+    }
+    {
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("signal")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Object(js_member_value);
         out_dict.insert("signal".to_string(), converted);
+      } else {
       }
     }
     Ok(BindingValue::Dictionary(out_dict))
   }
 
-  #[allow(dead_code)]
+  #[allow(dead_code, unused_variables)]
   fn js_to_dict_event_listener_options<Host, R>(
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
+    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let _ = host;
-    if rt.is_undefined(value) || rt.is_null(value) {
-      return Ok(BindingValue::Dictionary(BTreeMap::new()));
+    let is_missing = rt.is_undefined(value) || rt.is_null(value);
+    if is_missing && !allow_missing {
+      return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
-    if !rt.is_object(value) {
+    if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
     let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
     {
-      let key = rt.property_key("capture")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("capture")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("capture".to_string(), converted);
+      } else {
+        out_dict.insert("capture".to_string(), BindingValue::Bool(false));
       }
     }
     Ok(BindingValue::Dictionary(out_dict))

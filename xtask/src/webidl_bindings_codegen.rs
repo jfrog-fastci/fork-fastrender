@@ -15,8 +15,11 @@ use crate::webidl::ExtendedAttribute;
 use crate::webidl::ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember};
 use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
 use crate::webidl::type_resolution;
-
-use webidl_ir::IdlType as IrIdlType;
+use crate::webidl::type_resolution::{build_type_context, expand_typedefs_in_type};
+use webidl_ir::{
+  DefaultValue as IrDefaultValue, IdlType as IrIdlType, NamedTypeKind,
+  NumericType as IrNumericType, TypeAnnotation as IrTypeAnnotation, TypeContext,
+};
 
 #[derive(Args, Debug)]
 pub struct WebIdlBindingsCodegenArgs {
@@ -1317,9 +1320,11 @@ fn generate_bindings_module_unformatted(
 
     let filtered = resolved.filter_by_exposure(*target);
     let analyzed = crate::webidl::analyze::analyze_resolved_world(&filtered);
+    let type_ctx = build_type_context(&filtered).context("build WebIDL type context")?;
     let inner = generate_bindings_module_for_target_unformatted(
       &filtered,
       &analyzed,
+      &type_ctx,
       config,
       install_fn_name,
       globals,
@@ -1343,6 +1348,7 @@ fn generate_bindings_module_unformatted(
 fn generate_bindings_module_for_target_unformatted(
   resolved: &ResolvedWebIdlWorld,
   analyzed: &AnalyzedWebIdlWorld,
+  type_ctx: &TypeContext,
   config: &WebIdlBindingsCodegenConfig,
   install_fn_name: &str,
   global_interfaces: &[&str],
@@ -1350,9 +1356,7 @@ fn generate_bindings_module_for_target_unformatted(
   let is_global_iface = |name: &str| global_interfaces.iter().any(|g| *g == name);
 
   let selected = select_interfaces(resolved, analyzed, config)?;
-  let referenced_dicts = collect_referenced_dictionaries(resolved, &selected);
-  let type_ctx = crate::webidl::type_resolution::build_type_context(resolved)
-    .context("build WebIDL type context")?;
+  let referenced_dicts = collect_referenced_dictionaries(resolved, type_ctx, &selected);
 
   let mut out = String::new();
 
@@ -1399,9 +1403,7 @@ fn generate_bindings_module_for_target_unformatted(
 
   // Dictionary conversion helpers (sorted).
   for dict_name in &referenced_dicts {
-    if let Some(dict) = resolved.dictionaries.get(dict_name) {
-      write_dictionary_converter(&mut out, resolved, dict);
-    }
+    write_dictionary_converter(&mut out, resolved, type_ctx, dict_name)?;
   }
 
   // Operation shims.
@@ -1838,6 +1840,7 @@ fn render_idl_type(ty: &IdlType) -> String {
 
 fn collect_referenced_dictionaries(
   resolved: &ResolvedWebIdlWorld,
+  type_ctx: &TypeContext,
   interfaces: &BTreeMap<String, SelectedInterface>,
 ) -> BTreeSet<String> {
   let mut referenced = BTreeSet::<String>::new();
@@ -1874,14 +1877,14 @@ fn collect_referenced_dictionaries(
     if referenced.contains(&name) {
       continue;
     }
+
     if resolved.dictionaries.contains_key(&name) {
       referenced.insert(name.clone());
       // Pull in member types.
-      let members = resolved.flattened_dictionary_members(&name);
-      for member in members {
-        if let Some((ty, _member_name)) = parse_dictionary_member_type(&member.raw) {
+      if let Some(members) = type_ctx.flattened_dictionary_members(&name) {
+        for member in members {
           let mut names = BTreeSet::new();
-          collect_named_types(&ty, &mut names);
+          collect_named_types_ir(&member.ty, &mut names);
           for n in names {
             if !referenced.contains(&n) {
               pending.push(n);
@@ -1893,10 +1896,9 @@ fn collect_referenced_dictionaries(
     }
 
     if resolved.typedefs.contains_key(&name) {
-      let td = &resolved.typedefs[&name];
-      if let Ok(ty) = crate::webidl::parse_idl_type(&td.type_) {
+      if let Some(ty) = type_ctx.typedefs.get(&name) {
         let mut names = BTreeSet::new();
-        collect_named_types(&ty, &mut names);
+        collect_named_types_ir(ty, &mut names);
         for n in names {
           if !referenced.contains(&n) {
             pending.push(n);
@@ -1931,88 +1933,512 @@ fn collect_named_types(ty: &IdlType, out: &mut BTreeSet<String>) {
   }
 }
 
+fn collect_named_types_ir(ty: &IrIdlType, out: &mut BTreeSet<String>) {
+  match ty {
+    IrIdlType::Named(named) => {
+      out.insert(named.name.clone());
+    }
+    IrIdlType::Nullable(inner)
+    | IrIdlType::Sequence(inner)
+    | IrIdlType::FrozenArray(inner)
+    | IrIdlType::AsyncSequence(inner)
+    | IrIdlType::Promise(inner)
+    | IrIdlType::Annotated { inner, .. } => collect_named_types_ir(inner, out),
+    IrIdlType::Union(members) => {
+      for m in members {
+        collect_named_types_ir(m, out);
+      }
+    }
+    IrIdlType::Record(key, value) => {
+      collect_named_types_ir(key, out);
+      collect_named_types_ir(value, out);
+    }
+    IrIdlType::Any
+    | IrIdlType::Undefined
+    | IrIdlType::Boolean
+    | IrIdlType::Numeric(_)
+    | IrIdlType::BigInt
+    | IrIdlType::String(_)
+    | IrIdlType::Object
+    | IrIdlType::Symbol => {}
+  }
+}
+
 fn write_dictionary_converter(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
-  dict: &crate::webidl::resolve::ResolvedDictionary,
-) {
-  let fn_name = format!("js_to_dict_{}", to_snake_ident(&dict.name));
+  type_ctx: &TypeContext,
+  dict_name: &str,
+) -> Result<()> {
+  let fn_name = format!("js_to_dict_{}", to_snake_ident(dict_name));
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, value: R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
+    "#[allow(dead_code, unused_variables)]\nfn {fn_name}<Host, R>(\n  rt: &mut R,\n  host: &mut Host,\n  value: R::JsValue,\n  allow_missing: bool,\n) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
   ));
-  // `host` is required so nested conversions (e.g. `sequence<T>`) can call into JS with access to
-  // the embedder host context, but many dictionaries don't use it directly.
-  out.push_str("  let _ = host;\n");
-  out.push_str("  if rt.is_undefined(value) || rt.is_null(value) {\n");
-  out.push_str("    return Ok(BindingValue::Dictionary(BTreeMap::new()));\n");
-  out.push_str("  }\n");
-  out.push_str("  if !rt.is_object(value) {\n");
+  out.push_str("  let is_missing = rt.is_undefined(value) || rt.is_null(value);\n");
+  out.push_str("  if is_missing && !allow_missing {\n");
   out.push_str(&format!(
     "    return Err(rt.throw_type_error(\"expected object for dictionary {}\"));\n",
-    dict.name
+    dict_name
+  ));
+  out.push_str("  }\n");
+  out.push_str("  if !is_missing && !rt.is_object(value) {\n");
+  out.push_str(&format!(
+    "    return Err(rt.throw_type_error(\"expected object for dictionary {}\"));\n",
+    dict_name
   ));
   out.push_str("  }\n");
   out.push_str(
     "  let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();\n",
   );
 
-  for member in resolved.flattened_dictionary_members(&dict.name) {
-    let Some((ty, member_name)) = parse_dictionary_member_type(&member.raw) else {
-      continue;
-    };
+  let Some(members) = type_ctx.flattened_dictionary_members(dict_name) else {
+    out.push_str("  Ok(BindingValue::Dictionary(out_dict))\n");
+    out.push_str("}\n\n");
+    return Ok(());
+  };
+
+  for webidl_ir::DictionaryMemberSchema {
+    name: member_name,
+    required,
+    ty,
+    default,
+  } in members
+  {
+    let member_ty = expand_typedefs_in_type(type_ctx, &ty)?;
+    let conversion_expr = emit_conversion_expr_ir(resolved, type_ctx, &member_ty, "js_member_value")?;
+
+    out.push_str("  {\n");
     out.push_str(&format!(
-      "  {{\n    let key = rt.property_key({name_lit})?;\n    let v = rt.get(value, key)?;\n    if !rt.is_undefined(v) {{\n",
+      "    let js_member_value = if is_missing {{\n      rt.js_undefined()\n    }} else {{\n      let key = rt.property_key({name_lit})?;\n      rt.get(value, key)?\n    }};\n",
       name_lit = rust_string_literal(&member_name)
     ));
-    out.push_str(&format!(
-      "      let converted = {};\n",
-      emit_conversion_expr(resolved, &ty, &member.ext_attrs, "v")
-    ));
+
+    out.push_str("    if !rt.is_undefined(js_member_value) {\n");
+    out.push_str(&format!("      let converted = {conversion_expr};\n"));
     out.push_str(&format!(
       "      out_dict.insert({name_lit}.to_string(), converted);\n",
       name_lit = rust_string_literal(&member_name)
     ));
-    out.push_str("    }\n  }\n");
+    out.push_str("    } else {\n");
+
+    if let Some(default) = default {
+      let default_expr = emit_default_value_ir(type_ctx, &member_ty, &default).with_context(|| {
+        format!("emit default value for {dict_name}.{member_name} = {default:?}")
+      })?;
+      out.push_str(&format!(
+        "      out_dict.insert({name_lit}.to_string(), {default_expr});\n",
+        name_lit = rust_string_literal(&member_name)
+      ));
+    } else if required {
+      out.push_str(&format!(
+        "      return Err(rt.throw_type_error({msg_lit}));\n",
+        msg_lit = rust_string_literal(&format!(
+          "Missing required dictionary member {dict_name}.{member_name}"
+        ))
+      ));
+    }
+
+    out.push_str("    }\n");
+    out.push_str("  }\n");
   }
 
   out.push_str("  Ok(BindingValue::Dictionary(out_dict))\n");
   out.push_str("}\n\n");
+  Ok(())
 }
 
-fn parse_dictionary_member_type(raw: &str) -> Option<(IdlType, String)> {
-  let mut s = raw.trim();
-  s = s.strip_suffix(';').unwrap_or(s).trim();
+#[derive(Debug, Clone, Copy, Default)]
+struct IrConversionState {
+  clamp: bool,
+  enforce_range: bool,
+  legacy_null_to_empty_string: bool,
+}
 
-  // Strip leading `required`.
-  if let Some(rest) = s.strip_prefix("required") {
-    s = rest.trim_start();
-  }
+fn emit_conversion_expr_ir(
+  _resolved: &ResolvedWebIdlWorld,
+  type_ctx: &TypeContext,
+  ty: &IrIdlType,
+  value_ident: &str,
+) -> Result<String> {
+  emit_conversion_expr_ir_inner(type_ctx, ty, value_ident, IrConversionState::default())
+}
 
-  // Split default.
-  if let Some((before, _after)) = s.split_once('=') {
-    s = before.trim_end();
-  }
-
-  // Split trailing identifier (member name).
-  let mut end = s.len();
-  while end > 0 && s.as_bytes()[end - 1].is_ascii_whitespace() {
-    end -= 1;
-  }
-  let mut start = end;
-  while start > 0 {
-    let b = s.as_bytes()[start - 1];
-    if !(b.is_ascii_alphanumeric() || b == b'_') {
-      break;
+fn emit_conversion_expr_ir_inner(
+  type_ctx: &TypeContext,
+  ty: &IrIdlType,
+  value_ident: &str,
+  state: IrConversionState,
+) -> Result<String> {
+  match ty {
+    IrIdlType::Annotated { annotations, inner } => {
+      let mut next = state;
+      for a in annotations {
+        match a {
+          IrTypeAnnotation::Clamp => next.clamp = true,
+          IrTypeAnnotation::EnforceRange => next.enforce_range = true,
+          IrTypeAnnotation::LegacyNullToEmptyString => next.legacy_null_to_empty_string = true,
+          _ => {}
+        }
+      }
+      if next.clamp && next.enforce_range {
+        bail!("[Clamp] and [EnforceRange] cannot both apply to the same type");
+      }
+      emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, next)
     }
-    start -= 1;
+
+    IrIdlType::Undefined => Ok("BindingValue::Undefined".to_string()),
+    IrIdlType::Any => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on `any`");
+      }
+      Ok(format!("BindingValue::Object({value_ident})"))
+    }
+    IrIdlType::Boolean => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on `boolean`");
+      }
+      Ok(format!("BindingValue::Bool(rt.to_boolean({value_ident})?)"))
+    }
+    IrIdlType::Numeric(n) => {
+      if state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on numeric type");
+      }
+      let int_attrs = if state.clamp || state.enforce_range {
+        format!(
+          "conversions::IntegerConversionAttrs {{ clamp: {}, enforce_range: {} }}",
+          state.clamp, state.enforce_range
+        )
+      } else {
+        "conversions::IntegerConversionAttrs::default()".to_string()
+      };
+      match n {
+        IrNumericType::Byte => Ok(format!(
+          "BindingValue::Number(conversions::to_byte(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::Octet => Ok(format!(
+          "BindingValue::Number(conversions::to_octet(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::Short => Ok(format!(
+          "BindingValue::Number(conversions::to_short(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::UnsignedShort => Ok(format!(
+          "BindingValue::Number(conversions::to_unsigned_short(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::Long => Ok(format!(
+          "BindingValue::Number(conversions::to_long(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::UnsignedLong => Ok(format!(
+          "BindingValue::Number(conversions::to_unsigned_long(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::LongLong => Ok(format!(
+          "BindingValue::Number(conversions::to_long_long(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs.clone(),
+        )),
+        IrNumericType::UnsignedLongLong => Ok(format!(
+          "BindingValue::Number(conversions::to_unsigned_long_long(rt, {value_ident}, {int_attrs})? as f64)",
+          value_ident = value_ident,
+          int_attrs = int_attrs,
+        )),
+        IrNumericType::Float => {
+          if state.clamp || state.enforce_range {
+            bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
+          }
+          Ok(format!(
+            "BindingValue::Number(conversions::to_float(rt, {value_ident})? as f64)",
+            value_ident = value_ident
+          ))
+        }
+        IrNumericType::UnrestrictedFloat => {
+          if state.clamp || state.enforce_range {
+            bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
+          }
+          Ok(format!(
+            "BindingValue::Number(conversions::to_unrestricted_float(rt, {value_ident})? as f64)",
+            value_ident = value_ident
+          ))
+        }
+        IrNumericType::Double => {
+          if state.clamp || state.enforce_range {
+            bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
+          }
+          Ok(format!(
+            "BindingValue::Number(conversions::to_double(rt, {value_ident})?)",
+            value_ident = value_ident
+          ))
+        }
+        IrNumericType::UnrestrictedDouble => {
+          if state.clamp || state.enforce_range {
+            bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
+          }
+          Ok(format!(
+            "BindingValue::Number(conversions::to_unrestricted_double(rt, {value_ident})?)",
+            value_ident = value_ident
+          ))
+        }
+      }
+    }
+    IrIdlType::BigInt | IrIdlType::Symbol | IrIdlType::Object => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on non-numeric type");
+      }
+      Ok(format!("BindingValue::Object({value_ident})"))
+    }
+    IrIdlType::String(_s) => {
+      if state.clamp || state.enforce_range {
+        bail!("[Clamp]/[EnforceRange] annotations cannot apply to string types");
+      }
+      let base = format!(
+        "{{ let s = rt.to_string({value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
+        value_ident = value_ident
+      );
+      if state.legacy_null_to_empty_string {
+        Ok(format!(
+          "if rt.is_null({value_ident}) {{ BindingValue::String(String::new()) }} else {{ {base} }}",
+          value_ident = value_ident,
+          base = base
+        ))
+      } else {
+        Ok(base)
+      }
+    }
+
+    IrIdlType::Named(named) => {
+      if state.clamp || state.enforce_range {
+        bail!(
+          "[Clamp]/[EnforceRange] annotations cannot apply to named type `{}`",
+          named.name
+        );
+      }
+      match named.kind {
+        NamedTypeKind::Dictionary => Ok(format!(
+          "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, false)?",
+          to_snake_ident(&named.name),
+          value_ident = value_ident
+        )),
+        NamedTypeKind::Enum => Ok(format!(
+          "{{ let s = rt.to_string({value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
+          value_ident = value_ident
+        )),
+        NamedTypeKind::Typedef => {
+          if let Some(inner) = type_ctx.typedefs.get(&named.name) {
+            emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, state)
+          } else {
+            Ok(format!("BindingValue::Object({value_ident})"))
+          }
+        }
+        _ => Ok(format!("BindingValue::Object({value_ident})")),
+      }
+    }
+
+    IrIdlType::Nullable(inner) => Ok(format!(
+      "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {inner_expr} }}",
+      value_ident = value_ident,
+      inner_expr = emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, state)?,
+    )),
+
+    IrIdlType::Sequence(elem) => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on `sequence`");
+      }
+      emit_iterable_list_conversion_expr_ir(type_ctx, elem, value_ident, "sequence", "Sequence")
+    }
+    IrIdlType::FrozenArray(elem) => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on `FrozenArray`");
+      }
+      emit_iterable_list_conversion_expr_ir(
+        type_ctx,
+        elem,
+        value_ident,
+        "FrozenArray",
+        "FrozenArray",
+      )
+    }
+
+    IrIdlType::Union(_)
+    | IrIdlType::AsyncSequence(_)
+    | IrIdlType::Record(_, _)
+    | IrIdlType::Promise(_) => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on non-primitive type");
+      }
+      Ok(format!("BindingValue::Object({value_ident})"))
+    }
   }
-  if start == end {
-    return None;
+}
+
+fn emit_iterable_list_conversion_expr_ir(
+  type_ctx: &TypeContext,
+  elem_ty: &IrIdlType,
+  value_ident: &str,
+  kind_label: &str,
+  out_variant: &str,
+) -> Result<String> {
+  let elem_expr =
+    emit_conversion_expr_ir_inner(type_ctx, elem_ty, "next", IrConversionState::default())?;
+  Ok(format!(
+    r#"{{
+  if !rt.is_object({value_ident}) {{
+    return Err(rt.throw_type_error("expected object for {kind_label}"));
+  }}
+  rt.with_stack_roots(&[{value_ident}], |rt| {{
+    let iterator_key = rt.symbol_iterator()?;
+    let Some(method) = rt.get_method({value_ident}, iterator_key)? else {{
+      return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
+    }};
+    let mut iterator_record = rt.get_iterator_from_method(host, {value_ident}, method)?;
+    rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
+      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {{
+        if values.len() >= rt.limits().max_sequence_length {{
+          return Err(rt.throw_range_error("{kind_label} exceeds maximum length"));
+        }}
+        let converted = rt.with_stack_roots(&[next], |rt| Ok({elem_expr}))?;
+        values.push(converted);
+      }}
+      Ok(BindingValue::{out_variant}(values))
+    }})
+  }})?
+}}"#,
+    value_ident = value_ident,
+    kind_label = kind_label,
+    out_variant = out_variant,
+    elem_expr = elem_expr,
+  ))
+}
+
+fn emit_default_value_ir(
+  type_ctx: &TypeContext,
+  ty: &IrIdlType,
+  default: &IrDefaultValue,
+) -> Result<String> {
+  let evaluated =
+    webidl_ir::eval_default_value(ty, default, type_ctx).map_err(|e| anyhow::anyhow!("{e}"))?;
+  Ok(emit_binding_value_expr_from_webidl_value(&evaluated))
+}
+
+fn emit_binding_value_expr_from_webidl_value(v: &webidl_ir::WebIdlValue) -> String {
+  match v {
+    webidl_ir::WebIdlValue::Undefined => "BindingValue::Undefined".to_string(),
+    webidl_ir::WebIdlValue::Null => "BindingValue::Null".to_string(),
+    webidl_ir::WebIdlValue::Boolean(b) => {
+      format!("BindingValue::Bool({})", if *b { "true" } else { "false" })
+    }
+
+    webidl_ir::WebIdlValue::Byte(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::Octet(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::Short(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::UnsignedShort(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::Long(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::UnsignedLong(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::LongLong(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::UnsignedLongLong(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::Float(n) | webidl_ir::WebIdlValue::UnrestrictedFloat(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n as f64))
+    }
+    webidl_ir::WebIdlValue::Double(n) | webidl_ir::WebIdlValue::UnrestrictedDouble(n) => {
+      format!("BindingValue::Number({})", emit_f64_literal(*n))
+    }
+
+    webidl_ir::WebIdlValue::String(s) | webidl_ir::WebIdlValue::Enum(s) => {
+      format!("BindingValue::String({}.to_string())", rust_string_literal(s))
+    }
+
+    webidl_ir::WebIdlValue::Sequence { values, .. } => {
+      if values.is_empty() {
+        "BindingValue::Sequence(Vec::new())".to_string()
+      } else {
+        let items = values
+          .iter()
+          .map(emit_binding_value_expr_from_webidl_value)
+          .collect::<Vec<_>>()
+          .join(", ");
+        format!("BindingValue::Sequence(vec![{items}])")
+      }
+    }
+
+    webidl_ir::WebIdlValue::Record { entries, .. } => {
+      if entries.is_empty() {
+        "BindingValue::Dictionary(BTreeMap::new())".to_string()
+      } else {
+        let mut out = String::new();
+        out.push_str("{\n  let mut map = BTreeMap::new();\n");
+        for (k, v) in entries.iter().cloned() {
+          let value_expr = emit_binding_value_expr_from_webidl_value(&v);
+          out.push_str(&format!(
+            "  map.insert({key}.to_string(), {value_expr});\n",
+            key = rust_string_literal(&k)
+          ));
+        }
+        out.push_str("  BindingValue::Dictionary(map)\n}");
+        out
+      }
+    }
+
+    webidl_ir::WebIdlValue::Dictionary { members, .. } => {
+      if members.is_empty() {
+        "BindingValue::Dictionary(BTreeMap::new())".to_string()
+      } else {
+        let mut out = String::new();
+        out.push_str("{\n  let mut map = BTreeMap::new();\n");
+        for (k, v) in members {
+          let value_expr = emit_binding_value_expr_from_webidl_value(v);
+          out.push_str(&format!(
+            "  map.insert({key}.to_string(), {value_expr});\n",
+            key = rust_string_literal(k)
+          ));
+        }
+        out.push_str("  BindingValue::Dictionary(map)\n}");
+        out
+      }
+    }
+
+    webidl_ir::WebIdlValue::Union { value, .. } => emit_binding_value_expr_from_webidl_value(value),
+    webidl_ir::WebIdlValue::PlatformObject(_) => "BindingValue::Undefined".to_string(),
   }
-  let name = s[start..end].to_string();
-  let ty_str = s[..start].trim_end();
-  let ty = crate::webidl::parse_idl_type(ty_str).ok()?;
-  Some((ty, name))
+}
+
+fn emit_f64_literal(value: f64) -> String {
+  if value.is_nan() {
+    "f64::NAN".to_string()
+  } else if value.is_infinite() {
+    if value.is_sign_negative() {
+      "f64::NEG_INFINITY".to_string()
+    } else {
+      "f64::INFINITY".to_string()
+    }
+  } else {
+    format!("{value:?}")
+  }
 }
 
 fn ast_idl_type_to_webidl_ir_src(ty: &IdlType) -> String {
@@ -2828,6 +3254,19 @@ fn emit_conversion_expr_for_optional(
     return emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
   }
 
+  // Dictionary arguments: per WebIDL, `undefined`/`null` are treated as "missing dictionary
+  // argument" only when the argument itself is optional/defaulted. The dictionary conversion helper
+  // is strict by default, so optional/defaulted dictionary arguments must opt into this behaviour.
+  if let IdlType::Named(name) = &arg.type_ {
+    if resolved.dictionaries.contains_key(name) {
+      return format!(
+        "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, true)?",
+        to_snake_ident(name),
+        value_ident = value_ident
+      );
+    }
+  }
+
   // If the argument is missing or `undefined`, use the default if present, otherwise `undefined`.
   let default_expr = arg
     .default
@@ -2983,7 +3422,7 @@ fn emit_conversion_expr(
     IdlType::Named(name) => {
       if resolved.dictionaries.contains_key(name) {
         format!(
-          "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
+          "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, false)?",
           to_snake_ident(name)
         )
       } else if resolved.callbacks.contains_key(name) {

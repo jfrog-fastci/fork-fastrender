@@ -49,29 +49,35 @@ pub mod window {
     }
   }
 
-  #[allow(dead_code)]
+  #[allow(dead_code, unused_variables)]
   fn js_to_dict_foo_options<Host, R>(
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
+    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let _ = host;
-    if rt.is_undefined(value) || rt.is_null(value) {
-      return Ok(BindingValue::Dictionary(BTreeMap::new()));
+    let is_missing = rt.is_undefined(value) || rt.is_null(value);
+    if is_missing && !allow_missing {
+      return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
     }
-    if !rt.is_object(value) {
+    if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
     }
     let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
     {
-      let key = rt.property_key("capture")?;
-      let v = rt.get(value, key)?;
-      if !rt.is_undefined(v) {
-        let converted = BindingValue::Bool(rt.to_boolean(v)?);
+      let js_member_value = if is_missing {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key("capture")?;
+        rt.get(value, key)?
+      };
+      if !rt.is_undefined(js_member_value) {
+        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
         out_dict.insert("capture".to_string(), converted);
+      } else {
       }
     }
     Ok(BindingValue::Dictionary(out_dict))
@@ -269,11 +275,7 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(if rt.is_undefined(v0) {
-        BindingValue::Undefined
-      } else {
-        js_to_dict_foo_options::<Host, R>(rt, host, v0)?
-      });
+      converted_args.push(js_to_dict_foo_options::<Host, R>(rt, host, v0, true)?);
       let result = host.call_operation(rt, Some(this), "Foo", "qux", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
     }
