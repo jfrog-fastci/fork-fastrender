@@ -375,6 +375,22 @@ mod tests {
           let href = self.require_url(rt, receiver)?;
           Ok(BindingValue::String(href.to_string()))
         }
+        ("URL", "origin") => {
+          let href = self.require_url(rt, receiver)?;
+          // Minimal origin parsing for tests. This intentionally does not implement the full WHATWG
+          // URL Standard: it only handles `scheme://host/...` inputs that appear in our binding
+          // tests.
+          let origin = if let Some(scheme_end) = href.find("://") {
+            let after_scheme = scheme_end + "://".len();
+            match href[after_scheme..].find('/') {
+              Some(path_start) => &href[..after_scheme + path_start],
+              None => href,
+            }
+          } else {
+            href
+          };
+          Ok(BindingValue::String(origin.to_string()))
+        }
         _ => Err(rt.throw_type_error("unimplemented host attribute getter")),
       }
     }
@@ -475,9 +491,12 @@ mod tests {
     else {
       panic!("missing URLSearchParams.prototype.size descriptor");
     };
-    let PropertyKind::Accessor { get, .. } = size_desc.kind else {
+    assert!(size_desc.enumerable);
+    assert!(size_desc.configurable);
+    let PropertyKind::Accessor { get, set } = size_desc.kind else {
       panic!("URLSearchParams.prototype.size is not an accessor property");
     };
+    assert_eq!(set, Value::Undefined);
     let size_val = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, params_val, &[])?;
     assert_eq!(size_val, Value::Number(2.0));
 
@@ -553,9 +572,37 @@ mod tests {
     else {
       panic!("missing URL.prototype.href descriptor");
     };
+    assert!(href_desc.enumerable);
+    assert!(href_desc.configurable);
     let PropertyKind::Accessor { set, .. } = href_desc.kind else {
       panic!("URL.prototype.href is not an accessor property");
     };
+    assert!(matches!(set, Value::Object(_)));
+
+    // --- Read a readonly attribute with no setter ---
+    let origin_key = alloc_key(&mut scope, "origin")?;
+    let Some(origin_desc) = scope
+      .heap()
+      .object_get_own_property(url_proto_obj, &origin_key)?
+    else {
+      panic!("missing URL.prototype.origin descriptor");
+    };
+    assert!(origin_desc.enumerable);
+    assert!(origin_desc.configurable);
+    let PropertyKind::Accessor {
+      get: origin_get,
+      set: origin_set,
+    } = origin_desc.kind
+    else {
+      panic!("URL.prototype.origin is not an accessor property");
+    };
+    assert_eq!(origin_set, Value::Undefined);
+    let origin_val =
+      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, origin_get, url_val, &[])?;
+    assert_eq!(
+      UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
+      "https://example.test"
+    );
 
     let new_href_str = scope.alloc_string("https://changed.test/")?;
     scope.push_root(Value::String(new_href_str))?;
@@ -569,6 +616,12 @@ mod tests {
       &[new_href],
     )?;
     assert_eq!(host.last_set_href.as_deref(), Some("https://changed.test/"));
+    let origin_val =
+      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, origin_get, url_val, &[])?;
+    assert_eq!(
+      UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
+      "https://changed.test"
+    );
 
     // --- Read a constant defined on the interface object ---
     let node_key = alloc_key(&mut scope, "Node")?;
@@ -621,7 +674,7 @@ mod tests {
     else {
       panic!("Node.ELEMENT_NODE should be defined");
     };
-    assert!(!element_node_desc.enumerable, "constants must be non-enumerable");
+    assert!(element_node_desc.enumerable, "constants must be enumerable");
     assert!(
       !element_node_desc.configurable,
       "constants must be non-configurable"

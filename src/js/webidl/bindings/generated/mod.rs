@@ -469,6 +469,24 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1195,6 +1213,9 @@ pub mod window {
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
+    let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
+    let set = rt.js_undefined();
+    rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
     let ctor_u_r_l = rt.create_constructor(
       "URL",
       1,
@@ -1726,6 +1747,24 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2206,6 +2245,9 @@ pub mod worker {
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
+    let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
+    let set = rt.js_undefined();
+    rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
     let ctor_u_r_l = rt.create_constructor(
       "URL",
       1,

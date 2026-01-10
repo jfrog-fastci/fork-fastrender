@@ -24,7 +24,7 @@ operations = []
 [[interface]]
 name = "URL"
 constructors = true
-attributes = ["href"]
+attributes = ["href", "origin"]
 operations = ["toJSON", "canParse", "parse"]
 
 [[interface]]

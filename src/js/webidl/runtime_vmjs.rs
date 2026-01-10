@@ -298,14 +298,14 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   ///
   /// - writable: false
   /// - configurable: false
-  /// - enumerable: false
+  /// - enumerable: true
   fn define_constant(
     &mut self,
     obj: Self::JsValue,
     name: &str,
     value: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(obj, name, value, false, false, false)
+    self.define_data_property_str_with_attrs(obj, name, value, false, true, false)
   }
 
   /// Defines an interface constructor, wiring `.prototype` and `prototype.constructor`.

@@ -81,6 +81,9 @@ impl DataPropertyAttributes {
 
   /// Typical attributes for prototype methods: writable, non-enumerable, configurable.
   pub const METHOD: Self = Self::new(true, false, true);
+
+  /// Typical attributes for WebIDL `const` values: non-writable, enumerable, non-configurable.
+  pub const CONST: Self = Self::new(false, true, false);
 }
 
 /// Attributes for an accessor property definition.
@@ -98,6 +101,9 @@ impl AccessorPropertyAttributes {
       configurable,
     }
   }
+
+  /// Typical attributes for WebIDL interface attributes: enumerable, configurable.
+  pub const ATTRIBUTE: Self = Self::new(true, true);
 }
 
 /// Host-defined behaviour implementation for WebIDL bindings (vm-js flavour).
