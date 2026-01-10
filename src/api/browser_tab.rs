@@ -118,6 +118,10 @@ impl BrowserTabHost {
     self.document.dom()
   }
 
+  pub fn document_is_dirty(&self) -> bool {
+    self.document.is_dirty()
+  }
+
   pub fn dom_mut(&mut self) -> &mut Document {
     self.document.dom_mut()
   }
@@ -950,8 +954,27 @@ impl BrowserTab {
     Ok(())
   }
 
+  fn run_event_loop_until_idle_with_render_hook(
+    &mut self,
+    limits: RunLimits,
+    mut on_render: impl FnMut(),
+  ) -> Result<RunUntilIdleOutcome> {
+    self.event_loop.run_until_idle_with_hook(
+      &mut self.host,
+      limits,
+      |host, _event_loop| -> Result<()> {
+        if host.document.is_dirty() {
+          if host.document.render_if_needed()?.is_some() {
+            on_render();
+          }
+        }
+        Ok(())
+      },
+    )
+  }
+
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    self.event_loop.run_until_idle(&mut self.host, limits)
+    self.run_event_loop_until_idle_with_render_hook(limits, || {})
   }
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
@@ -990,7 +1013,9 @@ impl BrowserTab {
       }
       frames_executed += 1;
 
-      match self.run_event_loop_until_idle(limits)? {
+      match self.run_event_loop_until_idle_with_render_hook(limits, || {
+        frames_rendered = frames_rendered.saturating_add(1);
+      })? {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
           return Ok(RunUntilStableOutcome::Stopped {
@@ -1027,9 +1052,8 @@ impl BrowserTab {
         }
       }
 
-      if self.host.document.is_dirty() {
-        let _pixmap = self.host.document.render_frame()?;
-        frames_rendered += 1;
+      if self.host.document.render_if_needed()?.is_some() {
+        frames_rendered = frames_rendered.saturating_add(1);
       }
 
       if !self.host.document.is_dirty()

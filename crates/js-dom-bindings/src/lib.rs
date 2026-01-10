@@ -2519,14 +2519,14 @@ const DOM_BINDINGS_SHIM: &str = r##"
             return String(e.name) + "|" + String(e instanceof DOMException);
           }
         })()"#,
-      );
-       assert_eq!(out, "NotSupportedError|true");
- 
-       let out = eval_str(
-         &ctx,
-         r#"(() => {
-           try {
-             document.querySelector("[");
+       );
+        assert_eq!(out, "NotSupportedError|true");
+
+        let out = eval_str(
+          &ctx,
+          r#"(() => {
+            try {
+              document.querySelector("[");
              return "no throw";
            } catch (e) {
             return String(e.name) + "|" + String(e instanceof DOMException) + "|" + String(e instanceof SyntaxError);
