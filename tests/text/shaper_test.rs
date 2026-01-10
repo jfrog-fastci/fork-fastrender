@@ -102,6 +102,8 @@ fn bidi_format_chars_do_not_break_fi_ligature() {
     ("LRO/PDF", "f\u{202D}i\u{202C}"),
     // LRI begins an isolate sequence; PDI terminates it. Both are default-ignorable.
     ("LRI/PDI", "f\u{2066}i\u{2069}"),
+    ("RLI/PDI", "f\u{2067}i\u{2069}"),
+    ("FSI/PDI", "f\u{2068}i\u{2069}"),
   ] {
     let shaped = shape_single_run(text, &style, &font_ctx);
     assert_eq!(
@@ -134,6 +136,8 @@ fn bidi_format_chars_remap_clusters_to_original_text() {
     ("LRE/PDF", "a\u{202A}b\u{202C}"),
     ("LRO/PDF", "a\u{202D}b\u{202C}"),
     ("LRI/PDI", "a\u{2066}b\u{2069}"),
+    ("RLI/PDI", "a\u{2067}b\u{2069}"),
+    ("FSI/PDI", "a\u{2068}b\u{2069}"),
   ] {
     let shaped = shape_single_run(text, &style, &font_ctx);
     assert_eq!(
