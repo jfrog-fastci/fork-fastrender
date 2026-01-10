@@ -3619,6 +3619,21 @@ impl GridFormattingContext {
       LengthUnit::Em => Some(len.value * style.font_size),
       LengthUnit::Ex => Some(len.value * style.font_size * 0.5),
       LengthUnit::Ch => Some(len.value * style.font_size * 0.5),
+      LengthUnit::Cap => Some(len.value * style.font_size * 0.7),
+      LengthUnit::Ic => Some(len.value * style.font_size),
+      LengthUnit::Rex | LengthUnit::Rch => Some(len.value * style.root_font_size * 0.5),
+      LengthUnit::Rcap => Some(len.value * style.root_font_size * 0.7),
+      LengthUnit::Ric => Some(len.value * style.root_font_size),
+      LengthUnit::Rlh => Some(len.value * style.root_font_size * 1.2),
+      LengthUnit::Lh => resolve_length_with_percentage_metrics(
+        *len,
+        None,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
+      ),
       _ => None,
     }
   }
@@ -11904,6 +11919,22 @@ mod tests {
 
   fn make_item_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  #[test]
+  fn grid_resolve_length_px_resolves_root_font_relative_units() {
+    let fc = GridFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.font_size = 20.0;
+    style.root_font_size = 10.0;
+
+    let rch = Length::new(1.0, LengthUnit::Rch);
+    let resolved_rch = fc.resolve_length_px(&rch, &style).expect("resolve rch");
+    assert!((resolved_rch - 5.0).abs() < 1e-6);
+
+    let rlh = Length::new(1.0, LengthUnit::Rlh);
+    let resolved_rlh = fc.resolve_length_px(&rlh, &style).expect("resolve rlh");
+    assert!((resolved_rlh - 12.0).abs() < 1e-6);
   }
 
   fn make_grid_style_with_tracks(cols: Vec<GridTrack>, rows: Vec<GridTrack>) -> Arc<ComputedStyle> {
