@@ -528,7 +528,9 @@ impl Document {
 
     if changed {
       self.record_text_mutation(node_id);
+      self.bump_mutation_generation();
     }
+
     Ok(changed)
   }
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
@@ -605,6 +607,7 @@ impl Document {
         .children
         .splice(insertion_idx..insertion_idx, children_to_move);
       self.record_child_list_mutation(parent);
+      self.bump_mutation_generation();
       return Ok(true);
     }
 
@@ -631,6 +634,7 @@ impl Document {
       self.nodes[parent.index()].children.remove(current_idx);
       self.nodes[parent.index()].children.insert(insertion_idx, new_child);
       self.record_child_list_mutation(parent);
+      self.bump_mutation_generation();
       return Ok(true);
     }
 
@@ -643,6 +647,7 @@ impl Document {
       .insert(insertion_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
+    self.bump_mutation_generation();
     Ok(true)
   }
 
@@ -659,6 +664,7 @@ impl Document {
     self.nodes[parent.index()].children.remove(idx);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(parent);
+    self.bump_mutation_generation();
     Ok(true)
   }
 
@@ -722,6 +728,7 @@ impl Document {
       self.nodes[old_child.index()].parent = None;
 
       self.record_child_list_mutation(parent);
+      self.bump_mutation_generation();
       return Ok(true);
     }
 
@@ -749,6 +756,7 @@ impl Document {
       .insert(old_child_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
+    self.bump_mutation_generation();
     Ok(true)
   }
 }

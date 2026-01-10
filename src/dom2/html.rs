@@ -113,13 +113,16 @@ impl Document {
     // DOM and should not be affected by `innerHTML`).
     let old_children = std::mem::take(&mut self.nodes[element.index()].children);
     let mut preserved_shadow_roots: Vec<NodeId> = Vec::new();
+    let mut detached_any = false;
     for child in old_children {
       if child.index() >= self.nodes.len() {
+        detached_any = true;
         continue;
       }
       if matches!(self.nodes[child.index()].kind, NodeKind::ShadowRoot { .. }) {
         preserved_shadow_roots.push(child);
       } else if let Some(node) = self.nodes.get_mut(child.index()) {
+        detached_any = true;
         node.parent = None;
       }
     }
@@ -127,7 +130,12 @@ impl Document {
 
     // Append the fragment; `DocumentFragment` insertion semantics splice its children into the
     // element (in order) and empty the fragment.
-    self.append_child(element, fragment)?;
+    let inserted = self.append_child(element, fragment)?;
+    // If the fragment insertion was a no-op (empty fragment), we still need to track the mutation
+    // generation when `innerHTML` removed existing light DOM children.
+    if !inserted && detached_any {
+      self.bump_mutation_generation();
+    }
     Ok(())
   }
 

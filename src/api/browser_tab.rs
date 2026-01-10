@@ -1872,4 +1872,60 @@ html, body { margin: 0; padding: 0; }
     assert_eq!(*script_result.borrow(), Some(Value::Bool(true)));
     Ok(())
   }
+
+  fn exec_vm_js_dom_script(tab: &mut BrowserTab, source: &str) {
+    // The vm-js DOM shims store a raw pointer to the host DOM in a thread-local registry keyed by an
+    // integer "dom source id". Register the tab's live DOM for the duration of this script call so
+    // JS can mutate it directly via raw pointers (bypassing BrowserDocumentDom2's `dom_mut()` /
+    // `mutate_dom()` invalidation hooks).
+    let dom_source_id = register_dom_source(tab.host.document.dom_ptr());
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
+      .expect("WindowRealm");
+    realm.exec_script(source).expect("exec_script");
+  }
+
+  #[test]
+  fn vm_js_dom_shim_mutations_invalidate_browser_document_dom2() -> Result<()> {
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><div>hello</div></body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+      NoopExecutor::default(),
+    )?;
+
+    // Initial render clears dirty flags and records the current DOM mutation generation.
+    assert!(tab.render_if_needed()?.is_some());
+    assert!(tab.render_if_needed()?.is_none());
+
+    exec_vm_js_dom_script(&mut tab, "document.documentElement.className = 'x';");
+
+    // `run_until_stable` must observe that the document is dirty (via the mutation generation) and
+    // render a frame before reporting stability.
+    let mut limits = tab.js_execution_options().event_loop_run_limits;
+    // Default run limits include a conservative wall-time budget; bump it to avoid spurious failures
+    // on slow CI machines while keeping the frame cap as a safety net.
+    limits.max_wall_time = Some(std::time::Duration::from_secs(2));
+    match tab.run_until_stable_with_run_limits(limits, 10)? {
+      RunUntilStableOutcome::Stable { frames_rendered } => {
+        assert!(
+          frames_rendered > 0,
+          "expected DOM mutation to trigger a render before reaching Stable"
+        );
+      }
+      other => panic!("expected Stable after rendering, got {other:?}"),
+    }
+
+    exec_vm_js_dom_script(
+      &mut tab,
+      "document.body.innerHTML = '<p id=changed>changed</p>';",
+    );
+
+    assert!(
+      tab.render_if_needed()?.is_some(),
+      "expected BrowserTab::render_if_needed to produce a new frame after JS DOM mutation"
+    );
+    assert!(tab.render_if_needed()?.is_none());
+    Ok(())
+  }
 }

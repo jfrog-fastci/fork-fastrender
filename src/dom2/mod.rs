@@ -147,6 +147,7 @@ pub struct Document {
   events: web_events::EventListenerRegistry,
   scripting_enabled: bool,
   mutations: MutationLog,
+  mutation_generation: u64,
 }
 
 impl Clone for Document {
@@ -161,6 +162,7 @@ impl Clone for Document {
       scripting_enabled: self.scripting_enabled,
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
+      mutation_generation: self.mutation_generation,
     }
   }
 }
@@ -171,6 +173,7 @@ impl std::fmt::Debug for Document {
       .field("nodes", &self.nodes)
       .field("root", &self.root)
       .field("scripting_enabled", &self.scripting_enabled)
+      .field("mutation_generation", &self.mutation_generation)
       .finish()
   }
 }
@@ -295,6 +298,7 @@ impl Document {
       scripting_enabled: self.scripting_enabled,
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
+      mutation_generation: self.mutation_generation,
     }
   }
 
@@ -358,6 +362,7 @@ impl Document {
       events: web_events::EventListenerRegistry::new(),
       scripting_enabled,
       mutations: MutationLog::default(),
+      mutation_generation: 0,
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -375,6 +380,20 @@ impl Document {
 
   pub fn root(&self) -> NodeId {
     self.root
+  }
+
+  /// Monotonic counter incremented on DOM mutations that can affect rendering.
+  ///
+  /// This is used by embedding layers (e.g. `BrowserDocumentDom2`) to detect when the live `dom2`
+  /// document has changed even if the mutation bypassed higher-level invalidation hooks (such as
+  /// raw-pointer JS shims).
+  pub fn mutation_generation(&self) -> u64 {
+    self.mutation_generation
+  }
+
+  #[inline]
+  fn bump_mutation_generation(&mut self) {
+    self.mutation_generation = self.mutation_generation.wrapping_add(1);
   }
 
   pub fn ready_state(&self) -> DocumentReadyState {
@@ -1531,6 +1550,8 @@ mod class_list_tests;
 mod mapping_tests;
 #[cfg(test)]
 mod mutation_tests;
+#[cfg(test)]
+mod mutation_generation_tests;
 #[cfg(test)]
 mod query_tests;
 #[cfg(test)]

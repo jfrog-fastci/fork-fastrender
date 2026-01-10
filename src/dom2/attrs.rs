@@ -105,7 +105,9 @@ impl Document {
 
     if changed {
       self.record_attribute_mutation(node_id);
+      self.bump_mutation_generation();
     }
+
     Ok(changed)
   }
 
@@ -130,7 +132,9 @@ impl Document {
 
     if changed {
       self.record_attribute_mutation(node_id);
+      self.bump_mutation_generation();
     }
+
     Ok(changed)
   }
 
@@ -159,7 +163,9 @@ impl Document {
       };
       if changed {
         self.record_attribute_mutation(node_id);
+        self.bump_mutation_generation();
       }
+
       Ok(changed)
     } else {
       self.remove_attribute(node, name)

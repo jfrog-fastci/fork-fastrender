@@ -50,6 +50,7 @@ pub struct BrowserDocumentDom2 {
   dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
   invalidation_counters: BrowserDocumentDom2InvalidationCounters,
+  last_seen_dom_mutation_generation: u64,
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
@@ -74,7 +75,9 @@ impl BrowserDocumentDom2 {
     } else {
       renderer.parse_html(html)?
     };
-    let dom = Box::new(crate::dom2::Document::from_renderer_dom(&dom));
+    let dom = crate::dom2::Document::from_renderer_dom(&dom);
+    let last_seen_dom_mutation_generation = dom.mutation_generation();
+    let dom = Box::new(dom);
     Ok(Self {
       renderer,
       dom,
@@ -90,6 +93,7 @@ impl BrowserDocumentDom2 {
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
       invalidation_counters: BrowserDocumentDom2InvalidationCounters::default(),
+      last_seen_dom_mutation_generation,
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
@@ -173,6 +177,7 @@ impl BrowserDocumentDom2 {
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
     *self.dom = dom;
+    self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
@@ -187,6 +192,7 @@ impl BrowserDocumentDom2 {
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
     *self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
+    self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
     self.options = options;
     self.prepared = Some(prepared);
     self.last_dom_mapping = Some(self.dom.as_ref().to_renderer_dom_with_mapping().mapping);
@@ -299,7 +305,10 @@ impl BrowserDocumentDom2 {
 
   /// Returns true when style/layout must be recomputed before painting.
   pub fn needs_layout(&self) -> bool {
-    self.prepared.is_none() || self.style_dirty || self.layout_dirty
+    self.prepared.is_none()
+      || self.style_dirty
+      || self.layout_dirty
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
@@ -399,7 +408,9 @@ impl BrowserDocumentDom2 {
       self.invalidate_all();
     }
 
-    let needs_layout = self.style_dirty || self.layout_dirty;
+    let needs_layout = self.style_dirty
+      || self.layout_dirty
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
     if needs_layout {
       // Layout without style changes can often avoid a full cascade by patching the existing box tree
       // and rerunning only layout (e.g. text content changes).
@@ -585,6 +596,7 @@ impl BrowserDocumentDom2 {
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
+    let dom_generation = self.dom.mutation_generation();
     let snapshot = self.dom.as_ref().to_renderer_dom_with_mapping();
     let renderer_dom = snapshot.dom;
     let mapping = snapshot.mapping;
@@ -623,6 +635,11 @@ impl BrowserDocumentDom2 {
     };
 
     self.last_dom_mapping = Some(mapping);
+    // The cached layout artifacts produced by `prepare_dom_inner` correspond to the DOM snapshot we
+    // just took. Update the "seen" generation so future calls can detect out-of-band DOM mutations
+    // (e.g. via JS shims using raw pointers) without forcing a re-layout when only paint is
+    // outstanding.
+    self.last_seen_dom_mutation_generation = dom_generation;
     Ok(prepared)
   }
 
@@ -648,7 +665,10 @@ impl BrowserDocumentDom2 {
 
   #[inline]
   pub fn is_dirty(&self) -> bool {
-    self.style_dirty || self.layout_dirty || self.paint_dirty
+    self.style_dirty
+      || self.layout_dirty
+      || self.paint_dirty
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
   fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) {
