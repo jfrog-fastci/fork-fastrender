@@ -806,6 +806,8 @@ impl BrowserTabHost {
                   return Err(err);
                 };
                 self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
+                // Uncaught script exceptions should not abort parsing/task scheduling (browser
+                // behavior). Still propagate host-level render timeouts/cancellation.
                 if matches!(err, Error::Render(_)) {
                   return Err(err);
                 }
@@ -5814,6 +5816,65 @@ mod tests {
       1,
       "expected readystatechange listener to enqueue a microtask that runs during parsing completion"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_rust_dom_event_dispatch_invokes_vm_js_promise_microtasks() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <div id="target"></div>
+          <script>
+            globalThis.__ran = false;
+            document.getElementById("target").addEventListener("click", () => {
+              Promise.resolve().then(() => { globalThis.__ran = true; });
+            });
+          </script>
+        </body>
+      </html>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(html, RenderOptions::default())?;
+
+    let target = tab
+      .dom()
+      .get_element_by_id("target")
+      .expect("expected #target element");
+
+    tab.dispatch_click_event(target)?;
+
+    // Promise jobs should not run synchronously as part of Rust-driven event dispatch.
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let ran = realm
+        .exec_script("globalThis.__ran")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert!(
+        matches!(ran, Value::Bool(false)),
+        "expected __ran=false before microtask checkpoint, got {ran:?}"
+      );
+    }
+
+    tab.event_loop.perform_microtask_checkpoint(&mut tab.host)?;
+
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let ran = realm
+        .exec_script("globalThis.__ran")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert!(
+        matches!(ran, Value::Bool(true)),
+        "expected __ran=true after microtask checkpoint, got {ran:?}"
+      );
+    }
+
     Ok(())
   }
 

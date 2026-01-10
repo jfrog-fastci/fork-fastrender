@@ -22239,6 +22239,7 @@ mod tests {
     let artifacts = renderer
       .layout_document_for_media_with_artifacts(
         &dom,
+        None,
         200,
         200,
         MediaType::Screen,
@@ -22279,6 +22280,7 @@ mod tests {
     let artifacts = renderer
       .layout_document_for_media_with_artifacts(
         &dom,
+        None,
         200,
         200,
         MediaType::Screen,

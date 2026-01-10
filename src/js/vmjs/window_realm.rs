@@ -10,8 +10,8 @@ use crate::js::document_write::{current_document_write_state_mut, DocumentWriteL
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
-use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState};
+use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
 use crate::js::JsExecutionOptions;
@@ -6682,7 +6682,6 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
 
     // Route Promise jobs (and other hooks) through the host event loop microtask queue.
     let mut host_hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
-
     let call_result: Result<(), VmError> = (|| {
       let event_value = Value::Object(event_obj);
       if scope.heap().is_callable(callback)? {

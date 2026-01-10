@@ -20478,6 +20478,7 @@ mod tests {
           &slot_assignment,
           None,
           None,
+          None,
           &sibling_cache,
           false,
           false,
