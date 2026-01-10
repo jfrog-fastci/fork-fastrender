@@ -242,7 +242,9 @@ fn js_string_literal(value: &str) -> Result<String> {
 fn resolve_module_specifier(specifier: &str, base_url: &str) -> Result<String> {
   // HTML's "resolve a module specifier" algorithm treats bare specifiers (those not starting with
   // `/`, `./`, or `../` and not parseable as an absolute URL) as failures unless import maps are
-  // present. Import maps are out of scope for this milestone, so reject them.
+  // present. FastRender implements import map parsing/merging/resolution in `src/js/import_maps/`,
+  // but that state is not yet integrated into this minimal host-side module graph loader, so reject
+  // bare specifiers here.
   let allowed_relative = specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
   if allowed_relative {
     return resolve_url(specifier, Some(base_url)).map_err(|err| Error::Other(format!("{err}")));
@@ -251,7 +253,7 @@ fn resolve_module_specifier(specifier: &str, base_url: &str) -> Result<String> {
   match resolve_url(specifier, None) {
     Ok(abs) => Ok(abs),
     Err(UrlResolveError::RelativeUrlWithoutBase) => Err(Error::Other(format!(
-      "unsupported bare module specifier {specifier:?} (import maps not implemented)"
+      "unsupported bare module specifier {specifier:?} (import maps not wired into ModuleGraphLoader yet)"
     ))),
     Err(err) => Err(Error::Other(format!("{err}"))),
   }
