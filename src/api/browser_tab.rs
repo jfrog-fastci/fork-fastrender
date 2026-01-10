@@ -3510,6 +3510,116 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn dynamic_script_discovery_respects_force_async_internal_slot() -> Result<()> {
+    struct LoggingExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for LoggingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+    }
+
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let document =
+      BrowserDocumentDom2::from_html("<!doctype html><html><body></body></html>", RenderOptions::default())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(LoggingExecutor {
+        log: Rc::clone(&log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    )?;
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let (script_a, script_b) = host.mutate_dom(|dom| {
+      let body = dom.body().expect("expected document.body to exist");
+      let script_a = dom.create_element("script", "");
+      dom
+        .set_attribute(script_a, "src", "a.js")
+        .expect("set_attribute");
+      let script_b = dom.create_element("script", "");
+      dom
+        .set_attribute(script_b, "src", "b.js")
+        .expect("set_attribute");
+      dom
+        .append_child(body, script_a)
+        .expect("append_child should succeed");
+      dom
+        .append_child(body, script_b)
+        .expect("append_child should succeed");
+      ((script_a, script_b), false)
+    });
+
+    assert!(
+      host.dom().node(script_a).script_force_async,
+      "expected DOM-created scripts to default script_force_async=true"
+    );
+    assert!(
+      host.dom().node(script_b).script_force_async,
+      "expected DOM-created scripts to default script_force_async=true"
+    );
+
+    // Discover dynamic scripts (this schedules fetches and queues networking tasks).
+    let mut event_loop = EventLoop::new();
+    host.discover_dynamic_scripts(&mut event_loop)?;
+    // Clear queued networking tasks; we'll drive fetch completion manually to control ordering.
+    event_loop.clear_all_pending_work();
+
+    let (id_a, id_b) = {
+      let mut id_a = None;
+      let mut id_b = None;
+      for (id, entry) in &host.scripts {
+        if entry.node_id == script_a {
+          id_a = Some(*id);
+        } else if entry.node_id == script_b {
+          id_b = Some(*id);
+        }
+      }
+      (id_a.expect("missing script_id for a.js"), id_b.expect("missing script_id for b.js"))
+    };
+
+    // Complete fetch for B first. When `force_async=true` is plumbed through, scripts behave like
+    // async scripts and execute in completion order (B then A). If `force_async` is ignored, the
+    // scheduler treats them as in-order-asap scripts and would execute A before B.
+    let actions_b = host
+      .scheduler
+      .fetch_completed(id_b, "B".to_string())
+      .expect("fetch_completed for B");
+    host.apply_scheduler_actions(actions_b, &mut event_loop)?;
+    let actions_a = host
+      .scheduler
+      .fetch_completed(id_a, "A".to_string())
+      .expect("fetch_completed for A");
+    host.apply_scheduler_actions(actions_a, &mut event_loop)?;
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(&*log.borrow(), &["B".to_string(), "A".to_string()]);
+    Ok(())
+  }
+
   #[derive(Default)]
   struct ScriptSourceFetcher {
     calls: AtomicUsize,
