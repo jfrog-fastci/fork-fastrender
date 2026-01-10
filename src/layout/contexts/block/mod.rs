@@ -710,6 +710,11 @@ impl BlockFormattingContext {
         style.max_width_keyword,
       )
     };
+    // Percentage block sizes resolve against the containing block's *definite* block-size
+    // (CSS2.1 §10.5). Thread this through via `LayoutConstraints::block_percentage_base` so we can
+    // keep the block-axis available space indefinite (in-flow content is allowed to overflow)
+    // without incorrectly resolving percentages against an ancestor's available height (e.g. the
+    // viewport).
     let containing_height = if inline_is_horizontal {
       constraints.height()
     } else {
@@ -1863,6 +1868,7 @@ impl BlockFormattingContext {
             )
           }
           .with_inline_percentage_base(Some(containing_width))
+          .with_block_percentage_base(containing_height_for_percentages)
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
 
           let mut fragment = FormattingContextFactory::with_viewport_scroll_override(

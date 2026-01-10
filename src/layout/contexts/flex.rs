@@ -1622,7 +1622,6 @@ impl FormattingContext for FlexFormattingContext {
                         // fit-content clamping. The measure path below resolves this by computing a
                         // fit-content size from the item's intrinsic min/max contributions and
                         // re-laying out under that clamped size.
-
                         // Taffy sometimes propagates a "known" cross size for nested flex containers
                         // even when the child’s physical cross-size is `auto`. Treat that as a soft
                         // hint rather than a hard used border-box size so the child formatting
@@ -2626,10 +2625,25 @@ impl FormattingContext for FlexFormattingContext {
                     let mut fit_inset_w: f32 = 0.0;
                     let mut fit_inset_h: f32 = 0.0;
 
-                    let fit_width_limit = match (known_dimensions.width, measure_style.width_keyword) {
+                    let effective_align_self =
+                      measure_style.align_self.unwrap_or(style.align_items);
+                    let implicit_cross_fit_content_width = !container_main_axis_is_horizontal
+                      && effective_align_self != AlignItems::Stretch
+                      && known_dimensions.width.is_none()
+                      && matches!(avail.width, AvailableSpace::Definite(_))
+                      && physical_width_is_auto(measure_style);
+
+                    let mut fit_width_limit = match (known_dimensions.width, measure_style.width_keyword) {
                       (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
                       _ => None,
                     };
+                    if fit_width_limit.is_none() && implicit_cross_fit_content_width {
+                      // Flex items in a column flex container with a definite available cross size and
+                      // `width:auto` (cross-size auto) use a shrink-to-fit (fit-content) width when
+                      // they are not stretched (CSS Flexbox §9.2). This prevents max-content widths
+                      // from overflowing and allows text to wrap (e.g. nasa.gov card overlays).
+                      fit_width_limit = Some(None);
+                    }
                     let fit_height_limit = match (known_dimensions.height, measure_style.height_keyword) {
                       (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
                       _ => None,

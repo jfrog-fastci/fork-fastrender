@@ -268,10 +268,11 @@ pub struct LayoutConstraints {
   /// The containing block block size used for resolving percentage-based lengths in the block
   /// axis (e.g. percentage heights in horizontal writing modes).
   ///
-  /// Unlike the inline axis, percentage heights often compute to `auto` when the containing block
-  /// block size depends on content. Callers should set this explicitly only when the containing
-  /// block has a definite block-size (e.g. a specified height, a flex/grid-used size, or the
-  /// absolute-positioning inset sizing algorithm).
+  /// Percentage block sizes resolve against the containing block's *definite* used size (CSS2.1
+  /// §10.5). Callers should set this explicitly only when the containing block has a definite
+  /// block-size (e.g. a specified height, a flex/grid-used size, or the absolute-positioning inset
+  /// sizing algorithm). Leave this as `None` when the containing block's block size depends on
+  /// content so percentage heights compute to `auto`.
   pub block_percentage_base: Option<f32>,
 }
 
