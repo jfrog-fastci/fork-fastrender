@@ -4408,6 +4408,9 @@ fn resolve_viewport(
     return resolved;
   };
 
+  let width_specified = meta.width.is_some();
+  let height_specified = meta.height.is_some();
+
   // Apply explicit width/height requests first; these drive the layout viewport directly.
   let requested_visual = resolved.visual_viewport;
   let mut applied_width = false;
@@ -4485,6 +4488,18 @@ fn resolve_viewport(
     (requested_visual.width / scale).max(1.0),
     (requested_visual.height / scale).max(1.0),
   );
+
+  // When an axis is not explicitly specified by the author, treat it as being determined by the
+  // zoom scale (matching the visual viewport). This keeps the effective output surface stable in
+  // device pixels for non-1.0 `initial-scale` / derived zoom, and matches how real-world pages
+  // (e.g. Wikipedia's `width=1120`) expect the viewport to scale uniformly.
+  if !width_specified {
+    resolved.layout_viewport.width = resolved.visual_viewport.width;
+  }
+  if !height_specified {
+    resolved.layout_viewport.height = resolved.visual_viewport.height;
+  }
+
   resolved.device_pixel_ratio = (resolved.device_pixel_ratio * scale)
     .clamp(MIN_EFFECTIVE_SCALE, MAX_EFFECTIVE_SCALE)
     .max(f32::EPSILON);
@@ -4569,7 +4584,7 @@ mod viewport_resolution_tests {
       (
         "width with explicit scale",
         Some("width=320, initial-scale=1.5"),
-        (320.0, 600.0),
+        (320.0, 400.0),
         (533.33, 400.0),
         3.0,
       ),
@@ -4590,7 +4605,7 @@ mod viewport_resolution_tests {
       (
         "initial scale clamped low",
         Some("width=320, initial-scale=0.05"),
-        (320.0, 600.0),
+        (320.0, 6000.0),
         (8000.0, 6000.0),
         0.2,
       ),
@@ -4611,35 +4626,35 @@ mod viewport_resolution_tests {
       (
         "initial scale only",
         Some("initial-scale=2"),
-        (800.0, 600.0),
+        (400.0, 300.0),
         (400.0, 300.0),
         4.0,
       ),
       (
         "initial scale clamped to minimum",
         Some("initial-scale=0.05"),
-        (800.0, 600.0),
+        (8000.0, 6000.0),
         (8000.0, 6000.0),
         0.2,
       ),
       (
         "min greater than max swaps",
         Some("minimum-scale=2, maximum-scale=1, initial-scale=5"),
-        (800.0, 600.0),
+        (400.0, 300.0),
         (400.0, 300.0),
         4.0,
       ),
       (
         "wide layout with zoom",
         Some("width=1200, initial-scale=2"),
-        (1200.0, 600.0),
+        (1200.0, 300.0),
         (400.0, 300.0),
         4.0,
       ),
       (
         "wide layout with clamped zoom",
         Some("width=1200, initial-scale=2, maximum-scale=1.2"),
-        (1200.0, 600.0),
+        (1200.0, 500.0),
         (666.67, 500.0),
         2.4,
       ),
@@ -4653,7 +4668,7 @@ mod viewport_resolution_tests {
       (
         "device width with scale capped by maximum",
         Some("width=device-width, initial-scale=3, maximum-scale=2"),
-        (800.0, 600.0),
+        (800.0, 300.0),
         (400.0, 300.0),
         4.0,
       ),

@@ -4683,11 +4683,22 @@ impl DisplayListRenderer {
       return dest_rect;
     }
 
-    if transform == Transform::identity() {
+    let snapped_origin = if transform == Transform::identity() {
       Self::round_rect_origin_to_device_pixels(dest_rect)
     } else {
       Self::round_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
-    }
+    };
+    let width = if Self::is_near_integer(snapped_origin.width()) {
+      snapped_origin.width().round()
+    } else {
+      snapped_origin.width()
+    };
+    let height = if Self::is_near_integer(snapped_origin.height()) {
+      snapped_origin.height().round()
+    } else {
+      snapped_origin.height()
+    };
+    Rect::from_xywh(snapped_origin.x(), snapped_origin.y(), width, height)
   }
 
   #[inline]
@@ -18596,6 +18607,18 @@ mod tests {
   fn rgba_bytes_rejects_overflow() {
     assert_eq!(rgba_bytes(2, 3), Some(24));
     assert!(rgba_bytes(u32::MAX, u32::MAX).is_none());
+  }
+
+  #[test]
+  fn maybe_snap_unscaled_image_dest_rect_snaps_near_integer_size() {
+    let renderer = DisplayListRenderer::new(10, 10, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+    let pixmap = Pixmap::new(115, 115).unwrap();
+    let dest_rect = Rect::from_xywh(10.9, 20.4, 115.0001, 114.99999);
+    let snapped = renderer.maybe_snap_unscaled_image_dest_rect(dest_rect, &pixmap);
+    assert_eq!(snapped.x(), 11.0);
+    assert_eq!(snapped.y(), 20.0);
+    assert_eq!(snapped.width(), 115.0);
+    assert_eq!(snapped.height(), 115.0);
   }
 
   fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
