@@ -4108,7 +4108,7 @@ impl FormattingContext for FlexFormattingContext {
     {
       if let CrateAvailableSpace::Definite(w) = constraints.available_width {
         let base = w.max(0.0);
-        let used = self.clamp_border_box_width_to_min_max(box_node, style, constraints, base)?;
+        let used = self.clamp_border_box_width_to_min_max(box_node, style, &constraints, base)?;
         fragment.bounds = Rect::new(
           fragment.bounds.origin,
           Size::new(used, fragment.bounds.height()),
@@ -8520,7 +8520,7 @@ impl FlexFormattingContext {
       Ok(resolved)
     };
 
-    let keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Result<Option<f32>, LayoutError> {
+    let mut keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Result<Option<f32>, LayoutError> {
       match kw {
         IntrinsicSizeKeyword::FillAvailable => Ok(Some(base)),
         IntrinsicSizeKeyword::MinContent => Ok(intrinsic_range()?.map(|(min, _)| min)),
