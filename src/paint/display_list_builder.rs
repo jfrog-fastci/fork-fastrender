@@ -6757,18 +6757,6 @@ impl DisplayListBuilder {
       }
     }
 
-    // As a last resort, fall back to any paintable child so we at least fill the canvas for
-    // synthetic trees.
-    for child in html.children.iter() {
-      if let Some(style) = child.style.clone() {
-        if Self::has_paintable_background(&style) {
-          let suppress_box_id = Self::get_box_id(child).unwrap_or(usize::MAX);
-          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
-          return Some((style, suppress_box_id, rect));
-        }
-      }
-    }
-
     None
   }
 
