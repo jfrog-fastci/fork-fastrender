@@ -1,6 +1,7 @@
 use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
+use crate::js::import_maps::ImportMapState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{
@@ -235,6 +236,7 @@ pub struct WindowHostState {
   ///
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
   pub base_url: Option<String>,
+  import_map_state: ImportMapState,
   dom_source_id: Option<u64>,
   document: Box<DocumentHostState>,
   window: WindowRealm,
@@ -350,6 +352,7 @@ impl WindowHostState {
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
+      import_map_state: ImportMapState::default(),
       dom_source_id: Some(dom_source_id),
       document,
       window,
@@ -396,6 +399,10 @@ impl WindowHostState {
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
     self.js_execution_options
+  }
+
+  pub fn resolve_module_integrity_metadata(&self, url: &::url::Url) -> String {
+    crate::js::import_maps::resolve_module_integrity_metadata(&self.import_map_state, url).to_string()
   }
 
   /// Execute a classic script while integrating Promise jobs into the provided [`EventLoop`]'s

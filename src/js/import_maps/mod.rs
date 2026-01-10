@@ -15,6 +15,8 @@
 //!   - "resolve a module specifier"
 //!   - "resolve an imports match"
 //!   - "add module to resolved module set"
+//! - Fetch option helpers:
+//!   - "resolve a module integrity metadata"
 //! - Merging:
 //!   - "merge module specifier maps"
 //!   - "merge existing and new import maps"

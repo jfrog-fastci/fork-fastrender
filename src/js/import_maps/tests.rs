@@ -1,6 +1,7 @@
 use super::{
-  create_import_map_parse_result, merge_existing_and_new_import_maps, register_import_map, resolve_module_specifier,
-  resolve_module_integrity_metadata, ImportMap, ImportMapError, ImportMapState, SpecifierAsUrlKind,
+  create_import_map_parse_result, merge_existing_and_new_import_maps, parse_import_map_string,
+  register_import_map, resolve_module_integrity_metadata, resolve_module_specifier, ImportMap, ImportMapError,
+  ImportMapState, SpecifierAsUrlKind,
 };
 
 use url::Url;
@@ -543,4 +544,95 @@ fn as_url_non_special_disables_prefix_mapping() {
   let record = state.resolved_module_set.last().unwrap();
   assert_eq!(record.specifier, Url::parse(specifier).unwrap().to_string());
   assert_eq!(record.as_url_kind, SpecifierAsUrlKind::NonSpecial);
+}
+
+#[test]
+fn parse_import_map_integrity_entries_are_stored() {
+  let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+  let (import_map, warnings) = parse_import_map_string(
+    r#"{
+      "integrity": {
+        "./a.js": "sha256-aaa",
+        "/b.js": "sha384-bbb",
+        "https://example.com/c.js": "sha512-ccc"
+      }
+    }"#,
+    &base_url,
+  )
+  .unwrap();
+
+  assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+  assert_eq!(
+    import_map.integrity.entries,
+    vec![
+      ("https://example.com/base/a.js".to_string(), "sha256-aaa".to_string()),
+      ("https://example.com/b.js".to_string(), "sha384-bbb".to_string()),
+      ("https://example.com/c.js".to_string(), "sha512-ccc".to_string()),
+    ]
+  );
+}
+
+#[test]
+fn resolve_module_integrity_metadata_returns_match_or_empty() {
+  let base_url = Url::parse("https://example.com/").unwrap();
+  let (import_map, _warnings) = parse_import_map_string(
+    r#"{
+      "integrity": {
+        "./a.js": "sha256-aaa"
+      }
+    }"#,
+    &base_url,
+  )
+  .unwrap();
+
+  let state = ImportMapState {
+    import_map,
+    resolved_module_set: Vec::new(),
+  };
+
+  let a = Url::parse("https://example.com/a.js").unwrap();
+  assert_eq!(
+    resolve_module_integrity_metadata(&state, &a),
+    "sha256-aaa"
+  );
+
+  let missing = Url::parse("https://example.com/missing.js").unwrap();
+  assert_eq!(resolve_module_integrity_metadata(&state, &missing), "");
+}
+
+#[test]
+fn merge_integrity_ignores_duplicates() {
+  let base_url = Url::parse("https://example.com/").unwrap();
+  let (first, _warnings) = parse_import_map_string(
+    r#"{
+      "integrity": {
+        "./a.js": "sha256-first"
+      }
+    }"#,
+    &base_url,
+  )
+  .unwrap();
+  let (second, _warnings) = parse_import_map_string(
+    r#"{
+      "integrity": {
+        "./a.js": "sha256-second",
+        "./b.js": "sha256-b"
+      }
+    }"#,
+    &base_url,
+  )
+  .unwrap();
+
+  let mut state = ImportMapState::default();
+  merge_existing_and_new_import_maps(&mut state, &first);
+  merge_existing_and_new_import_maps(&mut state, &second);
+
+  let a = Url::parse("https://example.com/a.js").unwrap();
+  assert_eq!(
+    resolve_module_integrity_metadata(&state, &a),
+    "sha256-first"
+  );
+
+  let b = Url::parse("https://example.com/b.js").unwrap();
+  assert_eq!(resolve_module_integrity_metadata(&state, &b), "sha256-b");
 }
