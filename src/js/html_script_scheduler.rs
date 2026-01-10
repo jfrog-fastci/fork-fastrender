@@ -328,13 +328,14 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
       }
       ScriptType::Module => {
         // HTML: `defer` has no effect on module scripts.
-        let mode = if element.async_attr {
+        let is_async = element.async_attr || element.force_async;
+        let mode = if is_async {
           ScheduleMode::Async
         } else if element.parser_inserted {
           // Parser-inserted module scripts are deferred by default.
           ScheduleMode::PostParse
         } else {
-          // Dynamically inserted module scripts without async execute in insertion order.
+          // Dynamically inserted module scripts that are not async-like execute in insertion order.
           ScheduleMode::OrderedAsap
         };
 
@@ -752,6 +753,17 @@ mod state_machine_tests {
     }
   }
 
+  fn module_external_with_force_async(
+    src: &str,
+    async_attr: bool,
+    force_async: bool,
+    parser_inserted: bool,
+  ) -> ScriptElementSpec {
+    let mut spec = module_external(src, async_attr, parser_inserted);
+    spec.force_async = force_async;
+    spec
+  }
+
   fn module_inline(source: &str, async_attr: bool, parser_inserted: bool) -> ScriptElementSpec {
     ScriptElementSpec {
       base_url: Some("https://example.com/".to_string()),
@@ -1040,6 +1052,46 @@ mod state_machine_tests {
         "microtask:module:1".to_string(),
         "module:2".to_string(),
         "microtask:module:2".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_module_scripts_with_force_async_true_execute_in_completion_order() -> Result<()> {
+    let mut h = Harness::new();
+
+    let m1 = h.discover(module_external_with_force_async(
+      "dyn1.js",
+      /* async */ false,
+      /* force_async */ true,
+      /* parser_inserted */ false,
+    ))?;
+    let m2 = h.discover(module_external_with_force_async(
+      "dyn2.js",
+      /* async */ false,
+      /* force_async */ true,
+      /* parser_inserted */ false,
+    ))?;
+
+    // Complete out of order: m2 ready before m1.
+    h.module_graph_complete(m2, "2")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["module:2".to_string(), "microtask:module:2".to_string()],
+      "async-like module scripts should run as soon as possible when ready"
+    );
+
+    h.module_graph_complete(m1, "1")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "module:2".to_string(),
+        "microtask:module:2".to_string(),
+        "module:1".to_string(),
+        "microtask:module:1".to_string(),
       ]
     );
     Ok(())
