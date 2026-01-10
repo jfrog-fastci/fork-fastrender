@@ -118,6 +118,12 @@ pub struct Node {
   /// - Parser-inserted scripts set this to false.
   /// - Scripts created via DOM APIs default it to true.
   pub script_force_async: bool,
+  /// Whether this `<script>` element was created by the HTML parser as part of full document
+  /// parsing.
+  ///
+  /// This corresponds to the HTML spec's "parser-inserted" internal slot for scripts. It is
+  /// distinct from fragment parsing (e.g. `innerHTML`), which does **not** mark scripts as parser
+  /// inserted.
   pub script_parser_document: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
