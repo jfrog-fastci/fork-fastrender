@@ -8150,11 +8150,8 @@ fn build_dynamic_script_spec(
         CorsMode::Anonymous
       }
     });
-  let integrity = dom
-    .get_attribute(script, "integrity")
-    .ok()
-    .flatten()
-    .map(|value| value.to_string());
+  let (integrity_attr_present, integrity) =
+    super::clamp_integrity_attribute(dom.get_attribute(script, "integrity").ok().flatten());
   let referrer_policy = dom
     .get_attribute(script, "referrerpolicy")
     .ok()
@@ -8182,6 +8179,7 @@ fn build_dynamic_script_spec(
     defer_attr,
     nomodule_attr,
     crossorigin,
+    integrity_attr_present,
     integrity,
     referrer_policy,
     parser_inserted: false,
