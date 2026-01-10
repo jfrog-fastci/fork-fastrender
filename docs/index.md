@@ -9,6 +9,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Common agent rules & resource safety: [`AGENTS.md`](../AGENTS.md)
 - Capability buildout workstream: [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
 - Pageset-by-page fixing loop: [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
+- Page-loop tooling playbook (fixtures, `page-loop`, `inspect_frag`): [page_loop_tooling.md](page_loop_tooling.md)
 - Browser UI / chrome work: [`instructions/browser_ui.md`](../instructions/browser_ui.md)
 - Desktop browser app (`browser` binary): [browser.md](browser.md)
 - Running the desktop browser UI locally: [browser_ui.md](browser_ui.md)
