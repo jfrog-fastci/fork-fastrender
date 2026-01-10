@@ -4150,13 +4150,11 @@ impl FormattingContext for FlexFormattingContext {
 
         let max_x = x + w;
         let max_y = y + h;
-        if x.abs() > runaway_x || max_x.abs() > runaway_x {
-          w = w.min(max_w);
+        if !max_x.is_finite() || x.abs() > runaway_x {
           x = x.clamp(0.0, (max_w - w).max(0.0));
           changed = true;
         }
-        if y.abs() > runaway_y || max_y.abs() > runaway_y {
-          h = h.min(max_h);
+        if !max_y.is_finite() || y.abs() > runaway_y {
           y = y.clamp(0.0, (max_h - h).max(0.0));
           changed = true;
         }

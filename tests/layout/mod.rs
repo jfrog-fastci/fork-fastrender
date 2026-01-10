@@ -65,6 +65,7 @@ mod flex_calc_gap_cache_key;
 mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
 mod flex_fragmentation;
+mod flex_huge_overflow_item_is_not_size_clamped;
 mod flex_intrinsic_gap;
 mod flex_intrinsic_gap_vertical_writing_mode;
 mod flex_intrinsic_margins_vertical_writing_mode;
