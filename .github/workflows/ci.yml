@@ -136,6 +136,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+          # `cargo xtask webidl-bindings --check` uses `rustfmt` to ensure deterministic formatting.
+          components: rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -171,6 +173,11 @@ jobs:
 
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
+
+      - name: Validate generated WebIDL bindings
+        # To reproduce locally:
+        #   bash scripts/cargo_agent.sh xtask webidl-bindings --check
+        run: cargo xtask webidl-bindings --check
 
       - name: "Lint: no panics in production code"
         run: cargo xtask lint-no-panics
