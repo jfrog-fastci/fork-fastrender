@@ -16,6 +16,31 @@
   },
   "notes": "",
   "auto_notes": "not run",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 101864,
+    "diff_percent": 7.8989,
+    "perceptual": 0.2012,
+    "first_mismatch": {
+      "x": 567,
+      "y": 11,
+      "baseline_rgba": [
+        195,
+        175,
+        214,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "acfe410db3e7f0776527ea2bc68106f6e6429880"
+  },
   "hotspot": "fetch",
   "failure_stage": null,
   "timeout_stage": null,
