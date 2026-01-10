@@ -931,22 +931,23 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(if rt.is_undefined(v0) {
-        BindingValue::String("".to_string())
-      } else {
+    // WebIDL overloads:
+    // - `undefined alert();`
+    // - `undefined alert(DOMString message);`
+    //
+    // Extra arguments are ignored per the WebIDL operation invocation algorithm, so dispatch based
+    // on whether at least one argument was provided.
+    let overload = if args.is_empty() { 0 } else { 1 };
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    if overload == 1 {
+      let v0 = args[0];
+      converted_args.push({
         let s = rt.to_string(v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
-      let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
     }
+    let result = host.call_operation(rt, None, "Window", "alert", overload, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
