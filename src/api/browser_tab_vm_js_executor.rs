@@ -9,8 +9,8 @@ use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings,
   import_maps::{
-    create_import_map_parse_result, register_import_map, resolve_module_specifier, ImportMapError,
-    ImportMapState, ImportMapWarningKind,
+    create_import_map_parse_result_with_limits, register_import_map_with_limits, resolve_module_specifier,
+    ImportMapError, ImportMapState, ImportMapWarningKind,
   },
   CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec,
   WindowFetchBindings, WindowFetchEnv,
@@ -435,7 +435,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let base_url =
       url::Url::parse(base_url).unwrap_or_else(|_| url::Url::parse("about:blank").unwrap());
 
-    let result = create_import_map_parse_result(script_text, &base_url);
+    let limits = &self.js_execution_options.import_map_limits;
+    let result = create_import_map_parse_result_with_limits(script_text, &base_url, limits);
 
     if let Some(diag) = self.diagnostics.as_ref() {
       for warning in &result.warnings {
@@ -446,7 +447,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
     }
 
-    match register_import_map(&mut self.import_map_state, result) {
+    match register_import_map_with_limits(&mut self.import_map_state, result, limits) {
       Ok(()) => Ok(()),
       Err(err) => {
         if let Some(diag) = self.diagnostics.as_ref() {
@@ -886,8 +887,8 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::api::FastRender;
-  use crate::api::RenderOptions;
+  use crate::api::{FastRender, RenderOptions};
+  use crate::js::ImportMapLimits;
   use crate::resource::{FetchRequest, FetchedResource};
   use crate::text::font_db::FontConfig;
   use std::collections::HashMap;
@@ -965,9 +966,30 @@ mod tests {
     }
   }
 
+  fn import_map_spec(base_url: &str) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: Some(base_url.to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: String::new(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::ImportMap,
+    }
+  }
+
   #[test]
   fn vm_js_browser_tab_executor_sets_import_meta_url() -> Result<()> {
-    let mut document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
     let current_script = CurrentScriptStateHandle::default();
     let mut executor = VmJsBrowserTabExecutor::new();
     let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
@@ -988,6 +1010,7 @@ mod tests {
       src_attr_present: false,
       inline_text: script_text.to_string(),
       async_attr: false,
+      force_async: false,
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
@@ -995,7 +1018,6 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: crate::js::ScriptType::Module,
     };
@@ -1051,6 +1073,7 @@ mod tests {
       src_attr_present: false,
       inline_text: import_map_text.to_string(),
       async_attr: false,
+      force_async: false,
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
@@ -1058,11 +1081,16 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: crate::js::ScriptType::ImportMap,
     };
-    executor.execute_import_map_script(import_map_text, &import_map_spec, None, &mut document, &mut event_loop)?;
+    executor.execute_import_map_script(
+      import_map_text,
+      &import_map_spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
 
     let module_text = "import { value } from 'dep'; globalThis.result = value;";
     let module_spec = ScriptElementSpec {
@@ -1071,6 +1099,7 @@ mod tests {
       src_attr_present: false,
       inline_text: module_text.to_string(),
       async_attr: false,
+      force_async: false,
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
@@ -1078,14 +1107,82 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: crate::js::ScriptType::Module,
     };
-    executor.execute_module_script(module_text, &module_spec, None, &mut document, &mut event_loop)?;
+    executor.execute_module_script(
+      module_text,
+      &module_spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_script_respects_max_bytes_limit_from_js_execution_options() -> Result<()> {
+    let mut executor = VmJsBrowserTabExecutor::new();
+    executor.js_execution_options.import_map_limits = ImportMapLimits {
+      max_bytes: 1,
+      ..ImportMapLimits::default()
+    };
+    let mut document = BrowserDocumentDom2::from_html("<!doctype html>", RenderOptions::default())?;
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    executor.execute_import_map_script(
+      r#"{"imports":{"a":"/a.js"}}"#,
+      &import_map_spec("https://example.com/"),
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+
+    assert!(
+      executor.import_map_state.import_map.imports.is_empty(),
+      "expected import map registration to be blocked by max_bytes"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_registration_respects_max_total_entries_limit_from_js_execution_options() -> Result<()> {
+    let mut executor = VmJsBrowserTabExecutor::new();
+    executor.js_execution_options.import_map_limits = ImportMapLimits {
+      max_total_entries: 1,
+      ..ImportMapLimits::default()
+    };
+    let mut document = BrowserDocumentDom2::from_html("<!doctype html>", RenderOptions::default())?;
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    let spec = import_map_spec("https://example.com/");
+
+    executor.execute_import_map_script(
+      r#"{"imports":{"a":"/a.js"}}"#,
+      &spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    assert!(
+      executor.import_map_state.import_map.imports.contains_key("a"),
+      "expected first import map entry to be registered"
+    );
+
+    // Second import map would push total entries over max_total_entries, so it must not be merged.
+    executor.execute_import_map_script(
+      r#"{"imports":{"b":"/b.js"}}"#,
+      &spec,
+      None,
+      &mut document,
+      &mut event_loop,
+    )?;
+    assert!(
+      !executor.import_map_state.import_map.imports.contains_key("b"),
+      "expected import map merge to be blocked by max_total_entries"
+    );
     Ok(())
   }
 }

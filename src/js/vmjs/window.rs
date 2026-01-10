@@ -466,10 +466,8 @@ impl WindowHostState {
     Vec<crate::js::import_maps::ImportMapWarning>,
     crate::js::import_maps::ImportMapError,
   > {
-    let mut parse_result = crate::js::import_maps::create_import_map_parse_result(json, base_url);
-    let warnings = std::mem::take(&mut parse_result.warnings);
-    crate::js::import_maps::register_import_map(&mut self.import_map_state, parse_result)?;
-    Ok(warnings)
+    let limits = self.js_execution_options.import_map_limits;
+    self.register_import_map_string_with_limits(json, base_url, &limits)
   }
 
   pub fn register_import_map_string_with_limits(

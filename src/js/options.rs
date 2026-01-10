@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::Instant;
 use vm_js::Budget as VmJsBudget;
 
+use super::import_maps::ImportMapLimits;
 use super::{QueueLimits, RunLimits};
 
 /// Configures how much HTML parsing work is performed per event-loop "parse task".
@@ -67,6 +68,12 @@ pub struct JsExecutionOptions {
 
   /// Maximum number of bytes accepted for a single script's source text (inline or external).
   pub max_script_bytes: usize,
+
+  /// Deterministic resource limits for import map parsing and merging.
+  ///
+  /// These apply when processing `<script type="importmap">` and when embedders register import maps
+  /// via `WindowHostState`.
+  pub import_map_limits: ImportMapLimits,
 
   /// Maximum number of simultaneously pending render-blocking stylesheets that can block
   /// parser-blocking script execution.
@@ -196,6 +203,8 @@ impl Default for JsExecutionOptions {
       // 2 MiB per script mirrors the stylesheet inlining default and keeps per-script allocations
       // bounded. Embedders can raise this when targeting real-world pages.
       max_script_bytes: 2 * 1024 * 1024,
+
+      import_map_limits: ImportMapLimits::default(),
 
       // `document.write` budgets (hostile-input hard caps).
       //
