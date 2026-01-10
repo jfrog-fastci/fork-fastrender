@@ -12883,6 +12883,86 @@ mod tests {
   }
 
   #[test]
+  fn grid_scrollable_percentage_block_tracks_do_not_resolve_against_definite_available_space_horizontal_tb(
+  ) {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.writing_mode = WritingMode::HorizontalTb;
+    style.overflow_y = Overflow::Auto;
+    style.grid_template_columns = vec![GridTrack::Length(Length::px(10.0))];
+    // Percentages should behave like `auto` when the grid's block size is indefinite.
+    style.grid_template_rows = vec![
+      GridTrack::Length(Length::percent(50.0)),
+      GridTrack::Length(Length::percent(50.0)),
+    ];
+    let style = Arc::new(style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.height = Some(Length::px(10.0));
+    item_style.height_keyword = None;
+    let item_style = Arc::new(item_style);
+    let child1 = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+    let child2 = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(style, FormattingContextType::Grid, vec![child1, child2]);
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    assert!(
+      (fragment.bounds.height() - 20.0).abs() < 0.5,
+      "expected grid height to size to content (20px), got {:.2}",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn grid_scrollable_percentage_block_tracks_do_not_resolve_against_definite_available_space_vertical_writing_modes(
+  ) {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let writing_modes = [
+      WritingMode::VerticalRl,
+      WritingMode::VerticalLr,
+      WritingMode::SidewaysRl,
+      WritingMode::SidewaysLr,
+    ];
+
+    for writing_mode in writing_modes {
+      let mut style = ComputedStyle::default();
+      style.display = CssDisplay::Grid;
+      style.writing_mode = writing_mode;
+      style.overflow_x = Overflow::Auto;
+      style.grid_template_columns = vec![GridTrack::Length(Length::px(10.0))];
+      // In vertical writing modes the block axis maps to the physical X axis. The scroll-layout
+      // safeguard must therefore drop the *available width* so percentages behave like `auto`.
+      style.grid_template_rows = vec![
+        GridTrack::Length(Length::percent(50.0)),
+        GridTrack::Length(Length::percent(50.0)),
+      ];
+      let style = Arc::new(style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.width = Some(Length::px(10.0));
+      item_style.width_keyword = None;
+      let item_style = Arc::new(item_style);
+      let child1 = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+      let child2 = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+
+      let grid = BoxNode::new_block(style, FormattingContextType::Grid, vec![child1, child2]);
+      let constraints = LayoutConstraints::definite(200.0, 200.0);
+      let fragment = fc.layout(&grid, &constraints).unwrap();
+
+      assert!(
+        (fragment.bounds.width() - 20.0).abs() < 0.5,
+        "expected {writing_mode:?} grid width to size to content (20px), got {:.2}",
+        fragment.bounds.width()
+      );
+    }
+  }
+
+  #[test]
   fn grid_continuation_available_block_size_horizontal_tb() {
     let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
     let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(

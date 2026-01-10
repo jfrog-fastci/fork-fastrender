@@ -467,6 +467,62 @@ fn flow_root_creates_bfc_and_prevents_parent_child_margin_collapse() {
 }
 
 #[test]
+fn bfc_with_only_floats_is_not_treated_as_empty_for_margin_collapse() {
+  // Floats do not generate line boxes, but when a container establishes a BFC (e.g. via
+  // `overflow:hidden`) they contribute to the container's auto height. Such boxes should therefore
+  // stop "collapsing through empty blocks" logic, otherwise ancestor margins can collapse past a
+  // float-containing BFC and incorrectly offset the document (regression seen on sqlite.org where
+  // <body> was shifted down by the first <p>'s 1em margin-top).
+
+  let mut float_style = block_style_with_height(Some(10.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut bfc_style = block_style_with_height(None);
+  bfc_style.overflow_y = Overflow::Hidden;
+  let bfc = BoxNode::new_block(Arc::new(bfc_style), FormattingContextType::Block, vec![float_box]);
+
+  // Wrapper that would be considered collapsible-through if the BFC child were misclassified as
+  // empty.
+  let wrapper = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![bfc],
+  );
+
+  let mut para_style = block_style_with_height(Some(10.0));
+  para_style.margin_top = Some(Length::px(16.0));
+  let para = BoxNode::new_block(Arc::new(para_style), FormattingContextType::Block, vec![]);
+
+  // Root (id=1 in BoxTree) should not collapse with body, so any collapsed margin chain inside the
+  // body affects its y offset.
+  let body = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![wrapper, para],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![body],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let body_fragment = &fragment.children[0];
+  assert_approx(
+    body_fragment.bounds.y(),
+    0.0,
+    "expected float-containing BFC to prevent collapsing-through from picking up the following paragraph's margin-top",
+  );
+}
+
+#[test]
 fn parent_last_child_margin_collapses() {
   let mut child_style = block_style_with_height(Some(10.0));
   child_style.margin_bottom = Some(Length::px(20.0));

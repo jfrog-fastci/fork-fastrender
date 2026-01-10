@@ -4068,11 +4068,24 @@ impl BlockFormattingContext {
     let mut has_in_flow_content = matches!(node.box_type, BoxType::Replaced(_));
     if !has_in_flow_content {
       let mut seen_float = false;
+      // Floats do not generate line boxes, but when this block establishes a new BFC (e.g.
+      // `overflow:hidden` / `display: flow-root`) they contribute to the block's used auto size.
+      // Such blocks are therefore not "empty" for margin-collapsing-through purposes.
+      let float_children_extend_auto_block_size = establishes_bfc(style)
+        && (if block_axis_is_horizontal(style.writing_mode) {
+          style.width.is_none() && style.width_keyword.is_none()
+        } else {
+          style.height.is_none() && style.height_keyword.is_none()
+        });
       for child in &node.children {
         if child.style.float.is_floating()
           && !matches!(child.style.position, Position::Absolute | Position::Fixed)
         {
           seen_float = true;
+          if float_children_extend_auto_block_size {
+            has_in_flow_content = true;
+            break;
+          }
         }
         if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
           continue;
