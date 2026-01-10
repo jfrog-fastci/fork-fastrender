@@ -213,6 +213,37 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn dom_input_type(node: &crate::dom::DomNode) -> &str {
+  node
+    .get_attribute_ref("type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .unwrap_or("text")
+}
+
+fn dom_is_text_input(node: &crate::dom::DomNode) -> bool {
+  if !node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+  {
+    return false;
+  }
+
+  let t = dom_input_type(node);
+  // Match the interaction engine's MVP heuristic: treat non-button-ish, non-choice-ish inputs as
+  // text controls.
+  !t.eq_ignore_ascii_case("checkbox")
+    && !t.eq_ignore_ascii_case("radio")
+    && !t.eq_ignore_ascii_case("button")
+    && !t.eq_ignore_ascii_case("submit")
+    && !t.eq_ignore_ascii_case("reset")
+    && !t.eq_ignore_ascii_case("hidden")
+    && !t.eq_ignore_ascii_case("range")
+    && !t.eq_ignore_ascii_case("color")
+    && !t.eq_ignore_ascii_case("file")
+    && !t.eq_ignore_ascii_case("image")
+}
+
 fn js_dom_node_for_preorder_id(
   js_tab: &BrowserTab,
   preorder_id: usize,
@@ -2311,11 +2342,16 @@ impl BrowserRuntime {
             .map(|id| id.to_string())
         });
         let focused = tab.interaction.focused_node_id();
-        let focused_element_id = focused.and_then(|focused_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, focused_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let (focused_element_id, focused_is_text_input) = focused
+          .and_then(|focused_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+              (
+                node.get_attribute_ref("id").map(|id| id.to_string()),
+                dom_is_text_input(node),
+              )
+            })
+          })
+          .unwrap_or((None, false));
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -2337,6 +2373,7 @@ impl BrowserRuntime {
             submitter_element_id,
             focused,
             focused_element_id,
+            focused_is_text_input,
           ),
         )
       });
@@ -2348,6 +2385,7 @@ impl BrowserRuntime {
         form_submitter_element_id,
         focused,
         focused_element_id,
+        focused_is_text_input,
       ) = match result {
         Ok(result) => result,
         Err(_) => {
@@ -2356,6 +2394,7 @@ impl BrowserRuntime {
           let mut submitter_element_id: Option<String> = None;
           let mut focused: Option<usize> = None;
           let mut focused_element_id: Option<String> = None;
+          let mut focused_is_text_input = false;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
@@ -2369,11 +2408,18 @@ impl BrowserRuntime {
                 .map(|id| id.to_string())
             });
             focused = tab.interaction.focused_node_id();
-            focused_element_id = focused.and_then(|focused_id| {
-              crate::dom::find_node_mut_by_preorder_id(dom, focused_id)
-                .and_then(|node| node.get_attribute_ref("id"))
-                .map(|id| id.to_string())
-            });
+            let (id, is_text_input) = focused
+              .and_then(|focused_id| {
+                crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+                  (
+                    node.get_attribute_ref("id").map(|id| id.to_string()),
+                    dom_is_text_input(node),
+                  )
+                })
+              })
+              .unwrap_or((None, false));
+            focused_element_id = id;
+            focused_is_text_input = is_text_input;
             dom_changed
           });
           (
@@ -2384,6 +2430,7 @@ impl BrowserRuntime {
             submitter_element_id,
             focused,
             focused_element_id,
+            focused_is_text_input,
           )
         }
       };
@@ -2404,9 +2451,9 @@ impl BrowserRuntime {
       // Keyboard activation should dispatch a cancelable `"click"` event on the activated element
       // before performing its default action (navigation, open-in-new-tab, submit, ...).
       //
-      // Note: implicit form submission (Enter in a text input) uses a default submitter but does
-      // not fire a click event on that submit button, so only dispatch click when the activated
-      // element *is* the submitter.
+      // Note: implicit form submission (Enter in a text input) does not fire a click event, so
+      // only dispatch click when the activated element is not a text input (or is explicitly the
+      // submitter).
       let mut click_target_id: Option<usize> = None;
       let mut click_target_element_id: Option<&str> = None;
       if matches!(
@@ -2421,8 +2468,10 @@ impl BrowserRuntime {
             click_target_element_id = form_submitter_element_id.as_deref();
           }
         } else if let Some(focused_id) = focused {
-          click_target_id = Some(focused_id);
-          click_target_element_id = focused_element_id.as_deref();
+          if !focused_is_text_input {
+            click_target_id = Some(focused_id);
+            click_target_element_id = focused_element_id.as_deref();
+          }
         }
       }
 
@@ -2445,18 +2494,28 @@ impl BrowserRuntime {
 
       // If activation triggers a form submission attempt, dispatch a cancelable `"submit"` event
       // on the form owner and honor `preventDefault()` before committing the navigation.
+      let mut submit_source_id: Option<usize> = None;
+      let mut submit_source_element_id: Option<&str> = None;
+      if let Some(submitter_id) = form_submitter {
+        submit_source_id = Some(submitter_id);
+        submit_source_element_id = form_submitter_element_id.as_deref();
+      } else if focused_is_text_input
+        && matches!(key, crate::interaction::KeyAction::Enter)
+        && matches!(
+          action,
+          InteractionAction::Navigate { .. } | InteractionAction::NavigateRequest { .. }
+        )
+      {
+        submit_source_id = focused;
+        submit_source_element_id = focused_element_id.as_deref();
+      }
+
       if default_allowed {
-        if let Some(submitter_id) = form_submitter {
+        if let Some(source_id) = submit_source_id {
           if let Some(js_tab) = tab.js_tab.as_mut() {
-            let submitter_node = js_dom_node_for_preorder_id(
-              js_tab,
-              submitter_id,
-              form_submitter_element_id.as_deref(),
-            );
-            if let Some(submitter_node) = submitter_node {
-              if let Some(form_node) =
-                js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
-              {
+            let source_node = js_dom_node_for_preorder_id(js_tab, source_id, submit_source_element_id);
+            if let Some(source_node) = source_node {
+              if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), source_node) {
                 match js_tab.dispatch_submit_event(form_node) {
                   Ok(allowed) => default_allowed = allowed,
                   Err(err) => {
