@@ -5158,6 +5158,7 @@ fn paint_fragment_tree_with_state(
             node,
             Point::ZERO,
             node.bounds.size,
+            viewport_size,
             false,
             has_fixed_cb_ancestor,
           );

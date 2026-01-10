@@ -4,7 +4,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::style::position::Position;
 use crate::style::types::{
   Direction, Overflow, OverscrollBehavior, ScrollBehavior, ScrollSnapAlign, ScrollSnapAxis,
-  ScrollSnapStop, ScrollSnapStrictness, WritingMode,
+  ScrollSnapStop, ScrollSnapStrictness, VisualBox, WritingMode,
 };
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
@@ -332,7 +332,187 @@ fn overflow_axis_clips(overflow: Overflow) -> bool {
   )
 }
 
-fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool) -> Rect {
+fn resolve_length_with_context(
+  length: Length,
+  percentage_base: Option<f32>,
+  viewport: Size,
+  style: &ComputedStyle,
+) -> f32 {
+  length
+    .resolve_with_context(
+      percentage_base,
+      viewport.width,
+      viewport.height,
+      style.font_size,
+      style.root_font_size,
+    )
+    .unwrap_or_else(|| length.to_px())
+}
+
+fn sanitize_nonneg(value: f32) -> f32 {
+  if value.is_finite() {
+    value.max(0.0)
+  } else {
+    0.0
+  }
+}
+
+fn used_border_insets(style: &ComputedStyle) -> (f32, f32, f32, f32) {
+  (
+    sanitize_nonneg(style.used_border_left_width().to_px()),
+    sanitize_nonneg(style.used_border_right_width().to_px()),
+    sanitize_nonneg(style.used_border_top_width().to_px()),
+    sanitize_nonneg(style.used_border_bottom_width().to_px()),
+  )
+}
+
+fn scrollport_rect(node: &FragmentNode, style: &ComputedStyle) -> Rect {
+  let width = node.bounds.width();
+  let height = node.bounds.height();
+  let (border_left, border_right, border_top, border_bottom) = used_border_insets(style);
+
+  let mut rect = Rect::from_xywh(
+    border_left,
+    border_top,
+    (width - border_left - border_right).max(0.0),
+    (height - border_top - border_bottom).max(0.0),
+  );
+
+  let reservation = node.scrollbar_reservation;
+  let reserve_left = sanitize_nonneg(reservation.left);
+  let reserve_right = sanitize_nonneg(reservation.right);
+  let reserve_top = sanitize_nonneg(reservation.top);
+  let reserve_bottom = sanitize_nonneg(reservation.bottom);
+
+  rect.origin.x += reserve_left;
+  rect.origin.y += reserve_top;
+  rect.size.width = (rect.size.width - reserve_left - reserve_right).max(0.0);
+  rect.size.height = (rect.size.height - reserve_top - reserve_bottom).max(0.0);
+
+  rect
+}
+
+fn content_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Rect {
+  let mut rect = scrollport_rect(node, style);
+  let percentage_base = node.bounds.width().max(0.0);
+  let left = sanitize_nonneg(resolve_length_with_context(
+    style.padding_left,
+    Some(percentage_base),
+    viewport,
+    style,
+  ));
+  let right = sanitize_nonneg(resolve_length_with_context(
+    style.padding_right,
+    Some(percentage_base),
+    viewport,
+    style,
+  ));
+  let top = sanitize_nonneg(resolve_length_with_context(
+    style.padding_top,
+    Some(percentage_base),
+    viewport,
+    style,
+  ));
+  let bottom = sanitize_nonneg(resolve_length_with_context(
+    style.padding_bottom,
+    Some(percentage_base),
+    viewport,
+    style,
+  ));
+
+  rect.origin.x += left;
+  rect.origin.y += top;
+  rect.size.width = (rect.size.width - left - right).max(0.0);
+  rect.size.height = (rect.size.height - top - bottom).max(0.0);
+  rect
+}
+
+fn overflow_clip_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Rect {
+  let border = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+  let padding = scrollport_rect(node, style);
+  let content = content_rect(node, style, viewport);
+
+  let resolved_margin = resolve_length_with_context(
+    style.overflow_clip_margin.margin,
+    Some(border.width().max(0.0)),
+    viewport,
+    style,
+  );
+  let margin = sanitize_nonneg(resolved_margin);
+
+  let rect_for_visual_box = |vb: VisualBox| match vb {
+    VisualBox::BorderBox => border,
+    VisualBox::PaddingBox => padding,
+    VisualBox::ContentBox => content,
+  };
+
+  let base_x = if matches!(style.overflow_x, Overflow::Clip) {
+    rect_for_visual_box(style.overflow_clip_margin.visual_box)
+  } else {
+    padding
+  };
+  let base_y = if matches!(style.overflow_y, Overflow::Clip) {
+    rect_for_visual_box(style.overflow_clip_margin.visual_box)
+  } else {
+    padding
+  };
+
+  let expand_x = if matches!(style.overflow_x, Overflow::Clip) {
+    margin
+  } else {
+    0.0
+  };
+  let expand_y = if matches!(style.overflow_y, Overflow::Clip) {
+    margin
+  } else {
+    0.0
+  };
+
+  let min_x = base_x.min_x() - expand_x;
+  let max_x = base_x.max_x() + expand_x;
+  let min_y = base_y.min_y() - expand_y;
+  let max_y = base_y.max_y() + expand_y;
+
+  Rect::from_xywh(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+}
+
+fn clip_rect_from_style(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Option<Rect> {
+  if !matches!(style.position, Position::Absolute | Position::Fixed) {
+    return None;
+  }
+  let clip = style.clip.as_ref()?;
+  let width = node.bounds.width().max(0.0);
+  let height = node.bounds.height().max(0.0);
+
+  let resolve_component = |component: &crate::style::types::ClipComponent, base: f32| match component
+  {
+    crate::style::types::ClipComponent::Auto => None,
+    crate::style::types::ClipComponent::Length(len) => Some(resolve_length_with_context(
+      *len,
+      Some(base),
+      viewport,
+      style,
+    )),
+  };
+
+  let left_offset = resolve_component(&clip.left, width).unwrap_or(0.0);
+  let top_offset = resolve_component(&clip.top, height).unwrap_or(0.0);
+  let right_offset = resolve_component(&clip.right, width).unwrap_or(width);
+  let bottom_offset = resolve_component(&clip.bottom, height).unwrap_or(height);
+
+  Some(Rect::from_xywh(
+    left_offset,
+    top_offset,
+    (right_offset - left_offset).max(0.0),
+    (bottom_offset - top_offset).max(0.0),
+  ))
+}
+
+fn annotate_overflow(
+  node: &mut FragmentNode,
+  has_fixed_cb_ancestor: bool,
+  viewport: Size,
+) -> Rect {
   let mut overflow = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
   let has_fixed_cb_ancestor = has_fixed_cb_ancestor
     || node
@@ -340,7 +520,7 @@ fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool) -> Re
       .as_deref()
       .is_some_and(|style| style.establishes_fixed_containing_block());
   for child in node.children_mut() {
-    let child_overflow = annotate_overflow(child, has_fixed_cb_ancestor);
+    let child_overflow = annotate_overflow(child, has_fixed_cb_ancestor, viewport);
     let translated = child_overflow.translate(Point::new(child.bounds.x(), child.bounds.y()));
     let child_is_viewport_fixed = child
       .style
@@ -359,16 +539,23 @@ fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool) -> Re
       .map(|style| overflow_axis_clips(style.overflow_y))
       .unwrap_or(false);
 
-    let mut clip = ClipRect::unbounded();
+    let mut clip = AxisClipRect::unbounded();
     if clips_x || clips_y {
-      let child_border_box = Rect::from_xywh(
-        child.bounds.x(),
-        child.bounds.y(),
-        child.bounds.width(),
-        child.bounds.height(),
-      );
-      if let Some(updated) = clip.clip_to_rect_on_axes(child_border_box, clips_x, clips_y) {
-        clip = updated;
+      if let Some(style) = child_style {
+        let local_clip = overflow_clip_rect(child, style, viewport);
+        let clip_rect = local_clip.translate(Point::new(child.bounds.x(), child.bounds.y()));
+        if let Some(updated) = clip.clip_to_rect_on_axes(clip_rect, clips_x, clips_y) {
+          clip = updated;
+        }
+      }
+    }
+
+    if let Some(style) = child_style {
+      if let Some(local_clip) = clip_rect_from_style(child, style, viewport) {
+        let clip_rect = local_clip.translate(Point::new(child.bounds.x(), child.bounds.y()));
+        if let Some(updated) = clip.clip_to_rect_on_axes(clip_rect, true, true) {
+          clip = updated;
+        }
       }
     }
 
@@ -693,8 +880,9 @@ fn collect_scroll_metadata(
   // `scroll_overflow` (which includes all descendants with intermediate overflow clipping applied).
   //
   // We intentionally do *not* union every descendant fragment's `scroll_overflow` into each
-  // ancestor container here: descendant overflow is not yet clipped by intermediate ancestors, so
-  // doing so would re-introduce clipped geometry and inflate scroll snap bounds.
+  // ancestor container here. `scroll_overflow` is stored in each fragment's local coordinate space
+  // and does not account for clipping imposed by its ancestors, so naively translating+unioning it
+  // would re-introduce geometry that should have been clipped and inflate scroll snap bounds.
 
   if let Some(style) = style.as_ref() {
     for container in stack.iter_mut().skip(active_container_start) {
@@ -821,14 +1009,13 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
     found
   };
 
-  annotate_overflow(&mut tree.root, false);
-  for fragment in &mut tree.additional_fragments {
-    annotate_overflow(fragment, false);
-  }
-
   let mut metadata = ScrollMetadata::default();
   let mut stack = Vec::new();
   let root_viewport = tree.viewport_size();
+  annotate_overflow(&mut tree.root, false, root_viewport);
+  for fragment in &mut tree.additional_fragments {
+    annotate_overflow(fragment, false, root_viewport);
+  }
   collect_scroll_metadata(
     &mut tree.root,
     Point::ZERO,
@@ -1089,14 +1276,14 @@ impl Bounds {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ClipRect {
+struct AxisClipRect {
   min_x: f32,
   max_x: f32,
   min_y: f32,
   max_y: f32,
 }
 
-impl ClipRect {
+impl AxisClipRect {
   fn unbounded() -> Self {
     Self {
       min_x: f32::NEG_INFINITY,
@@ -1145,8 +1332,9 @@ fn collect_bounds(
   node: &FragmentNode,
   origin: Point,
   bounds: &mut Bounds,
-  clip: ClipRect,
+  clip: AxisClipRect,
   root: bool,
+  viewport: Size,
   has_fixed_cb_ancestor: bool,
 ) {
   // Viewport-fixed descendants do not participate in scrollable overflow for any ancestor scroll
@@ -1162,24 +1350,40 @@ fn collect_bounds(
   }
 
   let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
-  let Some(visible_rect) = clip.intersect_rect(rect) else {
-    return;
-  };
-  bounds.update(visible_rect);
 
-  let mut child_clip = clip;
+  // When bubbling descendant bounds into ancestor scroll containers, apply clipping established by
+  // intermediate overflow/clip ancestors. Overflow clipping uses the scrollport (padding edge minus
+  // any reserved scrollbar gutters), while CSS2.1 `clip: rect()` applies to the border box.
+  let mut node_clip = clip;
   if !root {
     if let Some(style) = node.style.as_ref() {
       let clip_x = overflow_axis_clips(style.overflow_x);
       let clip_y = overflow_axis_clips(style.overflow_y);
       if clip_x || clip_y {
-        let Some(updated) = child_clip.clip_to_rect_on_axes(rect, clip_x, clip_y) else {
+        let local_clip = overflow_clip_rect(node, style, viewport);
+        let clip_rect = local_clip.translate(origin);
+        let Some(updated) = node_clip.clip_to_rect_on_axes(clip_rect, clip_x, clip_y) else {
           return;
         };
-        child_clip = updated;
+        node_clip = updated;
+      }
+
+      if let Some(local_clip) = clip_rect_from_style(node, style, viewport) {
+        let clip_rect = local_clip.translate(origin);
+        let Some(updated) = node_clip.clip_to_rect_on_axes(clip_rect, true, true) else {
+          return;
+        };
+        node_clip = updated;
       }
     }
   }
+
+  let Some(visible_rect) = node_clip.intersect_rect(rect) else {
+    return;
+  };
+  bounds.update(visible_rect);
+
+  let child_clip = node_clip;
 
   let has_fixed_cb_ancestor = has_fixed_cb_ancestor
     || node
@@ -1203,6 +1407,7 @@ fn collect_bounds(
       bounds,
       child_clip,
       false,
+      viewport,
       has_fixed_cb_ancestor,
     );
   }
@@ -1212,6 +1417,7 @@ pub(crate) fn scroll_bounds_for_fragment(
   container: &FragmentNode,
   _origin: Point,
   viewport: Size,
+  viewport_for_units: Size,
   treat_as_root: bool,
   has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
@@ -1254,8 +1460,9 @@ pub(crate) fn scroll_bounds_for_fragment(
       child,
       child_origin,
       &mut bounds,
-      ClipRect::unbounded(),
+      AxisClipRect::unbounded(),
       false,
+      viewport_for_units,
       has_fixed_cb_ancestor_for_children,
     );
   }
@@ -1317,6 +1524,7 @@ impl<'a> ScrollChainState<'a> {
     node: &'a FragmentNode,
     origin: Point,
     viewport: Size,
+    viewport_for_units: Size,
     treat_as_root: bool,
     has_fixed_cb_ancestor: bool,
   ) -> Option<Self> {
@@ -1350,7 +1558,14 @@ impl<'a> ScrollChainState<'a> {
       return None;
     }
 
-    let bounds = scroll_bounds_for_fragment(node, origin, viewport, treat_as_root, has_fixed_cb_ancestor);
+    let bounds = scroll_bounds_for_fragment(
+      node,
+      origin,
+      viewport,
+      viewport_for_units,
+      treat_as_root,
+      has_fixed_cb_ancestor,
+    );
     Some(Self {
       container: node,
       origin,
@@ -1375,22 +1590,22 @@ impl<'a> ScrollChainState<'a> {
 /// that should not be promoted to viewport scroll.
 pub fn build_scroll_chain_with_root_mode<'a>(
   root: &'a FragmentNode,
-  viewport: Size,
+  root_viewport: Size,
   path: &[usize],
   treat_root_as_scroll_container: bool,
 ) -> Vec<ScrollChainState<'a>> {
   let mut stack: Vec<(&FragmentNode, Point, Size, bool, bool)> = Vec::new();
   let mut current = root;
   let mut origin = Point::new(root.bounds.x(), root.bounds.y());
-  let mut current_viewport = viewport;
+  let mut current_viewport = root_viewport;
   let mut has_fixed_cb_ancestor = false;
   stack.push((
     current,
     origin,
     current_viewport,
     treat_root_as_scroll_container,
-    has_fixed_cb_ancestor,
-  ));
+      has_fixed_cb_ancestor,
+    ));
 
   for &idx in path {
     if let Some(child) = current.children.get(idx) {
@@ -1414,6 +1629,7 @@ pub fn build_scroll_chain_with_root_mode<'a>(
       node,
       origin,
       viewport,
+      root_viewport,
       treat_as_root,
       has_fixed_cb_ancestor,
     ) {

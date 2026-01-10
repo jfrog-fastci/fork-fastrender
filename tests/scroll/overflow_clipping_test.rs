@@ -1,8 +1,8 @@
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};
-use fastrender::style::types::{Overflow, ScrollSnapAxis};
+use fastrender::style::types::{BorderStyle, Overflow, ScrollSnapAxis};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use fastrender::ComputedStyle;
+use fastrender::{ComputedStyle, Length};
 use std::sync::Arc;
 
 #[test]
@@ -138,5 +138,105 @@ fn scroll_snap_bounds_ignore_clipped_descendant_overflow() {
     snapped.state.viewport.y.abs() < 1e-3,
     "expected scroll snap to clamp to 0 when overflow is clipped; got {:#?}",
     snapped.state.viewport
+  );
+}
+
+#[test]
+fn scroll_overflow_clips_to_padding_box_not_border_box() {
+  let mut root_style = ComputedStyle::default();
+  root_style.overflow_x = Overflow::Scroll;
+  root_style.overflow_y = Overflow::Scroll;
+  let root_style = Arc::new(root_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.overflow_x = Overflow::Hidden;
+  child_style.overflow_y = Overflow::Hidden;
+  child_style.border_left_style = BorderStyle::Solid;
+  child_style.border_right_style = BorderStyle::Solid;
+  child_style.border_top_style = BorderStyle::Solid;
+  child_style.border_bottom_style = BorderStyle::Solid;
+  child_style.border_left_width = Length::px(10.0);
+  child_style.border_right_width = Length::px(10.0);
+  child_style.border_top_width = Length::px(10.0);
+  child_style.border_bottom_width = Length::px(10.0);
+  let child_style = Arc::new(child_style);
+
+  // The grandchild starts at (0,0) which places it in the border area (outside the padding box).
+  // When propagating overflow into the root, it should be clipped to the child's padding box,
+  // i.e. max_x/max_y should be 90 rather than 100.
+  let grandchild = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![]);
+  let child = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![grandchild],
+    child_style,
+  );
+
+  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
+  let mut tree = FragmentTree::with_viewport(root, Size::new(80.0, 80.0));
+  tree.ensure_scroll_metadata();
+
+  assert!(
+    (tree.root.scroll_overflow.max_x() - 90.0).abs() < 1e-3,
+    "expected scroll_overflow to be clipped to the padding edge (border excluded); got {:#?}",
+    tree.root.scroll_overflow
+  );
+  assert!(
+    (tree.root.scroll_overflow.max_y() - 90.0).abs() < 1e-3,
+    "expected scroll_overflow to be clipped to the padding edge (border excluded); got {:#?}",
+    tree.root.scroll_overflow
+  );
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[]);
+  assert_eq!(chain.len(), 1);
+  assert!(
+    (chain[0].bounds.max_x - 10.0).abs() < 1e-3,
+    "scroll bounds should be derived from the clipped scrollport; got {:#?}",
+    chain[0].bounds
+  );
+  assert!(
+    (chain[0].bounds.max_y - 10.0).abs() < 1e-3,
+    "scroll bounds should be derived from the clipped scrollport; got {:#?}",
+    chain[0].bounds
+  );
+}
+
+#[test]
+fn scroll_overflow_respects_scrollbar_reservation_when_clipping() {
+  let mut root_style = ComputedStyle::default();
+  root_style.overflow_x = Overflow::Scroll;
+  root_style.overflow_y = Overflow::Scroll;
+  let root_style = Arc::new(root_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.overflow_x = Overflow::Hidden;
+  child_style.overflow_y = Overflow::Hidden;
+  let child_style = Arc::new(child_style);
+
+  // The grandchild overflows into the 10px reserved gutter on the right. That gutter is not part of
+  // the scrollport and must not inflate ancestor overflow.
+  let grandchild = FragmentNode::new_block(Rect::from_xywh(80.0, 0.0, 20.0, 100.0), vec![]);
+  let mut child = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![grandchild],
+    child_style,
+  );
+  child.scrollbar_reservation.right = 10.0;
+
+  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![child], root_style);
+  let mut tree = FragmentTree::with_viewport(root, Size::new(80.0, 80.0));
+  tree.ensure_scroll_metadata();
+
+  assert!(
+    (tree.root.scroll_overflow.max_x() - 90.0).abs() < 1e-3,
+    "expected scroll_overflow to clip to the scrollport excluding reserved scrollbar gutters; got {:#?}",
+    tree.root.scroll_overflow
+  );
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[]);
+  assert_eq!(chain.len(), 1);
+  assert!(
+    (chain[0].bounds.max_x - 10.0).abs() < 1e-3,
+    "scroll bounds should not include overflow into reserved scrollbar gutters; got {:#?}",
+    chain[0].bounds
   );
 }
