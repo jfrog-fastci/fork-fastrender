@@ -2296,6 +2296,8 @@ fn serialize_svg_mask_subtree_with_namespaces(
 ///
 /// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
 pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
+  use crate::style::types::{ColorOrNone, SvgUrlOrNone};
+
   fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
     let bytes = value.as_bytes();
     let mut idx = 0usize;
@@ -2350,6 +2352,13 @@ pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
+  fn collect_local_fragment_ref(raw: &str, refs: &mut HashSet<String>) {
+    let trimmed = trim_ascii_whitespace(raw);
+    if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+      refs.insert(id.to_string());
+    }
+  }
+
   fn is_href_attr(name: &str) -> bool {
     if name.eq_ignore_ascii_case("href") {
       return true;
@@ -2376,6 +2385,23 @@ pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
           if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
             ids.insert(id.to_string());
           }
+
+          if let Some(ColorOrNone::Url(url)) = styled.styles.svg_fill.as_ref() {
+            collect_local_fragment_ref(url.as_ref(), refs);
+          }
+          if let Some(ColorOrNone::Url(url)) = styled.styles.svg_stroke.as_ref() {
+            collect_local_fragment_ref(url.as_ref(), refs);
+          }
+          if let Some(SvgUrlOrNone::Url(url)) = styled.styles.svg_marker_start.as_ref() {
+            collect_local_fragment_ref(url.as_ref(), refs);
+          }
+          if let Some(SvgUrlOrNone::Url(url)) = styled.styles.svg_marker_mid.as_ref() {
+            collect_local_fragment_ref(url.as_ref(), refs);
+          }
+          if let Some(SvgUrlOrNone::Url(url)) = styled.styles.svg_marker_end.as_ref() {
+            collect_local_fragment_ref(url.as_ref(), refs);
+          }
+
           let is_style = tag_name.eq_ignore_ascii_case("style");
           let next_in_svg_style = in_svg_style || is_style;
 
