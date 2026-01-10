@@ -437,6 +437,7 @@ fn run(args: Args) -> io::Result<()> {
     all_pages.extend(args.filter_pages.clone());
     PagesetFilter::from_inputs(&all_pages)
   };
+  let has_page_filter = page_filter.is_some();
 
   let hard_timeout = Duration::from_secs(args.timeout);
   let soft_timeout_ms = compute_soft_timeout_ms(hard_timeout, args.soft_timeout_ms);
@@ -480,10 +481,12 @@ fn run(args: Args) -> io::Result<()> {
 
   let entries = collect_entries(&args, page_filter);
   if entries.is_empty() {
-    eprintln!(
-      "No cached pages in {}. Run fetch_pages first.",
-      CACHE_HTML_DIR
-    );
+    let any_cached_pages = cache_dir_has_cached_pages(CACHE_HTML_DIR);
+    if has_page_filter && any_cached_pages {
+      eprintln!("No cached pages matched the provided filter.");
+    } else {
+      eprintln!("No cached pages in {}. Run fetch_pages first.", CACHE_HTML_DIR);
+    }
     std::process::exit(1);
   }
 
@@ -699,6 +702,16 @@ fn collect_entries(args: &Args, page_filter: Option<PagesetFilter>) -> Vec<Cache
   }
 
   entries
+}
+
+fn cache_dir_has_cached_pages(cache_html_dir: &str) -> bool {
+  let Ok(entries) = fs::read_dir(cache_html_dir) else {
+    return false;
+  };
+  entries
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| entry.file_type().is_ok_and(|ty| ty.is_file()))
+    .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("html"))
 }
 
 #[derive(Clone)]

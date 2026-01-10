@@ -292,15 +292,14 @@ pub struct PagesetFilter {
 
 impl PagesetFilter {
   pub fn from_inputs(inputs: &[String]) -> Option<Self> {
+    if inputs.is_empty() {
+      return None;
+    }
     let mut filter = PagesetFilter::default();
     for input in inputs {
       filter.add(input);
     }
-    if filter.stems.is_empty() && filter.cache_stems.is_empty() {
-      None
-    } else {
-      Some(filter)
-    }
+    Some(filter)
   }
 
   fn add(&mut self, raw: &str) {
@@ -448,5 +447,21 @@ mod tests {
   fn non_ascii_whitespace_pageset_stem_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
     assert_eq!(pageset_stem(&format!("{nbsp}example.com")).as_deref(), Some("_example.com"));
+  }
+
+  #[test]
+  fn pageset_filter_from_inputs_empty_slice_is_none() {
+    assert!(PagesetFilter::from_inputs(&[]).is_none());
+  }
+
+  #[test]
+  fn pageset_filter_from_inputs_whitespace_only_matches_nothing() {
+    let filter = PagesetFilter::from_inputs(&vec!["   ".to_string()]).expect("filter");
+    let entry = PagesetEntry {
+      url: "https://example.com".to_string(),
+      stem: "example.com".to_string(),
+      cache_stem: "example.com".to_string(),
+    };
+    assert!(!filter.matches_entry(&entry));
   }
 }

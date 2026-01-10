@@ -26,16 +26,21 @@ fn render_pages_exits_non_zero_when_filter_matches_nothing() {
   )
   .expect("write html");
 
-  let status = Command::new(env!("CARGO_BIN_EXE_render_pages"))
+  let output = Command::new(env!("CARGO_BIN_EXE_render_pages"))
     .current_dir(temp.path())
     .args(["--pages", "bar"])
-    .status()
+    .output()
     .expect("run render_pages");
 
   assert_eq!(
-    status.code(),
+    output.status.code(),
     Some(1),
     "expected failure exit code for unmatched filter"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("No cached pages matched the provided filter"),
+    "expected helpful error message when filter matches nothing; stderr was:\n{stderr}"
   );
 }
 
@@ -107,6 +112,36 @@ fn render_pages_errors_on_unknown_option_even_with_cache() {
     !status.success(),
     "expected non-zero exit when unknown option is provided (got {:?})",
     status.code()
+  );
+}
+
+#[test]
+fn render_pages_does_not_render_all_pages_when_filter_is_empty() {
+  let temp = TempDir::new().expect("tempdir");
+  let html_dir = temp.path().join("fetches/html");
+  fs::create_dir_all(&html_dir).expect("create html dir");
+
+  fs::write(
+    html_dir.join("foo.html"),
+    "<!doctype html><title>Foo</title>",
+  )
+  .expect("write html");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_render_pages"))
+    .current_dir(temp.path())
+    .args(["--pages", ""])
+    .output()
+    .expect("run render_pages");
+
+  assert_eq!(
+    output.status.code(),
+    Some(1),
+    "expected failure exit code for empty filter"
+  );
+
+  assert!(
+    !temp.path().join("fetches/renders/foo.png").exists(),
+    "expected render_pages to avoid rendering all cached pages when the filter is empty"
   );
 }
 
