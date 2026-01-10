@@ -126,7 +126,7 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
       Value::String(s) => {
         let js = scope.heap().get_string(s).ok()?;
         if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
-          return None;
+          return Some("[exception string exceeded limit]".to_string());
         }
         Some(js.to_utf8_lossy())
       }
@@ -189,7 +189,7 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
 mod tests {
   use super::*;
   use std::sync::Arc;
-  use vm_js::HeapLimits;
+  use vm_js::{HeapLimits, PropertyDescriptor, PropertyKind};
 
   #[test]
   fn thrown_long_string_is_replaced_with_marker_and_includes_stack_trace() {
@@ -217,6 +217,86 @@ mod tests {
     assert!(
       msg.starts_with("[exception string exceeded limit]"),
       "expected over-limit thrown string to be replaced with marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_object_long_message_is_replaced_with_marker() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let obj = scope.alloc_object().expect("alloc thrown object");
+    scope
+      .push_root(Value::Object(obj))
+      .expect("root thrown object");
+
+    let name_s = scope.alloc_string("Error").expect("alloc name");
+    scope.push_root(Value::String(name_s)).expect("root name");
+
+    let units = vec![0x0061u16; MAX_THROWN_STRING_CODE_UNITS + 1];
+    let long_message_s = scope
+      .alloc_string_from_code_units(&units)
+      .expect("alloc long message");
+    scope
+      .push_root(Value::String(long_message_s))
+      .expect("root long message");
+
+    let name_key_s = scope.alloc_string("name").expect("alloc key");
+    scope
+      .push_root(Value::String(name_key_s))
+      .expect("root key");
+    let name_key = PropertyKey::from_string(name_key_s);
+    scope
+      .define_property(
+        obj,
+        name_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::String(name_s),
+            writable: true,
+          },
+        },
+      )
+      .expect("define name");
+
+    let msg_key_s = scope.alloc_string("message").expect("alloc key");
+    scope.push_root(Value::String(msg_key_s)).expect("root key");
+    let msg_key = PropertyKey::from_string(msg_key_s);
+    scope
+      .define_property(
+        obj,
+        msg_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::String(long_message_s),
+            writable: true,
+          },
+        },
+      )
+      .expect("define message");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(obj),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("Error: [exception string exceeded limit]"),
+      "expected over-limit message property to be replaced with marker, got {msg:?}"
     );
     assert!(
       msg.contains("at f (<test>:1:2)"),
