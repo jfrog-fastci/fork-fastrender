@@ -196,6 +196,42 @@ mod vm_js_gc_safety_guard {
   };
 }
 
+// --- Compile-time regression guard (vm-js host + hooks entrypoints) ---
+//
+// FastRender relies on `vm-js` exposing host-aware entry points that thread both a `VmHost` (native
+// call/construct context) and a `VmHostHooks` implementation (Promise-job scheduling) through script
+// execution and microtask checkpoints.
+//
+// If the vendored `vendor/ecma-rs` is updated to a version before these APIs existed, compilation
+// should fail immediately instead of silently falling back to dummy-host behavior.
+#[allow(dead_code)]
+mod vm_js_host_hooks_api_guard {
+  // Keep this guard extremely small and signature-based so it fails at compile time if the vm-js
+  // API regresses.
+  #[allow(clippy::type_complexity)]
+  const _: () = {
+    let _exec_script_source_with_host_and_hooks: fn(
+      &mut vm_js::JsRuntime,
+      &mut dyn vm_js::VmHost,
+      &mut dyn vm_js::VmHostHooks,
+      std::sync::Arc<vm_js::SourceText>,
+    ) -> Result<vm_js::Value, vm_js::VmError> = vm_js::JsRuntime::exec_script_source_with_host_and_hooks;
+
+    let _exec_script_with_host_and_hooks: fn(
+      &mut vm_js::JsRuntime,
+      &mut dyn vm_js::VmHost,
+      &mut dyn vm_js::VmHostHooks,
+      &str,
+    ) -> Result<vm_js::Value, vm_js::VmError> = vm_js::JsRuntime::exec_script_with_host_and_hooks;
+
+    let _perform_microtask_checkpoint_with_host: fn(
+      &mut vm_js::Vm,
+      &mut dyn vm_js::VmHost,
+      &mut vm_js::Heap,
+    ) -> Result<(), vm_js::VmError> = vm_js::Vm::perform_microtask_checkpoint_with_host;
+  };
+}
+
 /// Adapter implementing `vm-js`'s [`vm_js::VmHostHooks`] by enqueueing jobs into a FastRender
 /// [`EventLoop`]'s microtask queue.
 ///
