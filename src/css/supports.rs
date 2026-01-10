@@ -3,6 +3,9 @@ use super::properties::{
   supports_parsed_declaration_is_valid, vendor_prefixed_property_alias,
 };
 use crate::style::var_resolution::contains_var;
+use cssparser::Parser;
+use cssparser::ParserInput;
+use cssparser::Token;
 use std::borrow::Cow;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -20,30 +23,66 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 /// - Whitespace between `!` and `important` is allowed (`! important`).
 fn strip_trailing_important(value: &str) -> &str {
   let trimmed = trim_ascii_whitespace(value);
-  const IMPORTANT: &[u8] = b"important";
-  let bytes = trimmed.as_bytes();
-  if bytes.len() < IMPORTANT.len() {
+  if !trimmed.as_bytes().contains(&b'!') {
     return trimmed;
   }
 
-  let important_start = bytes.len() - IMPORTANT.len();
-  if !bytes[important_start..].eq_ignore_ascii_case(IMPORTANT) {
-    return trimmed;
+  #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+  enum SignificantToken {
+    Bang,
+    ImportantIdent,
+    Other,
   }
 
-  let Some(before) = trimmed.get(..important_start) else {
-    // `important_start` is derived from a byte offset. It should always be a char boundary because
-    // we've already validated that the suffix is pure ASCII.
-    return trimmed;
-  };
-
-  let before_ident = trim_ascii_whitespace(before);
-  if !before_ident.ends_with('!') {
-    return trimmed;
+  fn skip_nested_block<'i, 't>(parser: &mut Parser<'i, 't>) {
+    let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(()));
   }
 
-  let without_bang = &before_ident[..before_ident.len() - 1];
-  trim_ascii_whitespace(without_bang)
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  let start = parser.position();
+  let mut second_last: Option<(SignificantToken, cssparser::ParserState)> = None;
+  let mut last: Option<(SignificantToken, cssparser::ParserState)> = None;
+
+  loop {
+    let state = parser.state();
+    let token = match parser.next_including_whitespace_and_comments() {
+      Ok(token) => token,
+      Err(_) => break,
+    };
+
+    let (kind, needs_skip) = match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => (None, false),
+      Token::Delim('!') => (Some(SignificantToken::Bang), false),
+      Token::Ident(ref ident) if ident.eq_ignore_ascii_case("important") => {
+        (Some(SignificantToken::ImportantIdent), false)
+      }
+      Token::Function(_)
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::CurlyBracketBlock => (Some(SignificantToken::Other), true),
+      _ => (Some(SignificantToken::Other), false),
+    };
+
+    if needs_skip {
+      skip_nested_block(&mut parser);
+    }
+
+    if let Some(kind) = kind {
+      second_last = last;
+      last = Some((kind, state));
+    }
+  }
+
+  if matches!(last, Some((SignificantToken::ImportantIdent, _)))
+    && matches!(second_last, Some((SignificantToken::Bang, _)))
+  {
+    let bang_state = second_last.expect("matched Some above").1;
+    parser.reset(&bang_state);
+    return trim_ascii_whitespace(parser.slice_from(start));
+  }
+
+  trimmed
 }
 
 /// Validates a (property, value) pair for use in @supports queries.
@@ -365,6 +404,16 @@ mod tests {
 
     // `!important` must be at the end of the value to be treated as the important flag.
     assert!(!supports_declaration("color", "red !important bogus"));
+  }
+
+  #[test]
+  fn supports_declaration_strips_important_with_comments() {
+    assert!(supports_declaration("color", "red!/**/important"));
+    assert!(supports_declaration("color", "red!important/**/"));
+    assert!(supports_declaration("color", "red !/**/important"));
+
+    // `!important` must still be the final token (ignoring trailing whitespace/comments).
+    assert!(!supports_declaration("color", "red!important/**/ bogus"));
   }
 
   #[test]
