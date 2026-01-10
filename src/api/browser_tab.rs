@@ -1049,6 +1049,42 @@ impl DocumentLifecycleHost for BrowserTabHost {
   }
 }
 
+impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost {
+  fn dispatch_script_element_event(&mut self, script: NodeId, event_name: &'static str) -> Result<()> {
+    use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
+
+    struct NoopInvoker;
+
+    impl EventListenerInvoker for NoopInvoker {
+      fn invoke(
+        &mut self,
+        _listener_id: ListenerId,
+        _event: &mut crate::web::events::Event,
+      ) -> std::result::Result<(), DomError> {
+        Ok(())
+      }
+    }
+
+    // HTML "fire an event" for `<script>` load/error is an element task on the DOM manipulation
+    // task source. The task itself performs event dispatch synchronously.
+    let mut event = Event::new(
+      event_name,
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+
+    let dom: &crate::dom2::Document = self.document.dom();
+    let mut invoker = NoopInvoker;
+    dispatch_event(EventTargetId::Node(script), &mut event, dom, dom.events(), &mut invoker)
+      .map(|_default_not_prevented| ())
+      .map_err(|err| Error::Other(err.to_string()))
+  }
+}
+
 pub struct BrowserTab {
   trace: TraceHandle,
   trace_output: Option<PathBuf>,
