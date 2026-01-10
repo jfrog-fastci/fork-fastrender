@@ -154,3 +154,139 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
+
+#[test]
+fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+
+      #t {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 180px;
+        height: 50px;
+      }
+
+      /* A probe element whose background reflects whether the textarea is empty. */
+      #probe {
+        position: absolute;
+        left: 10px;
+        top: 70px;
+        width: 20px;
+        height: 20px;
+        background: rgb(0, 0, 0);
+      }
+
+      #t:placeholder-shown + #probe { background: rgb(255, 0, 0); }
+      #t:not(:placeholder-shown) + #probe { background: rgb(0, 255, 0); }
+    </style>
+  </head>
+  <body>
+    <textarea id="t" placeholder="x">hello</textarea><div id="probe"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-clipboard-textarea").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url.clone()),
+      cancel: Default::default(),
+    })
+    .expect("create tab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  // Initial value is non-empty, so the probe should be green.
+  let frame0 = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 20, 80),
+    [0, 255, 0, 255],
+    "expected probe to reflect initial textarea value"
+  );
+
+  // Click the textarea to focus it.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+  let _ = next_frame_ready(&ui_rx, tab_id);
+
+  // Select all, then copy.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all");
+  ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
+
+  // Cut: should set clipboard and clear the textarea (probe turns red).
+  ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
+  let frame_cut = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame_cut.pixmap, 20, 80),
+    [255, 0, 0, 255],
+    "expected probe to reflect value after cut"
+  );
+
+  // Paste: should insert at the caret and make textarea non-empty again.
+  ui_tx
+    .send(UiToWorker::Paste {
+      tab_id,
+      text: "world".to_string(),
+    })
+    .expect("paste");
+  let frame_paste = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame_paste.pixmap, 20, 80),
+    [0, 255, 0, 255],
+    "expected probe to reflect value after paste"
+  );
+
+  // Copy again to ensure the pasted text landed in the DOM.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all after paste");
+  ui_tx
+    .send(UiToWorker::Copy { tab_id })
+    .expect("copy after paste");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "world");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}

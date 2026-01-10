@@ -93,6 +93,10 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Alt+Right | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
+| Ctrl/Cmd+A (page focus) | Select all text in the focused page `<input>`/`<textarea>` |
+| Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
+| Ctrl/Cmd+X (page focus) | Cut selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
+| Ctrl/Cmd+V (page focus) | Paste OS clipboard text into the focused page `<input>`/`<textarea>` |
 
 ## Code layout
 
@@ -339,6 +343,8 @@ Front-ends are encouraged to print these to stderr while developing new protocol
   incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).
 - **Limited form support** (non-JS):
   - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
+    - basic clipboard shortcuts (Ctrl/Cmd+A/C/X/V) are supported for focused `<input>`/`<textarea>`,
+      but selection is currently worker-local and is not rendered/highlighted
   - `<select>` support is basic (listbox clicks + dropdown popup selection; no typeahead/multi-select yet)
   - many controls are not yet supported (`contenteditable`, file inputs, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
