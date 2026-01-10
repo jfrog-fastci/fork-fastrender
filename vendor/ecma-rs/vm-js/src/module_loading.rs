@@ -151,28 +151,32 @@ impl GraphLoadingState {
 
     // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
     let values = [cap.promise, cap.resolve, cap.reject];
-    scope.push_roots(&values)?;
+    let promise_roots = {
+      // Use a nested scope so the temporary stack roots are popped before returning.
+      let mut root_scope = scope.reborrow();
+      root_scope.push_roots(&values)?;
 
-    let mut roots: Vec<RootId> = Vec::new();
-    roots
-      .try_reserve_exact(values.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    for &value in &values {
-      match scope.heap_mut().add_root(value) {
-        Ok(id) => roots.push(id),
-        Err(e) => {
-          for root in roots.drain(..) {
-            scope.heap_mut().remove_root(root);
+      let mut roots: Vec<RootId> = Vec::new();
+      roots
+        .try_reserve_exact(values.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for &value in &values {
+        match root_scope.heap_mut().add_root(value) {
+          Ok(id) => roots.push(id),
+          Err(e) => {
+            for root in roots.drain(..) {
+              root_scope.heap_mut().remove_root(root);
+            }
+            return Err(e);
           }
-          return Err(e);
         }
       }
-    }
 
-    let promise_roots = PromiseCapabilityRoots {
-      promise: roots[0],
-      resolve: roots[1],
-      reject: roots[2],
+      PromiseCapabilityRoots {
+        promise: roots[0],
+        resolve: roots[1],
+        reject: roots[2],
+      }
     };
 
     Ok((
@@ -363,7 +367,14 @@ pub fn load_requested_modules(
   host_defined: HostDefined,
 ) -> Result<Value, VmError> {
   let (state, promise) = GraphLoadingState::new(vm, scope, host, host_defined)?;
-  inner_module_loading(vm, scope, modules, host, &state, module)?;
+  if let Err(err) = inner_module_loading(vm, scope, modules, host, &state, module) {
+    // `GraphLoadingState` owns persistent roots for the promise capability. If we abort the
+    // algorithm with an abrupt completion (OOM, termination, etc), ensure those roots are released
+    // before returning the error to the host.
+    state.set_is_loading(false);
+    let _ = state.reject_promise(vm, scope, host, err.clone());
+    return Err(err);
+  }
   Ok(promise)
 }
 
@@ -598,7 +609,15 @@ pub fn continue_module_loading(
   }
 
   match result {
-    Ok(module) => inner_module_loading(vm, scope, modules, host, &state, module),
+    Ok(module) => {
+      if let Err(err) = inner_module_loading(vm, scope, modules, host, &state, module) {
+        // Ensure promise roots are released even on abrupt completion.
+        state.set_is_loading(false);
+        let _ = state.reject_promise(vm, scope, host, err.clone());
+        return Err(err);
+      }
+      Ok(())
+    }
     Err(err) => {
       state.set_is_loading(false);
       state.reject_promise(vm, scope, host, err)
@@ -986,6 +1005,78 @@ mod tests {
       assert!(matches!(err, VmError::Termination(_)));
 
       // Even though settlement failed, the persistent roots must be released.
+      assert!(scope.heap().get_root(promise_root).is_none());
+      assert!(scope.heap().get_root(resolve_root).is_none());
+      assert!(scope.heap().get_root(reject_root).is_none());
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn graph_loading_state_releases_persistent_roots_on_inner_module_loading_error() {
+    // If `InnerModuleLoading` aborts with an abrupt completion, `GraphLoadingState` owns persistent
+    // roots that must be released before returning the error to the host.
+    //
+    // This test forces `GraphLoadingState::inc_pending` to overflow, which causes
+    // `inner_module_loading` to return `VmError::LimitExceeded` before the promise is settled.
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    // Ensure we always call `Realm::teardown` even if the test panics, otherwise `Realm`'s `Drop`
+    // will panic in debug builds.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host;
+      let mut scope = heap.scope();
+      let (state, _promise) =
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+
+      let (promise_root, resolve_root, reject_root) = {
+        let guard = state.0.borrow();
+        let roots = guard
+          .promise_roots
+          .as_ref()
+          .expect("GraphLoadingState should have promise roots after creation");
+        (roots.promise, roots.resolve, roots.reject)
+      };
+      assert!(scope.heap().get_root(promise_root).is_some());
+      assert!(scope.heap().get_root(resolve_root).is_some());
+      assert!(scope.heap().get_root(reject_root).is_some());
+
+      // Force `GraphLoadingState::inc_pending` to overflow.
+      state.0.borrow_mut().pending_modules_count = usize::MAX;
+
+      let mut modules = ModuleGraph::new();
+      let module = modules.add_module(crate::module_record::SourceTextModuleRecord {
+        requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
+        status: ModuleStatus::New,
+        ..Default::default()
+      });
+
+      let err = continue_module_loading(
+        &mut vm,
+        &mut scope,
+        &mut modules,
+        &mut host,
+        ModuleLoadPayload::graph_loading_state(state.clone()),
+        Ok(module),
+      )
+      .unwrap_err();
+      assert!(matches!(
+        err,
+        VmError::LimitExceeded("module graph loader pending module count overflow")
+      ));
+
+      // Even though module loading aborted, the graph loading promise roots must be released.
       assert!(scope.heap().get_root(promise_root).is_none());
       assert!(scope.heap().get_root(resolve_root).is_none());
       assert!(scope.heap().get_root(reject_root).is_none());
