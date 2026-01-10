@@ -1,7 +1,7 @@
 # WebIDL allowlist for Window-facing bindings generation (`bash scripts/cargo_agent.sh xtask webidl-bindings`).
 #
 # This controls what gets emitted into:
-# - src/js/bindings/generated/mod.rs
+# - src/js/webidl/bindings/generated/mod.rs
 #
 # The generator treats this file as the source of truth for *what* gets generated and will fail if
 # any allowlisted interface/member is missing from `src/webidl/generated/mod.rs` (typo guard).

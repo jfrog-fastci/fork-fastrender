@@ -14,7 +14,7 @@ fn repo_root() -> PathBuf {
 fn generated_bindings_snapshots_contain_known_members() {
   let repo_root = repo_root();
 
-  let window_bindings_path = repo_root.join("src/js/bindings/generated/mod.rs");
+  let window_bindings_path = repo_root.join("src/js/webidl/bindings/generated/mod.rs");
   let window_bindings = fs::read_to_string(&window_bindings_path)
     .unwrap_or_else(|_| panic!("read {}", window_bindings_path.display()));
 

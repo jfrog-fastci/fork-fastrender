@@ -176,13 +176,13 @@ Notes:
 
 `bash scripts/cargo_agent.sh xtask webidl-bindings` writes a committed Rust module:
 
-- **Window-facing bindings glue**: `src/js/bindings/generated/mod.rs`
+- **Window-facing bindings glue**: `src/js/webidl/bindings/generated/mod.rs`
   - Generated wrappers perform WebIDL-ish argument conversions then dispatch into the host
     integration via `fastrender::js::bindings::WebHostBindings`.
   - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
     against the committed snapshot world).
 
-DOM bindings are currently implemented directly against `vm-js` realms in `src/js/vm_dom.rs` and are
+DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs` and are
 installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
 
 Note: The deprecated `VmJsRuntime` DOM scaffold can still be generated for debugging with

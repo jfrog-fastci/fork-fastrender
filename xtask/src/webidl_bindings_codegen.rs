@@ -26,14 +26,14 @@ pub struct WebIdlBindingsCodegenArgs {
   /// Codegen backend.
   ///
   /// - `realm` (default): emit only the Window-facing WebIDL wrappers.
-  /// - `legacy`: also emit the deprecated `VmJsRuntime` DOM scaffold (`src/js/bindings/dom_generated.rs`).
+  /// - `legacy`: also emit the deprecated `VmJsRuntime` DOM scaffold (`src/js/legacy/dom_generated.rs`).
   #[arg(long, default_value = "realm", value_enum)]
   pub backend: WebIdlBindingsBackend,
 
   /// Output Rust module path (relative to repo root unless absolute).
   #[arg(
     long,
-    default_value = "src/js/bindings/generated/mod.rs",
+    default_value = "src/js/webidl/bindings/generated/mod.rs",
     value_name = "FILE"
   )]
   pub out: PathBuf,
@@ -61,7 +61,7 @@ pub struct WebIdlBindingsCodegenArgs {
   /// Only used when `--backend legacy` is passed.
   #[arg(
     long,
-    default_value = "src/js/bindings/dom_generated.rs",
+    default_value = "src/js/legacy/dom_generated.rs",
     value_name = "FILE"
   )]
   pub dom_out: PathBuf,
