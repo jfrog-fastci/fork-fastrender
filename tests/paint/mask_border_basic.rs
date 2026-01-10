@@ -49,7 +49,8 @@ fn svg_data_url(svg: &str) -> String {
   format!("data:image/svg+xml;base64,{encoded}")
 }
 
-fn html_for_mask_border(source_url: &str, mode: &str) -> String {
+fn html_for_mask_border_with_fill(source_url: &str, mode: &str, fill: bool) -> String {
+  let slice = if fill { "2 fill" } else { "2" };
   format!(
     r#"
       <style>
@@ -63,7 +64,7 @@ fn html_for_mask_border(source_url: &str, mode: &str) -> String {
           background: rgb(255, 0, 0);
 
           mask-border-source: url("{source_url}");
-          mask-border-slice: 2 fill;
+          mask-border-slice: {slice};
           mask-border-width: 20px;
           mask-border-repeat: stretch;
           mask-border-mode: {mode};
@@ -72,6 +73,10 @@ fn html_for_mask_border(source_url: &str, mode: &str) -> String {
       <div id="target"></div>
     "#
   )
+}
+
+fn html_for_mask_border(source_url: &str, mode: &str) -> String {
+  html_for_mask_border_with_fill(source_url, mode, true)
 }
 
 fn html_for_webkit_mask_box_image(source_url: &str, mode: &str) -> String {
@@ -146,6 +151,29 @@ fn mask_border_luminance_masks_center_from_rgb_luminance() {
     assert_is_white(
       rgba_at(&pixmap, 100, 100),
       &format!("{backend}: expected center to be masked out via luminance mode"),
+    );
+  }
+}
+
+#[test]
+fn mask_border_without_fill_treats_center_as_opaque() {
+  // Per the spec (and matching border-image semantics), when `mask-border-slice` omits `fill` the
+  // center region is treated as fully opaque (rather than sampling the image's center pixels).
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+    <rect x="0" y="0" width="10" height="2" fill="white"/>
+    <rect x="0" y="8" width="10" height="2" fill="white"/>
+    <rect x="0" y="2" width="2" height="6" fill="white"/>
+    <rect x="8" y="2" width="2" height="6" fill="white"/>
+  </svg>"#;
+  let url = svg_data_url(svg);
+  let html = html_for_mask_border_with_fill(&url, "alpha", false);
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected center to remain visible when mask-border-slice omits fill"),
     );
   }
 }
