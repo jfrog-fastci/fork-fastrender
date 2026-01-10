@@ -22,7 +22,7 @@ use common::render_pipeline::{
   follow_client_redirects_resource, format_error_with_chain, log_diagnostics, read_cached_document,
   render_fetched_document, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
-use fastrender::api::{BrowserTab, FastRenderPool, FastRenderPoolConfig, VmJsBrowserTabExecutor};
+use fastrender::api::{BrowserTab, FastRenderPool, FastRenderPoolConfig};
 use fastrender::image_output::encode_image;
 use fastrender::js::JsExecutionOptions;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
@@ -84,7 +84,7 @@ struct Args {
   /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
   ///
   /// When unset, defaults to (timeout - buffer) to allow a graceful timeout before the hard kill.
-  /// The buffer is 5% of the hard timeout, clamped to 250ms..10s.
+  /// The buffer is 5% of the hard timeout, clamped to 250ms..10s (i.e. at minimum, timeout - 250ms).
   /// Ignored if --timeout is not set (or is 0).
   #[arg(long, value_name = "MS")]
   soft_timeout_ms: Option<u64>,
@@ -215,7 +215,9 @@ fn render_page(
       resource.final_url = Some(base_hint.clone());
     }
 
-    render_pool.with_renderer(|renderer| render_fetched_document(renderer, &resource, Some(&base_hint), &options))?
+    render_pool.with_renderer(|renderer| {
+      render_fetched_document(renderer, &resource, Some(&base_hint), &options)
+    })?
   } else {
     log("JavaScript: enabled");
 
@@ -243,11 +245,9 @@ fn render_page(
       })
       .transpose()?;
 
-    let executor = VmJsBrowserTabExecutor::default();
-    let mut tab = BrowserTab::with_renderer_and_js_execution_options(
+    let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
       renderer,
       options.clone(),
-      executor,
       js_execution_options,
     )?;
 
@@ -505,6 +505,7 @@ fn try_main(args: Args) -> Result<()> {
   if js_options.max_script_bytes == 0 {
     js_options.max_script_bytes = usize::MAX;
   }
+
   // `fetch_and_render --js` uses the `vm-js` executor, which can evaluate module scripts. Enable
   // module script support so `<script type="module">` works in CLI fixtures.
   if args.js_enabled {

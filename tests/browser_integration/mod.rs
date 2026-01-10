@@ -81,6 +81,7 @@ mod tab_vm_js_time;
 mod js_diagnostics;
 mod support;
 mod tab;
+mod browser_tab_vmjs_smoke;
 mod ui_clipboard;
 mod tab_js_realm_navigation_reset;
 mod tab_vmjs;

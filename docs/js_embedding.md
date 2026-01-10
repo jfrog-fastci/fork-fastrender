@@ -81,55 +81,35 @@ What `BrowserTab` does today:
 What it does **not** do yet (important gaps):
 
 - fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- dynamic `import()` and asynchronous module loading/evaluation (e.g. top-level `await`).
-- a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
+- dynamic `import()` and asynchronous module loading/evaluation (e.g. top-level `await`) are not
+  implemented yet (only static module import graphs); see [`docs/import_maps.md`](import_maps.md)
+  for import map support.
+- a full DOM/Web API surface exposed to JS (bindings are still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
 
-This is intentionally minimal and shows the *shape* of the embedding. It uses a no-op script
-executor; real integrations will wire this to a JS engine.
+This example uses the production `vm-js` runtime via the convenience constructors on `BrowserTab`
+(no custom executor required):
 
-```rust
-use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
-use fastrender::dom2::NodeId;
-use fastrender::js::{EventLoop, ScriptElementSpec};
-
-#[derive(Default)]
-struct NoopExecutor;
-
-impl BrowserTabJsExecutor for NoopExecutor {
-    fn execute_classic_script(
-        &mut self,
-        _script_text: &str,
-        _spec: &ScriptElementSpec,
-        _current_script: Option<NodeId>,
-        _document: &mut fastrender::BrowserDocumentDom2,
-        _event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn execute_module_script(
-        &mut self,
-        _script_text: &str,
-        _spec: &ScriptElementSpec,
-        _current_script: Option<NodeId>,
-        _document: &mut fastrender::BrowserDocumentDom2,
-        _event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-        Ok(())
-    }
-}
+```rust,no_run
+use fastrender::{BrowserTab, RenderOptions, Result};
 
 fn main() -> Result<()> {
-    // 1) Create a tab from HTML.
-    let mut tab = BrowserTab::from_html(
-        "<!doctype html><html><body><h1>Hello</h1></body></html>",
+    // 1) Create a vm-js-backed tab from HTML.
+    let html = r#"<!doctype html>
+        <html><body>
+          <script>
+            document.body.setAttribute("data-ok", "1");
+          </script>
+          <h1>Hello</h1>
+        </body></html>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs(
+        html,
         RenderOptions::new().with_viewport(800, 600),
-        NoopExecutor::default(),
     )?;
 
-    // 2) Drive the event loop + rerender until stable (bounded by default JS limits).
+    // 2) Drive the JS event loop until stable (bounded by default JS budgets).
     let _ = tab.run_until_stable(/* max_frames */ 10)?;
 
     // 3) Render a frame.
@@ -374,21 +354,19 @@ iterating.
 
 ### `fetch_and_render --js` (experimental page execution)
 
-`fetch_and_render` can optionally execute a **best-effort subset** of author `<script>` elements when
-`--js` is provided.
+`fetch_and_render` can optionally execute author `<script>` elements when `--js` is provided.
 
-Current behavior (intentionally limited / not spec-correct):
+Current behavior (still experimental / not fully spec-correct):
 
-- Uses the script-aware streaming parser (`StreamingHtmlParser`) so **parser-inserted** scripts run
-  at `</script>` boundaries against a partially-built DOM (like `BrowserTab`, but with a smaller API
-  surface).
-- Fetches and executes external classic scripts (`<script src=...>`) and external module scripts.
-- Executes module scripts (including static imports) via real `vm-js` modules (`VmJsModuleLoader`).
-- Supports **inline** `<script type="importmap">` and applies the active import map for module
-  specifier resolution.
-- Exposes a minimal `window` realm (`window`/`self`/`document`/`location`) and a small DOM shim
-  surface used by real pages (for example: `document.documentElement.className`).
-- Runs scripts under the renderer's JS execution budgets (`JsExecutionArgs` + render deadlines).
+- Uses the `vm-js`-backed `BrowserTab` runtime (same embedding surface as library consumers).
+- Drives the script-aware streaming parser so **parser-inserted** scripts run at `</script>`
+  boundaries against a partially-built DOM.
+- Fetches and executes external classic scripts (`<script src=...>`) and module scripts (including
+  static import graphs).
+- Supports **inline** `<script type="importmap">` and applies import maps for module specifier
+  resolution.
+- Runs scripts under the renderer’s JS execution budgets (`JsExecutionArgs`) and cooperative render
+  deadlines.
 
 Example:
 
@@ -408,8 +386,9 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- module scripts (`type="module"`) and import maps (`type="importmap"`) are supported (static import
-  graphs, inline import maps). Dynamic `import()` is not implemented.
+- module scripts (`type="module"`) and **inline** import maps (`type="importmap"`) are supported
+  (static import graphs). Dynamic `import()` is not implemented; see
+  [`docs/import_maps.md`](import_maps.md).
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
     executed during `BrowserTab`'s streaming HTML parse,

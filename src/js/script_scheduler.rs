@@ -916,7 +916,6 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             source_text: element.inline_text,
           });
         }
-        return Ok(DiscoveredScript { id, actions });
       }
       ScriptType::Unknown => {
         // Unknown script types do not execute.

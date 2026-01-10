@@ -102,6 +102,13 @@ struct BrowserCliArgs {
   #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
   headless_smoke: bool,
 
+  /// Enable JavaScript execution (experimental)
+  ///
+  /// Note: the windowed browser UI worker does not execute author scripts yet. Today this flag is
+  /// supported only for `--headless-smoke --js` (a vm-js `BrowserTab` smoke test).
+  #[arg(long = "js", action = clap::ArgAction::SetTrue)]
+  js_enabled: bool,
+
   /// Exit after parsing CLI + applying mem limits, without creating a window
   #[arg(long = "exit-immediately", action = clap::ArgAction::SetTrue)]
   exit_immediately: bool,
@@ -277,6 +284,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 bash scripts/run_limited.sh --as 64G -- \
   //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
+    if cli.js_enabled {
+      return run_headless_vmjs_smoke_mode();
+    }
+
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
     let (startup_session, source) = match std::env::var(OVERRIDE_ENV) {
       Ok(raw) if !raw.trim().is_empty() => {
@@ -288,6 +299,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     return run_headless_smoke_mode(startup_session, source, session_path);
+  }
+
+  if cli.js_enabled {
+    eprintln!(
+      "warning: --js is currently supported only with --headless-smoke (windowed UI script execution is not wired yet)"
+    );
   }
 
   let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
@@ -477,8 +494,87 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
     // tick deadline when needed.
     app.drive_animation_tick();
-    app.update_control_flow_for_animation_ticks(control_flow);
+  app.update_control_flow_for_animation_ticks(control_flow);
   });
+}
+
+#[cfg(feature = "browser_ui")]
+fn run_headless_vmjs_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
+  use std::time::Duration;
+
+  // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
+  const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
+  if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
+    std::env::set_var(RAYON_NUM_THREADS_ENV, "1");
+  }
+
+  // Prefer deterministic bundled fonts for this smoke path unless explicitly opted out.
+  if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  }
+
+  const VIEWPORT_CSS: (u32, u32) = (200, 120);
+  const DPR: f32 = 2.0;
+  let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
+  let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
+
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>document.body.setAttribute("data-ok", "1")</script>
+      </body>
+    </html>"#;
+
+  let mut tab = fastrender::BrowserTab::from_html_with_vmjs(
+    html,
+    fastrender::RenderOptions::new()
+      .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
+      .with_device_pixel_ratio(DPR),
+  )?;
+
+  let run_limits = fastrender::js::RunLimits {
+    max_tasks: 128,
+    max_microtasks: 1024,
+    max_wall_time: Some(Duration::from_millis(500)),
+  };
+  let outcome = tab.run_event_loop_until_idle(run_limits)?;
+  if outcome != fastrender::js::RunUntilIdleOutcome::Idle {
+    return Err(fastrender::Error::Other(format!(
+      "expected vmjs event loop to reach idle, got {outcome:?}"
+    ))
+    .into());
+  }
+
+  let dom: &fastrender::dom2::Document = tab.dom();
+  let body = dom
+    .body()
+    .ok_or_else(|| fastrender::Error::Other("expected document.body to exist".to_string()))?;
+  let value = dom
+    .get_attribute(body, "data-ok")
+    .map_err(|err| fastrender::Error::Other(format!("failed to read body[data-ok]: {err}")))?;
+  if value != Some("1") {
+    return Err(fastrender::Error::Other(format!(
+      "expected body[data-ok]=\"1\", got {value:?}"
+    ))
+    .into());
+  }
+
+  let pixmap = tab.render_frame()?;
+  let pixmap_px = (pixmap.width(), pixmap.height());
+  if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
+    return Err(fastrender::Error::Other(format!(
+      "unexpected pixmap size: got {}x{}, expected {}x{}",
+      pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
+    )
+    )
+    .into());
+  }
+
+  println!(
+    "HEADLESS_VMJS_SMOKE_OK viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
+    VIEWPORT_CSS.0, VIEWPORT_CSS.1, DPR, pixmap_px.0, pixmap_px.1
+  );
+  Ok(())
 }
 
 #[cfg(feature = "browser_ui")]

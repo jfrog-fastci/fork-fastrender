@@ -67,16 +67,16 @@ pub trait BrowserTabJsExecutor {
   /// HTML import maps are not JavaScript; they register/merge into per-document import map state
   /// used by subsequent module resolution.
   ///
-  /// The default implementation is a no-op so non-module JS backends can ignore import maps.
+  /// The default implementation is a no-op so custom/test executors do not need to implement import
+  /// map support.
   fn execute_import_map_script(
     &mut self,
-    script_text: &str,
-    spec: &ScriptElementSpec,
-    current_script: Option<NodeId>,
-    document: &mut BrowserDocumentDom2,
-    event_loop: &mut EventLoop<BrowserTabHost>,
+    _script_text: &str,
+    _spec: &ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
-    let _ = (script_text, spec, current_script, document, event_loop);
     Ok(())
   }
 
@@ -264,6 +264,13 @@ pub struct BrowserTabHost {
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
   streaming_parse_active: bool,
+  /// Re-entrancy guard for `parse_until_blocked`.
+  ///
+  /// Some networking tasks (e.g. script-blocking stylesheet loads) attempt to resume parsing by
+  /// queueing another parse task. When we are already actively parsing on the stack, re-queueing
+  /// parsing would lead to nested parses of the same `StreamingHtmlParser` state. Guard against
+  /// that by treating such resume requests as a no-op: the active parse will continue naturally.
+  streaming_parse_in_progress: bool,
   streaming_parse: Option<StreamingParseState>,
   pending_parser_blocking_script: Option<PendingParserBlockingScript>,
 }
@@ -351,6 +358,7 @@ impl BrowserTabHost {
       webidl_bindings_host: BrowserTabWebIdlBindingsHost::default(),
       last_dynamic_script_discovery_generation: 0,
       streaming_parse_active: false,
+      streaming_parse_in_progress: false,
       streaming_parse: None,
       pending_parser_blocking_script: None,
     })
@@ -627,6 +635,11 @@ impl BrowserTabHost {
   }
 
   fn queue_parse_task(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    if self.streaming_parse_in_progress {
+      // Avoid scheduling nested parse tasks when parsing is already on the stack (for example when a
+      // networking task completes while `parse_until_blocked` is interleaving event-loop turns).
+      return Ok(());
+    }
     let Some(state) = self.streaming_parse.as_mut() else {
       return Ok(());
     };
@@ -719,9 +732,31 @@ impl BrowserTabHost {
   fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
     const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 
+    if self.streaming_parse_in_progress {
+      // Re-entrancy guard: when parsing is already active, callers should rely on the outer parse
+      // loop to continue. This can happen if a parse-resume hook tries to parse synchronously while
+      // we are already parsing on the stack.
+      return Ok(());
+    }
+
     let Some(mut state) = self.streaming_parse.take() else {
       return Ok(());
     };
+
+    // Mark parsing as in-progress for the duration of this call so tasks triggered while parsing
+    // (e.g. stylesheet fetch completion) do not attempt to schedule nested parse tasks.
+    struct StreamingParseInProgressGuard(*mut bool);
+    impl Drop for StreamingParseInProgressGuard {
+      fn drop(&mut self) {
+        // SAFETY: The guard is created from a stable pointer to `BrowserTabHost`'s field and dropped
+        // before `self` can be moved.
+        unsafe {
+          *self.0 = false;
+        }
+      }
+    }
+    self.streaming_parse_in_progress = true;
+    let _parse_guard = StreamingParseInProgressGuard(&mut self.streaming_parse_in_progress as *mut bool);
 
     // Ensure any render deadline configured for streaming parsing remains active even when parsing
     // is resumed via event-loop tasks (e.g. after script-blocking stylesheets load).
@@ -1063,6 +1098,59 @@ impl BrowserTabHost {
                 ));
               };
               *doc = updated;
+            }
+
+            // Allow pending async/defer networking tasks (including async script loads) to run
+            // between parser yield points when parsing is initiated outside the event loop.
+            //
+            // This mirrors browsers where parsing yields back to the event loop, letting async
+            // scripts execute before later parser-blocking inline scripts when their fetch completes
+            // quickly.
+            if self.document_url.is_some()
+              && event_loop.currently_running_task().is_none()
+              && !event_loop.is_idle()
+            {
+              with_active_streaming_parser(&state.parser, || {
+                // Treat task errors as uncaught exceptions (browser-like) while keeping the overall
+                // parse bounded by the active render deadline + JS run limits.
+                event_loop.run_until_idle_handling_errors_with_hook(
+                  self,
+                  self.js_execution_options.event_loop_run_limits,
+                  |_err| {},
+                  |host, event_loop| -> Result<()> {
+                    if host.pending_navigation.is_some() {
+                      // Abort task processing immediately; the embedding will commit the navigation
+                      // synchronously (clearing all outstanding work for the old document).
+                      event_loop.clear_all_pending_work();
+                      return Ok(());
+                    }
+                    host.discover_dynamic_scripts(event_loop)?;
+                    Ok(())
+                  },
+                )
+              })?;
+
+              if self.pending_navigation.is_some() {
+                // Abort the current parse/execution; the caller will commit the navigation.
+                return Ok(Outcome::AbortedForNavigation);
+              }
+
+              // Flush any `document.write` output produced by async tasks before continuing parsing.
+              let pending = self.document_write_state.take_pending_html();
+              if !pending.is_empty() {
+                state.parser.push_front_str(&pending);
+              }
+
+              // Sync any DOM mutations from tasks back into the streaming parser's live DOM.
+              let updated = self.dom().clone_with_events();
+              {
+                let Some(mut doc) = state.parser.document_mut() else {
+                  return Err(Error::Other(
+                    "StreamingHtmlParser yielded a script without an active document".to_string(),
+                  ));
+                };
+                *doc = updated;
+              }
             }
           }
           StreamingParserYield::Finished { document } => {
@@ -2390,6 +2478,171 @@ impl BrowserTab {
     Self::from_html(html, options, super::VmJsBrowserTabExecutor::default())
   }
 
+  /// Creates a new tab from an HTML string with JavaScript enabled via the production `vm-js`
+  /// executor.
+  pub fn from_html_with_vmjs(html: &str, options: RenderOptions) -> Result<Self> {
+    Self::from_html_with_vmjs_and_js_execution_options(html, options, JsExecutionOptions::default())
+  }
+
+  /// Like [`BrowserTab::from_html_with_vmjs`], but supplies a document URL hint for base URL
+  /// resolution and referrer/origin semantics.
+  pub fn from_html_with_vmjs_and_document_url(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+  ) -> Result<Self> {
+    Self::from_html_with_vmjs_and_document_url_and_js_execution_options(
+      html,
+      document_url,
+      options,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_vmjs`], but allows overriding JavaScript execution budgets.
+  pub fn from_html_with_vmjs_and_js_execution_options(
+    html: &str,
+    options: RenderOptions,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Self::from_html_with_js_execution_options(
+      html,
+      options,
+      super::VmJsBrowserTabExecutor::default(),
+      js_execution_options,
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_vmjs_and_document_url`], but allows overriding JavaScript
+  /// execution budgets.
+  pub fn from_html_with_vmjs_and_document_url_and_js_execution_options(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    // This mirrors `from_html_with_document_url_and_fetcher_and_js_execution_options`, but wires
+    // the production vm-js executor by default.
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+
+    // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
+    // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
+    let renderer = super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .build()?;
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(super::VmJsBrowserTabExecutor::default()),
+      trace_handle.clone(),
+      js_execution_options,
+    )?;
+    let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+
+    let mut tab = Self {
+      trace: trace_handle,
+      trace_output,
+      diagnostics,
+      host,
+      event_loop,
+      pending_frame: None,
+      history: TabHistory::new(),
+    };
+
+    // Configure the renderer's document URL hint up-front so any non-script fetches (stylesheets,
+    // images, etc) see consistent referrer/origin context during parsing.
+    tab
+      .host
+      .document
+      .renderer_mut()
+      .set_document_url(document_url);
+
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.to_string()), document_referrer_policy)?;
+    let base_url =
+      tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &options)?;
+    if let Some(req) = tab.host.pending_navigation.take() {
+      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
+    } else {
+      let renderer = tab.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
+    }
+    Ok(tab)
+  }
+
+  /// Like [`BrowserTab::from_html_with_vmjs_and_document_url`], but uses the provided
+  /// [`ResourceFetcher`] for subresource/script/fetch() loads.
+  pub fn from_html_with_vmjs_and_document_url_and_fetcher(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
+    Self::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      document_url,
+      options,
+      fetcher,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher`], but allows overriding
+  /// JavaScript execution budgets.
+  pub fn from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    fetcher: Arc<dyn ResourceFetcher>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Self::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      html,
+      document_url,
+      options,
+      super::VmJsBrowserTabExecutor::default(),
+      fetcher,
+      js_execution_options,
+    )
+  }
+
+  /// Creates a new vm-js-backed tab and navigates it to `url`.
+  pub fn from_url_with_vmjs(url: &str, options: RenderOptions) -> Result<Self> {
+    Self::from_url_with_vmjs_and_js_execution_options(url, options, JsExecutionOptions::default())
+  }
+
+  /// Like [`BrowserTab::from_url_with_vmjs`], but allows overriding JavaScript execution budgets.
+  pub fn from_url_with_vmjs_and_js_execution_options(
+    url: &str,
+    options: RenderOptions,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    let mut tab = Self::from_html_with_vmjs_and_js_execution_options(
+      "",
+      options.clone(),
+      js_execution_options,
+    )?;
+    tab.navigate_to_url(url, options)?;
+    Ok(tab)
+  }
+
   fn parse_html_streaming_and_schedule_scripts(
     &mut self,
     html: &str,
@@ -2549,6 +2802,30 @@ impl BrowserTab {
       }
     }
     Ok(tab)
+  }
+
+  /// Construct a `BrowserTab` from a pre-built renderer instance with JavaScript enabled via the
+  /// production `vm-js` executor.
+  ///
+  /// This is primarily used by CLI tools and other embeddings that want to configure the renderer
+  /// (fetcher, runtime toggles, etc) before enabling JS execution via `BrowserTab`, without having
+  /// to manually instantiate a `VmJsBrowserTabExecutor`.
+  pub fn with_renderer_and_vmjs(renderer: super::FastRender, options: RenderOptions) -> Result<Self> {
+    Self::with_renderer_and_vmjs_and_js_execution_options(renderer, options, JsExecutionOptions::default())
+  }
+
+  /// Like [`BrowserTab::with_renderer_and_vmjs`], but allows overriding JavaScript execution budgets.
+  pub fn with_renderer_and_vmjs_and_js_execution_options(
+    renderer: super::FastRender,
+    options: RenderOptions,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Self::with_renderer_and_js_execution_options(
+      renderer,
+      options,
+      super::VmJsBrowserTabExecutor::default(),
+      js_execution_options,
+    )
   }
 
   /// Construct a `BrowserTab` from a pre-built renderer instance.

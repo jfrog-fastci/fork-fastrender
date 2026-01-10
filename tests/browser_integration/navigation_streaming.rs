@@ -128,8 +128,8 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
     vec![
       "head-inline".to_string(),
       "ext-blocking".to_string(),
-      "partial:before=true after=false eof=false".to_string(),
       "ext-async".to_string(),
+      "partial:before=true after=false eof=false".to_string(),
       "ext-defer:eof=true".to_string(),
     ]
   );
