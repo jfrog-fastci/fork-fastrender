@@ -163,6 +163,22 @@ Key modules:
 - `src/js/window_timers.rs`, `src/js/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
   - early “web platform” primitives used by tests and eventual page execution
 
+#### Promise jobs and microtasks (`vm-js` host hooks)
+
+`vm-js` models ECMAScript host hooks (e.g. `HostEnqueuePromiseJob`) via the `VmHostHooks` trait.
+FastRender implements these hooks by routing Promise jobs into the host-owned HTML-like
+`EventLoop` microtask queue:
+
+- `src/js/window_timers.rs`: `VmJsEventLoopHooks` implements `VmHostHooks::host_enqueue_promise_job`
+  by queueing an `EventLoop` microtask that runs the `vm-js::Job`.
+- Script execution that needs correct Promise/microtask behavior must use the `vm-js`
+  `exec_script_with_hooks(...)` entrypoint (wired through `WindowRealm::exec_script_with_host` /
+  `WindowHost::exec_script`), not `exec_script(...)` / `exec_script_with_host(...)` which use the
+  VM-owned microtask queue.
+
+This keeps Promise jobs and `queueMicrotask(...)` in the same FIFO-ordered microtask queue, and
+ensures Promise jobs enqueued by other Promise jobs run in the same microtask checkpoint.
+
 ### DOM for bindings (`src/dom2/*`)
 
 `dom2` is FastRender’s mutable DOM representation designed for JS bindings. The renderer still
