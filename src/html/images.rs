@@ -171,12 +171,13 @@ fn resolve_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_>
   .filter(|v| v.is_finite() && *v > 0.0)
 }
 
-fn pick_best_density<'a, I>(candidates: I, target: f32) -> Option<(&'a SrcsetCandidate, f32)>
+fn pick_best_density<C, I>(candidates: I, target: f32) -> Option<(C, f32)>
 where
-  I: Iterator<Item = (&'a SrcsetCandidate, f32)>,
+  I: Iterator<Item = (C, f32)>,
+  C: Copy,
 {
-  let mut best_ge: Option<(&SrcsetCandidate, f32)> = None;
-  let mut best_lt: Option<(&SrcsetCandidate, f32)> = None;
+  let mut best_ge: Option<(C, f32)> = None;
+  let mut best_lt: Option<(C, f32)> = None;
 
   for (candidate, density) in candidates {
     if density <= 0.0 || !density.is_finite() {
@@ -208,6 +209,7 @@ fn select_from_srcset<'a>(
   sizes: Option<&'a SizesList>,
   ctx: ImageSelectionContext<'_>,
   from_picture: bool,
+  default_source: Option<&'a str>,
 ) -> Option<SelectedImageSource<'a>> {
   if srcset.is_empty() {
     return None;
@@ -226,32 +228,92 @@ fn select_from_srcset<'a>(
 
   let target = sanitized_target_density(ctx.device_pixel_ratio);
 
-  let best = pick_best_density(
-    srcset.iter().filter_map(|candidate| {
-      let density = match (kind, candidate.descriptor) {
-        (DescriptorKind::Width, SrcsetDescriptor::Width(w)) => {
-          let slot = source_size?;
-          Some(w as f32 / slot)
-        }
-        (DescriptorKind::Width, SrcsetDescriptor::WidthHeight { width, .. }) => {
-          let slot = source_size?;
-          Some(width as f32 / slot)
-        }
-        (DescriptorKind::Density, SrcsetDescriptor::Density(d)) => Some(d),
-        // Ignore density descriptors when width descriptors are present.
-        _ => None,
-      }?;
-      Some((candidate, density))
-    }),
-    target,
-  )?;
+  // HTML: https://html.spec.whatwg.org/multipage/images.html#create-a-source-set
+  //
+  // When `srcset` provides only density descriptors and does not include a 1x entry, the `src`
+  // attribute (default source) is appended to the source set as the implicit 1x candidate.
+  //
+  // This matters for fixtures that only capture a `2x` asset: browsers will still select the `src`
+  // candidate on DPR=1 devices (and will not fall back to the 2x candidate if the 1x resource fails
+  // to decode).
+  #[derive(Clone, Copy)]
+  enum DensityCandidate<'b> {
+    Srcset(&'b SrcsetCandidate),
+    DefaultSource(&'b str),
+  }
 
-  Some(SelectedImageSource {
-    url: best.0.url.as_str(),
-    descriptor: Some(best.0.descriptor),
-    density: Some(best.1),
-    from_picture,
-  })
+  let include_default_source = if kind == DescriptorKind::Density {
+    let src = default_source.unwrap_or("");
+    !trim_ascii_whitespace(src).is_empty()
+      && !srcset.iter().any(|candidate| {
+        matches!(candidate.descriptor, SrcsetDescriptor::Density(d) if d == 1.0)
+      })
+  } else {
+    false
+  };
+
+  let best = match kind {
+    DescriptorKind::Width => {
+      let best = pick_best_density(
+        srcset.iter().filter_map(|candidate| {
+          let density = match candidate.descriptor {
+            SrcsetDescriptor::Width(w) => {
+              let slot = source_size?;
+              Some(w as f32 / slot)
+            }
+            SrcsetDescriptor::WidthHeight { width, .. } => {
+              let slot = source_size?;
+              Some(width as f32 / slot)
+            }
+            // Ignore density descriptors when width descriptors are present.
+            _ => None,
+          }?;
+          Some((candidate, density))
+        }),
+        target,
+      )?;
+      return Some(SelectedImageSource {
+        url: best.0.url.as_str(),
+        descriptor: Some(best.0.descriptor),
+        density: Some(best.1),
+        from_picture,
+      });
+    }
+    DescriptorKind::Density => {
+      let src = default_source.unwrap_or("");
+      let best = pick_best_density(
+        srcset
+          .iter()
+          .filter_map(|candidate| match candidate.descriptor {
+            SrcsetDescriptor::Density(d) => Some((DensityCandidate::Srcset(candidate), d)),
+            _ => None,
+          })
+          .chain(
+            include_default_source
+              .then_some((DensityCandidate::DefaultSource(src), 1.0))
+              .into_iter(),
+          ),
+        target,
+      )?;
+
+      match best.0 {
+        DensityCandidate::Srcset(candidate) => SelectedImageSource {
+          url: candidate.url.as_str(),
+          descriptor: Some(candidate.descriptor),
+          density: Some(best.1),
+          from_picture,
+        },
+        DensityCandidate::DefaultSource(src) => SelectedImageSource {
+          url: src,
+          descriptor: None,
+          density: None,
+          from_picture,
+        },
+      }
+    }
+  };
+
+  Some(best)
 }
 
 fn select_img_source<'a>(
@@ -261,7 +323,7 @@ fn select_img_source<'a>(
   ctx: ImageSelectionContext<'_>,
   from_picture: bool,
 ) -> SelectedImageSource<'a> {
-  if let Some(selected) = select_from_srcset(srcset, sizes, ctx, from_picture) {
+  if let Some(selected) = select_from_srcset(srcset, sizes, ctx, from_picture, Some(src)) {
     return selected;
   }
 
@@ -287,6 +349,7 @@ pub fn select_image_source<'a>(
       source.sizes.as_ref().or(img_sizes),
       ctx,
       true,
+      None,
     ) {
       return selected;
     }
@@ -608,5 +671,35 @@ mod tests {
 
     let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
     assert_eq!(picked[0].url, "second.png");
+  }
+
+  #[test]
+  fn srcset_density_appends_default_src_as_1x_when_missing() {
+    // HTML "create a source set" appends the `src` attribute as the implicit 1x candidate when the
+    // srcset only contains density descriptors and does not provide a 1x entry.
+    let srcset = vec![SrcsetCandidate {
+      url: "2x.png".to_string(),
+      descriptor: SrcsetDescriptor::Density(2.0),
+    }];
+
+    let ctx_1x = ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: None,
+    };
+    let picked_1x = image_sources_with_fallback("base.png", &srcset, None, &[], ctx_1x);
+    assert_eq!(picked_1x.len(), 1);
+    assert_eq!(picked_1x[0].url, "base.png");
+
+    let ctx_2x = ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      ..ctx_1x
+    };
+    let picked_2x = image_sources_with_fallback("base.png", &srcset, None, &[], ctx_2x);
+    assert_eq!(picked_2x[0].url, "2x.png");
   }
 }
