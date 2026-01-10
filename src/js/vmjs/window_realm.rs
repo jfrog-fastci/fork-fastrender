@@ -10162,9 +10162,11 @@ fn document_base_uri_get_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // `document.baseURI` reflects the document base URL used to resolve relative URLs. When the
+  // embedder has not yet installed a base URL, fall back to the realm's document URL.
   let base_url = vm
     .user_data_mut::<WindowRealmUserData>()
-    .and_then(|data| data.base_url.clone())
+    .map(|data| data.base_url.clone().unwrap_or_else(|| data.document_url.clone()))
     .unwrap_or_default();
   Ok(Value::String(scope.alloc_string(&base_url)?))
 }

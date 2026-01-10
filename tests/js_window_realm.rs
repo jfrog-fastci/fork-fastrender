@@ -238,6 +238,23 @@ fn window_self_and_document_url_are_exposed() -> Result<()> {
 }
 
 #[test]
+fn document_base_uri_falls_back_to_document_url() -> Result<()> {
+  let url = "https://example.com/";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  // Simulate an embedder that has not yet installed a base URL (or cleared it while navigating).
+  realm.set_base_url(None);
+
+  let base_uri = realm
+    .exec_script("document.baseURI")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let (_vm, heap) = realm.vm_and_heap_mut();
+  assert_eq!(get_string(heap, base_uri), url);
+  Ok(())
+}
+
+#[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
   struct RecordingExecutor {
