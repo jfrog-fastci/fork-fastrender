@@ -155,6 +155,7 @@ mod grid_column_numeric;
 mod grid_intrinsic_definite_height;
 mod grid_intrinsic_sizing_keywords;
 mod grid_intrinsic_keywords_vertical_writing_mode;
+mod grid_item_auto_width_stretch_respects_max_width;
 mod grid_item_margin_collapse;
 mod grid_min_content_calc;
 mod grid_min_content_rows_fixed_height;
