@@ -5066,6 +5066,235 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn empty_parser_inserted_script_can_execute_after_later_text_mutation() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><script id=s></script></body></html>",
+      RenderOptions::default(),
+      executor,
+    )?;
+
+    // Empty parser-inserted scripts must not execute during parsing.
+    assert!(log.borrow().is_empty());
+
+    let script = tab
+      .host
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script to exist");
+    let node = tab.host.dom().node(script);
+    assert!(
+      !node.script_already_started,
+      "empty parser-inserted script must not be marked already started"
+    );
+    assert!(
+      !node.script_parser_document,
+      "empty parser-inserted script must clear parser document to allow later mutation"
+    );
+    assert!(
+      node.script_force_async,
+      "empty parser-inserted script must set force-async so later src mutation is async-by-default"
+    );
+
+    // Simulate a later DOM mutation that provides inline script text.
+    tab.host.mutate_dom(|dom| {
+      let text = dom.create_text("A");
+      dom.append_child(script, text).expect("append_child");
+      ((), true)
+    });
+
+    tab.host.discover_dynamic_scripts(&mut tab.event_loop)?;
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn unsupported_type_parser_inserted_script_can_execute_after_type_and_children_mutation() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><script type=\"text/plain\" id=s>A</script></body></html>",
+      RenderOptions::default(),
+      executor,
+    )?;
+
+    // Unsupported-type parser-inserted scripts must not execute during parsing.
+    assert!(log.borrow().is_empty());
+
+    let script = tab
+      .host
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script to exist");
+    let node = tab.host.dom().node(script);
+    assert!(
+      !node.script_already_started,
+      "unsupported-type parser-inserted script must not be marked already started"
+    );
+    assert!(
+      !node.script_parser_document,
+      "unsupported-type parser-inserted script must clear parser document to allow later mutation"
+    );
+
+    // Mutate the element to become a classic script and change its children, then discover/execute.
+    tab.host.mutate_dom(|dom| {
+      dom.remove_attribute(script, "type").expect("remove_attribute");
+      let text = dom.create_text("B");
+      dom.append_child(script, text).expect("append_child");
+      ((), true)
+    });
+
+    tab.host.discover_dynamic_scripts(&mut tab.event_loop)?;
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:AB".to_string(), "microtask:AB".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn empty_parser_inserted_script_sets_force_async_for_later_external_script_execution() -> Result<()> {
+    struct LoggingExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for LoggingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+    }
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = LoggingExecutor { log: Rc::clone(&log) };
+
+    // Parse an empty parser-inserted script. It should not execute, but it should clear the parser
+    // document slot and set force-async so it behaves like a dynamically inserted script if mutated
+    // later.
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><script id=a></script></body></html>",
+      RenderOptions::default(),
+      executor,
+    )?;
+    assert!(log.borrow().is_empty());
+
+    let script_a = tab
+      .host
+      .dom()
+      .get_element_by_id("a")
+      .expect("expected #a script");
+    assert!(tab.host.dom().node(script_a).script_force_async);
+    assert!(!tab.host.dom().node(script_a).script_parser_document);
+    assert!(!tab.host.dom().node(script_a).script_already_started);
+
+    // Create a second script that is *not* async-like (`force_async=false`, no `async` attribute) so
+    // it executes using the HTML "in-order-asap" rules. We clear force-async by toggling the `async`
+    // attribute (sticky per the HTML spec).
+    let script_b = tab.host.mutate_dom(|dom| {
+      let body = dom.body().expect("expected document.body to exist");
+
+      dom
+        .set_attribute(script_a, "src", "a.js")
+        .expect("set_attribute");
+
+      let script_b = dom.create_element("script", "");
+      dom.set_attribute(script_b, "async", "").expect("set_attribute");
+      dom.remove_attribute(script_b, "async").expect("remove_attribute");
+      dom.set_attribute(script_b, "src", "b.js").expect("set_attribute");
+      dom.append_child(body, script_b).expect("append_child");
+      (script_b, true)
+    });
+    assert!(
+      !tab.host.dom().has_attribute(script_b, "async").unwrap_or(false),
+      "expected `async` attribute to be removed"
+    );
+    assert!(
+      !tab.host.dom().node(script_b).script_force_async,
+      "expected force-async to be cleared for script_b"
+    );
+
+    tab.host.discover_dynamic_scripts(&mut tab.event_loop)?;
+    // Clear queued networking tasks; we'll drive fetch completion manually to control ordering.
+    tab.event_loop.clear_all_pending_work();
+
+    let (id_a, id_b) = {
+      let mut id_a = None;
+      let mut id_b = None;
+      for (id, entry) in &tab.host.scripts {
+        if entry.node_id == script_a {
+          id_a = Some(*id);
+        } else if entry.node_id == script_b {
+          id_b = Some(*id);
+        }
+      }
+      (id_a.expect("missing script_id for a.js"), id_b.expect("missing script_id for b.js"))
+    };
+
+    // Verify the discovered specs match the internal-slot state.
+    assert!(
+      tab.host
+        .scripts
+        .get(&id_a)
+        .expect("missing script entry for a.js")
+        .spec
+        .force_async,
+      "expected force_async to be propagated for previously-failed parser-inserted script"
+    );
+    assert!(
+      !tab.host
+        .scripts
+        .get(&id_b)
+        .expect("missing script entry for b.js")
+        .spec
+        .force_async,
+      "expected force_async to be cleared for in-order-asap script"
+    );
+
+    // Complete fetch for B first. Because A is async-like (force_async=true), it is not part of the
+    // in-order-asap list; therefore B can execute immediately on fetch completion, before A.
+    let actions_b = tab.host.scheduler.fetch_completed(id_b, "B".to_string())?;
+    tab.host.apply_scheduler_actions(actions_b, &mut tab.event_loop)?;
+    let actions_a = tab.host.scheduler.fetch_completed(id_a, "A".to_string())?;
+    tab.host.apply_scheduler_actions(actions_a, &mut tab.event_loop)?;
+
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+    assert_eq!(&*log.borrow(), &["B".to_string(), "A".to_string()]);
+    Ok(())
+  }
+
   struct DomSourceGuard {
     id: u64,
   }
