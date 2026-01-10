@@ -101,7 +101,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 
 * `resolve a module specifier`:
   * `rg -n '<dfn>resolve a module specifier' specs/whatwg-html/source`
-* `resolve an imports match`:
+* `resolve an imports match` (**implemented as** `resolve_imports_match`):
   * `rg -n 'resolve an imports match' specs/whatwg-html/source`
 * `resolve a URL-like module specifier`:
   * `rg -n 'resolve a URL-like module specifier' specs/whatwg-html/source`
