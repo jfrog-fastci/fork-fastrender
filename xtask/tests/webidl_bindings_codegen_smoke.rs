@@ -50,4 +50,13 @@ fn generated_bindings_snapshots_contain_known_members() {
     !window_bindings.contains("u_r_l_search_params_sort"),
     "expected URLSearchParams.sort to be excluded by tools/webidl/window_bindings_allowlist.toml"
   );
+
+  let worker_start = window_bindings
+    .find("pub mod worker")
+    .expect("expected generated bindings to include a worker module");
+  let worker_bindings = &window_bindings[worker_start..];
+  assert!(
+    worker_bindings.contains("BindingValue::FrozenArray"),
+    "expected worker bindings to handle FrozenArray values when converting results back to JS"
+  );
 }
