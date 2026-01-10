@@ -1897,9 +1897,30 @@ mod state_machine_tests {
     }
   }
 
-  fn with_nomodule(mut spec: ScriptElementSpec) -> ScriptElementSpec {
-    spec.nomodule_attr = true;
+  fn module_inline(text: &str) -> ScriptElementSpec {
+    let mut spec = classic_inline(text);
+    spec.script_type = ScriptType::Module;
     spec
+  }
+
+  fn module_inline_dynamic(text: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      src_attr_present: false,
+      inline_text: text.to_string(),
+      async_attr,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      force_async,
+      node_id: None,
+      script_type: ScriptType::Module,
+    }
   }
 
   fn module_external_dynamic(src: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
@@ -1922,24 +1943,9 @@ mod state_machine_tests {
     }
   }
 
-  fn module_inline_dynamic(source: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
-    ScriptElementSpec {
-      base_url: None,
-      src: None,
-      src_attr_present: false,
-      inline_text: source.to_string(),
-      async_attr,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      parser_inserted: false,
-      force_async,
-      node_id: None,
-      script_type: ScriptType::Module,
-    }
+  fn with_nomodule(mut spec: ScriptElementSpec) -> ScriptElementSpec {
+    spec.nomodule_attr = true;
+    spec
   }
 
   struct Harness {
@@ -2212,7 +2218,10 @@ mod state_machine_tests {
       /* force_async */ false,
     ))?;
 
-    assert!(h.blocked_parser_on.is_none(), "module scripts must not block parsing");
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic module scripts must not block parsing"
+    );
     assert_eq!(
       h.started_fetches
         .iter()
@@ -2246,24 +2255,89 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn in_order_asap_dynamic_inline_module_script_queues_without_parsing_completed() -> Result<()> {
+  fn force_async_true_dynamic_module_external_scripts_behave_like_async() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let a = h.discover_dynamic(module_external_dynamic(
+      "a.js",
+      /* async_attr */ false,
+      /* force_async */ true,
+    ))?;
+    let b = h.discover_dynamic(module_external_dynamic(
+      "b.js",
+      /* async_attr */ false,
+      /* force_async */ true,
+    ))?;
+
+    // Async module scripts execute in completion order.
+    h.fetch_complete(b, "B")?;
+    h.fetch_complete(a, "A")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:B".to_string(),
+        "microtask:B".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn in_order_asap_dynamic_inline_module_scripts_execute_in_insertion_order() -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
     h.discover_dynamic(module_inline_dynamic(
-      "INLINE",
+      "A",
       /* async_attr */ false,
       /* force_async */ false,
     ))?;
-    assert!(h.host.log.is_empty(), "inline module scripts should be queued as tasks");
+    h.discover_dynamic(module_inline_dynamic(
+      "B",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+
+    assert!(h.host.log.is_empty());
     h.run_event_loop()?;
     assert_eq!(
       h.host.log,
       vec![
-        "script:INLINE".to_string(),
-        "microtask:INLINE".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "script:B".to_string(),
+        "microtask:B".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_inline_module_scripts_are_deferred_by_default_until_parsing_completed() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    h.discover(module_inline("M"))?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      Vec::<String>::new(),
+      "module scripts must not execute synchronously during parsing"
+    );
+
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:M".to_string(), "microtask:M".to_string()]
     );
     Ok(())
   }
