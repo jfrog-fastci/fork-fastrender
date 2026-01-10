@@ -536,6 +536,128 @@ Promise.allSettled([Promise.resolve("a"), Promise.reject("b")]).then(function (r
 }
 
 #[test]
+fn promise_all_resolves_values_in_input_order() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__out = "";
+Promise.all([Promise.resolve("a"), "b"]).then(
+  function (res) { globalThis.__out = res[0] + "," + res[1]; },
+  function (e) { globalThis.__out = "rejected:" + e; }
+);
+"#,
+  )?;
+
+  let before = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__out");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(before, "");
+
+  host.perform_microtask_checkpoint()?;
+
+  let after = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__out");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(after, "a,b");
+  Ok(())
+}
+
+#[test]
+fn promise_all_rejects_with_first_rejection_reason() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__out = "";
+Promise.all([Promise.reject("x"), Promise.resolve("y")]).then(
+  function () { globalThis.__out = "resolved"; },
+  function (e) { globalThis.__out = "rejected:" + e; }
+);
+"#,
+  )?;
+
+  host.perform_microtask_checkpoint()?;
+
+  let out = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__out");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(out, "rejected:x");
+  Ok(())
+}
+
+#[test]
+fn promise_race_resolves_first_settled_value() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__out = "";
+Promise.race([Promise.resolve("a"), Promise.resolve("b")]).then(
+  function (v) { globalThis.__out = "resolved:" + v; },
+  function (e) { globalThis.__out = "rejected:" + e; }
+);
+"#,
+  )?;
+
+  host.perform_microtask_checkpoint()?;
+
+  let out = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__out");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(out, "resolved:a");
+  Ok(())
+}
+
+#[test]
+fn promise_race_rejects_first_rejection_reason() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__out = "";
+Promise.race([Promise.reject("x"), Promise.resolve("y")]).then(
+  function (v) { globalThis.__out = "resolved:" + v; },
+  function (e) { globalThis.__out = "rejected:" + e; }
+);
+"#,
+  )?;
+
+  host.perform_microtask_checkpoint()?;
+
+  let out = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__out");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(out, "rejected:x");
+  Ok(())
+}
+
+#[test]
 fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let url = "https://example.com:8080/path/to/page?query=1#hash";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
