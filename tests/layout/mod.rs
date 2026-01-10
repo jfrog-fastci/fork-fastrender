@@ -27,6 +27,7 @@ mod collapsible_whitespace_before_floats;
 mod details_open_state;
 mod display_contents;
 mod empty_inline_boxes;
+mod inline_atomic_subpixel_overflow_does_not_wrap;
 mod fieldset_legend;
 mod inline_border_padding_line_height;
 mod inline_box_baseline_uses_last_child;

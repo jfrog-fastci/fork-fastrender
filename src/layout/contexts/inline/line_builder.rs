@@ -99,6 +99,10 @@ const LINE_DEFAULT_ITEM_CAPACITY: usize = 8;
 // "just fit" can be treated as overflowing, triggering emergency wrap opportunities like
 // `word-break: break-word` and inflating line heights (e.g. single-word footer links wrapping).
 const LINE_FIT_EPSILON: f32 = 0.01;
+// Some layout code paths effectively snap to whole pixels (e.g. flex/grid intrinsic sizing probes),
+// while inline content (text shaping, inline-block contents) retains subpixel advances. Allow a
+// half-pixel tolerance so a <0.5px overflow doesn't spuriously flip a wrap decision.
+const LINE_HALF_PIXEL_FIT_EPSILON: f32 = 0.5;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -3415,9 +3419,18 @@ impl<'a> LineBuilder<'a> {
       // constraints vs shaped glyph advances) and end up with a tiny "doesn't fit" overflow that
       // triggers an unexpected line break (notably in narrow ad placeholders).
       //
-      // Allow a small epsilon for breakable inline items (text / inline boxes) so subpixel rounding
-      // differences don't split a word into multiple lines.
-      let fit_eps = if resolved.is_breakable() { 0.5 } else { 0.0 };
+      // Allow a small epsilon for items that can legitimately accumulate subpixel width differences
+      // (text shaping + atomic inline boxes). This avoids "almost fits" overflow flipping a line
+      // wrap decision and drastically changing layout (e.g. footer nav links wrapping).
+      let fit_eps = if resolved.is_breakable()
+        || matches!(
+          resolved,
+          InlineItem::InlineBlock(_) | InlineItem::Ruby(_) | InlineItem::Replaced(_)
+        ) {
+        LINE_HALF_PIXEL_FIT_EPSILON
+      } else {
+        0.0
+      };
       if self.current_x + item_width <= line_width + fit_eps {
         self.place_item_with_width(resolved, item_width);
         return Ok(());
@@ -3809,11 +3822,17 @@ impl<'a> LineBuilder<'a> {
           let start_x = box_start_x + start_edge + used_width;
           let (next, next_width) = next.resolve_width_at(start_x);
 
-           if used_width + next_width <= available_children_width + LINE_FIT_EPSILON {
-             fragment_children.push(next);
-             used_width += next_width;
-             continue;
-           }
+          let fit_epsilon = match &next {
+            InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Ruby(_) => {
+              LINE_HALF_PIXEL_FIT_EPSILON
+            }
+            _ => LINE_FIT_EPSILON,
+          };
+          if used_width + next_width <= available_children_width + fit_epsilon {
+            fragment_children.push(next);
+            used_width += next_width;
+            continue;
+          }
 
           match next {
             InlineItem::Text(text_item) => {
