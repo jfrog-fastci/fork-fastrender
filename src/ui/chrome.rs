@@ -433,20 +433,23 @@ pub fn chrome_ui(
     });
   });
 
-  if let Some(url) = app
+  // Always reserve space for the status bar so showing/hiding the hovered URL doesn't change the
+  // page viewport size (which would trigger needless repaints and can cause hover flicker).
+  let status_text = app
     .active_tab()
     .and_then(|t| t.hovered_url.as_deref())
-    .filter(|u| !u.trim().is_empty())
-  {
-    let url = url.to_string();
-    egui::TopBottomPanel::bottom("status_bar")
-      .resizable(false)
-      .show(ctx, |ui| {
-        ui.horizontal(|ui| {
-          ui.label(egui::RichText::new(url).small());
-        });
+    .map(|s| s.trim())
+    .filter(|s| !s.is_empty())
+    .unwrap_or(" ");
+
+  egui::TopBottomPanel::bottom("status_bar")
+    .resizable(false)
+    .default_height(18.0)
+    .show(ctx, |ui| {
+      ui.horizontal(|ui| {
+        ui.add(egui::Label::new(egui::RichText::new(status_text).small()).wrap(false));
       });
-  }
+    });
 
   actions
 }
