@@ -438,7 +438,7 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
   );
   assert!(
     !log.contains("--disable-gpu"),
-    "--disable-gpu should not be used with --headless=new; got:\n{log}"
+    "chrome args should omit --disable-gpu for --headless=new (it can break screenshots on some Chrome builds); got:\n{log}"
   );
   assert!(
     log.contains("--window-size=64,152"),

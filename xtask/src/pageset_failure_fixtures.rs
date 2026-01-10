@@ -14,6 +14,8 @@ pub struct PagesetProgressPage {
   pub stem: String,
   pub status: String,
   pub url: Option<String>,
+  pub hotspot: Option<String>,
+  pub total_ms: Option<f64>,
   pub accuracy: Option<PagesetAccuracyMetrics>,
   pub progress_path: PathBuf,
   pub fixture_index_path: PathBuf,
@@ -91,6 +93,10 @@ struct PageProgress {
   #[serde(default)]
   url: Option<String>,
   #[serde(default)]
+  hotspot: Option<String>,
+  #[serde(default)]
+  total_ms: Option<f64>,
+  #[serde(default)]
   accuracy: Option<ProgressAccuracy>,
 }
 
@@ -146,6 +152,13 @@ pub fn read_progress_pages(
         diff_percent,
         perceptual: accuracy.perceptual.filter(|value| value.is_finite()),
       });
+    let hotspot = progress
+      .hotspot
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(|s| s.to_string());
+    let total_ms = progress.total_ms.filter(|v| v.is_finite());
     let fixture_index_path = fixtures_root.join(stem).join("index.html");
     let has_fixture = fixture_index_path.is_file();
 
@@ -153,6 +166,8 @@ pub fn read_progress_pages(
       stem: stem.to_string(),
       status: progress.status,
       url: progress.url,
+      hotspot,
+      total_ms,
       accuracy,
       progress_path: path,
       fixture_index_path,

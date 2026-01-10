@@ -31,14 +31,59 @@ impl MediaMode {
 #[derive(Args, Debug)]
 pub struct PageLoopArgs {
   /// Offline fixture stem under tests/pages/fixtures (must contain an index.html).
-  #[arg(long, value_name = "STEM", required_unless_present = "pageset")]
+  #[arg(
+    long,
+    value_name = "STEM",
+    conflicts_with_all = ["pageset", "from_progress"],
+    required_unless_present_any = ["pageset", "from_progress"]
+  )]
   pub fixture: Option<String>,
 
   /// Pageset page URL or stem (from `src/pageset.rs`) to render via its fixture directory.
   ///
   /// This is resolved to a collision-aware fixture name (cache stem) before running.
-  #[arg(long, value_name = "URL_OR_STEM", conflicts_with = "fixture")]
+  #[arg(
+    long,
+    value_name = "URL_OR_STEM",
+    conflicts_with_all = ["fixture", "from_progress"]
+  )]
   pub pageset: Option<String>,
+
+  /// Select exactly one fixture from pageset progress JSON files in this directory.
+  ///
+  /// The directory should contain `*.json` files like `progress/pages/<stem>.json`.
+  #[arg(long, value_name = "DIR", conflicts_with_all = ["fixture", "pageset"])]
+  pub from_progress: Option<PathBuf>,
+
+  /// When selecting from `--from-progress`, choose the first page whose `status != ok`
+  /// (deterministic stem order).
+  #[arg(long, requires = "from_progress", conflicts_with_all = ["top_worst_accuracy", "top_slowest"])]
+  pub only_failures: bool,
+
+  /// When selecting from `--from-progress`, choose the Nth worst-accuracy ok page (1-based)
+  /// by `accuracy.diff_percent` (tie-break perceptual desc, then stem asc).
+  ///
+  /// If no selection flag is provided, `page-loop` defaults to `--top-worst-accuracy 1`.
+  #[arg(
+    long,
+    value_name = "N",
+    requires = "from_progress",
+    conflicts_with_all = ["only_failures", "top_slowest"]
+  )]
+  pub top_worst_accuracy: Option<usize>,
+
+  /// When selecting from `--from-progress`, choose the Nth slowest page (1-based) by `total_ms`.
+  #[arg(
+    long,
+    value_name = "N",
+    requires = "from_progress",
+    conflicts_with_all = ["only_failures", "top_worst_accuracy"]
+  )]
+  pub top_slowest: Option<usize>,
+
+  /// When selecting from `--from-progress`, only consider pages whose `hotspot` matches this value.
+  #[arg(long, value_name = "NAME", requires = "from_progress")]
+  pub hotspot: Option<String>,
 
   /// Viewport size as WxH (e.g. 1040x1240; forwarded to renderers).
   #[arg(long, value_parser = crate::parse_viewport, default_value = DEFAULT_VIEWPORT)]
@@ -153,10 +198,9 @@ impl Layout {
 }
 
 pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
-  let fixture_stem = resolve_fixture_stem(&args)?;
-  validate_args(&args, &fixture_stem)?;
-
   let repo_root = crate::repo_root();
+  let fixture_stem = resolve_fixture_stem(&repo_root, &args)?;
+  validate_args(&args, &fixture_stem)?;
   let out_root = resolve_out_root(&repo_root, &args, &fixture_stem)?;
   let layout = Layout::new(&repo_root, &fixture_stem, &out_root);
 
@@ -331,7 +375,10 @@ fn resolve_out_root(repo_root: &Path, args: &PageLoopArgs, fixture_stem: &str) -
   Ok(out_dir)
 }
 
-fn resolve_fixture_stem(args: &PageLoopArgs) -> Result<String> {
+fn resolve_fixture_stem(repo_root: &Path, args: &PageLoopArgs) -> Result<String> {
+  if args.from_progress.is_some() {
+    return resolve_fixture_stem_from_progress(repo_root, args);
+  }
   if let Some(fixture) = args.fixture.as_deref() {
     return Ok(fixture.trim().to_string());
   }
@@ -382,6 +429,203 @@ fn resolve_pageset_to_fixture_stem(raw: &str) -> Result<String> {
   }
 
   Ok(selected[0].cache_stem.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressSelectionMode {
+  OnlyFailures,
+  TopWorstAccuracy { rank: usize },
+  TopSlowest { rank: usize },
+}
+
+fn resolve_fixture_stem_from_progress(repo_root: &Path, args: &PageLoopArgs) -> Result<String> {
+  let Some(progress_dir) = args.from_progress.as_deref() else {
+    bail!("internal error: resolve_fixture_stem_from_progress called without --from-progress");
+  };
+
+  let progress_dir = resolve_repo_path(repo_root, progress_dir);
+  if !progress_dir.is_dir() {
+    bail!(
+      "progress directory does not exist: {}",
+      progress_dir.display()
+    );
+  }
+
+  let mode = if args.only_failures {
+    ProgressSelectionMode::OnlyFailures
+  } else if let Some(rank) = args.top_slowest {
+    ProgressSelectionMode::TopSlowest { rank }
+  } else {
+    ProgressSelectionMode::TopWorstAccuracy {
+      rank: args.top_worst_accuracy.unwrap_or(1),
+    }
+  };
+
+  match mode {
+    ProgressSelectionMode::OnlyFailures => {}
+    ProgressSelectionMode::TopWorstAccuracy { rank } => {
+      if rank == 0 {
+        bail!("--top-worst-accuracy must be > 0");
+      }
+    }
+    ProgressSelectionMode::TopSlowest { rank } => {
+      if rank == 0 {
+        bail!("--top-slowest must be > 0");
+      }
+    }
+  }
+
+  let hotspot = args.hotspot.as_deref().map(str::trim);
+  if args.hotspot.is_some() && hotspot == Some("") {
+    bail!("--hotspot must not be empty");
+  }
+  let hotspot = hotspot.filter(|s| !s.is_empty());
+
+  let fixtures_root = repo_root.join(DEFAULT_FIXTURES_DIR);
+  let mut pages =
+    xtask::pageset_failure_fixtures::read_progress_pages(&progress_dir, &fixtures_root)?;
+
+  if let Some(hotspot) = hotspot {
+    pages.retain(|p| p.hotspot.as_deref() == Some(hotspot));
+    if pages.is_empty() {
+      bail!(
+        "no progress pages matched --hotspot {hotspot:?} under {}",
+        progress_dir.display()
+      );
+    }
+  }
+
+  println!(
+    "Progress selection: discovered {} entr{} in {}",
+    pages.len(),
+    if pages.len() == 1 { "y" } else { "ies" },
+    progress_dir.display()
+  );
+  if let Some(hotspot) = hotspot {
+    println!("Progress selection: hotspot filter: {hotspot}");
+  }
+
+  let selected = match mode {
+    ProgressSelectionMode::OnlyFailures => {
+      let mut failing = pages
+        .into_iter()
+        .filter(|p| p.status != "ok")
+        .collect::<Vec<_>>();
+      if failing.is_empty() {
+        bail!(
+          "no failing pages (status != ok) found under {}",
+          progress_dir.display()
+        );
+      }
+      // Prefer pages that have offline fixtures.
+      let any_fixture = failing.iter().any(|p| p.has_fixture);
+      if any_fixture {
+        failing.retain(|p| p.has_fixture);
+      }
+
+      // Deterministic order: the input `pages` list is stem-sorted, but retain the guarantee after
+      // filtering by sorting again.
+      failing.sort_by(|a, b| a.stem.cmp(&b.stem));
+      failing[0].clone()
+    }
+    ProgressSelectionMode::TopWorstAccuracy { rank } => {
+      let mut candidates = pages
+        .into_iter()
+        .filter(|p| p.status == "ok" && p.accuracy.is_some())
+        .collect::<Vec<_>>();
+      if candidates.is_empty() {
+        bail!(
+          "no ok pages with accuracy metrics found under {}.\n\
+           hint: run `cargo xtask pageset --accuracy ...` or `cargo xtask refresh-progress-accuracy ...` to populate `accuracy.diff_percent`.",
+          progress_dir.display()
+        );
+      }
+
+      let any_fixture = candidates.iter().any(|p| p.has_fixture);
+      if any_fixture {
+        candidates.retain(|p| p.has_fixture);
+      }
+
+      candidates.sort_by(|a, b| {
+        let a_acc = a.accuracy.expect("filtered to accuracy pages");
+        let b_acc = b.accuracy.expect("filtered to accuracy pages");
+        b_acc
+          .diff_percent
+          .total_cmp(&a_acc.diff_percent)
+          .then_with(|| {
+            b_acc
+              .perceptual
+              .unwrap_or(0.0)
+              .total_cmp(&a_acc.perceptual.unwrap_or(0.0))
+          })
+          .then_with(|| a.stem.cmp(&b.stem))
+      });
+
+      if rank > candidates.len() {
+        bail!(
+          "--top-worst-accuracy {rank} is out of range (only {} eligible page(s) found under {})",
+          candidates.len(),
+          progress_dir.display()
+        );
+      }
+      candidates[rank - 1].clone()
+    }
+    ProgressSelectionMode::TopSlowest { rank } => {
+      let mut candidates = pages
+        .into_iter()
+        .filter(|p| p.total_ms.is_some())
+        .collect::<Vec<_>>();
+      if candidates.is_empty() {
+        bail!(
+          "no pages with total_ms timings found under {}",
+          progress_dir.display()
+        );
+      }
+
+      let any_fixture = candidates.iter().any(|p| p.has_fixture);
+      if any_fixture {
+        candidates.retain(|p| p.has_fixture);
+      }
+
+      candidates.sort_by(|a, b| {
+        // Safe unwrap: filtered to total_ms pages.
+        b.total_ms
+          .unwrap_or(0.0)
+          .total_cmp(&a.total_ms.unwrap_or(0.0))
+          .then_with(|| a.stem.cmp(&b.stem))
+      });
+
+      if rank > candidates.len() {
+        bail!(
+          "--top-slowest {rank} is out of range (only {} eligible page(s) found under {})",
+          candidates.len(),
+          progress_dir.display()
+        );
+      }
+      candidates[rank - 1].clone()
+    }
+  };
+  println!("Progress selection: selected {}", selected.stem);
+  if selected.has_fixture {
+    return Ok(selected.stem);
+  }
+
+  bail!(
+    "selected page '{}' does not have an offline fixture.\n\
+     Expected: {}\n\
+     Hint: run `cargo xtask import-page-fixture <bundle.tar> {}` or `cargo xtask recapture-page-fixtures ...` to create it.",
+    selected.stem,
+    selected.fixture_index_path.display(),
+    selected.stem
+  );
+}
+
+fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
+  if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    repo_root.join(path)
+  }
 }
 
 fn build_render_fixtures_command(
