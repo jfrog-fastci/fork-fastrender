@@ -6912,6 +6912,20 @@ impl ImageCache {
       AvifImage::Rgb16(img) => {
         let (width, height) =
           Self::avif_dimensions(img.width(), img.height()).map_err(AvifDecodeError::Image)?;
+        // `avif_decode` exposes >8-bit pixels via 16-bit channel types, but the values are in the
+        // image's native bit depth range (AVIF only supports 8/10/12-bit). The `image` crate's
+        // `to_rgba8()` conversion expects 16-bit channels to already span the full 0..=65535 range,
+        // and otherwise will effectively shift the data down (turning 10-bit images nearly black).
+        //
+        // Normalize 10/12-bit channels up to 16-bit before handing them off to `image`. The AVIF
+        // bit depth is not exposed by `avif_decode`, so infer it from the observed channel range.
+        let scale_channel_max = |max_value: u16| -> Option<u16> {
+          match max_value {
+            0..=1023 => Some(1023),
+            1024..=4095 => Some(4095),
+            _ => None,
+          }
+        };
         let Some(bytes) = u64::from(width)
           .checked_mul(u64::from(height))
           .and_then(|px| px.checked_mul(3))
@@ -6922,6 +6936,7 @@ impl ImageCache {
           )));
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif rgb16 data")?;
+        let mut max_value = 0u16;
         for px in img.buf() {
           check_root_periodic(
             deadline_counter,
@@ -6929,7 +6944,21 @@ impl ImageCache {
             RenderStage::Paint,
           )
           .map_err(AvifDecodeError::from)?;
+          max_value = max_value.max(px.r).max(px.g).max(px.b);
           buf.extend_from_slice(&[px.r, px.g, px.b]);
+        }
+        if let Some(max_in) = scale_channel_max(max_value) {
+          let max_in = u32::from(max_in);
+          for value in &mut buf {
+            check_root_periodic(
+              deadline_counter,
+              IMAGE_DECODE_DEADLINE_STRIDE,
+              RenderStage::Paint,
+            )
+            .map_err(AvifDecodeError::from)?;
+            let v = u32::from(*value);
+            *value = ((v * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+          }
         }
         image::ImageBuffer::from_vec(width, height, buf)
           .map(DynamicImage::ImageRgb16)
@@ -6963,6 +6992,13 @@ impl ImageCache {
       AvifImage::Rgba16(img) => {
         let (width, height) =
           Self::avif_dimensions(img.width(), img.height()).map_err(AvifDecodeError::Image)?;
+        let scale_channel_max = |max_value: u16| -> Option<u16> {
+          match max_value {
+            0..=1023 => Some(1023),
+            1024..=4095 => Some(4095),
+            _ => None,
+          }
+        };
         let Some(bytes) = u64::from(width)
           .checked_mul(u64::from(height))
           .and_then(|px| px.checked_mul(4))
@@ -6973,6 +7009,8 @@ impl ImageCache {
           )));
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif rgba16 data")?;
+        let mut max_rgb = 0u16;
+        let mut max_alpha = 0u16;
         for px in img.buf() {
           check_root_periodic(
             deadline_counter,
@@ -6980,7 +7018,33 @@ impl ImageCache {
             RenderStage::Paint,
           )
           .map_err(AvifDecodeError::from)?;
+          max_rgb = max_rgb.max(px.r).max(px.g).max(px.b);
+          max_alpha = max_alpha.max(px.a);
           buf.extend_from_slice(&[px.r, px.g, px.b, px.a]);
+        }
+        let max_in_rgb = scale_channel_max(max_rgb).map(u32::from);
+        let max_in_alpha = scale_channel_max(max_alpha).map(u32::from);
+        if max_in_rgb.is_some() || max_in_alpha.is_some() {
+          for channels in buf.chunks_mut(4) {
+            check_root_periodic(
+              deadline_counter,
+              IMAGE_DECODE_DEADLINE_STRIDE,
+              RenderStage::Paint,
+            )
+            .map_err(AvifDecodeError::from)?;
+            if let Some(max_in) = max_in_rgb {
+              channels[0] =
+                ((u32::from(channels[0]) * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+              channels[1] =
+                ((u32::from(channels[1]) * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+              channels[2] =
+                ((u32::from(channels[2]) * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+            }
+            if let Some(max_in) = max_in_alpha {
+              channels[3] =
+                ((u32::from(channels[3]) * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+            }
+          }
         }
         image::ImageBuffer::from_vec(width, height, buf)
           .map(DynamicImage::ImageRgba16)
@@ -7011,6 +7075,13 @@ impl ImageCache {
       AvifImage::Gray16(img) => {
         let (width, height) =
           Self::avif_dimensions(img.width(), img.height()).map_err(AvifDecodeError::Image)?;
+        let scale_channel_max = |max_value: u16| -> Option<u16> {
+          match max_value {
+            0..=1023 => Some(1023),
+            1024..=4095 => Some(4095),
+            _ => None,
+          }
+        };
         let Some(bytes) = u64::from(width)
           .checked_mul(u64::from(height))
           .and_then(|px| px.checked_mul(2))
@@ -7020,6 +7091,7 @@ impl ImageCache {
           )));
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif gray16 data")?;
+        let mut max_value = 0u16;
         for px in img.buf() {
           check_root_periodic(
             deadline_counter,
@@ -7027,7 +7099,22 @@ impl ImageCache {
             RenderStage::Paint,
           )
           .map_err(AvifDecodeError::from)?;
-          buf.push(px.value());
+          let v = px.value();
+          max_value = max_value.max(v);
+          buf.push(v);
+        }
+        if let Some(max_in) = scale_channel_max(max_value) {
+          let max_in = u32::from(max_in);
+          for value in &mut buf {
+            check_root_periodic(
+              deadline_counter,
+              IMAGE_DECODE_DEADLINE_STRIDE,
+              RenderStage::Paint,
+            )
+            .map_err(AvifDecodeError::from)?;
+            let v = u32::from(*value);
+            *value = ((v * u32::from(u16::MAX) + max_in / 2) / max_in) as u16;
+          }
         }
         image::ImageBuffer::from_vec(width, height, buf)
           .map(DynamicImage::ImageLuma16)

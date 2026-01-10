@@ -328,12 +328,20 @@ impl AbsoluteLayout {
         } else if height_auto && !width_auto {
           height = width / ratio;
         } else if width_auto && height_auto {
-          if input.intrinsic_size.width > 0.0 {
-            width = input.intrinsic_size.width;
-            height = width / ratio;
-          } else if input.intrinsic_size.height > 0.0 {
-            height = input.intrinsic_size.height;
-            width = height * ratio;
+          // Only replaced elements have an intrinsic size in the sense required by
+          // `aspect-ratio` (CSS Sizing L4). For non-replaced absolutely positioned boxes, the
+          // `AbsoluteLayoutInput::intrinsic_size` field is a best-effort content measurement from
+          // a previous layout pass and can be as large as the containing block (e.g. a block-level
+          // `display:flex` element laid out in-flow before being taken out of flow), which would
+          // incorrectly turn `aspect-ratio: 1/1` into a huge square.
+          if input.is_replaced {
+            if input.intrinsic_size.width > 0.0 {
+              width = input.intrinsic_size.width;
+              height = width / ratio;
+            } else if input.intrinsic_size.height > 0.0 {
+              height = input.intrinsic_size.height;
+              width = height * ratio;
+            }
           }
         }
       }
