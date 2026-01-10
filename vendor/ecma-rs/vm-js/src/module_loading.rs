@@ -245,13 +245,17 @@ impl GraphLoadingState {
       return Ok(());
     };
 
-    scope.push_root(cap.resolve)?;
-    let _ = vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[Value::Undefined])?;
-
+    // Ensure we always release the persistent roots even if calling the resolve function fails
+    // (e.g. termination due to budgets/interrupts).
+    let result = (|| {
+      scope.push_root(cap.resolve)?;
+      let _ = vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[Value::Undefined])?;
+      Ok(())
+    })();
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
     scope.heap_mut().remove_root(roots.reject);
-    Ok(())
+    result
   }
 
   fn reject_promise(
@@ -272,14 +276,16 @@ impl GraphLoadingState {
 
     let reason = err.thrown_value().unwrap_or(Value::Undefined);
 
-    scope.push_root(cap.reject)?;
-    scope.push_root(reason)?;
-    let _ = vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[reason])?;
-
+    let result = (|| {
+      scope.push_root(cap.reject)?;
+      scope.push_root(reason)?;
+      let _ = vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[reason])?;
+      Ok(())
+    })();
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
     scope.heap_mut().remove_root(roots.reject);
-    Ok(())
+    result
   }
 }
 
@@ -786,6 +792,10 @@ mod tests {
   use crate::property::PropertyKind as HeapPropertyKind;
   use crate::Heap;
   use crate::HeapLimits;
+  use crate::Job;
+  use crate::Realm;
+  use crate::RealmId;
+  use crate::VmHostHooks;
   use crate::VmOptions;
 
   fn data_desc(value: Value, enumerable: bool) -> PropertyDescriptor {
@@ -922,5 +932,68 @@ mod tests {
     };
     let err = continue_dynamic_import(cap, Ok(ModuleId::from_raw(1))).unwrap_err();
     assert!(matches!(err, VmError::Unimplemented("ContinueDynamicImport")));
+  }
+
+  #[test]
+  fn graph_loading_state_releases_persistent_roots_even_if_settlement_fails() {
+    // If calling the internal promise capability resolve/reject functions fails (for example due to
+    // budgets/interrupts), we still must release the persistent roots held by the graph loading
+    // state so hostile inputs cannot leak roots indefinitely.
+    //
+    // We can observe this by checking that the next `Heap::add_root` call reuses one of the freed
+    // root ids (0..=2) rather than allocating a new slot (index 3).
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    // Ensure we always call `Realm::teardown` even if the test panics, otherwise `Realm`'s `Drop`
+    // will panic in debug builds.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host;
+      let mut scope = heap.scope();
+      let (state, _promise) =
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+
+      // Capture the persistent roots created by `GraphLoadingState::new` so we can observe whether
+      // they are removed.
+      let (promise_root, resolve_root, reject_root) = {
+        let guard = state.0.borrow();
+        let roots = guard
+          .promise_roots
+          .as_ref()
+          .expect("GraphLoadingState should have promise roots after creation");
+        (roots.promise, roots.resolve, roots.reject)
+      };
+      assert!(scope.heap().get_root(promise_root).is_some());
+      assert!(scope.heap().get_root(resolve_root).is_some());
+      assert!(scope.heap().get_root(reject_root).is_some());
+
+      // Force `Vm::call_with_host` to fail via the tick at call entry.
+      vm.set_budget(crate::vm::Budget {
+        fuel: Some(0),
+        deadline: None,
+        check_time_every: 1,
+      });
+
+      let err = state
+        .resolve_promise(&mut vm, &mut scope, &mut host)
+        .unwrap_err();
+      assert!(matches!(err, VmError::Termination(_)));
+
+      // Even though settlement failed, the persistent roots must be released.
+      assert!(scope.heap().get_root(promise_root).is_none());
+      assert!(scope.heap().get_root(resolve_root).is_none());
+      assert!(scope.heap().get_root(reject_root).is_none());
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
   }
 }
