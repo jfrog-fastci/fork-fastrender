@@ -4441,6 +4441,107 @@ pub fn array_prototype_find_index(
   Ok(Value::Number(-1.0))
 }
 
+/// `Array.prototype.concat` (ECMA-262) (minimal).
+pub fn array_prototype_concat(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let intr = require_intrinsics(vm)?;
+  let out = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.array_prototype()))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let mut n = 0usize;
+
+  // Per spec, concat starts with `this` and then processes each argument.
+  let mut process_item = |item: Value, n: &mut usize| -> Result<(), VmError> {
+    if let Value::Object(source_obj) = item {
+      if scope.heap().object_is_array(source_obj)? {
+        // Spread array elements (holes preserved via length tracking).
+        let source_len_value = scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          source_obj,
+          length_key,
+          Value::Object(source_obj),
+        )?;
+        let source_len = to_length(source_len_value);
+
+        for k in 0..source_len {
+          if k % 1024 == 0 {
+            vm.tick()?;
+          }
+          let mut iter_scope = scope.reborrow();
+
+          let key_s = iter_scope.alloc_string(&k.to_string())?;
+          let key = PropertyKey::from_string(key_s);
+          if iter_scope.ordinary_has_property(source_obj, key)? {
+            let value = iter_scope.ordinary_get_with_host_and_hooks(
+              vm,
+              host,
+              hooks,
+              source_obj,
+              key,
+              Value::Object(source_obj),
+            )?;
+
+            let to_s = iter_scope.alloc_string(&n.to_string())?;
+            iter_scope.push_root(Value::String(to_s))?;
+            let to_key = PropertyKey::from_string(to_s);
+            iter_scope.create_data_property_or_throw(out, to_key, value)?;
+          }
+          *n = n.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        }
+        return Ok(());
+      }
+    }
+
+    // Not spreadable: append as a single element.
+    let mut iter_scope = scope.reborrow();
+    let to_s = iter_scope.alloc_string(&n.to_string())?;
+    iter_scope.push_root(Value::String(to_s))?;
+    let to_key = PropertyKey::from_string(to_s);
+    iter_scope.create_data_property_or_throw(out, to_key, item)?;
+    *n = n.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    Ok(())
+  };
+
+  process_item(Value::Object(obj), &mut n)?;
+  for item in args {
+    process_item(*item, &mut n)?;
+  }
+
+  // Ensure the final length accounts for trailing holes created by spreading arrays.
+  let ok = scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    out,
+    length_key,
+    Value::Number(n as f64),
+    Value::Object(out),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.concat failed"));
+  }
+
+  Ok(Value::Object(out))
+}
+
 /// `Array.prototype.reverse` (ECMA-262) (minimal).
 pub fn array_prototype_reverse(
   vm: &mut Vm,

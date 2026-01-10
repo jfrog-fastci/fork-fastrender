@@ -190,6 +190,17 @@ fn array_prototype_some_every_find_find_index_work() {
 }
 
 #[test]
+fn array_prototype_concat_works_and_preserves_holes() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2]; var b=[3]; var c=a.concat(b,4); var d=[1,2,3]; delete d[1]; var e=d.concat([]); c.length===4 && c[2]===3 && c[3]===4 && e.length===3 && e[0]===1 && e[2]===3 && !e.hasOwnProperty("1")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt

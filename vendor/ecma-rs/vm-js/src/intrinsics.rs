@@ -411,6 +411,7 @@ impl Intrinsics {
     let array_prototype_every = vm.register_native_call(builtins::array_prototype_every)?;
     let array_prototype_find = vm.register_native_call(builtins::array_prototype_find)?;
     let array_prototype_find_index = vm.register_native_call(builtins::array_prototype_find_index)?;
+    let array_prototype_concat = vm.register_native_call(builtins::array_prototype_concat)?;
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
@@ -674,7 +675,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / reverse / join / slice / push / splice
+      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / join / slice / push / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -817,6 +818,20 @@ impl Intrinsics {
           array_prototype,
           find_index_key,
           data_desc(Value::Object(find_index_fn), true, false, true),
+        )?;
+
+        let concat_s = scope.alloc_string("concat")?;
+        scope.push_root(Value::String(concat_s))?;
+        let concat_key = PropertyKey::from_string(concat_s);
+        let concat_fn = scope.alloc_native_function(array_prototype_concat, None, concat_s, 1)?;
+        scope.push_root(Value::Object(concat_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(concat_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          concat_key,
+          data_desc(Value::Object(concat_fn), true, false, true),
         )?;
 
         let reverse_s = scope.alloc_string("reverse")?;
