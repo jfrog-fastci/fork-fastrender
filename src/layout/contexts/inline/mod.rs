@@ -8259,73 +8259,7 @@ fn compute_inline_box_metrics(
   _bottom_inset: f32,
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  let effective_children: Vec<&InlineItem> = children
-    .iter()
-    .filter(|child| {
-      !matches!(
-        child,
-        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
-      )
-    })
-    .collect();
-
-  if effective_children.is_empty() {
-    // Per CSS 2.1 §10.8, the inline box used for line box sizing is based on `line-height` and
-    // font metrics. Border/padding are painted around the inline box but do not affect the
-    // line-height strut, so ignore them here (they are accounted for when constructing fragment
-    // bounds for painting).
-    let baseline_offset = fallback.baseline_offset;
-    let ascent = fallback.ascent;
-    let height = fallback.height;
-    let descent = fallback.descent;
-    return BaselineMetrics {
-      baseline_offset,
-      height,
-      ascent,
-      descent,
-      line_gap: fallback.line_gap,
-      // Preserve the authored line-height for vertical-align percentage/length resolution.
-      line_height: fallback.line_height,
-      x_height: fallback.x_height,
-    };
-  }
-
-  let mut content_height: f32 = 0.0;
-  for child in &effective_children {
-    let child_metrics = child.baseline_metrics();
-    content_height = content_height.max(child_metrics.height);
-  }
-
-  // CSS 2.1 defines the baseline of an inline box as the baseline of its *last* in-flow line box.
-  // In the common single-line case, that corresponds to the last baseline-relative child in the
-  // inline box, not the first. Using the first child here can incorrectly anchor the baseline to a
-  // leading replaced element (e.g. an icon) and inflate the line box height.
-  let baseline_child = effective_children
-    .iter()
-    .rev()
-    .copied()
-    .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or_else(|| *effective_children.last().unwrap());
-  let child_metrics = baseline_child.baseline_metrics();
-
-  // Baseline metrics are expressed in the coordinate space of the inline box's *content strut*
-  // (i.e. the box defined by `line-height`). Border/padding are handled separately when producing
-  // fragments so they can overflow without inflating the line box.
-  let baseline_offset = child_metrics.baseline_offset;
-  let ascent = child_metrics.ascent;
-  let height = content_height;
-  let descent = (height - baseline_offset).max(0.0);
-
-  BaselineMetrics {
-    baseline_offset,
-    height,
-    ascent,
-    descent,
-    line_gap: child_metrics.line_gap,
-    // Preserve the authored line-height for vertical-align percentage/length resolution.
-    line_height: fallback.line_height,
-    x_height: child_metrics.x_height,
-  }
+  compute_inline_box_line_metrics(children, fallback)
 }
 
 fn compute_inline_box_line_metrics(
