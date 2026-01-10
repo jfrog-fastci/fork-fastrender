@@ -110,6 +110,7 @@ pub struct Node {
   /// inert template contents by keeping template descendants in `children` while skipping them for
   /// selector matching and other traversals.
   pub inert_subtree: bool,
+  pub script_force_async: bool,
   pub script_already_started: bool,
   pub script_parser_document: bool,
   pub mathml_annotation_xml_integration_point: bool,
