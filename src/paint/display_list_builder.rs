@@ -10179,12 +10179,18 @@ impl DisplayListBuilder {
         let stroke_color = Rgba::rgb(192, 192, 192);
         emit_inside_border(&mut self.list, content_rect, stroke_color);
 
-        // Draw a small icon in the top-left when there is enough room.
+        // Draw a small icon in the top-left when there is enough room. Keep it from dominating
+        // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
         let icon_inset = 2.0;
-        let icon_size = 16.0;
-        if content_rect.width() >= icon_inset * 2.0 + icon_size
-          && content_rect.height() >= icon_inset * 2.0 + icon_size
-        {
+        let max_icon_size = 16.0;
+        let icon_size = {
+          let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
+          let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
+          (available_w.min(available_h) * 0.5)
+            .floor()
+            .clamp(0.0, max_icon_size)
+        };
+        if icon_size > 0.0 {
           let icon_rect = Rect::from_xywh(
             content_rect.x() + icon_inset,
             content_rect.y() + icon_inset,
