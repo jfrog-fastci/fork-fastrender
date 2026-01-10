@@ -108,6 +108,80 @@ fn baseline_semitransparent_fill_matches_between_backends() {
 }
 
 #[test]
+fn baseline_semitransparent_rounded_rect_fill_matches_chrome_blend() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(227, 227, 227); }
+      #target {
+        width: 10px;
+        height: 10px;
+        background: rgba(0, 0, 0, 0.1);
+        border-radius: 2px;
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let background = Rgba::rgb(227, 227, 227);
+  let legacy = render_with_backend(html, 10, 10, background, PaintBackend::Legacy);
+  let display = render_with_backend(html, 10, 10, background, PaintBackend::DisplayList);
+
+  // Chrome/Skia uses truncating `mul/255` math for `source-over` compositing. For a fully covered
+  // pixel, `(227 * (255 - round(0.1 * 255))) / 255 = 203` (truncating to an integer).
+  let expected = (203, 203, 203, 255);
+  for (label, pixmap) in [("legacy", &legacy), ("display list", &display)] {
+    let px = pixmap.pixel(5, 5).expect("pixel");
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      expected,
+      "{label} backend produced unexpected rounded-rect pixel"
+    );
+  }
+
+  assert_eq!(
+    legacy.data(),
+    display.data(),
+    "rounded-rect compositing diverged between backends"
+  );
+}
+
+#[test]
+fn baseline_semitransparent_rounded_rect_fill_under_clip_matches_chrome_blend() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(227, 227, 227); }
+      #clip {
+        width: 10px;
+        height: 10px;
+        overflow: hidden;
+      }
+      #target {
+        width: 20px;
+        height: 20px;
+        background: rgba(0, 0, 0, 0.1);
+        border-radius: 2px;
+      }
+    </style>
+    <div id="clip"><div id="target"></div></div>
+  "#;
+
+  let background = Rgba::rgb(227, 227, 227);
+  let display = render_with_backend(html, 10, 10, background, PaintBackend::DisplayList);
+
+  // Same expectation as `baseline_semitransparent_rounded_rect_fill_matches_chrome_blend`, but
+  // ensure we still match when a clip mask is active.
+  let expected = (203, 203, 203, 255);
+  let px = display.pixel(5, 5).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    expected,
+    "display list backend produced unexpected clipped rounded-rect pixel"
+  );
+}
+
+#[test]
 fn filters_on_semitransparent_pixels_match_legacy_backend() {
   let filters = [
     "brightness(1.5)",

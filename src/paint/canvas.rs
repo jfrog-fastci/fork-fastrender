@@ -1970,6 +1970,264 @@ impl Canvas {
     true
   }
 
+  /// Fast path for axis-aligned `source-over` rounded-rectangle fills.
+  ///
+  /// Like [`Canvas::try_fill_rect_source_over_trunc`], tiny-skia's `fill_path` compositing differs
+  /// subtly from Chrome/Skia for semi-transparent colors (often by ±1 in each channel). Rounded
+  /// rectangle backgrounds show up frequently in UI-heavy pages, so these off-by-one errors can
+  /// dominate page-loop diffs.
+  ///
+  /// When the transform is translation-only and there is no complex clip mask, we can rasterize
+  /// the rounded-rect coverage into a temporary `Mask` and composite into the destination buffer
+  /// using truncating `mul/255` arithmetic to match Chrome's Skia backend.
+  fn try_fill_rounded_rect_source_over_trunc(&mut self, rect: Rect, radii: BorderRadii, color: Rgba) -> bool {
+    if self.current_state.blend_mode != SkiaBlendMode::SourceOver {
+      return false;
+    }
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return true;
+    }
+    if !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return false;
+    }
+
+    let transform = self.current_state.transform;
+    // Only support translation-only transforms (common case for pageset rendering and tiling).
+    if (transform.sx - 1.0).abs() > 1e-6
+      || (transform.sy - 1.0).abs() > 1e-6
+      || transform.kx.abs() > 1e-6
+      || transform.ky.abs() > 1e-6
+      || !transform.tx.is_finite()
+      || !transform.ty.is_finite()
+    {
+      return false;
+    }
+
+    let tx = transform.tx.round();
+    let ty = transform.ty.round();
+    if (transform.tx - tx).abs() > 1e-6 || (transform.ty - ty).abs() > 1e-6 {
+      return false;
+    }
+
+    let combined_alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
+    let sa = (combined_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    if sa == 0 {
+      return true;
+    }
+    // Keep existing code paths for opaque fills (they include pixel-snapping logic).
+    if sa == 255 {
+      return false;
+    }
+
+    let clip_mask = self.current_state.clip_mask.as_deref();
+
+    // If we don't have a clip mask, we only handle rectangular clip bounds when they align to
+    // integer device pixels. Fractional clip edges would require additional anti-aliasing support
+    // to match tiny-skia's path clipping.
+    //
+    // When a clip mask exists, we can instead clamp the iteration bounds conservatively and apply
+    // the clip coverage per pixel.
+    let clip_int = if let Some(clip) = self.current_state.clip_rect {
+      if clip.width() <= 0.0 || clip.height() <= 0.0 {
+        return true;
+      }
+      let cx0 = clip.min_x();
+      let cy0 = clip.min_y();
+      let cx1 = clip.max_x();
+      let cy1 = clip.max_y();
+      if !cx0.is_finite() || !cy0.is_finite() || !cx1.is_finite() || !cy1.is_finite() {
+        return false;
+      }
+      if clip_mask.is_none() {
+        let cx0i = cx0.round();
+        let cy0i = cy0.round();
+        let cx1i = cx1.round();
+        let cy1i = cy1.round();
+        if (cx0 - cx0i).abs() > 1e-6
+          || (cy0 - cy0i).abs() > 1e-6
+          || (cx1 - cx1i).abs() > 1e-6
+          || (cy1 - cy1i).abs() > 1e-6
+        {
+          return false;
+        }
+        Some((cx0i as i64, cy0i as i64, cx1i as i64, cy1i as i64))
+      } else {
+        Some((cx0.floor() as i64, cy0.floor() as i64, cx1.ceil() as i64, cy1.ceil() as i64))
+      }
+    } else {
+      None
+    };
+
+    let Some(path) = self.build_rounded_rect_path(rect, radii) else {
+      return true;
+    };
+
+    // Ensure the raster surface fully contains the transformed rounded-rect so coverage doesn't
+    // depend on pixmap clipping (important for tile-based painting).
+    const ROUNDED_RECT_COVERAGE_MARGIN_PX: i64 = 2;
+    let bounds = Self::transform_rect_aabb(rect, transform);
+    if bounds.width() <= 0.0
+      || bounds.height() <= 0.0
+      || !bounds.x().is_finite()
+      || !bounds.y().is_finite()
+      || !bounds.width().is_finite()
+      || !bounds.height().is_finite()
+    {
+      return true;
+    }
+
+    let mut x0 = bounds.min_x().floor() as i64;
+    let mut y0 = bounds.min_y().floor() as i64;
+    let mut x1 = bounds.max_x().ceil() as i64;
+    let mut y1 = bounds.max_y().ceil() as i64;
+
+    x0 = x0.saturating_sub(ROUNDED_RECT_COVERAGE_MARGIN_PX);
+    y0 = y0.saturating_sub(ROUNDED_RECT_COVERAGE_MARGIN_PX);
+    x1 = x1.saturating_add(ROUNDED_RECT_COVERAGE_MARGIN_PX);
+    y1 = y1.saturating_add(ROUNDED_RECT_COVERAGE_MARGIN_PX);
+
+    let scratch_w_i64 = x1 - x0;
+    let scratch_h_i64 = y1 - y0;
+    let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
+      return false;
+    };
+    let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
+      return false;
+    };
+    if scratch_w == 0 || scratch_h == 0 {
+      return true;
+    }
+
+    let mut scratch = ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut mask = match scratch.mask.take() {
+      Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+      _ => match Mask::new(scratch_w, scratch_h) {
+        Some(m) => m,
+        None => {
+          // Allocation failed; fall back to tiny-skia.
+          scratch.mask = None;
+          ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+          });
+          return false;
+        }
+      },
+    };
+    mask.data_mut().fill(0);
+    mask.fill_path(
+      &path,
+      FillRule::Winding,
+      true,
+      transform.post_translate(-(x0 as f32), -(y0 as f32)),
+    );
+
+    let dest_w = self.width() as i64;
+    let dest_h = self.height() as i64;
+    let mut inter_x0 = x0.max(0);
+    let mut inter_y0 = y0.max(0);
+    let mut inter_x1 = x1.min(dest_w);
+    let mut inter_y1 = y1.min(dest_h);
+    if let Some((cx0, cy0, cx1, cy1)) = clip_int {
+      inter_x0 = inter_x0.max(cx0);
+      inter_y0 = inter_y0.max(cy0);
+      inter_x1 = inter_x1.min(cx1);
+      inter_y1 = inter_y1.min(cy1);
+    }
+
+    if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+      scratch.mask = Some(mask);
+      ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = scratch;
+      });
+      return true;
+    }
+
+    {
+      let src = mask.data();
+      let clip = clip_mask.map(|m| m.data());
+      let clip_stride = clip_mask.map(|m| m.width() as usize).unwrap_or(0);
+      let src_stride = scratch_w as usize;
+      let dst_stride = self.width() as usize * 4;
+      let dst = self.pixmap.data_mut();
+      let copy_w = (inter_x1 - inter_x0) as usize;
+      let copy_h = (inter_y1 - inter_y0) as usize;
+      let src_x = (inter_x0 - x0) as usize;
+      let src_y = (inter_y0 - y0) as usize;
+      let dst_x = inter_x0 as usize * 4;
+      let dst_y = inter_y0 as usize;
+      let clip_x = inter_x0 as usize;
+
+      let sa = sa as u16;
+      let cr = color.r as u16;
+      let cg = color.g as u16;
+      let cb = color.b as u16;
+
+      for row in 0..copy_h {
+        let src_off = (src_y + row) * src_stride + src_x;
+        let mut dst_off = (dst_y + row) * dst_stride + dst_x;
+        let clip_off = (dst_y + row) * clip_stride + clip_x;
+        for col in 0..copy_w {
+          let mut coverage = src[src_off + col] as u16;
+          if coverage == 0 {
+            dst_off += 4;
+            continue;
+          }
+
+          if let Some(clip) = clip {
+            let clip_coverage = clip[clip_off + col] as u16;
+            coverage = (coverage * clip_coverage) / 255u16;
+            if coverage == 0 {
+              dst_off += 4;
+              continue;
+            }
+          }
+
+          let pix_sa = (coverage * sa) / 255u16;
+          if pix_sa == 0 {
+            dst_off += 4;
+            continue;
+          }
+
+          let inv_sa = 255u16 - pix_sa;
+          let sr = (cr * pix_sa) / 255u16;
+          let sg = (cg * pix_sa) / 255u16;
+          let sb = (cb * pix_sa) / 255u16;
+
+          let dr = dst[dst_off] as u16;
+          let dg = dst[dst_off + 1] as u16;
+          let db = dst[dst_off + 2] as u16;
+          let da = dst[dst_off + 3] as u16;
+
+          let out_a = pix_sa + (da * inv_sa) / 255u16;
+          let out_r = sr + (dr * inv_sa) / 255u16;
+          let out_g = sg + (dg * inv_sa) / 255u16;
+          let out_b = sb + (db * inv_sa) / 255u16;
+
+          // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+          let out_a_u8 = out_a.min(255) as u8;
+          dst[dst_off + 3] = out_a_u8;
+          let clamp = out_a_u8 as u16;
+          dst[dst_off] = out_r.min(clamp).min(255) as u8;
+          dst[dst_off + 1] = out_g.min(clamp).min(255) as u8;
+          dst[dst_off + 2] = out_b.min(clamp).min(255) as u8;
+
+          dst_off += 4;
+        }
+      }
+    }
+
+    scratch.mask = Some(mask);
+    ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+
+    true
+  }
+
   fn draw_rect_impl(&mut self, rect: Rect, color: Rgba) {
     // Skip fully transparent colors
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
@@ -2360,6 +2618,10 @@ impl Canvas {
       if !intersects {
         return;
       }
+    }
+
+    if self.try_fill_rounded_rect_source_over_trunc(rect, radii, color) {
+      return;
     }
 
     let transform = self.current_state.transform;

@@ -39,6 +39,7 @@ use crate::paint::display_list::BorderRadius;
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
+use std::cell::RefCell;
 use tiny_skia::FillRule;
 use tiny_skia::LineCap;
 use tiny_skia::LineJoin;
@@ -53,6 +54,16 @@ use tiny_skia::Stroke;
 use tiny_skia::Transform;
 
 const DEADLINE_STRIDE: usize = 16 * 1024;
+
+#[derive(Default)]
+struct RoundedRectMaskScratch {
+  mask: Option<Mask>,
+}
+
+thread_local! {
+  static ROUNDED_RECT_MASK_SCRATCH: RefCell<RoundedRectMaskScratch> =
+    RefCell::new(RoundedRectMaskScratch::default());
+}
 
 /// Border widths for all four sides
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -656,7 +667,7 @@ pub fn fill_rounded_rect(
   color: Rgba,
 ) -> bool {
   // Skip if completely transparent
-  if color.a == 0.0 {
+  if color.a == 0.0 || width <= 0.0 || height <= 0.0 {
     return false;
   }
 
@@ -670,14 +681,160 @@ pub fn fill_rounded_rect(
     None => return false,
   };
 
+  // Match Chrome/Skia's `source-over` compositing using truncating `mul/255` math (no rounding).
+  // See `fill_rect` for a more detailed rationale.
+  let sa_f = (color.a * 255.0).round().clamp(0.0, 255.0);
+  let sa = sa_f as u8;
+  if sa == 0 {
+    return true;
+  }
+  if sa != 255
+    && x.is_finite()
+    && y.is_finite()
+    && width.is_finite()
+    && height.is_finite()
+    && {
+      let x1 = x + width;
+      let y1 = y + height;
+      x1.is_finite() && y1.is_finite()
+    }
+  {
+    // Rasterize the rounded-rect coverage into a temporary mask, then composite into the
+    // destination premultiplied buffer using truncating `mul/255` arithmetic.
+    const COVERAGE_MARGIN_PX: i64 = 2;
+    let bounds = Rect::from_xywh(x, y, width, height);
+    let mut x0 = bounds.min_x().floor() as i64;
+    let mut y0 = bounds.min_y().floor() as i64;
+    let mut x1 = bounds.max_x().ceil() as i64;
+    let mut y1 = bounds.max_y().ceil() as i64;
+
+    x0 = x0.saturating_sub(COVERAGE_MARGIN_PX);
+    y0 = y0.saturating_sub(COVERAGE_MARGIN_PX);
+    x1 = x1.saturating_add(COVERAGE_MARGIN_PX);
+    y1 = y1.saturating_add(COVERAGE_MARGIN_PX);
+
+    let scratch_w_i64 = x1 - x0;
+    let scratch_h_i64 = y1 - y0;
+    let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
+      // Scratch would overflow; fall back to tiny-skia.
+      let paint = make_paint(color);
+      pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+      return true;
+    };
+    let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
+      let paint = make_paint(color);
+      pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+      return true;
+    };
+    if scratch_w == 0 || scratch_h == 0 {
+      return true;
+    }
+
+    let dest_w = pixmap.width() as i64;
+    let dest_h = pixmap.height() as i64;
+    let inter_x0 = x0.max(0);
+    let inter_y0 = y0.max(0);
+    let inter_x1 = x1.min(dest_w);
+    let inter_y1 = y1.min(dest_h);
+    if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+      return true;
+    }
+
+    let mut scratch = ROUNDED_RECT_MASK_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut mask = match scratch.mask.take() {
+      Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+      _ => match Mask::new(scratch_w, scratch_h) {
+        Some(m) => m,
+        None => {
+          let paint = make_paint(color);
+          pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+          scratch.mask = None;
+          ROUNDED_RECT_MASK_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+          });
+          return true;
+        }
+      },
+    };
+    mask.data_mut().fill(0);
+    mask.fill_path(
+      &path,
+      FillRule::Winding,
+      true,
+      Transform::from_translate(-(x0 as f32), -(y0 as f32)),
+    );
+
+    {
+      let src = mask.data();
+      let src_stride = scratch_w as usize;
+      let dst_stride = pixmap.width() as usize * 4;
+      let dst = pixmap.data_mut();
+      let copy_w = (inter_x1 - inter_x0) as usize;
+      let copy_h = (inter_y1 - inter_y0) as usize;
+      let src_x = (inter_x0 - x0) as usize;
+      let src_y = (inter_y0 - y0) as usize;
+      let dst_x = inter_x0 as usize * 4;
+      let dst_y = inter_y0 as usize;
+
+      let sa = sa as u16;
+      let cr = color.r as u16;
+      let cg = color.g as u16;
+      let cb = color.b as u16;
+
+      for row in 0..copy_h {
+        let src_off = (src_y + row) * src_stride + src_x;
+        let mut dst_off = (dst_y + row) * dst_stride + dst_x;
+        for col in 0..copy_w {
+          let coverage = src[src_off + col] as u16;
+          if coverage == 0 {
+            dst_off += 4;
+            continue;
+          }
+
+          let pix_sa = (coverage * sa) / 255u16;
+          if pix_sa == 0 {
+            dst_off += 4;
+            continue;
+          }
+
+          let inv_sa = 255u16 - pix_sa;
+          let sr = (cr * pix_sa) / 255u16;
+          let sg = (cg * pix_sa) / 255u16;
+          let sb = (cb * pix_sa) / 255u16;
+
+          let dr = dst[dst_off] as u16;
+          let dg = dst[dst_off + 1] as u16;
+          let db = dst[dst_off + 2] as u16;
+          let da = dst[dst_off + 3] as u16;
+
+          let out_a = pix_sa + (da * inv_sa) / 255u16;
+          let out_r = sr + (dr * inv_sa) / 255u16;
+          let out_g = sg + (dg * inv_sa) / 255u16;
+          let out_b = sb + (db * inv_sa) / 255u16;
+
+          // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+          let out_a_u8 = out_a.min(255) as u8;
+          dst[dst_off + 3] = out_a_u8;
+          let clamp = out_a_u8 as u16;
+          dst[dst_off] = out_r.min(clamp).min(255) as u8;
+          dst[dst_off + 1] = out_g.min(clamp).min(255) as u8;
+          dst[dst_off + 2] = out_b.min(clamp).min(255) as u8;
+
+          dst_off += 4;
+        }
+      }
+    }
+
+    scratch.mask = Some(mask);
+    ROUNDED_RECT_MASK_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+
+    return true;
+  }
+
   let paint = make_paint(color);
-  pixmap.fill_path(
-    &path,
-    &paint,
-    FillRule::Winding,
-    Transform::identity(),
-    None,
-  );
+  pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
   true
 }
 
