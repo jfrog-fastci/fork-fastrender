@@ -28,6 +28,7 @@ mod merge;
 mod integrity;
 mod parse;
 mod resolve;
+mod strings;
 mod types;
 
 pub use merge::{merge_existing_and_new_import_maps, merge_module_specifier_maps, register_import_map};
@@ -44,7 +45,8 @@ pub use types::{
 mod merge_tests;
 #[cfg(test)]
 mod parse_tests;
-
+#[cfg(test)]
+mod strings_tests;
 #[cfg(test)]
 mod resolve_tests;
 
@@ -53,3 +55,4 @@ mod fixture_tests;
 
 #[cfg(test)]
 mod tests;
+

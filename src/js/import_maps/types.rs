@@ -254,21 +254,7 @@ pub enum ImportMapWarningKind {
 }
 
 pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {
-  let mut a_iter = a.encode_utf16();
-  let mut b_iter = b.encode_utf16();
-  loop {
-    match (a_iter.next(), b_iter.next()) {
-      (Some(a_unit), Some(b_unit)) => {
-        let ord = a_unit.cmp(&b_unit);
-        if ord != Ordering::Equal {
-          return ord;
-        }
-      }
-      (None, Some(_)) => return Ordering::Less,
-      (Some(_), None) => return Ordering::Greater,
-      (None, None) => return Ordering::Equal,
-    }
-  }
+  super::strings::cmp_code_units(a, b)
 }
 
 /// Whether `prefix` is a prefix of `full` when both strings are compared as sequences of UTF-16

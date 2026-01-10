@@ -1,6 +1,6 @@
 use super::types::{
-  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ModuleIntegrityMap,
-  ModuleSpecifierMap,
+  code_unit_cmp, is_code_unit_prefix, ImportMap, ImportMapError, ImportMapParseResult, ImportMapState,
+  ModuleIntegrityMap, ModuleSpecifierMap,
 };
 
 /// HTML: "merge module specifier maps".
@@ -59,14 +59,15 @@ pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import
         };
 
         let base_matches = scope_prefix == record_base
-          || (scope_prefix.ends_with('/') && record_base.starts_with(scope_prefix.as_str()));
+          || (scope_prefix.ends_with('/')
+            && is_code_unit_prefix(scope_prefix.as_str(), record_base));
         if !base_matches {
           return false;
         }
 
         specifier_key == &record.specifier
           || (specifier_key.ends_with('/')
-            && record.specifier.starts_with(specifier_key.as_str())
+            && is_code_unit_prefix(specifier_key.as_str(), record.specifier.as_str())
             && record.as_url_kind.permits_prefix_match())
       })
     });
@@ -103,7 +104,7 @@ pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import
     !state
       .resolved_module_set
       .iter()
-      .any(|record| specifier.starts_with(record.specifier.as_str()))
+      .any(|record| is_code_unit_prefix(record.specifier.as_str(), specifier.as_str()))
   });
 
   // Step 7: merge top-level imports (old wins on duplicates).
@@ -127,4 +128,3 @@ pub fn register_import_map(
 
   Ok(())
 }
-

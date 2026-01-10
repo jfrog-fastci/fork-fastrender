@@ -8471,34 +8471,28 @@ fn compute_inline_box_line_metrics(
     }
   }
 
-  let effective_children: Vec<&InlineItem> = children
-    .iter()
-    .filter(|child| {
-      !matches!(
-        child,
-        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
-      )
-    })
-    .collect();
-
-  if effective_children.is_empty() {
-    return fallback;
-  }
-
+  let mut last_metrics: Option<BaselineMetrics> = None;
+  let mut baseline_metrics: Option<BaselineMetrics> = None;
   let mut content_height: f32 = fallback.height.max(0.0);
-  for child in &effective_children {
-    content_height = content_height.max(metrics_for_item(child).height);
+
+  for child in children {
+    if matches!(child, InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)) {
+      continue;
+    }
+    let metrics = metrics_for_item(child);
+    last_metrics = Some(metrics);
+    if child.vertical_align().is_baseline_relative() {
+      baseline_metrics = Some(metrics);
+    }
+    content_height = content_height.max(metrics.height);
   }
 
   // See `compute_inline_box_metrics`: the inline box baseline is taken from the last in-flow line,
   // which is best approximated by the last baseline-relative child.
-  let baseline_child = effective_children
-    .iter()
-    .rev()
-    .copied()
-    .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or_else(|| *effective_children.last().unwrap());
-  let child_metrics = metrics_for_item(baseline_child);
+  let Some(last_metrics) = last_metrics else {
+    return fallback;
+  };
+  let child_metrics = baseline_metrics.unwrap_or(last_metrics);
 
   let baseline_offset = child_metrics
     .baseline_offset
