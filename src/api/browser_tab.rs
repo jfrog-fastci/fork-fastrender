@@ -696,6 +696,25 @@ impl BrowserTabHost {
             // Ensure parser blocking is cleared even if script execution fails.
             self.finish_script_execution(script_id, event_loop)?;
 
+            // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+            // execution context stack is empty. Nested (re-entrant) script execution must not drain
+            // microtasks until the outermost script returns.
+            //
+            // Additionally, `<script>` load/error events are fired after the script (and its
+            // microtasks) complete, so ensure the checkpoint runs before event dispatch.
+            if matches!(&exec_result, Err(Error::Render(_))) {
+              if let Some(entry) = entry {
+                self.dispatch_script_event(entry.node_id, "error")?;
+              }
+              return exec_result;
+            }
+
+            let microtask_err = if self.js_execution_depth.get() == 0 {
+              event_loop.perform_microtask_checkpoint(self).err()
+            } else {
+              None
+            };
+
             match exec_result {
               Ok(()) => {
                 if let Some(entry) = entry {
@@ -717,11 +736,8 @@ impl BrowserTabHost {
               }
             }
 
-            // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
-            // execution context stack is empty. Nested (re-entrant) script execution must not drain
-            // microtasks until the outermost script returns.
-            if self.js_execution_depth.get() == 0 {
-              event_loop.perform_microtask_checkpoint(self)?;
+            if let Some(err) = microtask_err {
+              return Err(err);
             }
 
             if generation_before != self.document.dom_mutation_generation() {
@@ -1514,6 +1530,28 @@ impl BrowserTabHost {
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
           self.finish_script_execution(script_id, event_loop)?;
+
+          // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+          // execution context stack is empty. Nested (re-entrant) script execution must not drain
+          // microtasks until the outermost script returns.
+          //
+          // HTML fires `<script>` load/error events *after* `run a classic script` returns, so any
+          // microtasks queued by script execution must run before those events are dispatched.
+          if matches!(&exec_result, Err(Error::Render(_))) {
+            // Script execution timed out/cancelled. Preserve existing behavior: dispatch the script
+            // element error event, then abort without attempting a microtask checkpoint.
+            if let Some(entry) = entry {
+              self.dispatch_script_event(entry.node_id, "error")?;
+            }
+            return exec_result;
+          }
+
+          let microtask_err = if should_checkpoint && self.js_execution_depth.get() == 0 {
+            event_loop.perform_microtask_checkpoint(self).err()
+          } else {
+            None
+          };
+
           match exec_result {
             Ok(()) => {
               if let Some(entry) = entry {
@@ -1535,11 +1573,8 @@ impl BrowserTabHost {
             }
           }
 
-          // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
-          // execution context stack is empty. Nested (re-entrant) script execution must not drain
-          // microtasks until the outermost script returns.
-          if should_checkpoint && self.js_execution_depth.get() == 0 {
-            event_loop.perform_microtask_checkpoint(self)?;
+          if let Some(err) = microtask_err {
+            return Err(err);
           }
 
           // HTML: scripts inserted by the executed script (or its microtasks) should be prepared
@@ -1594,9 +1629,27 @@ impl BrowserTabHost {
           }
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let entry = host.scripts.get(&script_id).cloned();
-            let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
-            let result = host.execute_script(script_id, &source_text, event_loop);
+            let result = {
+              let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
+              host.execute_script(script_id, &source_text, event_loop)
+            };
             host.finish_script_execution(script_id, event_loop)?;
+
+            if matches!(&result, Err(Error::Render(_))) {
+              // Preserve existing behavior: dispatch the script element error event, then abort
+              // without attempting a microtask checkpoint.
+              if let Some(entry) = entry {
+                host.dispatch_script_event(entry.node_id, "error")?;
+              }
+              return result;
+            }
+
+            let microtask_err = if host.js_execution_depth.get() == 0 {
+              event_loop.perform_microtask_checkpoint(host).err()
+            } else {
+              None
+            };
+
             match result {
               Ok(()) => {
                 if let Some(entry) = entry {
@@ -1604,7 +1657,6 @@ impl BrowserTabHost {
                     host.dispatch_script_event(entry.node_id, "load")?;
                   }
                 }
-                Ok(())
               }
               Err(err) => {
                 let Some(entry) = entry else {
@@ -1612,12 +1664,16 @@ impl BrowserTabHost {
                 };
                 host.dispatch_script_event(entry.node_id, "error")?;
                 if matches!(err, Error::Render(_)) {
-                  Err(err)
-                } else {
-                  Ok(())
+                  return Err(err);
                 }
               }
             }
+
+            if let Some(err) = microtask_err {
+              return Err(err);
+            }
+
+            Ok(())
           })?;
         }
         ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
@@ -3849,6 +3905,83 @@ mod tests {
     host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
 
     assert_eq!(&*event_log.borrow(), &["load".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn script_load_event_runs_after_microtask_checkpoint_for_blocking_external_script() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script src=a.js></script>", Rc::clone(&log))?;
+    host.register_external_script_source("a.js".to_string(), "A".to_string());
+
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        ListenerId::new(1),
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "load".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn script_load_event_runs_after_microtask_checkpoint_for_async_external_script() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script async src=a.js></script>", Rc::clone(&log))?;
+    host.register_external_script_source("a.js".to_string(), "A".to_string());
+
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        ListenerId::new(1),
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "load".to_string()
+      ]
+    );
     Ok(())
   }
 
