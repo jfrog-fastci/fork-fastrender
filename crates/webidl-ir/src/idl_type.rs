@@ -269,7 +269,8 @@ impl IdlType {
       IdlType::Record(_, _) => Some(DistinguishabilityCategory::DictionaryLike),
       IdlType::Named(NamedType { kind, .. }) => match kind {
         NamedTypeKind::Interface => Some(DistinguishabilityCategory::InterfaceLike),
-        NamedTypeKind::Dictionary | NamedTypeKind::CallbackInterface => Some(DistinguishabilityCategory::DictionaryLike),
+        NamedTypeKind::Dictionary => Some(DistinguishabilityCategory::DictionaryLike),
+        NamedTypeKind::CallbackInterface => Some(DistinguishabilityCategory::InterfaceLike),
         NamedTypeKind::CallbackFunction => Some(DistinguishabilityCategory::CallbackFunction),
         NamedTypeKind::Enum => Some(DistinguishabilityCategory::String),
         NamedTypeKind::Typedef | NamedTypeKind::Unresolved => None,

@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 
 use crate::js::webidl::WebIdlBindingsRuntime;
 use vm_js::{Scope, Value, VmError};
+use webidl_vm_js::CallbackHandle;
 
 /// A minimally-typed value container used by the generated binding shims when crossing into the
 /// host.
 ///
 /// This is intentionally small: it is *not* a full JS value model. Objects are passed through as
 /// opaque `JsValue` handles, while primitives/dictionaries are converted to Rust-owned values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum BindingValue<JsValue: Copy> {
   Undefined,
   Null,
@@ -16,6 +17,7 @@ pub enum BindingValue<JsValue: Copy> {
   Number(f64),
   String(String),
   Object(JsValue),
+  Callback(CallbackHandle),
   Sequence(Vec<BindingValue<JsValue>>),
   FrozenArray(Vec<BindingValue<JsValue>>),
   Dictionary(BTreeMap<String, BindingValue<JsValue>>),

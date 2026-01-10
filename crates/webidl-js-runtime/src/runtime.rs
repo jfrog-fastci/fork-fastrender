@@ -5,6 +5,7 @@
 //! embedded JS engine.
 
 pub use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+use webidl_vm_js::CallbackHandle;
 
 /// The kind of property described by a [`JsOwnPropertyDescriptor`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -294,6 +295,20 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   ) -> Result<(), Self::Error>;
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error>;
+
+  /// Root and return a WebIDL callback function handle.
+  ///
+  /// Generated bindings use this to pass callbacks to the host in a GC-safe way.
+  fn root_callback_function(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    Err(self.throw_type_error("Callback functions are not supported by this runtime"))
+  }
+
+  /// Root and return a WebIDL callback interface handle.
+  ///
+  /// Callback interfaces accept callable functions or objects with a callable `handleEvent` method.
+  fn root_callback_interface(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    Err(self.throw_type_error("Callback interfaces are not supported by this runtime"))
+  }
 
   fn define_data_property_str(
     &mut self,

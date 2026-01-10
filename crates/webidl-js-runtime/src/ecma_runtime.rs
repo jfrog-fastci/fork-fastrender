@@ -2,6 +2,7 @@ use crate::runtime::{
   InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, NativeHostFunction,
   WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
+use webidl_vm_js::{CallbackHandle, CallbackKind};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::num::IntErrorKind;
@@ -1638,6 +1639,39 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
     let _ = self.heap.add_root(Value::Object(obj))?;
     self.global_object = Some(obj);
     Ok(Value::Object(obj))
+  }
+
+  fn root_callback_function(&mut self, value: Value) -> Result<CallbackHandle, VmError> {
+    if matches!(value, Value::Undefined | Value::Null) {
+      return Err(self.throw_type_error("Callback function is null or undefined"));
+    }
+    if !self.is_callable(value) {
+      return Err(self.throw_type_error("Value is not a callable callback function"));
+    }
+    CallbackHandle::new(self.heap_mut(), CallbackKind::Function, value, None)
+  }
+
+  fn root_callback_interface(&mut self, value: Value) -> Result<CallbackHandle, VmError> {
+    if matches!(value, Value::Undefined | Value::Null) {
+      return Err(self.throw_type_error("Callback interface is null or undefined"));
+    }
+
+    if self.is_callable(value) {
+      return CallbackHandle::new(self.heap_mut(), CallbackKind::Interface, value, None);
+    }
+
+    if !self.is_object(value) {
+      return Err(self.throw_type_error("Value is not a callback interface object"));
+    }
+
+    let handle_event_key = self.property_key_from_str("handleEvent")?;
+    if self.get_method(value, handle_event_key)?.is_none() {
+      return Err(self.throw_type_error(
+        "Callback interface object is missing a callable handleEvent method",
+      ));
+    }
+
+    CallbackHandle::new(self.heap_mut(), CallbackKind::Interface, value, None)
   }
 }
 

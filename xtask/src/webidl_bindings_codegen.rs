@@ -1359,6 +1359,9 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("    BindingValue::Number(n) => Ok(rt.js_number(n)),\n");
   out.push_str("    BindingValue::String(s) => rt.js_string(&s),\n");
   out.push_str("    BindingValue::Object(v) => Ok(v),\n");
+  out.push_str(
+    "    BindingValue::Callback(_) => Err(rt.throw_type_error(\"cannot return callback handles to JavaScript\")),\n",
+  );
   out.push_str("    BindingValue::Sequence(values) => {\n");
   out.push_str("      let obj = rt.create_object()?;\n");
   out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
@@ -1998,7 +2001,7 @@ fn write_operation_wrapper(
   // Naive overload resolution: bucket by argument count constraints, then discriminate by the first
   // differing argument's runtime type predicate.
   for (idx, sig) in overloads.iter().enumerate() {
-    let cond = emit_overload_condition(sig, "args");
+    let cond = emit_overload_condition(resolved, sig, "args");
     if idx == 0 {
       out.push_str(&format!("  if {cond} {{\n"));
     } else {
@@ -2025,7 +2028,7 @@ fn write_operation_wrapper(
   out.push_str("}\n\n");
 }
 
-fn emit_overload_condition(sig: &OperationSig, args_ident: &str) -> String {
+fn emit_overload_condition(resolved: &ResolvedWebIdlWorld, sig: &OperationSig, args_ident: &str) -> String {
   let required = required_arg_count(&sig.arguments);
   let max = max_arg_count(&sig.arguments);
   let len_check = match max {
@@ -2039,7 +2042,7 @@ fn emit_overload_condition(sig: &OperationSig, args_ident: &str) -> String {
     return len_check;
   }
 
-  let pred = emit_type_predicate(&sig.arguments[0].type_, &format!("{args_ident}[0]"));
+  let pred = emit_type_predicate(resolved, &sig.arguments[0].type_, &format!("{args_ident}[0]"));
   if required == 0 {
     format!("{len_check} && ({args_ident}.len() == 0 || ({pred}))")
   } else {
@@ -2122,12 +2125,34 @@ fn emit_conversion_expr_for_optional(
     })
     .unwrap_or_else(|| "BindingValue::Undefined".to_string());
 
-  format!(
-    "if rt.is_undefined({value}) {{ {default_expr} }} else {{ {converted} }}",
-    value = value_ident,
-    default_expr = default_expr,
-    converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident),
-  )
+  let converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
+  if type_contains_callback(resolved, &arg.type_) {
+    // WebIDL callback types treat `null` similarly to `undefined` for optional arguments.
+    format!(
+      "if rt.is_undefined({value}) {{ {default_expr} }} else if rt.is_null({value}) {{ BindingValue::Null }} else {{ {converted} }}",
+      value = value_ident,
+      default_expr = default_expr,
+      converted = converted,
+    )
+  } else {
+    format!(
+      "if rt.is_undefined({value}) {{ {default_expr} }} else {{ {converted} }}",
+      value = value_ident,
+      default_expr = default_expr,
+      converted = converted,
+    )
+  }
+}
+
+fn type_contains_callback(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
+  match ty {
+    IdlType::Named(name) => {
+      resolved.callbacks.contains_key(name)
+        || resolved.interfaces.get(name).is_some_and(|i| i.callback)
+    }
+    IdlType::Nullable(inner) => type_contains_callback(resolved, inner),
+    _ => false,
+  }
 }
 
 fn emit_default_literal(lit: &IdlLiteral) -> String {
@@ -2238,15 +2263,32 @@ fn emit_conversion_expr(
           "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
           to_snake_ident(name)
         )
+      } else if resolved.callbacks.contains_key(name) {
+        format!("BindingValue::Callback(rt.root_callback_function({value_ident})?)")
+      } else if resolved.interfaces.get(name).is_some_and(|i| i.callback) {
+        format!("BindingValue::Callback(rt.root_callback_interface({value_ident})?)")
       } else {
         // Fallback: treat as an opaque object/value.
         format!("BindingValue::Object({value_ident})")
       }
     }
-    IdlType::Nullable(inner) => format!(
-      "if rt.is_null({value_ident}) {{ BindingValue::Null }} else {{ {} }}",
-      emit_conversion_expr(resolved, inner, ext_attrs, value_ident)
-    ),
+    IdlType::Nullable(inner) => {
+      let converted = emit_conversion_expr(resolved, inner, ext_attrs, value_ident);
+      if type_contains_callback(resolved, inner) {
+        // Callback types accept `null`/`undefined` as "no callback" when nullable.
+        format!(
+          "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {converted} }}",
+          value_ident = value_ident,
+          converted = converted
+        )
+      } else {
+        format!(
+          "if rt.is_null({value_ident}) {{ BindingValue::Null }} else {{ {converted} }}",
+          value_ident = value_ident,
+          converted = converted
+        )
+      }
+    }
     IdlType::Union(_members) => {
       // Union conversion is non-trivial; for MVP treat as opaque.
       format!("BindingValue::Object({value_ident})")
@@ -2330,7 +2372,7 @@ fn max_arg_count(args: &[Argument]) -> Option<usize> {
   }
 }
 
-fn emit_type_predicate(ty: &IdlType, value_expr: &str) -> String {
+fn emit_type_predicate(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_expr: &str) -> String {
   match ty {
     IdlType::Builtin(b) => match b {
       BuiltinType::Boolean => format!("rt.is_boolean({value_expr})"),
@@ -2352,8 +2394,17 @@ fn emit_type_predicate(ty: &IdlType, value_expr: &str) -> String {
       | BuiltinType::UnrestrictedDouble => format!("rt.is_number({value_expr})"),
       BuiltinType::Undefined => format!("rt.is_undefined({value_expr})"),
     },
-    IdlType::Named(_name) => format!("rt.is_object({value_expr})"),
-    IdlType::Nullable(inner) => format!("rt.is_null({value_expr}) || ({})", emit_type_predicate(inner, value_expr)),
+    IdlType::Named(name) => {
+      if resolved.callbacks.contains_key(name) {
+        format!("rt.is_callable({value_expr})")
+      } else {
+        format!("rt.is_object({value_expr})")
+      }
+    }
+    IdlType::Nullable(inner) => format!(
+      "rt.is_null({value_expr}) || ({})",
+      emit_type_predicate(resolved, inner, value_expr)
+    ),
     IdlType::Union(_members) => "true".to_string(),
     IdlType::Sequence(_) | IdlType::FrozenArray(_) | IdlType::Promise(_) | IdlType::Record { .. } => {
       "true".to_string()

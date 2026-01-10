@@ -26,6 +26,9 @@ pub mod window {
       BindingValue::Number(n) => Ok(rt.js_number(n)),
       BindingValue::String(s) => rt.js_string(&s),
       BindingValue::Object(v) => Ok(v),
+      BindingValue::Callback(_) => {
+        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
+      }
       BindingValue::Sequence(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {

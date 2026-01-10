@@ -83,6 +83,9 @@ fn binding_value_to_js(
     BindingValue::Number(n) => Ok(Value::Number(n)),
     BindingValue::String(s) => Ok(Value::String(scope.alloc_string(&s)?)),
     BindingValue::Object(v) => Ok(v),
+    BindingValue::Callback(_) => Err(VmError::TypeError(
+      "cannot return callback handles to JavaScript",
+    )),
     BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;

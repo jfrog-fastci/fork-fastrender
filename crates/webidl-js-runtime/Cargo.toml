@@ -8,3 +8,4 @@ publish = false
 vm-js = { path = "../../vendor/ecma-rs/vm-js" }
 webidl-ir = { path = "../webidl-ir" }
 webidl = { path = "../../vendor/ecma-rs/webidl" }
+webidl-vm-js = { path = "../webidl-vm-js" }

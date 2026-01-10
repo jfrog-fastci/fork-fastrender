@@ -6,6 +6,7 @@ use vm_js::{
 };
 
 use webidl::WebIdlHooks;
+use webidl_vm_js::CallbackHandle;
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 ///
@@ -106,6 +107,20 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
   fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error>;
+
+  /// Root and return a WebIDL callback function handle.
+  ///
+  /// Generated bindings use this to pass callbacks to the host in a GC-safe way.
+  fn root_callback_function(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    Err(self.throw_type_error("Callback functions are not supported by this runtime"))
+  }
+
+  /// Root and return a WebIDL callback interface handle.
+  ///
+  /// Callback interfaces accept callable functions or objects with a callable `handleEvent` method.
+  fn root_callback_interface(&mut self, _value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    Err(self.throw_type_error("Callback interfaces are not supported by this runtime"))
+  }
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
@@ -501,6 +516,23 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(Value::Object(func))
   }
 
+  fn root_callback_function(&mut self, value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    let handle = {
+      let heap = self.cx.scope.heap_mut();
+      CallbackHandle::from_callback_function(&*self.cx.vm, heap, value, false)?
+    };
+    handle.ok_or_else(|| self.throw_type_error("Callback function is null or undefined"))
+  }
+
+  fn root_callback_interface(&mut self, value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    let handle = {
+      let vm = &mut *self.cx.vm;
+      let heap = self.cx.scope.heap_mut();
+      CallbackHandle::from_callback_interface(vm, heap, value, false)?
+    };
+    handle.ok_or_else(|| self.throw_type_error("Callback interface is null or undefined"))
+  }
+
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     self.cx.scope.push_root(Value::Object(self.state.global_object))?;
     Ok(Value::Object(self.state.global_object))
@@ -704,6 +736,18 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(self, f)
+  }
+
+  fn root_callback_function(&mut self, value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::root_callback_function(
+      self, value,
+    )
+  }
+
+  fn root_callback_interface(&mut self, value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::root_callback_interface(
+      self, value,
+    )
   }
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {

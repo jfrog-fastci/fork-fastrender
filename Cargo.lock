@@ -5004,6 +5004,7 @@ dependencies = [
  "vm-js",
  "webidl",
  "webidl-ir",
+ "webidl-vm-js",
 ]
 
 [[package]]

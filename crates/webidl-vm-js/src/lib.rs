@@ -12,8 +12,8 @@
 
 use std::ptr::NonNull;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
-  PropertyKey as VmPropertyKey, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  ExecutionContext, GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
+  PropertyKey as VmPropertyKey, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use webidl::{
   InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, PropertyKey,
@@ -144,6 +144,216 @@ pub fn host_from_hooks<'a>(
     .ok_or(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE))
 }
 
+/// Kind of WebIDL callback represented by [`CallbackHandle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackKind {
+  /// `callback Foo = ...` (must be callable when present).
+  Function,
+  /// `callback interface Foo { ... }` (callable or has callable `handleEvent`).
+  Interface,
+}
+
+/// A host-owned, GC-safe handle to a JavaScript callback.
+///
+/// This is a **persistent root** in the `vm-js` heap so it can be stored and invoked later without
+/// risking use-after-GC.
+#[derive(Debug)]
+pub struct CallbackHandle {
+  kind: CallbackKind,
+  root: RootId,
+  /// Optional realm to run the callback in.
+  ///
+  /// `vm-js` currently supports a single active realm, but the host hooks and job queue APIs are
+  /// spec-shaped around realm tokens, so keep this metadata for future multi-realm support.
+  realm: Option<RealmId>,
+}
+
+impl CallbackHandle {
+  /// Creates a new handle by registering `value` as a persistent root.
+  pub fn new(heap: &mut Heap, kind: CallbackKind, value: Value, realm: Option<RealmId>) -> Result<Self, VmError> {
+    let root = heap.add_root(value)?;
+    Ok(Self { kind, root, realm })
+  }
+
+  /// Convert a JS value to a callback function handle.
+  ///
+  /// If `allow_null_or_undefined` is true, `null`/`undefined` are accepted as "no callback" and this
+  /// returns `Ok(None)`.
+  pub fn from_callback_function(
+    vm: &Vm,
+    heap: &mut Heap,
+    value: Value,
+    allow_null_or_undefined: bool,
+  ) -> Result<Option<Self>, VmError> {
+    if allow_null_or_undefined && matches!(value, Value::Undefined | Value::Null) {
+      return Ok(None);
+    }
+    if !heap.is_callable(value)? {
+      return Err(VmError::TypeError("Value is not a callable callback function"));
+    }
+    Ok(Some(Self::new(
+      heap,
+      CallbackKind::Function,
+      value,
+      vm.current_realm(),
+    )?))
+  }
+
+  /// Convert a JS value to a callback interface handle.
+  ///
+  /// If `allow_null_or_undefined` is true, `null`/`undefined` are accepted as "no callback" and this
+  /// returns `Ok(None)`.
+  pub fn from_callback_interface(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    value: Value,
+    allow_null_or_undefined: bool,
+  ) -> Result<Option<Self>, VmError> {
+    if allow_null_or_undefined && matches!(value, Value::Undefined | Value::Null) {
+      return Ok(None);
+    }
+
+    if heap.is_callable(value)? {
+      return Ok(Some(Self::new(
+        heap,
+        CallbackKind::Interface,
+        value,
+        vm.current_realm(),
+      )?));
+    }
+
+    let Value::Object(obj) = value else {
+      return Err(VmError::TypeError("Value is not a callback interface object"));
+    };
+
+    // Ensure `value` stays alive across key allocation and any user code invoked by accessors.
+    let mut scope = heap.scope();
+    scope.push_root(value)?;
+
+    let key_str = scope.alloc_string("handleEvent")?;
+    scope.push_root(Value::String(key_str))?;
+    let key = VmPropertyKey::from_string(key_str);
+
+    let Some(_method) = vm.get_method_from_object(&mut scope, obj, key)? else {
+      return Err(VmError::TypeError(
+        "Callback interface object is missing a callable handleEvent method",
+      ));
+    };
+
+    drop(scope);
+
+    Ok(Some(Self::new(
+      heap,
+      CallbackKind::Interface,
+      value,
+      vm.current_realm(),
+    )?))
+  }
+
+  pub fn kind(&self) -> CallbackKind {
+    self.kind
+  }
+
+  pub fn root_id(&self) -> RootId {
+    self.root
+  }
+
+  pub fn realm(&self) -> Option<RealmId> {
+    self.realm
+  }
+
+  /// Returns the current rooted callback value.
+  pub fn value(&self, heap: &Heap) -> Result<Value, VmError> {
+    heap.get_root(self.root).ok_or(VmError::InvalidHandle)
+  }
+
+  /// Unregister the underlying persistent root.
+  ///
+  /// This consumes the handle to prevent double-unroot bugs.
+  pub fn unroot(self, heap: &mut Heap) {
+    heap.remove_root(self.root);
+  }
+
+  /// Invoke this callback with an explicit `this` value.
+  ///
+  /// For callback interface objects, `this` is ignored and `handleEvent` is called with the
+  /// callback object as the receiver.
+  pub fn invoke_with_this(
+    &self,
+    vm: &mut Vm,
+    heap: &mut Heap,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let callback = self.value(heap)?;
+
+    let mut scope = heap.scope();
+    // Root `callback`/`this`/`args` across any allocations we do while preparing the call (e.g.
+    // allocating the `"handleEvent"` property key).
+    let roots_len = args.len().checked_add(2).ok_or(VmError::OutOfMemory)?;
+    let mut roots = Vec::<Value>::new();
+    roots
+      .try_reserve_exact(roots_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    roots.push(callback);
+    roots.push(this);
+    roots.extend_from_slice(args);
+    scope.push_roots(&roots)?;
+
+    let mut call = |vm: &mut Vm, scope: &mut Scope<'_>| -> Result<Value, VmError> {
+      match self.kind {
+        CallbackKind::Function => vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args),
+        CallbackKind::Interface => {
+          if scope.heap().is_callable(callback)? {
+            return vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args);
+          }
+
+          let Value::Object(obj) = callback else {
+            return Err(VmError::TypeError("Callback interface value is not an object"));
+          };
+
+          // `handleEvent`
+          let key_str = scope.alloc_string("handleEvent")?;
+          scope.push_root(Value::String(key_str))?;
+          let key = VmPropertyKey::from_string(key_str);
+          let Some(method) = vm.get_method_from_object(scope, obj, key)? else {
+            return Err(VmError::TypeError(
+              "Callback interface object is missing a callable handleEvent method",
+            ));
+          };
+          scope.push_root(method)?;
+
+          vm.call_with_host_and_hooks(host, scope, hooks, method, callback, args)
+        }
+      }
+    };
+
+    if let Some(realm) = self.realm {
+      let mut vm = vm.execution_context_guard(ExecutionContext {
+        realm,
+        script_or_module: None,
+      });
+      call(&mut vm, &mut scope)
+    } else {
+      call(vm, &mut scope)
+    }
+  }
+
+  /// Convenience wrapper around [`CallbackHandle::invoke_with_this`] that uses `undefined` as the
+  /// receiver for callable callbacks.
+  pub fn invoke(
+    &self,
+    vm: &mut Vm,
+    heap: &mut Heap,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    self.invoke_with_this(vm, heap, host, hooks, Value::Undefined, args)
+  }
+}
 /// `webidl` conversion context backed by `vm-js`.
 pub struct VmJsWebIdlCx<'a> {
   pub vm: &'a mut Vm,

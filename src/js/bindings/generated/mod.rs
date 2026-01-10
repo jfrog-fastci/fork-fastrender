@@ -26,7 +26,19 @@ pub mod window {
       BindingValue::Number(n) => Ok(rt.js_number(n)),
       BindingValue::String(s) => rt.js_string(&s),
       BindingValue::Object(v) => Ok(v),
-      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
+      BindingValue::Callback(_) => {
+        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
+      }
+      BindingValue::Sequence(values) => {
+        let obj = rt.create_object()?;
+        for (idx, item) in values.into_iter().enumerate() {
+          let key = idx.to_string();
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(obj, &key, value, true)?;
+        }
+        Ok(obj)
+      }
+      BindingValue::FrozenArray(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
@@ -153,10 +165,10 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(if rt.is_null(v1) {
+      converted_args.push(if rt.is_null(v1) || rt.is_undefined(v1) {
         BindingValue::Null
       } else {
-        BindingValue::Object(v1)
+        BindingValue::Callback(rt.root_callback_interface(v1)?)
       });
       let v2 = if args.len() > 2 {
         args[2]
@@ -238,10 +250,10 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(if rt.is_null(v1) {
+      converted_args.push(if rt.is_null(v1) || rt.is_undefined(v1) {
         BindingValue::Null
       } else {
-        BindingValue::Object(v1)
+        BindingValue::Callback(rt.root_callback_interface(v1)?)
       });
       let v2 = if args.len() > 2 {
         args[2]
@@ -1073,7 +1085,10 @@ pub mod worker {
       BindingValue::Number(n) => Ok(rt.js_number(n)),
       BindingValue::String(s) => rt.js_string(&s),
       BindingValue::Object(v) => Ok(v),
-      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
+      BindingValue::Callback(_) => {
+        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
+      }
+      BindingValue::Sequence(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
@@ -1209,10 +1224,10 @@ pub mod worker {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(if rt.is_null(v1) {
+      converted_args.push(if rt.is_null(v1) || rt.is_undefined(v1) {
         BindingValue::Null
       } else {
-        BindingValue::Object(v1)
+        BindingValue::Callback(rt.root_callback_interface(v1)?)
       });
       let v2 = if args.len() > 2 {
         args[2]
@@ -1294,10 +1309,10 @@ pub mod worker {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(if rt.is_null(v1) {
+      converted_args.push(if rt.is_null(v1) || rt.is_undefined(v1) {
         BindingValue::Null
       } else {
-        BindingValue::Object(v1)
+        BindingValue::Callback(rt.root_callback_interface(v1)?)
       });
       let v2 = if args.len() > 2 {
         args[2]
