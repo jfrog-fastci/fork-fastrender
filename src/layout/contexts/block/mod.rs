@@ -993,8 +993,8 @@ impl BlockFormattingContext {
           }
         }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics(
+          let preferred_border = limit.map(|limit| {
+            resolve_length_with_percentage_metrics(
               limit,
               containing_height_for_percentages,
               self.viewport_size,
@@ -1004,10 +1004,14 @@ impl BlockFormattingContext {
               Some(&self.font_context),
             )
             .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            .unwrap_or(f32::INFINITY)
+          });
+          crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+            Some(available_block_border_box),
+            preferred_border,
+            intrinsic_min,
+            intrinsic_max,
+          )
         }
         crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
           use crate::style::types::BoxSizing;

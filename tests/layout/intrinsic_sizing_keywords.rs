@@ -121,6 +121,59 @@ fn width_fit_content_clamps_to_available_and_max_content() {
 }
 
 #[test]
+fn height_fit_content_keyword_uses_max_content_when_min_content_exceeds_max_content() {
+  let factory = FormattingContextFactory::new();
+  let ctx = factory.create(FormattingContextType::Block);
+
+  let text = "lorem ipsum dolor sit amet";
+  let mut measure_style = ComputedStyle::default();
+  measure_style.display = Display::Block;
+  let measure = BoxNode::new_block(
+    Arc::new(measure_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let min_border = ctx
+    .compute_intrinsic_block_size(&measure, IntrinsicSizingMode::MinContent)
+    .expect("intrinsic min-content height");
+  let max_border = ctx
+    .compute_intrinsic_block_size(&measure, IntrinsicSizingMode::MaxContent)
+    .expect("intrinsic max-content height");
+  assert!(
+    min_border > max_border + 1.0,
+    "expected min-content block size ({}) > max-content ({}) for fit-content height regression",
+    min_border,
+    max_border
+  );
+
+  let max_inline = ctx
+    .compute_intrinsic_inline_size(&measure, IntrinsicSizingMode::MaxContent)
+    .expect("intrinsic max-content width");
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.height = None;
+  child_style.height_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let root = block_container(vec![child]);
+  let fragment = ctx
+    .layout(&root, &LayoutConstraints::definite_width(max_inline + 200.0))
+    .expect("layout");
+  let child_fragment = &fragment.children[0];
+  assert_approx(
+    child_fragment.bounds.height(),
+    max_border,
+    "height: fit-content should clamp to max-content when min-content block size exceeds max-content",
+  );
+}
+
+#[test]
 fn intrinsic_keyword_constraints_clamp_used_width() {
   let factory = FormattingContextFactory::new();
   let ctx = factory.create(FormattingContextType::Block);

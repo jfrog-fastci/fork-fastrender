@@ -74,6 +74,16 @@ pub(crate) fn resolve_fit_content_border_box(
   min: f32,
   max: f32,
 ) -> f32 {
+  // CSS Sizing: `fit-content` sizes clamp between the min/max-content contributions using a target:
+  //
+  // - `fit-content(<length-percentage>)`: the resolved preferred size
+  // - `fit-content` keyword: the available size, when definite; otherwise max-content
+  //
+  // When clamping, tolerate inverted intrinsic sizes by swapping bounds (see `clamp_with_order`).
+  // This matters on the block axis where "min-content" and "max-content" block sizes can be
+  // inverted (e.g. wrapping text at min-content inline size increases height).
+  let preferred = preferred.filter(|v| v.is_finite());
+  let available = available.filter(|v| v.is_finite());
   let target = preferred.or(available).unwrap_or(max);
   crate::layout::utils::clamp_with_order(target, min, max)
 }
