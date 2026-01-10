@@ -608,15 +608,6 @@ pub fn generate_box_tree_with_anonymous_fixup(styled: &StyledNode) -> Result<Box
   generate_box_tree_with_anonymous_fixup_with_options(styled, &BoxGenerationOptions::default())
 }
 
-/// Generates a BoxTree from a StyledNode tree, applies anonymous box fixup, and
-/// allows customizing generation behavior via options.
-pub fn generate_box_tree_with_anonymous_fixup_with_options(
-  styled: &StyledNode,
-  options: &BoxGenerationOptions,
-) -> Result<BoxTree> {
-  generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(styled, options, None)
-}
-
 pub(crate) fn generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(
   styled: &StyledNode,
   options: &BoxGenerationOptions,
@@ -642,6 +633,15 @@ pub(crate) fn generate_box_tree_with_anonymous_fixup_with_options_and_interactio
     eprintln!("timing:box_gen_table_fixup {:?}", start.elapsed());
   }
   Ok(BoxTree::new(fixed_root))
+}
+
+/// Generates a BoxTree from a StyledNode tree, applies anonymous box fixup, and
+/// allows customizing generation behavior via options.
+pub fn generate_box_tree_with_anonymous_fixup_with_options(
+  styled: &StyledNode,
+  options: &BoxGenerationOptions,
+) -> Result<BoxTree> {
+  generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(styled, options, None)
 }
 
 fn attach_styled_id(mut node: BoxNode, styled: &StyledNode) -> BoxNode {
@@ -6366,13 +6366,6 @@ fn create_form_control_replaced(
       .and_then(|v| v.parse::<f32>().ok())
       .filter(|v| v.is_finite())
   };
-  let parse_usize_attr = |node: &DomNode, name: &str| -> Option<usize> {
-    node
-      .get_attribute_ref(name)
-      .map(trim_ascii_whitespace)
-      .filter(|v| !v.is_empty())
-      .and_then(|v| v.parse::<usize>().ok())
-  };
 
   let disabled = styled.node.get_attribute_ref("disabled").is_some();
   let inert = styled.node.get_attribute_ref("inert").is_some()
@@ -6626,14 +6619,11 @@ fn create_form_control_replaced(
       };
 
       let value_char_len = value.chars().count();
-      let caret = parse_usize_attr(&styled.node, "data-fastr-caret")
-        .unwrap_or(value_char_len)
-        .min(value_char_len);
-      let selection = match (
-        parse_usize_attr(&styled.node, "data-fastr-selection-start"),
-        parse_usize_attr(&styled.node, "data-fastr-selection-end"),
-      ) {
-        (Some(start), Some(end)) => {
+      let mut caret = value_char_len;
+      let mut selection: Option<(usize, usize)> = None;
+      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
+        caret = edit.caret.min(value_char_len);
+        selection = edit.selection.and_then(|(start, end)| {
           let start = start.min(value_char_len);
           let end = end.min(value_char_len);
           if start == end {
@@ -6643,9 +6633,8 @@ fn create_form_control_replaced(
           } else {
             Some((end, start))
           }
-        }
-        _ => None,
-      };
+        });
+      }
 
       FormControlKind::Text {
         value,
@@ -6710,14 +6699,11 @@ fn create_form_control_replaced(
       .map(|p| p.to_string());
     let value = textarea_value.unwrap_or_default();
     let value_char_len = value.chars().count();
-    let caret = parse_usize_attr(&styled.node, "data-fastr-caret")
-      .unwrap_or(value_char_len)
-      .min(value_char_len);
-    let selection = match (
-      parse_usize_attr(&styled.node, "data-fastr-selection-start"),
-      parse_usize_attr(&styled.node, "data-fastr-selection-end"),
-    ) {
-      (Some(start), Some(end)) => {
+    let mut caret = value_char_len;
+    let mut selection: Option<(usize, usize)> = None;
+    if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
+      caret = edit.caret.min(value_char_len);
+      selection = edit.selection.and_then(|(start, end)| {
         let start = start.min(value_char_len);
         let end = end.min(value_char_len);
         if start == end {
@@ -6727,9 +6713,8 @@ fn create_form_control_replaced(
         } else {
           Some((end, start))
         }
-      }
-      _ => None,
-    };
+      });
+    }
     Some(FormControl {
       control: FormControlKind::TextArea {
         value,

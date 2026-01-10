@@ -29,6 +29,13 @@ pub struct InteractionState {
   /// Optional IME composition (preedit) state for the focused text control.
   pub ime_preedit: Option<ImePreeditState>,
 
+  /// Optional caret/selection state for a focused text control (`<input>` / `<textarea>`).
+  ///
+  /// This is internal UI state used for form-control painting. It must never be mirrored onto the
+  /// DOM (e.g. via `data-*` attributes), because that would make selection/caret state observable to
+  /// author CSS/DOM.
+  pub text_edit: Option<TextEditPaintState>,
+
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   ///
   /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
@@ -71,6 +78,14 @@ impl InteractionState {
   }
 
   #[inline]
+  pub fn text_edit_for(&self, node_id: usize) -> Option<&TextEditPaintState> {
+    self
+      .text_edit
+      .as_ref()
+      .filter(|state| state.node_id == node_id)
+  }
+
+  #[inline]
   pub fn has_user_validity(&self, node_id: usize) -> bool {
     self.user_validity.contains(&node_id)
   }
@@ -82,4 +97,14 @@ pub struct ImePreeditState {
   pub node_id: usize,
   pub text: String,
   pub cursor: Option<(usize, usize)>,
+}
+
+/// Caret + selection state for a focused text control (`<input>` / `<textarea>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextEditPaintState {
+  pub node_id: usize,
+  /// Caret position in character indices.
+  pub caret: usize,
+  /// Optional selection range in character indices (start, end), where `start < end`.
+  pub selection: Option<(usize, usize)>,
 }

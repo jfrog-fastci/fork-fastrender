@@ -507,11 +507,14 @@ impl BrowserTabController {
   }
 
   fn handle_select_all(&mut self) -> Result<Vec<WorkerToUi>> {
-    // Selection is worker-local state and does not invalidate the document pipeline.
-    let _ = self
+    let changed = self
       .document
       .mutate_dom(|dom| self.interaction.clipboard_select_all(dom));
-    Ok(Vec::new())
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
   }
 
   fn handle_copy(&mut self) -> Result<Vec<WorkerToUi>> {

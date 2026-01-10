@@ -27,13 +27,6 @@ fn insert_at_char_idx(original: &str, idx: usize, insert: &str) -> String {
   out
 }
 
-fn caret_attr(node: &DomNode) -> usize {
-  node
-    .get_attribute_ref("data-fastr-caret")
-    .and_then(|v| v.parse::<usize>().ok())
-    .expect("expected data-fastr-caret attr")
-}
-
 #[test]
 fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
@@ -85,23 +78,28 @@ fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
   let input = find_element_by_id(controller.document().dom(), "txt");
   assert_eq!(input.get_attribute_ref("value"), Some(initial_value));
 
-  let caret = caret_attr(input);
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  let after_x = input
+    .get_attribute_ref("value")
+    .expect("expected input value after typing X");
+  let caret = after_x
+    .chars()
+    .position(|ch| ch == 'X')
+    .expect("expected typed character to appear in input value");
   let len = initial_value.chars().count();
   assert!(
     caret > 0 && caret < len,
     "expected click-to-place caret to land inside the text (got {caret} for len={len})"
   );
 
-  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+  assert_eq!(after_x, insert_at_char_idx(initial_value, caret, "X"));
+
+  // Type another character to confirm the caret advanced after insertion.
+  let _ = controller.handle_message(support::text_input(tab_id, "Y"))?;
   let input = find_element_by_id(controller.document().dom(), "txt");
-  let expected = insert_at_char_idx(initial_value, caret, "X");
+  let expected = insert_at_char_idx(initial_value, caret, "XY");
   assert_eq!(input.get_attribute_ref("value"), Some(expected.as_str()));
-  assert_eq!(caret_attr(input), caret + 1);
-  assert!(
-    input.get_attribute_ref("data-fastr-selection-start").is_none()
-      && input.get_attribute_ref("data-fastr-selection-end").is_none(),
-    "expected typing to clear selection attributes"
-  );
 
   Ok(())
 }
@@ -290,16 +288,24 @@ def</textarea>
     Some("abc\ndef\n"),
     "expected Enter to insert a newline in textarea value"
   );
-  assert_eq!(caret_attr(textarea), "abc\ndef\n".chars().count());
 
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowUp))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
   let textarea = find_element_by_id(controller.document().dom(), "ta");
-  assert_eq!(caret_attr(textarea), 4, "expected ArrowUp to move caret to previous line");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("abc\nXdef\n"),
+    "expected ArrowUp to move caret to previous line before insertion"
+  );
 
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "Y"))?;
   let textarea = find_element_by_id(controller.document().dom(), "ta");
-  assert_eq!(caret_attr(textarea), 8, "expected ArrowDown to move caret back to last line");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("abc\nXdef\nY"),
+    "expected ArrowDown to move caret back to last line before insertion"
+  );
 
   Ok(())
 }
-

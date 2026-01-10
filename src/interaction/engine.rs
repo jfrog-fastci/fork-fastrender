@@ -24,7 +24,7 @@ use super::form_submit::{form_submission, form_submission_without_submitter, For
 use super::hit_test::hit_test_dom;
 use super::image_maps;
 use super::resolve_url;
-use super::state::{ImePreeditState, InteractionState};
+use super::state::{ImePreeditState, InteractionState, TextEditPaintState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModality {
@@ -235,20 +235,18 @@ mod tests {
     }
   }
 
-  fn set_text_selection_caret(engine: &mut InteractionEngine, dom: &mut DomNode, node_id: usize, caret: usize) {
+  fn set_text_selection_caret(engine: &mut InteractionEngine, _dom: &mut DomNode, node_id: usize, caret: usize) {
     engine.text_edit = Some(TextEditState {
       node_id,
       caret,
       selection_anchor: None,
       preferred_column: None,
     });
-    let mut index = DomIndexMut::new(dom);
-    write_text_edit_data_attrs(&mut index, node_id, caret, None);
   }
 
   fn set_text_selection_range(
     engine: &mut InteractionEngine,
-    dom: &mut DomNode,
+    _dom: &mut DomNode,
     node_id: usize,
     start: usize,
     end: usize,
@@ -259,8 +257,6 @@ mod tests {
       selection_anchor: Some(start),
       preferred_column: None,
     });
-    let mut index = DomIndexMut::new(dom);
-    write_text_edit_data_attrs(&mut index, node_id, end, Some((start, end)));
   }
 
   #[test]
@@ -629,41 +625,6 @@ fn remove_node_attr(node: &mut DomNode, name: &str) -> bool {
     }
     _ => false,
   }
-}
-
-fn clear_text_edit_data_attrs(index: &mut DomIndexMut, node_id: usize) -> bool {
-  let Some(node) = index.node_mut(node_id) else {
-    return false;
-  };
-  let mut changed = false;
-  changed |= remove_node_attr(node, "data-fastr-caret");
-  changed |= remove_node_attr(node, "data-fastr-selection-start");
-  changed |= remove_node_attr(node, "data-fastr-selection-end");
-  changed
-}
-
-fn write_text_edit_data_attrs(
-  index: &mut DomIndexMut,
-  node_id: usize,
-  caret: usize,
-  selection: Option<(usize, usize)>,
-) -> bool {
-  let Some(node) = index.node_mut(node_id) else {
-    return false;
-  };
-  let mut changed = false;
-  changed |= set_node_attr(node, "data-fastr-caret", &caret.to_string());
-  match selection {
-    Some((start, end)) if start != end => {
-      changed |= set_node_attr(node, "data-fastr-selection-start", &start.to_string());
-      changed |= set_node_attr(node, "data-fastr-selection-end", &end.to_string());
-    }
-    _ => {
-      changed |= remove_node_attr(node, "data-fastr-selection-start");
-      changed |= remove_node_attr(node, "data-fastr-selection-end");
-    }
-  }
-  changed
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -1984,6 +1945,21 @@ impl InteractionEngine {
     self.state.focused
   }
 
+  fn sync_text_edit_paint_state(&mut self) -> bool {
+    let next = self
+      .text_edit
+      .as_ref()
+      .filter(|edit| self.state.focused == Some(edit.node_id))
+      .map(|edit| TextEditPaintState {
+        node_id: edit.node_id,
+        caret: edit.caret,
+        selection: edit.selection(),
+      });
+    let changed = self.state.text_edit != next;
+    self.state.text_edit = next;
+    changed
+  }
+
   /// Returns the most recent click target (pre-order DOM node id) produced by
   /// [`InteractionEngine::pointer_up_with_scroll`].
   ///
@@ -2012,19 +1988,14 @@ impl InteractionEngine {
     let prev_focused = self.state.focused;
     let prev_focus_visible = self.state.focus_visible;
     let prev_focus_chain = self.state.focus_chain.clone();
-
     let mut changed = false;
 
-    // Any focus change cancels an in-progress IME composition.
+    // Any focus change cancels an in-progress IME composition and resets text-editing state.
     if prev_focused != new_focused {
       if self.state.ime_preedit.is_some() {
         changed = true;
       }
       self.state.ime_preedit = None;
-
-      if let Some(old) = prev_focused {
-        changed |= clear_text_edit_data_attrs(index, old);
-      }
       self.text_edit = None;
       self.text_drag = None;
     }
@@ -2038,10 +2009,6 @@ impl InteractionEngine {
     if prev_focused != new_focused {
       if let Some(new_id) = new_focused {
         // Initialize text editing state for focused text controls.
-        //
-        // We keep the canonical caret/selection state in `InteractionEngine`, but we also mirror it
-        // onto the DOM as `data-fastr-*` attributes so the box tree / painter can render the caret
-        // and selection without a separate state channel.
         if index.node(new_id).is_some_and(|node| is_text_input(node) || is_textarea(node)) {
           let caret = index
             .node(new_id)
@@ -2059,10 +2026,12 @@ impl InteractionEngine {
             selection_anchor: None,
             preferred_column: None,
           });
-          changed |= write_text_edit_data_attrs(index, new_id, caret, None);
         }
       }
     }
+
+    // Keep caret/selection paint state in sync with the internal text editing state.
+    changed |= self.sync_text_edit_paint_state();
 
     changed
       || prev_focused != self.state.focused
@@ -2123,6 +2092,7 @@ impl InteractionEngine {
         });
       }
     }
+    self.sync_text_edit_paint_state();
   }
 
   pub fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
@@ -2150,6 +2120,7 @@ impl InteractionEngine {
         });
       }
     }
+    self.sync_text_edit_paint_state();
   }
 
   pub fn clear_pointer_state(&mut self, _dom: &mut DomNode) -> bool {
@@ -2233,6 +2204,8 @@ impl InteractionEngine {
             state.box_id,
             page_point,
           ) {
+            let prev_caret = edit.caret;
+            let prev_anchor = edit.selection_anchor;
             edit.preferred_column = None;
             edit.caret = caret;
             if caret == state.anchor {
@@ -2240,16 +2213,15 @@ impl InteractionEngine {
             } else {
               edit.selection_anchor = Some(state.anchor);
             }
-            dom_changed |= write_text_edit_data_attrs(
-              &mut index,
-              state.node_id,
-              edit.caret,
-              edit.selection(),
-            );
+            if edit.caret != prev_caret || edit.selection_anchor != prev_anchor {
+              dom_changed = true;
+            }
           }
         }
       }
     }
+
+    dom_changed |= self.sync_text_edit_paint_state();
 
     let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let new_chain = hit
@@ -2323,7 +2295,7 @@ impl InteractionEngine {
         if is_focusable_interactive_element(&index, hit.dom_node_id) {
           dom_changed |= self.set_focus(&mut index, Some(hit.dom_node_id), false);
         }
-
+ 
         // Only update caret/selection state when the text control is (now) focused.
         if self.state.focused == Some(hit.dom_node_id) {
           let caret = caret_index_for_text_control_point(
@@ -2336,10 +2308,13 @@ impl InteractionEngine {
           )
           .unwrap_or(0);
 
+          let mut text_edit_changed = false;
           match self.text_edit.as_mut().filter(|state| state.node_id == hit.dom_node_id) {
             Some(state) => {
+              let prev = (state.caret, state.selection_anchor);
               state.set_caret(caret);
               state.clear_selection();
+              text_edit_changed = (state.caret, state.selection_anchor) != prev;
             }
             None => {
               self.text_edit = Some(TextEditState {
@@ -2348,10 +2323,14 @@ impl InteractionEngine {
                 selection_anchor: None,
                 preferred_column: None,
               });
+              text_edit_changed = true;
             }
           }
 
-          dom_changed |= write_text_edit_data_attrs(&mut index, hit.dom_node_id, caret, None);
+          if text_edit_changed {
+            dom_changed = true;
+          }
+          dom_changed |= self.sync_text_edit_paint_state();
           self.text_drag = Some(TextDragState {
             node_id: hit.dom_node_id,
             box_id: hit.box_id,
@@ -2484,6 +2463,10 @@ impl InteractionEngine {
         None => self.text_drag = None,
       }
     }
+
+    // Ensure the paint-only caret/selection state stays in sync with the remapped internal edit
+    // state.
+    let _ = self.sync_text_edit_paint_state();
   }
   /// End active state, and if click qualifies, perform action:
   /// - link: return Navigate
@@ -2889,7 +2872,7 @@ impl InteractionEngine {
       selection_anchor: None,
       preferred_column: None,
     });
-    changed |= write_text_edit_data_attrs(&mut index, focused, next_caret, None);
+    changed |= self.sync_text_edit_paint_state();
 
     changed
   }
@@ -3016,9 +2999,8 @@ impl InteractionEngine {
     let is_text_input = is_text_input(node);
     let is_textarea = is_textarea(node);
     if !(is_text_input || is_textarea) {
-      // Not a text control: clear any existing caret/selection attributes.
-      changed |= clear_text_edit_data_attrs(&mut index, focused);
       self.text_edit = None;
+      changed |= self.sync_text_edit_paint_state();
       return changed;
     }
 
@@ -3053,8 +3035,10 @@ impl InteractionEngine {
       edit.selection_anchor = Some(0);
     }
 
+    let prev = self.text_edit;
     self.text_edit = Some(edit);
-    changed |= write_text_edit_data_attrs(&mut index, focused, edit.caret, edit.selection());
+    changed |= prev != self.text_edit;
+    changed |= self.sync_text_edit_paint_state();
 
     changed
   }
@@ -3197,7 +3181,7 @@ impl InteractionEngine {
     edit.selection_anchor = None;
     edit.preferred_column = None;
     self.text_edit = Some(edit);
-    dom_changed |= write_text_edit_data_attrs(&mut index, focused, edit.caret, None);
+    dom_changed |= self.sync_text_edit_paint_state();
 
     (dom_changed, selected)
   }
@@ -3300,7 +3284,7 @@ impl InteractionEngine {
       selection_anchor: None,
       preferred_column: None,
     });
-    changed |= write_text_edit_data_attrs(&mut index, focused, next_caret, None);
+    changed |= self.sync_text_edit_paint_state();
 
     changed
   }
@@ -3545,9 +3529,10 @@ impl InteractionEngine {
 
       if edit != original {
         self.text_edit = Some(edit);
-        changed |= write_text_edit_data_attrs(&mut index, focused, edit.caret, edit.selection());
+        changed = true;
       }
 
+      changed |= self.sync_text_edit_paint_state();
       return changed;
     }
 
