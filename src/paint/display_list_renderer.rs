@@ -59,6 +59,7 @@ use crate::paint::display_list::RadialGradientItem;
 use crate::paint::display_list::RadialGradientPatternItem;
 use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::ResolvedMask;
+use crate::paint::display_list::ResolvedMaskBorder;
 use crate::paint::display_list::ResolvedMaskImage;
 use crate::paint::display_list::StackingContextItem;
 use crate::paint::display_list::StrokeRectItem;
@@ -115,6 +116,7 @@ use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::TextDecorationStyle;
@@ -3813,6 +3815,7 @@ struct StackingRecord {
   bounds: Rect,
   mask_bounds: Rect,
   mask: Option<ResolvedMask>,
+  mask_border: Option<ResolvedMaskBorder>,
   css_bounds: Rect,
   manual_blend: Option<BlendMode>,
   layer_bounds: Option<Rect>,
@@ -7842,6 +7845,605 @@ impl DisplayListRenderer {
         })
       }
     })
+  }
+
+  fn render_mask_border(
+    &mut self,
+    mask_border: &ResolvedMaskBorder,
+  ) -> RenderResult<Option<OffsetMask>> {
+    check_active(RenderStage::Paint)?;
+    let mut reusable_mask = MASK_RENDER_SCRATCH.with(|cell| cell.borrow_mut().take());
+
+    // Align to the element's border box in global CSS coordinates.
+    let rect_css = mask_border.rect;
+    if rect_css.width() <= 0.0 || rect_css.height() <= 0.0 {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = reusable_mask;
+      });
+      return Ok(None);
+    }
+
+    let viewport = mask_border.viewport.unwrap_or((
+      self.canvas.width() as f32 / self.scale,
+      self.canvas.height() as f32 / self.scale,
+    ));
+
+    let transform = self.canvas.transform();
+    let inv_transform = (transform == Transform::identity())
+      .then_some(Transform::identity())
+      .or_else(|| invert_transform(transform));
+
+    let (canvas_bounds_css, canvas_clip_bounds_css) = if let Some(inv) = inv_transform {
+      let bounds_device = transform_rect(self.canvas.bounds(), &inv);
+      let bounds_css = Rect::from_xywh(
+        bounds_device.x() / self.scale,
+        bounds_device.y() / self.scale,
+        bounds_device.width() / self.scale,
+        bounds_device.height() / self.scale,
+      );
+      let clip_css = self
+        .canvas
+        .clip_bounds()
+        .map(|rect| {
+          let clip_device = transform_rect(rect, &inv);
+          Rect::from_xywh(
+            clip_device.x() / self.scale,
+            clip_device.y() / self.scale,
+            clip_device.width() / self.scale,
+            clip_device.height() / self.scale,
+          )
+        })
+        .unwrap_or(bounds_css);
+      (bounds_css, clip_css)
+    } else {
+      let bounds_css = Rect::from_xywh(0.0, 0.0, viewport.0, viewport.1);
+      let clip_css = self
+        .canvas
+        .clip_bounds()
+        .map(|rect| {
+          Rect::from_xywh(
+            rect.x() / self.scale,
+            rect.y() / self.scale,
+            rect.width() / self.scale,
+            rect.height() / self.scale,
+          )
+        })
+        .unwrap_or(bounds_css);
+      (bounds_css, clip_css)
+    };
+
+    // Decode (or generate) the source image first so we can resolve slice-based `auto` widths.
+    let (source_pixmap, img_w, img_h, intrinsic_css_size) = match &mask_border.source {
+      BorderImageSourceItem::Raster(image) => {
+        let Some(pixmap) = self.image_data_to_pixmap(image)? else {
+          MASK_RENDER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = reusable_mask;
+          });
+          return Ok(None);
+        };
+        let (w, h) = (pixmap.width(), pixmap.height());
+        if w == 0 || h == 0 {
+          MASK_RENDER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = reusable_mask;
+          });
+          return Ok(None);
+        }
+        (
+          pixmap,
+          w,
+          h,
+          Some((image.css_width, image.css_height)),
+        )
+      }
+      BorderImageSourceItem::Generated(bg) => {
+        // Generated images have no intrinsic size; render at the mask border's outer rect size
+        // (in CSS px) so slice percentages resolve consistently with border-image painting.
+        let img_w = rect_css.width().ceil().max(1.0) as u32;
+        let img_h = rect_css.height().ceil().max(1.0) as u32;
+        let timer = self.diagnostics_enabled.then(Instant::now);
+        let Some(pixmap) = render_generated_border_image(
+          bg,
+          mask_border.current_color,
+          mask_border.used_dark_color_scheme,
+          mask_border.forced_colors,
+          img_w,
+          img_h,
+          mask_border.font_size,
+          mask_border.root_font_size,
+          mask_border.viewport,
+          &self.gradient_pixmap_cache,
+          &self.gradient_cache,
+        ) else {
+          MASK_RENDER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = reusable_mask;
+          });
+          return Ok(None);
+        };
+        if let Some(start) = timer {
+          self.record_gradient_usage((img_w * img_h) as u64, start);
+        }
+        let (w, h) = (pixmap.width(), pixmap.height());
+        if w == 0 || h == 0 {
+          MASK_RENDER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = reusable_mask;
+          });
+          return Ok(None);
+        }
+        (pixmap, w, h, None)
+      }
+    };
+
+    let slice_top_px = resolve_slice_value(mask_border.slice.top, img_h);
+    let slice_right_px = resolve_slice_value(mask_border.slice.right, img_w);
+    let slice_bottom_px = resolve_slice_value(mask_border.slice.bottom, img_h);
+    let slice_left_px = resolve_slice_value(mask_border.slice.left, img_w);
+
+    let auto_slice_css = intrinsic_css_size.and_then(|(css_w, css_h)| {
+      if css_w.is_finite()
+        && css_h.is_finite()
+        && css_w > 0.0
+        && css_h > 0.0
+        && img_w > 0
+        && img_h > 0
+      {
+        Some(BorderImageWidths {
+          top: slice_top_px * (css_h / img_h as f32),
+          right: slice_right_px * (css_w / img_w as f32),
+          bottom: slice_bottom_px * (css_h / img_h as f32),
+          left: slice_left_px * (css_w / img_w as f32),
+        })
+      } else {
+        None
+      }
+    });
+
+    let border_widths = BorderImageWidths {
+      top: mask_border.border_widths.top,
+      right: mask_border.border_widths.right,
+      bottom: mask_border.border_widths.bottom,
+      left: mask_border.border_widths.left,
+    };
+
+    let resolve_width = |value: BorderImageWidthValue,
+                         border: f32,
+                         axis: f32,
+                         auto: Option<f32>|
+     -> f32 {
+      match value {
+        BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
+        BorderImageWidthValue::Number(n) => (n * border).max(0.0),
+        BorderImageWidthValue::Length(len) => resolve_length_for_border_image(
+          &len,
+          axis,
+          mask_border.font_size,
+          mask_border.root_font_size,
+          mask_border.viewport,
+        )
+        .max(0.0),
+        BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+      }
+    };
+
+    let target_widths = BorderImageWidths {
+      top: resolve_width(
+        mask_border.width.top,
+        border_widths.top,
+        rect_css.height(),
+        auto_slice_css.map(|w| w.top),
+      ),
+      right: resolve_width(
+        mask_border.width.right,
+        border_widths.right,
+        rect_css.width(),
+        auto_slice_css.map(|w| w.right),
+      ),
+      bottom: resolve_width(
+        mask_border.width.bottom,
+        border_widths.bottom,
+        rect_css.height(),
+        auto_slice_css.map(|w| w.bottom),
+      ),
+      left: resolve_width(
+        mask_border.width.left,
+        border_widths.left,
+        rect_css.width(),
+        auto_slice_css.map(|w| w.left),
+      ),
+    };
+
+    let outsets = resolve_border_image_outset(
+      &mask_border.outset,
+      target_widths,
+      mask_border.font_size,
+      mask_border.root_font_size,
+      mask_border.viewport,
+    );
+
+    let outer_rect_css = Rect::from_xywh(
+      rect_css.x() - outsets.left,
+      rect_css.y() - outsets.top,
+      rect_css.width() + outsets.left + outsets.right,
+      rect_css.height() + outsets.top + outsets.bottom,
+    );
+    if outer_rect_css.width() <= 0.0 || outer_rect_css.height() <= 0.0 {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = reusable_mask;
+      });
+      return Ok(None);
+    }
+
+    let inner_rect_css = Rect::from_xywh(
+      outer_rect_css.x() + target_widths.left,
+      outer_rect_css.y() + target_widths.top,
+      outer_rect_css.width() - target_widths.left - target_widths.right,
+      outer_rect_css.height() - target_widths.top - target_widths.bottom,
+    );
+
+    let Some(clip_rect_css) = outer_rect_css
+      .intersection(canvas_bounds_css)
+      .and_then(|r| r.intersection(canvas_clip_bounds_css))
+    else {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = reusable_mask;
+      });
+      let Some(mut mask) = Mask::new(1, 1) else {
+        return Ok(None);
+      };
+      mask.data_mut()[0] = 0;
+      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+    };
+    if clip_rect_css.width() <= 0.0 || clip_rect_css.height() <= 0.0 {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = reusable_mask;
+      });
+      let Some(mut mask) = Mask::new(1, 1) else {
+        return Ok(None);
+      };
+      mask.data_mut()[0] = 0;
+      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+    }
+
+    // Convert the clip rect into device space and through the current canvas transform so the
+    // resulting mask aligns with the layer pixmap returned by `Canvas::pop_layer_raw`.
+    let device_x0 = (clip_rect_css.min_x() * self.scale).floor() as i32;
+    let device_y0 = (clip_rect_css.min_y() * self.scale).floor() as i32;
+    let device_x1 = (clip_rect_css.max_x() * self.scale).ceil() as i32;
+    let device_y1 = (clip_rect_css.max_y() * self.scale).ceil() as i32;
+    let device_w = device_x1.saturating_sub(device_x0);
+    let device_h = device_y1.saturating_sub(device_y0);
+
+    let device_rect = Rect::from_xywh(
+      device_x0 as f32,
+      device_y0 as f32,
+      device_w as f32,
+      device_h as f32,
+    );
+    let pixmap_rect = if transform == Transform::identity() {
+      device_rect
+    } else {
+      transform_rect(device_rect, &transform)
+    };
+
+    let canvas_w = self.canvas.width() as i32;
+    let canvas_h = self.canvas.height() as i32;
+    let mut pix_x0 = pixmap_rect.min_x().floor() as i32;
+    let mut pix_y0 = pixmap_rect.min_y().floor() as i32;
+    let mut pix_x1 = pixmap_rect.max_x().ceil() as i32;
+    let mut pix_y1 = pixmap_rect.max_y().ceil() as i32;
+    pix_x0 = pix_x0.clamp(0, canvas_w);
+    pix_y0 = pix_y0.clamp(0, canvas_h);
+    pix_x1 = pix_x1.clamp(0, canvas_w);
+    pix_y1 = pix_y1.clamp(0, canvas_h);
+    let region_w = pix_x1.saturating_sub(pix_x0) as u32;
+    let region_h = pix_y1.saturating_sub(pix_y0) as u32;
+    if region_w == 0 || region_h == 0 {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = reusable_mask;
+      });
+      let Some(mut mask) = Mask::new(1, 1) else {
+        return Ok(None);
+      };
+      mask.data_mut()[0] = 0;
+      return Ok(Some(OffsetMask { mask, origin: (0, 0) }));
+    }
+
+    // `paint_mask_border_patch` operates in untransformed device coordinates (CSS * scale) and
+    // expects the destination origin in that same coordinate space.
+    let dest_origin_device = if transform == Transform::identity() {
+      (pix_x0, pix_y0)
+    } else if let Some(inv) = inv_transform {
+      let x = pix_x0 as f32;
+      let y = pix_y0 as f32;
+      let dx = x * inv.sx + y * inv.kx + inv.tx;
+      let dy = x * inv.ky + y * inv.sy + inv.ty;
+      (dx.round() as i32, dy.round() as i32)
+    } else {
+      (device_x0, device_y0)
+    };
+
+    let mut layer_mask = match reusable_mask.take() {
+      Some(mask) if mask.width() == region_w && mask.height() == region_h => mask,
+      Some(_) | None => {
+        let Some(mask) = Mask::new(region_w, region_h) else {
+          return Ok(None);
+        };
+        mask
+      }
+    };
+
+    let mode = match mask_border.mode {
+      MaskBorderMode::Alpha => MaskMode::Alpha,
+      MaskBorderMode::Luminance => MaskMode::Luminance,
+    };
+    let mut converted_source = None;
+    let source_for_paint = match mode {
+      MaskMode::Alpha | MaskMode::MatchSource => source_pixmap.as_ref(),
+      MaskMode::Luminance => {
+        let Some(tile) = mask_tile_from_image(source_pixmap.as_ref(), mode)? else {
+          MASK_RENDER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = Some(layer_mask);
+          });
+          return Ok(None);
+        };
+        converted_source = Some(tile);
+        converted_source.as_ref().unwrap()
+      }
+    };
+
+    let sx0 = 0.0;
+    let sx1 = slice_left_px.min(img_w as f32);
+    let sx2 = (img_w as f32 - slice_right_px).max(sx1);
+    let sx3 = img_w as f32;
+
+    let sy0 = 0.0;
+    let sy1 = slice_top_px.min(img_h as f32);
+    let sy2 = (img_h as f32 - slice_bottom_px).max(sy1);
+    let sy3 = img_h as f32;
+
+    let (repeat_x, repeat_y) = mask_border.repeat;
+
+    let render_result = MASK_LAYER_PIXMAP_SCRATCH.with(|cell| -> RenderResult<Option<()>> {
+      let mut scratch = cell.borrow_mut();
+      let replace = match scratch.pixmap.as_ref() {
+        Some(existing) => existing.width() != region_w || existing.height() != region_h,
+        None => true,
+      };
+      if replace {
+        scratch.pixmap = new_pixmap(region_w, region_h);
+      }
+      let Some(mask_pixmap) = scratch.pixmap.as_mut() else {
+        return Ok(None);
+      };
+
+      // Clear previous pixels.
+      let mut clear_deadline_counter = 0usize;
+      let clear_chunk_bytes = CLIP_MASK_DEADLINE_STRIDE.saturating_mul(4);
+      for chunk in mask_pixmap.data_mut().chunks_mut(clear_chunk_bytes) {
+        check_active_periodic(&mut clear_deadline_counter, 1, RenderStage::Paint)?;
+        chunk.fill(0);
+      }
+
+      // `mask-border-slice` default behavior: when `fill` is not set, the center is treated as
+      // fully opaque.
+      if !mask_border.slice.fill
+        && inner_rect_css.width() > 0.0
+        && inner_rect_css.height() > 0.0
+      {
+        if let Some(inner_clip) = inner_rect_css.intersection(clip_rect_css) {
+          let device_rect = Rect::from_xywh(
+            inner_clip.x() * self.scale - dest_origin_device.0 as f32,
+            inner_clip.y() * self.scale - dest_origin_device.1 as f32,
+            inner_clip.width() * self.scale,
+            inner_clip.height() * self.scale,
+          );
+          if device_rect.width() > 0.0 && device_rect.height() > 0.0 {
+            if let Some(rect) = tiny_skia::Rect::from_xywh(
+              device_rect.x(),
+              device_rect.y(),
+              device_rect.width(),
+              device_rect.height(),
+            ) {
+              let mut paint = tiny_skia::Paint::default();
+              paint.set_color_rgba8(255, 255, 255, 255);
+              paint.anti_alias = false;
+              mask_pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+          }
+        }
+      }
+
+      let clip_rect_device = Rect::from_xywh(
+        clip_rect_css.x() * self.scale - dest_origin_device.0 as f32,
+        clip_rect_css.y() * self.scale - dest_origin_device.1 as f32,
+        clip_rect_css.width() * self.scale,
+        clip_rect_css.height() * self.scale,
+      );
+
+      let outer_rect_device = Rect::from_xywh(
+        outer_rect_css.x() * self.scale - dest_origin_device.0 as f32,
+        outer_rect_css.y() * self.scale - dest_origin_device.1 as f32,
+        outer_rect_css.width() * self.scale,
+        outer_rect_css.height() * self.scale,
+      );
+      let inner_rect_device = Rect::from_xywh(
+        inner_rect_css.x() * self.scale - dest_origin_device.0 as f32,
+        inner_rect_css.y() * self.scale - dest_origin_device.1 as f32,
+        inner_rect_css.width() * self.scale,
+        inner_rect_css.height() * self.scale,
+      );
+      let target_widths_device = BorderImageWidths {
+        top: target_widths.top * self.scale,
+        right: target_widths.right * self.scale,
+        bottom: target_widths.bottom * self.scale,
+        left: target_widths.left * self.scale,
+      };
+
+      // Corners
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx0, sy0, sx1 - sx0, sy1 - sy0),
+        Rect::from_xywh(
+          outer_rect_device.x(),
+          outer_rect_device.y(),
+          target_widths_device.left,
+          target_widths_device.top,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx2, sy0, sx3 - sx2, sy1 - sy0),
+        Rect::from_xywh(
+          outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+          outer_rect_device.y(),
+          target_widths_device.right,
+          target_widths_device.top,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx0, sy2, sx1 - sx0, sy3 - sy2),
+        Rect::from_xywh(
+          outer_rect_device.x(),
+          outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+          target_widths_device.left,
+          target_widths_device.bottom,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx2, sy2, sx3 - sx2, sy3 - sy2),
+        Rect::from_xywh(
+          outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+          outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+          target_widths_device.right,
+          target_widths_device.bottom,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+
+      // Edges
+      if inner_rect_device.width() > 0.0 && inner_rect_device.height() > 0.0 {
+        paint_mask_border_patch(
+          mask_pixmap,
+          source_for_paint,
+          Rect::from_xywh(sx1, sy0, sx2 - sx1, sy1 - sy0),
+          Rect::from_xywh(
+            inner_rect_device.x(),
+            outer_rect_device.y(),
+            inner_rect_device.width(),
+            target_widths_device.top,
+          ),
+          repeat_x,
+          BorderImageRepeat::Stretch,
+          clip_rect_device,
+        );
+        paint_mask_border_patch(
+          mask_pixmap,
+          source_for_paint,
+          Rect::from_xywh(sx1, sy2, sx2 - sx1, sy3 - sy2),
+          Rect::from_xywh(
+            inner_rect_device.x(),
+            outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+            inner_rect_device.width(),
+            target_widths_device.bottom,
+          ),
+          repeat_x,
+          BorderImageRepeat::Stretch,
+          clip_rect_device,
+        );
+        paint_mask_border_patch(
+          mask_pixmap,
+          source_for_paint,
+          Rect::from_xywh(sx0, sy1, sx1 - sx0, sy2 - sy1),
+          Rect::from_xywh(
+            outer_rect_device.x(),
+            inner_rect_device.y(),
+            target_widths_device.left,
+            inner_rect_device.height(),
+          ),
+          BorderImageRepeat::Stretch,
+          repeat_y,
+          clip_rect_device,
+        );
+        paint_mask_border_patch(
+          mask_pixmap,
+          source_for_paint,
+          Rect::from_xywh(sx2, sy1, sx3 - sx2, sy2 - sy1),
+          Rect::from_xywh(
+            outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+            inner_rect_device.y(),
+            target_widths_device.right,
+            inner_rect_device.height(),
+          ),
+          BorderImageRepeat::Stretch,
+          repeat_y,
+          clip_rect_device,
+        );
+
+        if mask_border.slice.fill {
+          paint_mask_border_patch(
+            mask_pixmap,
+            source_for_paint,
+            Rect::from_xywh(sx1, sy1, sx2 - sx1, sy2 - sy1),
+            inner_rect_device,
+            repeat_x,
+            repeat_y,
+            clip_rect_device,
+          );
+        }
+      }
+
+      // Copy alpha into the output mask.
+      let mut alpha_deadline_counter = 0usize;
+      let expected_len = (region_w as usize).saturating_mul(region_h as usize);
+      let mut src_idx = 3usize;
+      let src = mask_pixmap.data();
+      debug_assert_eq!(
+        layer_mask.data().len(),
+        expected_len,
+        "expected mask byte length to match region dimensions"
+      );
+      debug_assert_eq!(
+        src.len(),
+        expected_len.saturating_mul(4),
+        "expected scratch mask pixmap to be tightly packed RGBA"
+      );
+      for dst_chunk in layer_mask.data_mut().chunks_mut(CLIP_MASK_DEADLINE_STRIDE) {
+        check_active_periodic(&mut alpha_deadline_counter, 1, RenderStage::Paint)?;
+        for dst in dst_chunk.iter_mut() {
+          *dst = src[src_idx];
+          src_idx += 4;
+        }
+      }
+      Ok(Some(()))
+    });
+
+    if render_result?.is_none() {
+      MASK_RENDER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = Some(layer_mask);
+      });
+      return Ok(None);
+    }
+
+    Ok(Some(OffsetMask {
+      mask: layer_mask,
+      origin: (pix_x0, pix_y0),
+    }))
   }
 
   fn convert_stops_rgba(
@@ -12432,6 +13034,7 @@ impl DisplayListRenderer {
         let plane_bounds = self.ds_rect(plane_css_bounds);
         let radii = self.ds_radii(item.radii);
         let mask = item.mask.clone();
+        let mask_border = item.mask_border.clone();
 
         // `backdrop-filter` needs an isolated group surface (transparent initial backdrop) so
         // sampling does not include the element's own contents. `mix-blend-mode` isolation is
@@ -12549,6 +13152,7 @@ impl DisplayListRenderer {
           || has_backdrop
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
+          || mask_border.is_some()
           || item.has_clip_path
           || !matches!(item.mix_blend_mode, BlendMode::Normal);
         let establishes_backdrop_root_layer = !item.is_root
@@ -12563,6 +13167,7 @@ impl DisplayListRenderer {
           || has_backdrop
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
+          || mask_border.is_some()
           || item.has_clip_path
           || projective_transform.is_some()
           // Filter Effects Level 2 Backdrop Roots must isolate backdrop sampling for descendant
@@ -12729,6 +13334,7 @@ impl DisplayListRenderer {
           bounds,
           mask_bounds,
           mask,
+          mask_border,
           css_bounds,
           manual_blend,
           layer_bounds,
@@ -12784,12 +13390,13 @@ impl DisplayListRenderer {
             init_from_backdrop: false,
             filters: Vec::new(),
             radii: BorderRadii::ZERO,
-            bounds: Rect::ZERO,
-            mask_bounds: Rect::ZERO,
-            mask: None,
-            css_bounds: Rect::ZERO,
-            manual_blend: None,
-            layer_bounds: None,
+             bounds: Rect::ZERO,
+             mask_bounds: Rect::ZERO,
+             mask: None,
+             mask_border: None,
+             css_bounds: Rect::ZERO,
+             manual_blend: None,
+             layer_bounds: None,
             layer_origin: (0, 0),
             global_transform_3d: Transform3D::identity(),
             projective_transform: None,
@@ -12868,31 +13475,49 @@ impl DisplayListRenderer {
           let layer_region =
             effect_bounds.and_then(|rect| self.layer_space_bounds(rect, origin, &layer));
 
-          if let Some(mask_style) = record.mask.as_ref() {
-            if let Some(mask) = self.render_mask(mask_style)? {
-              let OffsetMask {
-                mask,
-                origin: mask_origin,
-              } = mask;
-              let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
-              // Don't overwrite the reusable scratch with the 1x1 all-transparent sentinel mask;
-              // that case is common for fully clipped masks and would otherwise destroy the
-              // allocation we want to reuse for subsequent (larger) masks.
-              if mask.width() > 1 || mask.height() > 1 {
-                MASK_RENDER_SCRATCH.with(|cell| {
-                  *cell.borrow_mut() = Some(mask);
-                });
-              }
-              if !applied {
-                return Ok(());
-              }
-            }
-          }
+           if let Some(mask_style) = record.mask.as_ref() {
+             if let Some(mask) = self.render_mask(mask_style)? {
+               let OffsetMask {
+                 mask,
+                 origin: mask_origin,
+               } = mask;
+               let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
+               // Don't overwrite the reusable scratch with the 1x1 all-transparent sentinel mask;
+               // that case is common for fully clipped masks and would otherwise destroy the
+               // allocation we want to reuse for subsequent (larger) masks.
+               if mask.width() > 1 || mask.height() > 1 {
+                 MASK_RENDER_SCRATCH.with(|cell| {
+                   *cell.borrow_mut() = Some(mask);
+                 });
+               }
+               if !applied {
+                 return Ok(());
+               }
+             }
+           }
 
-          // When an affine transform makes the border-radius clip non-axis-aligned, apply the
-          // transformed rounded-rect mask *before* filters run. This ensures filters that generate
-          // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
-          // clipped source graphic, while still allowing the filter outsets to remain visible.
+           if let Some(mask_border) = record.mask_border.as_ref() {
+             if let Some(mask) = self.render_mask_border(mask_border)? {
+               let OffsetMask {
+                 mask,
+                 origin: mask_origin,
+               } = mask;
+               let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
+               if mask.width() > 1 || mask.height() > 1 {
+                 MASK_RENDER_SCRATCH.with(|cell| {
+                   *cell.borrow_mut() = Some(mask);
+                 });
+               }
+               if !applied {
+                 return Ok(());
+               }
+             }
+           }
+
+           // When an affine transform makes the border-radius clip non-axis-aligned, apply the
+           // transformed rounded-rect mask *before* filters run. This ensures filters that generate
+           // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
+           // clipped source graphic, while still allowing the filter outsets to remain visible.
           if !record.filters.is_empty() && !record.radii.is_zero() {
             if let Some(clip) = record.clip {
               if let Some(local_shape_bounds) =
@@ -16561,6 +17186,324 @@ fn paint_mask_tile(
   dest.fill_rect(src_rect, &paint, Transform::identity(), None);
 }
 
+fn paint_mask_border_patch(
+  dest: &mut Pixmap,
+  source: &Pixmap,
+  src_rect: Rect,
+  dest_rect: Rect,
+  repeat_x: BorderImageRepeat,
+  repeat_y: BorderImageRepeat,
+  clip_rect: Rect,
+) {
+  if src_rect.width() <= 0.0
+    || src_rect.height() <= 0.0
+    || dest_rect.width() <= 0.0
+    || dest_rect.height() <= 0.0
+  {
+    return;
+  }
+
+  let Some(clip_rect) = dest_rect.intersection(clip_rect) else {
+    return;
+  };
+  if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+    return;
+  }
+
+  let sx0 = src_rect.x().max(0.0).floor() as u32;
+  let sy0 = src_rect.y().max(0.0).floor() as u32;
+  let sx1 = (src_rect.x() + src_rect.width())
+    .ceil()
+    .min(source.width() as f32)
+    .max(0.0) as u32;
+  let sy1 = (src_rect.y() + src_rect.height())
+    .ceil()
+    .min(source.height() as f32)
+    .max(0.0) as u32;
+  if sx1 <= sx0 || sy1 <= sy0 {
+    return;
+  }
+  let width = sx1 - sx0;
+  let height = sy1 - sy0;
+
+  let Some(size) = IntSize::from_wh(width, height) else {
+    return;
+  };
+  let Some(bytes) = rgba_bytes(width, height) else {
+    return;
+  };
+  let mut patch = match reserve_buffer(bytes, "mask-border patch") {
+    Ok(buf) => buf,
+    Err(_) => return,
+  };
+
+  let data = source.data();
+  let source_width = source.width();
+  let Some(row_bytes) = u64::from(width).checked_mul(4) else {
+    return;
+  };
+  for row in sy0..sy1 {
+    let Some(start) = u64::from(row)
+      .checked_mul(u64::from(source_width))
+      .and_then(|v| v.checked_add(u64::from(sx0)))
+      .and_then(|v| v.checked_mul(4))
+    else {
+      return;
+    };
+    let Some(end) = start.checked_add(row_bytes) else {
+      return;
+    };
+    let Ok(start) = usize::try_from(start) else {
+      return;
+    };
+    let Ok(end) = usize::try_from(end) else {
+      return;
+    };
+    if end > data.len() || start > end {
+      return;
+    }
+    patch.extend_from_slice(&data[start..end]);
+  }
+  let Some(patch_pixmap) = Pixmap::from_vec(patch, size) else {
+    return;
+  };
+
+  let mut tile_w = dest_rect.width();
+  let mut tile_h = dest_rect.height();
+
+  let mut scale_x = tile_w / width as f32;
+  let mut scale_y = tile_h / height as f32;
+
+  if repeat_x != BorderImageRepeat::Stretch {
+    scale_x = scale_y;
+    tile_w = width as f32 * scale_x;
+  }
+  if repeat_y != BorderImageRepeat::Stretch {
+    scale_y = scale_x;
+    tile_h = height as f32 * scale_y;
+  }
+
+  if repeat_x == BorderImageRepeat::Round && tile_w > 0.0 {
+    let count = (dest_rect.width() / tile_w).round().max(1.0);
+    tile_w = dest_rect.width() / count;
+    scale_x = tile_w / width as f32;
+  }
+  if repeat_y == BorderImageRepeat::Round && tile_h > 0.0 {
+    let count = (dest_rect.height() / tile_h).round().max(1.0);
+    tile_h = dest_rect.height() / count;
+    scale_y = tile_h / height as f32;
+  }
+
+  // Avoid panics/aborts when the destination is extremely thin and would require an unbounded
+  // number of tiles (e.g. a huge width with a near-zero height and repeat-x=space).
+  const MAX_BORDER_IMAGE_TILES_PER_AXIS: f32 = 4096.0;
+  let paint_repeated_patch = |dest: &mut Pixmap| {
+    let Some(dest_sk_rect) = tiny_skia::Rect::from_xywh(
+      clip_rect.x(),
+      clip_rect.y(),
+      clip_rect.width(),
+      clip_rect.height(),
+    ) else {
+      return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.shader = Pattern::new(
+      patch_pixmap.as_ref(),
+      SpreadMode::Repeat,
+      FilterQuality::Bilinear,
+      1.0,
+      Transform::from_row(scale_x, 0.0, 0.0, scale_y, dest_rect.x(), dest_rect.y()),
+    );
+    paint.anti_alias = false;
+    paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+    dest.fill_rect(dest_sk_rect, &paint, Transform::identity(), None);
+  };
+
+  let tiles_x = dest_rect.width() / tile_w;
+  let tiles_y = dest_rect.height() / tile_h;
+  let too_many_x =
+    repeat_x != BorderImageRepeat::Stretch && (!tiles_x.is_finite() || tiles_x > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  let too_many_y =
+    repeat_y != BorderImageRepeat::Stretch && (!tiles_y.is_finite() || tiles_y > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  if too_many_x || too_many_y {
+    paint_repeated_patch(dest);
+    return;
+  }
+
+  let positions_x = match repeat_x {
+    BorderImageRepeat::Stretch => vec![dest_rect.x()],
+    BorderImageRepeat::Round => {
+      let end = dest_rect.x() + dest_rect.width();
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.x();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_w;
+      }
+      pos
+    }
+    BorderImageRepeat::Space => {
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = tiles_x.floor();
+      if count < 1.0 {
+        vec![dest_rect.x() + (dest_rect.width() - tile_w) * 0.5]
+      } else if count < 2.0 {
+        vec![dest_rect.x() + (dest_rect.width() - tile_w) * 0.5]
+      } else {
+        let spacing = (dest_rect.width() - tile_w * count) / (count - 1.0);
+        let count = count as usize;
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(dest);
+          return;
+        }
+        let mut cursor = dest_rect.x();
+        for _ in 0..count {
+          pos.push(cursor);
+          cursor += tile_w + spacing;
+        }
+        pos
+      }
+    }
+    BorderImageRepeat::Repeat => {
+      let end = dest_rect.x() + dest_rect.width();
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.x();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_w;
+      }
+      pos
+    }
+  };
+
+  let positions_y = match repeat_y {
+    BorderImageRepeat::Stretch => vec![dest_rect.y()],
+    BorderImageRepeat::Round => {
+      let end = dest_rect.y() + dest_rect.height();
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.y();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_h;
+      }
+      pos
+    }
+    BorderImageRepeat::Space => {
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = tiles_y.floor();
+      if count < 1.0 {
+        vec![dest_rect.y() + (dest_rect.height() - tile_h) * 0.5]
+      } else if count < 2.0 {
+        vec![dest_rect.y() + (dest_rect.height() - tile_h) * 0.5]
+      } else {
+        let spacing = (dest_rect.height() - tile_h * count) / (count - 1.0);
+        let count = count as usize;
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(dest);
+          return;
+        }
+        let mut cursor = dest_rect.y();
+        for _ in 0..count {
+          pos.push(cursor);
+          cursor += tile_h + spacing;
+        }
+        pos
+      }
+    }
+    BorderImageRepeat::Repeat => {
+      let end = dest_rect.y() + dest_rect.height();
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.y();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_h;
+      }
+      pos
+    }
+  };
+
+  for ty in positions_y.iter().copied() {
+    for tx in positions_x.iter().copied() {
+      let tile_rect = Rect::from_xywh(tx, ty, tile_w, tile_h);
+      let Some(intersection) = tile_rect.intersection(clip_rect) else {
+        continue;
+      };
+      if intersection.width() <= 0.0 || intersection.height() <= 0.0 {
+        continue;
+      }
+      let Some(dst_rect) = tiny_skia::Rect::from_xywh(
+        intersection.x(),
+        intersection.y(),
+        intersection.width(),
+        intersection.height(),
+      ) else {
+        continue;
+      };
+      let mut paint = tiny_skia::Paint::default();
+      paint.shader = Pattern::new(
+        patch_pixmap.as_ref(),
+        SpreadMode::Pad,
+        FilterQuality::Bilinear,
+        1.0,
+        Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty),
+      );
+      paint.anti_alias = false;
+      paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+      dest.fill_rect(dst_rect, &paint, Transform::identity(), None);
+    }
+  }
+}
+
 fn apply_mask_composite(
   dest: CompositeMask,
   src: CompositeMask,
@@ -17209,6 +18152,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17250,6 +18194,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17353,6 +18298,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -17377,6 +18323,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17405,6 +18352,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17462,6 +18410,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -17485,6 +18434,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::FillRect(FillRectItem {
@@ -17518,6 +18468,7 @@ mod tests {
         backdrop_filters,
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);
@@ -17576,6 +18527,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -17598,6 +18550,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);
@@ -17661,6 +18614,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -17683,6 +18637,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);
@@ -17743,6 +18698,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -17765,6 +18721,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -17817,6 +18774,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -17839,6 +18797,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -17861,6 +18820,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -17918,6 +18878,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -17939,6 +18900,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -17991,6 +18953,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -18013,6 +18976,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -18035,6 +18999,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -18085,6 +19050,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -18130,6 +19096,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -18153,6 +19120,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       for _ in 0..160 {
@@ -18227,6 +19195,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -18262,6 +19231,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::FillRect(FillRectItem {
@@ -18957,6 +19927,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -19005,6 +19976,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -19055,6 +20027,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     base.push(DisplayItem::PopStackingContext);
@@ -19144,6 +20117,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -19273,6 +20247,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -19296,6 +20271,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -19377,6 +20353,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     };
 
@@ -19463,6 +20440,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     };
 
@@ -19850,6 +20828,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.25)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PushClip(ClipItem {
@@ -19989,6 +20968,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -20069,6 +21049,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -21738,6 +22719,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -21826,6 +22808,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -21883,6 +22866,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -21936,6 +22920,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -22035,6 +23020,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -22108,6 +23094,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -22362,6 +23349,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -22418,6 +23406,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -22445,6 +23434,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -22472,6 +23462,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 
@@ -22497,6 +23488,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       // Keep the stacking context empty; this forces the pending backdrop to apply right before the
@@ -22590,6 +23582,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -22634,6 +23627,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23076,6 +24070,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23127,6 +24122,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
@@ -23208,6 +24204,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -23246,6 +24243,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23295,6 +24293,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23350,6 +24349,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23405,6 +24405,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       },
     ));
@@ -23489,6 +24490,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -23619,6 +24621,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -23702,6 +24705,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -23772,6 +24776,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -24206,6 +25211,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -24778,6 +25784,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -24828,6 +25835,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -24850,6 +25858,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);
@@ -24907,6 +25916,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -24929,6 +25939,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);

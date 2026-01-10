@@ -29,6 +29,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -52,6 +53,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 

@@ -561,6 +561,7 @@ fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
       BorderRadius::uniform(6.0),
     ),
     mask: Some(patterned_mask(bounds)),
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(sc));

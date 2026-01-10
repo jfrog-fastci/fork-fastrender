@@ -78,6 +78,7 @@ use crate::paint::display_list::ImagePatternRepeat;
 use crate::paint::display_list::LinearGradientItem;
 use crate::paint::display_list::LinearGradientPatternItem;
 use crate::paint::display_list::ListMarkerItem;
+use crate::paint::display_list::MaskBorderWidths;
 use crate::paint::display_list::MaskReferenceRects;
 use crate::paint::display_list::OpacityItem;
 use crate::paint::display_list::OutlineItem;
@@ -85,6 +86,7 @@ use crate::paint::display_list::RadialGradientItem;
 use crate::paint::display_list::RadialGradientPatternItem;
 use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::ResolvedMask;
+use crate::paint::display_list::ResolvedMaskBorder;
 use crate::paint::display_list::ResolvedMaskImage;
 use crate::paint::display_list::ResolvedMaskLayer;
 use crate::paint::display_list::StackingContextItem;
@@ -2748,7 +2750,8 @@ impl DisplayListBuilder {
       root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
     let style_has_mask_image =
       root_style.is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
-    let style_has_mask_border = root_style.is_some_and(|style| style.mask_border);
+    let style_has_mask_border = root_style
+      .is_some_and(|style| matches!(style.mask_border.source, BorderImageSource::Image(_)));
 
     is_root
       || style_has_filter
@@ -2812,6 +2815,9 @@ impl DisplayListBuilder {
       root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
     let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
+    let style_has_mask_border = root_style
+      .is_some_and(|style| matches!(style.mask_border.source, BorderImageSource::Image(_)));
+    let mask_border = root_style.and_then(|style| self.resolve_mask_border(style, root_border_bounds));
     let is_paged_media_page_root = is_root
       && root_fragment.is_some_and(|fragment| {
         Self::get_box_id(fragment).is_none()
@@ -3146,6 +3152,8 @@ impl DisplayListBuilder {
       || paint_contained
       || !radii.is_zero()
       || mask.is_some()
+      || style_has_mask_border
+      || mask_border.is_some()
       || will_change_backdrop_root
       || has_opacity;
 
@@ -3283,6 +3291,7 @@ impl DisplayListBuilder {
       || !backdrop_filters.is_empty()
       || has_opacity
       || mask.is_some()
+      || mask_border.is_some()
       || clip_path.is_some()
       || clip_path_mask.is_some();
 
@@ -3308,6 +3317,7 @@ impl DisplayListBuilder {
         backdrop_filters,
         radii,
         mask,
+        mask_border,
         has_clip_path: style_has_clip_path,
       }));
 
@@ -4339,6 +4349,86 @@ impl DisplayListBuilder {
       root_font_size: style.root_font_size,
       viewport: self.viewport,
       rects,
+    })
+  }
+
+  fn resolve_mask_border(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMaskBorder> {
+    let bg = match &style.mask_border.source {
+      BorderImageSource::Image(bg) => bg,
+      BorderImageSource::None => return None,
+    };
+
+    let source = match bg.as_ref() {
+      BackgroundImage::Url(src) => self
+        .decode_image(
+          src,
+          Some(style),
+          true,
+          CrossOriginAttribute::None,
+          None,
+          false,
+        )
+        .map(|image| BorderImageSourceItem::Raster((*image).clone())),
+      BackgroundImage::LinearGradient { .. }
+      | BackgroundImage::RepeatingLinearGradient { .. }
+      | BackgroundImage::RadialGradient { .. }
+      | BackgroundImage::RepeatingRadialGradient { .. }
+      | BackgroundImage::ConicGradient { .. }
+      | BackgroundImage::RepeatingConicGradient { .. } => {
+        Some(BorderImageSourceItem::Generated(Box::new((**bg).clone())))
+      }
+      BackgroundImage::None => None,
+    }?;
+
+    // Used border widths are needed to resolve `<number>` values in mask-border-width/outset.
+    let percentage_base = bounds.width().max(0.0);
+    let font_size = style.font_size;
+    let border_widths = MaskBorderWidths {
+      top: Self::resolve_length_for_paint(
+        &style.used_border_top_width(),
+        font_size,
+        style.root_font_size,
+        percentage_base,
+        self.viewport,
+      ),
+      right: Self::resolve_length_for_paint(
+        &style.used_border_right_width(),
+        font_size,
+        style.root_font_size,
+        percentage_base,
+        self.viewport,
+      ),
+      bottom: Self::resolve_length_for_paint(
+        &style.used_border_bottom_width(),
+        font_size,
+        style.root_font_size,
+        percentage_base,
+        self.viewport,
+      ),
+      left: Self::resolve_length_for_paint(
+        &style.used_border_left_width(),
+        font_size,
+        style.root_font_size,
+        percentage_base,
+        self.viewport,
+      ),
+    };
+
+    Some(ResolvedMaskBorder {
+      source,
+      slice: style.mask_border.slice.clone(),
+      width: style.mask_border.width.clone(),
+      outset: style.mask_border.outset.clone(),
+      repeat: style.mask_border.repeat,
+      mode: style.mask_border.mode,
+      rect: bounds,
+      border_widths,
+      current_color: style.color,
+      used_dark_color_scheme: style.used_dark_color_scheme,
+      forced_colors: style.forced_colors,
+      font_size: style.font_size,
+      root_font_size: style.root_font_size,
+      viewport: self.viewport,
     })
   }
 

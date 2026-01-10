@@ -121,6 +121,7 @@ fn build_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>) -> 
         backdrop_filters: Vec::new(),
         radii: Default::default(),
         mask: None,
+        mask_border: None,
         has_clip_path: false,
       }));
 
@@ -198,6 +199,7 @@ fn build_seam_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>
     backdrop_filters: Vec::new(),
     radii: Default::default(),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 

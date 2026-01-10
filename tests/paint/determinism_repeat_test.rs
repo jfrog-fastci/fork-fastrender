@@ -180,6 +180,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: vec![ResolvedFilter::Blur(4.0), ResolvedFilter::Saturate(1.6)],
     radii: BorderRadii::uniform(12.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -204,6 +205,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(10.0),
     mask: Some(patterned_mask(masked_bounds)),
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -238,6 +240,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(8.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -293,6 +296,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -316,6 +320,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -345,6 +350,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: vec![ResolvedFilter::Blur(3.0), ResolvedFilter::Saturate(1.4)],
     radii: BorderRadii::uniform(12.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -373,6 +379,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {

@@ -34,6 +34,7 @@ fn preserve3d_degenerate_transform_renders() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -60,6 +61,7 @@ fn preserve3d_degenerate_transform_renders() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -176,6 +178,7 @@ fn preserve3d_disable_warp_toggle_forces_affine_approximation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -197,6 +200,7 @@ fn preserve3d_disable_warp_toggle_forces_affine_approximation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {

@@ -183,6 +183,7 @@ fn optimizer_pixel_equivalence_backface_culling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(fill(Rect::from_xywh(10.0, 10.0, 20.0, 20.0), Rgba::RED));
@@ -269,6 +270,7 @@ fn optimizer_pixel_equivalence_filter_outset() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(fill(bounds, Rgba::BLACK));
@@ -304,6 +306,7 @@ fn optimizer_pixel_equivalence_mask() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(simple_alpha_mask(bounds)),
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(fill(bounds, Rgba::rgb(40, 120, 220)));
@@ -397,6 +400,7 @@ fn optimizer_pixel_equivalence_noop_stacking_context() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(fill(

@@ -46,6 +46,7 @@ fn renderer_falls_back_for_degenerate_projection() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {

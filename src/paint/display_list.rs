@@ -58,6 +58,7 @@ use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::ResolvedTextDecoration;
@@ -1744,6 +1745,62 @@ pub struct ResolvedMask {
   pub rects: MaskReferenceRects,
 }
 
+/// Physical border widths (in CSS px) used when resolving `mask-border-width` and
+/// `mask-border-outset` number values.
+#[derive(Debug, Clone, Copy)]
+pub struct MaskBorderWidths {
+  pub top: f32,
+  pub right: f32,
+  pub bottom: f32,
+  pub left: f32,
+}
+
+/// Resolved `mask-border` applied to a stacking context.
+#[derive(Debug, Clone)]
+pub struct ResolvedMaskBorder {
+  /// The source image: either pre-decoded pixels or a generated background.
+  pub source: BorderImageSourceItem,
+
+  /// Slice geometry.
+  pub slice: BorderImageSlice,
+
+  /// Target mask border widths (length or percent).
+  pub width: BorderImageWidth,
+
+  /// Mask border outset.
+  pub outset: BorderImageOutset,
+
+  /// Repeat modes for x/y.
+  pub repeat: (BorderImageRepeat, BorderImageRepeat),
+
+  /// How to interpret the source pixels when deriving mask values.
+  pub mode: MaskBorderMode,
+
+  /// The element's border box (CSS px) that the mask border is aligned to.
+  pub rect: Rect,
+
+  /// The element's used border widths (CSS px) for resolving `<number>` values.
+  pub border_widths: MaskBorderWidths,
+
+  /// Current color for resolving `currentColor` stops.
+  pub current_color: Rgba,
+
+  /// Whether the element's used color scheme is dark.
+  pub used_dark_color_scheme: bool,
+
+  /// Whether the UA is in forced-colors mode for this element.
+  pub forced_colors: bool,
+
+  /// Font size at the element for resolving font-relative lengths.
+  pub font_size: f32,
+
+  /// Root font size for rem units.
+  pub root_font_size: f32,
+
+  /// Viewport used to resolve viewport-relative units.
+  pub viewport: Option<(f32, f32)>,
+}
+
 /// Precomputed mask layer with decoded image.
 #[derive(Debug, Clone)]
 pub struct ResolvedMaskLayer {
@@ -2550,6 +2607,9 @@ pub struct StackingContextItem {
 
   /// Optional mask applied to this stacking context
   pub mask: Option<ResolvedMask>,
+
+  /// Optional `mask-border` applied to this stacking context.
+  pub mask_border: Option<ResolvedMaskBorder>,
 
   /// Whether the stacking context root has a non-`none` `clip-path`.
   ///

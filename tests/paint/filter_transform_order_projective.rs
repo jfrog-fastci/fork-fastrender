@@ -59,6 +59,7 @@ fn filter_drop_shadow_rotates_with_affine_transform() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -151,6 +152,7 @@ fn filter_drop_shadow_projective_transform_uses_local_offset() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -180,6 +182,7 @@ fn filter_drop_shadow_projective_transform_uses_local_offset() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {

@@ -145,6 +145,7 @@ use types::ListStylePosition;
 use types::ListStyleType;
 use types::MaskClip;
 use types::MaskComposite;
+use types::MaskBorder;
 use types::MaskLayer;
 use types::MaskMode;
 use types::MaskOrigin;
@@ -1299,7 +1300,7 @@ pub struct ComputedStyle {
   pub mask_clips: Arc<[MaskClip]>,
   pub mask_composites: Arc<[MaskComposite]>,
   pub mask_layers: SmallVec<[MaskLayer; 1]>,
-  pub mask_border: bool,
+  pub mask_border: MaskBorder,
   pub object_fit: ObjectFit,
   pub object_position: ObjectPosition,
   pub image_resolution: ImageResolution,
@@ -1711,7 +1712,7 @@ impl Default for ComputedStyle {
       mask_clips: vec![mask_default.clip].into(),
       mask_composites: vec![mask_default.composite].into(),
       mask_layers: smallvec::smallvec![mask_default],
-      mask_border: false,
+      mask_border: MaskBorder::default(),
       object_fit: ObjectFit::Fill,
       object_position: ObjectPosition {
         x: types::PositionComponent::Keyword(types::PositionKeyword::Center),
@@ -2097,7 +2098,7 @@ impl ComputedStyle {
     self.background_color = Rgba::TRANSPARENT;
     self.set_background_layers(vec![BackgroundLayer::default()]);
     self.set_mask_layers(vec![MaskLayer::default()]);
-    self.mask_border = false;
+    self.mask_border = MaskBorder::default();
   }
 }
 
@@ -2150,6 +2151,7 @@ pub(crate) fn normalize_language_tag(tag: &str) -> String {
 mod tests {
   use super::normalize_language_tag;
   use super::ComputedStyle;
+  use super::MaskBorder;
 
   #[test]
   fn normalizes_language_tags_to_lower_hyphenated() {
@@ -2170,8 +2172,10 @@ mod tests {
   #[test]
   fn reset_background_to_initial_resets_mask_border() {
     let mut style = ComputedStyle::default();
-    style.mask_border = true;
+    style.mask_border.source = crate::style::types::BorderImageSource::Image(Box::new(
+      crate::style::types::BackgroundImage::Url("https://example.invalid/mask.png".to_string()),
+    ));
     style.reset_background_to_initial();
-    assert!(!style.mask_border);
+    assert_eq!(style.mask_border, MaskBorder::default());
   }
 }

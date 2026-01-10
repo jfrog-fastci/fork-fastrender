@@ -111,6 +111,7 @@ use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::MixBlendMode;
@@ -745,6 +746,7 @@ enum DisplayCommand {
     blend_mode: MixBlendMode,
     isolated: bool,
     mask: Option<Arc<ComputedStyle>>,
+    mask_border: Option<Arc<ComputedStyle>>,
     filters: Vec<ResolvedFilter>,
     backdrop_filters: Vec<ResolvedFilter>,
     radii: BorderRadii,
@@ -2326,21 +2328,22 @@ impl Painter {
         )?;
       }
 
-      let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
-      if clip.is_some() {
-        items.push(DisplayCommand::StackingContext {
-          rect: abs_bounds,
-          opacity: 1.0,
-          transform: None,
-          transform_3d: None,
-          blend_mode: MixBlendMode::Normal,
-          isolated: false,
-          mask: None,
-          filters: Vec::new(),
-          backdrop_filters: Vec::new(),
-          // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
-          // compositing the layer; only the explicit `clip` should apply.
-          radii: BorderRadii::ZERO,
+        let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
+        if clip.is_some() {
+          items.push(DisplayCommand::StackingContext {
+            rect: abs_bounds,
+            opacity: 1.0,
+            transform: None,
+            transform_3d: None,
+            blend_mode: MixBlendMode::Normal,
+            isolated: false,
+            mask: None,
+            mask_border: None,
+            filters: Vec::new(),
+            backdrop_filters: Vec::new(),
+            // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
+            // compositing the layer; only the explicit `clip` should apply.
+            radii: BorderRadii::ZERO,
           clip,
           has_clip_path: false,
           clip_path: None,
@@ -2600,6 +2603,10 @@ impl Painter {
       .style
       .clone()
       .filter(|s| s.mask_layers.iter().any(|layer| layer.image.is_some()));
+    let mask_border = fragment
+      .style
+      .clone()
+      .filter(|s| matches!(s.mask_border.source, BorderImageSource::Image(_)));
     if opacity < 1.0
       || transform.is_some()
       || transform_3d.is_some()
@@ -2610,6 +2617,7 @@ impl Painter {
       || clip.is_some()
       || style_has_clip_path
       || mask.is_some()
+      || mask_border.is_some()
     {
       let radii = resolve_border_radii(style_ref, abs_bounds);
       items.push(DisplayCommand::StackingContext {
@@ -2620,6 +2628,7 @@ impl Painter {
         blend_mode,
         isolated,
         mask,
+        mask_border,
         filters,
         backdrop_filters,
         radii,
@@ -3139,6 +3148,7 @@ impl Painter {
         blend_mode,
         isolated,
         mask,
+        mask_border,
         filters,
         backdrop_filters,
         radii,
@@ -3190,6 +3200,7 @@ impl Painter {
           && matches!(blend_mode, MixBlendMode::Normal)
           && !isolated
           && mask.is_none()
+          && mask_border.is_none()
           && filters.is_empty()
           && backdrop_filters.is_empty()
           && clip.is_none()
@@ -3754,7 +3765,25 @@ impl Painter {
             )?;
           }
           if let Some(start) = mask_start {
-            mask_ms = start.elapsed().as_secs_f64() * 1000.0;
+            mask_ms += start.elapsed().as_secs_f64() * 1000.0;
+          }
+        }
+        if let Some(ref mask_border_style) = mask_border {
+          let mask_start = profile_enabled.then(Instant::now);
+          if let Some(rendered) = base_painter.render_mask_border(
+            mask_border_style,
+            context_rect,
+            bounds,
+            (base_painter.pixmap.width(), base_painter.pixmap.height()),
+          )? {
+            apply_mask_with_dirty_bounds_rgba(
+              &mut base_painter.pixmap,
+              rendered.mask(),
+              rendered.dirty,
+            )?;
+          }
+          if let Some(start) = mask_start {
+            mask_ms += start.elapsed().as_secs_f64() * 1000.0;
           }
         }
         if !outline_commands.is_empty() {
@@ -4514,6 +4543,542 @@ impl Painter {
       }),
       None => None,
     })
+  }
+
+  fn render_mask_border(
+    &mut self,
+    style: &ComputedStyle,
+    css_bounds: Rect,
+    layer_bounds: Rect,
+    device_size: (u32, u32),
+  ) -> RenderResult<Option<RenderedMask>> {
+    let BorderImageSource::Image(bg) = &style.mask_border.source else {
+      return Ok(None);
+    };
+    let viewport = (self.css_width, self.css_height);
+    let rect_css = css_bounds;
+
+    // Resolve used border widths for `<number>` values in `mask-border-width/outset`.
+    let percentage_base = rect_css.width().max(0.0);
+    let border_widths = BorderWidths {
+      top: resolve_length_for_paint(
+        &style.used_border_top_width(),
+        style.font_size,
+        style.root_font_size,
+        percentage_base,
+        viewport,
+      )
+      .max(0.0),
+      right: resolve_length_for_paint(
+        &style.used_border_right_width(),
+        style.font_size,
+        style.root_font_size,
+        percentage_base,
+        viewport,
+      )
+      .max(0.0),
+      bottom: resolve_length_for_paint(
+        &style.used_border_bottom_width(),
+        style.font_size,
+        style.root_font_size,
+        percentage_base,
+        viewport,
+      )
+      .max(0.0),
+      left: resolve_length_for_paint(
+        &style.used_border_left_width(),
+        style.font_size,
+        style.root_font_size,
+        percentage_base,
+        viewport,
+      )
+      .max(0.0),
+    };
+
+    // Use the same mask scratch used for `mask-image`, but render into it via the border-image
+    // nine-slice tiling algorithm.
+    struct CssMaskScratchGuard {
+      scratch: CssMaskScratch,
+    }
+
+    impl CssMaskScratchGuard {
+      fn take() -> Self {
+        let scratch = CSS_MASK_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        Self { scratch }
+      }
+    }
+
+    impl Drop for CssMaskScratchGuard {
+      fn drop(&mut self) {
+        let scratch = std::mem::take(&mut self.scratch);
+        CSS_MASK_SCRATCH.with(|cell| {
+          *cell.borrow_mut() = scratch;
+        });
+      }
+    }
+
+    let mut css_mask_scratch = CssMaskScratchGuard::take();
+    if let Some(existing) = css_mask_scratch.scratch.mask.as_ref() {
+      if existing.width() != device_size.0 || existing.height() != device_size.1 {
+        css_mask_scratch.scratch.mask = None;
+        css_mask_scratch.scratch.last_dirty = None;
+      }
+    }
+    if let Some(prev_dirty) = css_mask_scratch.scratch.last_dirty {
+      if let Some(mask) = css_mask_scratch.scratch.mask.as_mut() {
+        clear_mask_rect(mask, prev_dirty)?;
+      }
+      css_mask_scratch.scratch.last_dirty = None;
+    }
+
+    let mut mask = if let Some(mask) = css_mask_scratch.scratch.mask.take() {
+      mask
+    } else {
+      let Some(mut mask) = Mask::new(device_size.0, device_size.1) else {
+        return Ok(None);
+      };
+      mask.data_mut().fill(0);
+      mask
+    };
+
+    // Resolve the source image.
+    let (source_pixmap, img_w, img_h, target_widths, outer_rect_css) = match bg.as_ref() {
+      BackgroundImage::Url(src) => {
+        let resolved_src = self.image_cache.resolve_url(src);
+        let image = match self.image_cache.load(&resolved_src) {
+          Ok(img) => img,
+          Err(_) => return Ok(None),
+        };
+        let orientation = style.image_orientation.resolve(image.orientation, true);
+        let intrinsic_css_size =
+          image.css_dimensions(orientation, &style.image_resolution, self.scale, None);
+
+        let pixmap = if image.is_vector {
+          let Some(svg) = &image.svg_content else {
+            return Ok(None);
+          };
+          let (render_w, render_h) = image.oriented_dimensions(orientation);
+          if render_w == 0 || render_h == 0 {
+            return Ok(None);
+          }
+          match self
+            .image_cache
+            .render_svg_pixmap_at_size(svg, render_w, render_h, &resolved_src, self.scale)
+          {
+            Ok(pixmap) => pixmap,
+            Err(_) => return Ok(None),
+          }
+        } else {
+          match self
+            .image_cache
+            .load_raster_pixmap(&resolved_src, orientation, true)
+          {
+            Ok(Some(pixmap)) => pixmap,
+            _ => return Ok(None),
+          }
+        };
+        let img_w = pixmap.width();
+        let img_h = pixmap.height();
+        if img_w == 0 || img_h == 0 {
+          return Ok(None);
+        }
+
+        let slice_top_px = resolve_slice_value(style.mask_border.slice.top, img_h);
+        let slice_right_px = resolve_slice_value(style.mask_border.slice.right, img_w);
+        let slice_bottom_px = resolve_slice_value(style.mask_border.slice.bottom, img_h);
+        let slice_left_px = resolve_slice_value(style.mask_border.slice.left, img_w);
+        let auto_slice_css = intrinsic_css_size.and_then(|(css_w, css_h)| {
+          if css_w.is_finite()
+            && css_h.is_finite()
+            && css_w > 0.0
+            && css_h > 0.0
+            && img_w > 0
+            && img_h > 0
+          {
+            Some(BorderWidths {
+              top: slice_top_px * (css_h / img_h as f32),
+              right: slice_right_px * (css_w / img_w as f32),
+              bottom: slice_bottom_px * (css_h / img_h as f32),
+              left: slice_left_px * (css_w / img_w as f32),
+            })
+          } else {
+            None
+          }
+        });
+
+        let resolve_width =
+          |value: BorderImageWidthValue, border: f32, axis: f32, auto: Option<f32>| -> f32 {
+            match value {
+              BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
+              BorderImageWidthValue::Number(n) => (n * border).max(0.0),
+              BorderImageWidthValue::Length(len) => {
+                resolve_length_for_paint(&len, style.font_size, style.root_font_size, axis, viewport)
+                  .max(0.0)
+              }
+              BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+            }
+          };
+        let target_widths = BorderWidths {
+          top: resolve_width(
+            style.mask_border.width.top,
+            border_widths.top,
+            rect_css.height(),
+            auto_slice_css.map(|w| w.top),
+          ),
+          right: resolve_width(
+            style.mask_border.width.right,
+            border_widths.right,
+            rect_css.width(),
+            auto_slice_css.map(|w| w.right),
+          ),
+          bottom: resolve_width(
+            style.mask_border.width.bottom,
+            border_widths.bottom,
+            rect_css.height(),
+            auto_slice_css.map(|w| w.bottom),
+          ),
+          left: resolve_width(
+            style.mask_border.width.left,
+            border_widths.left,
+            rect_css.width(),
+            auto_slice_css.map(|w| w.left),
+          ),
+        };
+        let outsets = resolve_border_image_outset(
+          &style.mask_border.outset,
+          target_widths,
+          style.font_size,
+          style.root_font_size,
+          viewport,
+        );
+        let outer_rect_css = Rect::from_xywh(
+          rect_css.x() - outsets.left,
+          rect_css.y() - outsets.top,
+          rect_css.width() + outsets.left + outsets.right,
+          rect_css.height() + outsets.top + outsets.bottom,
+        );
+        (pixmap, img_w, img_h, target_widths, outer_rect_css)
+      }
+      BackgroundImage::LinearGradient { .. }
+      | BackgroundImage::RepeatingLinearGradient { .. }
+      | BackgroundImage::RadialGradient { .. }
+      | BackgroundImage::RepeatingRadialGradient { .. }
+      | BackgroundImage::ConicGradient { .. }
+      | BackgroundImage::RepeatingConicGradient { .. } => {
+        // For generated images we don't have intrinsic CSS sizing information, so treat `auto`
+        // widths as the used border widths (matching current border-image behavior).
+        let resolve_width = |value: BorderImageWidthValue, border: f32, axis: f32| -> f32 {
+          match value {
+            BorderImageWidthValue::Auto => border,
+            BorderImageWidthValue::Number(n) => (n * border).max(0.0),
+            BorderImageWidthValue::Length(len) => {
+              resolve_length_for_paint(&len, style.font_size, style.root_font_size, axis, viewport)
+                .max(0.0)
+            }
+            BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+          }
+        };
+        let target_widths = BorderWidths {
+          top: resolve_width(style.mask_border.width.top, border_widths.top, rect_css.height()),
+          right: resolve_width(style.mask_border.width.right, border_widths.right, rect_css.width()),
+          bottom: resolve_width(
+            style.mask_border.width.bottom,
+            border_widths.bottom,
+            rect_css.height(),
+          ),
+          left: resolve_width(style.mask_border.width.left, border_widths.left, rect_css.width()),
+        };
+        let outsets = resolve_border_image_outset(
+          &style.mask_border.outset,
+          target_widths,
+          style.font_size,
+          style.root_font_size,
+          viewport,
+        );
+        let outer_rect_css = Rect::from_xywh(
+          rect_css.x() - outsets.left,
+          rect_css.y() - outsets.top,
+          rect_css.width() + outsets.left + outsets.right,
+          rect_css.height() + outsets.top + outsets.bottom,
+        );
+        if outer_rect_css.width() <= 0.0 || outer_rect_css.height() <= 0.0 {
+          return Ok(None);
+        }
+        let img_w = outer_rect_css.width().max(1.0).round() as u32;
+        let img_h = outer_rect_css.height().max(1.0).round() as u32;
+        let Some(pixmap) = self.render_generated_image(bg, style, img_w, img_h) else {
+          return Ok(None);
+        };
+        let pixmap = Arc::new(pixmap);
+        (pixmap, img_w, img_h, target_widths, outer_rect_css)
+      }
+      BackgroundImage::None => return Ok(None),
+    };
+
+    let slice_top_px = resolve_slice_value(style.mask_border.slice.top, img_h);
+    let slice_right_px = resolve_slice_value(style.mask_border.slice.right, img_w);
+    let slice_bottom_px = resolve_slice_value(style.mask_border.slice.bottom, img_h);
+    let slice_left_px = resolve_slice_value(style.mask_border.slice.left, img_w);
+
+    let inner_rect_css = Rect::from_xywh(
+      outer_rect_css.x() + target_widths.left,
+      outer_rect_css.y() + target_widths.top,
+      outer_rect_css.width() - target_widths.left - target_widths.right,
+      outer_rect_css.height() - target_widths.top - target_widths.bottom,
+    );
+
+    let Some(clip_rect_css) = outer_rect_css.intersection(layer_bounds) else {
+      // The border-mask area is entirely outside the stacking layer; applying the mask should
+      // clear all painted pixels.
+      mask.data_mut().fill(0);
+      return Ok(Some(RenderedMask {
+        mask: Some(mask),
+        dirty: None,
+      }));
+    };
+    if clip_rect_css.width() <= 0.0 || clip_rect_css.height() <= 0.0 {
+      mask.data_mut().fill(0);
+      return Ok(Some(RenderedMask {
+        mask: Some(mask),
+        dirty: None,
+      }));
+    }
+
+    let device_clip = self.device_rect(clip_rect_css);
+    let dirty = clip_mask_dirty_bounds(device_clip, device_size.0, device_size.1);
+    let Some(dirty) = dirty else {
+      mask.data_mut().fill(0);
+      return Ok(Some(RenderedMask {
+        mask: Some(mask),
+        dirty: None,
+      }));
+    };
+
+    // Convert source pixels to an alpha mask when `mask-border-mode: luminance` is used.
+    let mode = match style.mask_border.mode {
+      MaskBorderMode::Alpha => MaskMode::Alpha,
+      MaskBorderMode::Luminance => MaskMode::Luminance,
+    };
+    let converted_source = match mode {
+      MaskMode::Luminance => {
+        let Some(tile) = mask_tile_from_image(source_pixmap.as_ref(), mode)? else {
+          return Ok(None);
+        };
+        Some(tile)
+      }
+      _ => None,
+    };
+    let source_for_paint = converted_source
+      .as_ref()
+      .unwrap_or_else(|| source_pixmap.as_ref());
+
+    let sx0 = 0.0;
+    let sx1 = slice_left_px.min(img_w as f32);
+    let sx2 = (img_w as f32 - slice_right_px).max(sx1);
+    let sx3 = img_w as f32;
+    let sy0 = 0.0;
+    let sy1 = slice_top_px.min(img_h as f32);
+    let sy2 = (img_h as f32 - slice_bottom_px).max(sy1);
+    let sy3 = img_h as f32;
+
+    let (repeat_x, repeat_y) = style.mask_border.repeat;
+
+    // Convert geometry into the local device-space coordinate system of the stacking layer.
+    let clip_rect_device = self.device_rect(clip_rect_css);
+    let outer_rect_device = self.device_rect(outer_rect_css);
+    let inner_rect_device = self.device_rect(inner_rect_css);
+    let target_widths_device = BorderWidths {
+      top: target_widths.top * self.scale,
+      right: target_widths.right * self.scale,
+      bottom: target_widths.bottom * self.scale,
+      left: target_widths.left * self.scale,
+    };
+
+    let layer_result = MASK_LAYER_PIXMAP_SCRATCH.with(|cell| -> RenderResult<Option<()>> {
+      let mut scratch = cell.borrow_mut();
+      let replace = match scratch.pixmap.as_ref() {
+        Some(existing) => existing.width() != device_size.0 || existing.height() != device_size.1,
+        None => true,
+      };
+      if replace {
+        scratch.pixmap = new_pixmap(device_size.0, device_size.1);
+        scratch.last_dirty = None;
+      }
+      let prev_dirty = scratch.last_dirty;
+      let Some(mask_pixmap) = scratch.pixmap.as_mut() else {
+        return Ok(None);
+      };
+
+      // Clear pixels that might contain stale data from a previous use of the scratch.
+      let clear = prev_dirty.map_or(dirty, |prev| ClipMaskDirtyRect {
+        x0: prev.x0.min(dirty.x0),
+        y0: prev.y0.min(dirty.y0),
+        x1: prev.x1.max(dirty.x1),
+        y1: prev.y1.max(dirty.y1),
+      });
+      clear_pixmap_rect_rgba(mask_pixmap, clear)?;
+
+      // `mask-border-slice` default behavior: when `fill` is not set, the center is treated as
+      // fully opaque.
+      if !style.mask_border.slice.fill && inner_rect_device.width() > 0.0 && inner_rect_device.height() > 0.0 {
+        if let Some(inner_clip) = inner_rect_device.intersection(clip_rect_device) {
+          if inner_clip.width() > 0.0 && inner_clip.height() > 0.0 {
+            if let Some(rect) = SkiaRect::from_xywh(
+              inner_clip.x(),
+              inner_clip.y(),
+              inner_clip.width(),
+              inner_clip.height(),
+            ) {
+              let mut paint = Paint::default();
+              paint.set_color_rgba8(255, 255, 255, 255);
+              paint.anti_alias = false;
+              mask_pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+          }
+        }
+      }
+
+      // Corners.
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx0, sy0, sx1 - sx0, sy1 - sy0),
+        Rect::from_xywh(
+          outer_rect_device.x(),
+          outer_rect_device.y(),
+          target_widths_device.left,
+          target_widths_device.top,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx2, sy0, sx3 - sx2, sy1 - sy0),
+        Rect::from_xywh(
+          outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+          outer_rect_device.y(),
+          target_widths_device.right,
+          target_widths_device.top,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx0, sy2, sx1 - sx0, sy3 - sy2),
+        Rect::from_xywh(
+          outer_rect_device.x(),
+          outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+          target_widths_device.left,
+          target_widths_device.bottom,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx2, sy2, sx3 - sx2, sy3 - sy2),
+        Rect::from_xywh(
+          outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+          outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+          target_widths_device.right,
+          target_widths_device.bottom,
+        ),
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+
+      // Edges.
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx1, sy0, sx2 - sx1, sy1 - sy0),
+        Rect::from_xywh(
+          inner_rect_device.x(),
+          outer_rect_device.y(),
+          inner_rect_device.width(),
+          target_widths_device.top,
+        ),
+        repeat_x,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx1, sy2, sx2 - sx1, sy3 - sy2),
+        Rect::from_xywh(
+          inner_rect_device.x(),
+          outer_rect_device.y() + outer_rect_device.height() - target_widths_device.bottom,
+          inner_rect_device.width(),
+          target_widths_device.bottom,
+        ),
+        repeat_x,
+        BorderImageRepeat::Stretch,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx0, sy1, sx1 - sx0, sy2 - sy1),
+        Rect::from_xywh(
+          outer_rect_device.x(),
+          inner_rect_device.y(),
+          target_widths_device.left,
+          inner_rect_device.height(),
+        ),
+        BorderImageRepeat::Stretch,
+        repeat_y,
+        clip_rect_device,
+      );
+      paint_mask_border_patch(
+        mask_pixmap,
+        source_for_paint,
+        Rect::from_xywh(sx2, sy1, sx3 - sx2, sy2 - sy1),
+        Rect::from_xywh(
+          outer_rect_device.x() + outer_rect_device.width() - target_widths_device.right,
+          inner_rect_device.y(),
+          target_widths_device.right,
+          inner_rect_device.height(),
+        ),
+        BorderImageRepeat::Stretch,
+        repeat_y,
+        clip_rect_device,
+      );
+
+      // Center.
+      if style.mask_border.slice.fill {
+        paint_mask_border_patch(
+          mask_pixmap,
+          source_for_paint,
+          Rect::from_xywh(sx1, sy1, sx2 - sx1, sy2 - sy1),
+          inner_rect_device,
+          repeat_x,
+          repeat_y,
+          clip_rect_device,
+        );
+      }
+
+      copy_pixmap_alpha_to_mask(&mut mask, mask_pixmap, dirty)?;
+      scratch.last_dirty = Some(dirty);
+      Ok(Some(()))
+    })?;
+    if layer_result.is_none() {
+      return Ok(None);
+    }
+
+    Ok(Some(RenderedMask {
+      mask: Some(mask),
+      dirty: Some(dirty),
+    }))
   }
 
   /// Paints the background of a fragment
@@ -15995,6 +16560,320 @@ fn paint_mask_tile(
   dest.fill_rect(src_rect, &paint, Transform::identity(), None);
 }
 
+fn paint_mask_border_patch(
+  dest: &mut Pixmap,
+  source: &Pixmap,
+  src_rect: Rect,
+  dest_rect: Rect,
+  repeat_x: BorderImageRepeat,
+  repeat_y: BorderImageRepeat,
+  clip_rect: Rect,
+) {
+  if src_rect.width() <= 0.0
+    || src_rect.height() <= 0.0
+    || dest_rect.width() <= 0.0
+    || dest_rect.height() <= 0.0
+  {
+    return;
+  }
+
+  let Some(clip_rect) = dest_rect.intersection(clip_rect) else {
+    return;
+  };
+  if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+    return;
+  }
+
+  let sx0 = src_rect.x().max(0.0).floor() as u32;
+  let sy0 = src_rect.y().max(0.0).floor() as u32;
+  let sx1 = (src_rect.x() + src_rect.width())
+    .ceil()
+    .min(source.width() as f32)
+    .max(0.0) as u32;
+  let sy1 = (src_rect.y() + src_rect.height())
+    .ceil()
+    .min(source.height() as f32)
+    .max(0.0) as u32;
+  if sx1 <= sx0 || sy1 <= sy0 {
+    return;
+  }
+  let width = sx1 - sx0;
+  let height = sy1 - sy0;
+
+  let Some(bytes) = u64::from(width)
+    .checked_mul(u64::from(height))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return;
+  };
+  let mut patch = match reserve_buffer(bytes, "mask-border patch") {
+    Ok(buf) => buf,
+    Err(_) => return,
+  };
+  let Some(size) = IntSize::from_wh(width, height) else {
+    return;
+  };
+
+  let data = source.data();
+  let source_width = source.width();
+  let Some(row_bytes) = u64::from(width).checked_mul(4) else {
+    return;
+  };
+  for row in sy0..sy1 {
+    let Some(start) = u64::from(row)
+      .checked_mul(u64::from(source_width))
+      .and_then(|v| v.checked_add(u64::from(sx0)))
+      .and_then(|v| v.checked_mul(4))
+    else {
+      return;
+    };
+    let Some(end) = start.checked_add(row_bytes) else {
+      return;
+    };
+    let Ok(start) = usize::try_from(start) else {
+      return;
+    };
+    let Ok(end) = usize::try_from(end) else {
+      return;
+    };
+    if end > data.len() || start > end {
+      return;
+    }
+    patch.extend_from_slice(&data[start..end]);
+  }
+  let Some(patch_pixmap) = Pixmap::from_vec(patch, size) else {
+    return;
+  };
+
+  let mut tile_w = dest_rect.width();
+  let mut tile_h = dest_rect.height();
+
+  let mut scale_x = tile_w / width as f32;
+  let mut scale_y = tile_h / height as f32;
+
+  if repeat_x != BorderImageRepeat::Stretch {
+    scale_x = scale_y;
+    tile_w = width as f32 * scale_x;
+  }
+  if repeat_y != BorderImageRepeat::Stretch {
+    scale_y = scale_x;
+    tile_h = height as f32 * scale_y;
+  }
+
+  if repeat_x == BorderImageRepeat::Round && tile_w > 0.0 {
+    let count = (dest_rect.width() / tile_w).round().max(1.0);
+    tile_w = dest_rect.width() / count;
+    scale_x = tile_w / width as f32;
+  }
+  if repeat_y == BorderImageRepeat::Round && tile_h > 0.0 {
+    let count = (dest_rect.height() / tile_h).round().max(1.0);
+    tile_h = dest_rect.height() / count;
+    scale_y = tile_h / height as f32;
+  }
+
+  // Avoid panics/aborts when the destination is extremely thin and would require an unbounded
+  // number of tiles (e.g. a huge width with a near-zero height and repeat-x=space).
+  const MAX_BORDER_IMAGE_TILES_PER_AXIS: f32 = 4096.0;
+  let paint_repeated_patch = |dest: &mut Pixmap| {
+    let Some(dest_sk_rect) =
+      SkiaRect::from_xywh(clip_rect.x(), clip_rect.y(), clip_rect.width(), clip_rect.height())
+    else {
+      return;
+    };
+    let mut paint = Paint::default();
+    paint.shader = Pattern::new(
+      patch_pixmap.as_ref(),
+      SpreadMode::Repeat,
+      FilterQuality::Bilinear,
+      1.0,
+      Transform::from_row(scale_x, 0.0, 0.0, scale_y, dest_rect.x(), dest_rect.y()),
+    );
+    paint.anti_alias = false;
+    paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+    dest.fill_rect(dest_sk_rect, &paint, Transform::identity(), None);
+  };
+
+  let tiles_x = dest_rect.width() / tile_w;
+  let tiles_y = dest_rect.height() / tile_h;
+  let too_many_x = repeat_x != BorderImageRepeat::Stretch
+    && (!tiles_x.is_finite() || tiles_x > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  let too_many_y = repeat_y != BorderImageRepeat::Stretch
+    && (!tiles_y.is_finite() || tiles_y > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+  if too_many_x || too_many_y {
+    paint_repeated_patch(dest);
+    return;
+  }
+
+  let positions_x = match repeat_x {
+    BorderImageRepeat::Stretch => vec![dest_rect.x()],
+    BorderImageRepeat::Round => {
+      let end = dest_rect.x() + dest_rect.width();
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.x();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_w;
+      }
+      pos
+    }
+    BorderImageRepeat::Space => {
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = tiles_x.floor();
+      if count < 2.0 {
+        vec![dest_rect.x() + (dest_rect.width() - tile_w) * 0.5]
+      } else {
+        let spacing = (dest_rect.width() - tile_w * count) / (count - 1.0);
+        let count = count as usize;
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(dest);
+          return;
+        }
+        let mut cursor = dest_rect.x();
+        for _ in 0..count {
+          pos.push(cursor);
+          cursor += tile_w + spacing;
+        }
+        pos
+      }
+    }
+    BorderImageRepeat::Repeat => {
+      let end = dest_rect.x() + dest_rect.width();
+      if tile_w <= 0.0 {
+        return;
+      }
+      let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.x();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_w;
+      }
+      pos
+    }
+  };
+
+  let positions_y = match repeat_y {
+    BorderImageRepeat::Stretch => vec![dest_rect.y()],
+    BorderImageRepeat::Round => {
+      let end = dest_rect.y() + dest_rect.height();
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.y();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_h;
+      }
+      pos
+    }
+    BorderImageRepeat::Space => {
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = tiles_y.floor();
+      if count < 2.0 {
+        vec![dest_rect.y() + (dest_rect.height() - tile_h) * 0.5]
+      } else {
+        let spacing = (dest_rect.height() - tile_h * count) / (count - 1.0);
+        let count = count as usize;
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(dest);
+          return;
+        }
+        let mut cursor = dest_rect.y();
+        for _ in 0..count {
+          pos.push(cursor);
+          cursor += tile_h + spacing;
+        }
+        pos
+      }
+    }
+    BorderImageRepeat::Repeat => {
+      let end = dest_rect.y() + dest_rect.height();
+      if tile_h <= 0.0 {
+        return;
+      }
+      let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+      let mut pos = Vec::new();
+      if pos.try_reserve_exact(count).is_err() {
+        paint_repeated_patch(dest);
+        return;
+      }
+      let mut cursor = dest_rect.y();
+      for _ in 0..count {
+        if cursor >= end - 1e-3 {
+          break;
+        }
+        pos.push(cursor);
+        cursor += tile_h;
+      }
+      pos
+    }
+  };
+
+  for ty in positions_y.iter().copied() {
+    for tx in positions_x.iter().copied() {
+      let tile_rect = Rect::from_xywh(tx, ty, tile_w, tile_h);
+      let Some(intersection) = tile_rect.intersection(clip_rect) else {
+        continue;
+      };
+      if intersection.width() <= 0.0 || intersection.height() <= 0.0 {
+        continue;
+      }
+      let Some(dst_rect) = SkiaRect::from_xywh(
+        intersection.x(),
+        intersection.y(),
+        intersection.width(),
+        intersection.height(),
+      ) else {
+        continue;
+      };
+      let mut paint = Paint::default();
+      paint.shader = Pattern::new(
+        patch_pixmap.as_ref(),
+        SpreadMode::Pad,
+        FilterQuality::Bilinear,
+        1.0,
+        Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty),
+      );
+      paint.anti_alias = false;
+      paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+      dest.fill_rect(dst_rect, &paint, Transform::identity(), None);
+    }
+  }
+}
+
 #[cfg(test)]
 fn apply_mask_composite(dest: &mut Mask, src: &Mask, op: MaskComposite) {
   if dest.width() != src.width() || dest.height() != src.height() {
@@ -21145,6 +22024,7 @@ mod tests {
       blend_mode: MixBlendMode::Normal,
       isolated: true,
       mask: None,
+      mask_border: None,
       filters: vec![ResolvedFilter::Blur(1.0)],
       backdrop_filters: Vec::new(),
       radii: BorderRadii::uniform(0.5),
@@ -21182,6 +22062,7 @@ mod tests {
       blend_mode: MixBlendMode::Normal,
       isolated: false,
       mask: None,
+      mask_border: None,
       filters: Vec::new(),
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,

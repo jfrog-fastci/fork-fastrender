@@ -259,6 +259,15 @@ pub enum MaskMode {
   Luminance,
 }
 
+/// Mask border mode (`mask-border-mode`).
+///
+/// This controls how mask values are derived from the source image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaskBorderMode {
+  Alpha,
+  Luminance,
+}
+
 /// Reference box for mask positioning (mask-origin)
 pub type MaskOrigin = BackgroundBox;
 
@@ -395,6 +404,42 @@ impl Default for BorderImage {
       width: BorderImageWidth::default(),
       outset: BorderImageOutset::default(),
       repeat: (BorderImageRepeat::Stretch, BorderImageRepeat::Stretch),
+    }
+  }
+}
+
+/// Complete `mask-border` data (CSS Masking Module Level 1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskBorder {
+  pub source: BorderImageSource,
+  pub slice: BorderImageSlice,
+  pub width: BorderImageWidth,
+  pub outset: BorderImageOutset,
+  pub repeat: (BorderImageRepeat, BorderImageRepeat),
+  pub mode: MaskBorderMode,
+}
+
+impl Default for MaskBorder {
+  fn default() -> Self {
+    // https://www.w3.org/TR/css-masking-1/#the-mask-border
+    Self {
+      source: BorderImageSource::None,
+      slice: BorderImageSlice {
+        top: BorderImageSliceValue::Number(0.0),
+        right: BorderImageSliceValue::Number(0.0),
+        bottom: BorderImageSliceValue::Number(0.0),
+        left: BorderImageSliceValue::Number(0.0),
+        fill: false,
+      },
+      width: BorderImageWidth {
+        top: BorderImageWidthValue::Auto,
+        right: BorderImageWidthValue::Auto,
+        bottom: BorderImageWidthValue::Auto,
+        left: BorderImageWidthValue::Auto,
+      },
+      outset: BorderImageOutset::default(),
+      repeat: (BorderImageRepeat::Stretch, BorderImageRepeat::Stretch),
+      mode: MaskBorderMode::Alpha,
     }
   }
 }

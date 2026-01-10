@@ -1967,6 +1967,7 @@ fn test_stacking_context() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 

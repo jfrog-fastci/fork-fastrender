@@ -31,6 +31,7 @@ fn context(bounds: Rect, transform_style: TransformStyle) -> StackingContextItem
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }
 }

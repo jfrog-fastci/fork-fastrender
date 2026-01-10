@@ -305,6 +305,7 @@ fn manual_blend_mode_triggers_parallel_paint_in_auto_mode() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -431,6 +432,7 @@ fn non_manual_blend_mode_triggers_parallel_paint_in_auto_mode() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -535,6 +537,7 @@ fn mask_parallel_paint_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -661,6 +664,7 @@ fn viewport_unit_masks_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -804,6 +808,7 @@ fn clip_transform_and_stacking_context_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(2.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -882,6 +887,7 @@ fn stacking_context_mask_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(patterned_mask(masked_bounds)),
+    mask_border: None,
     has_clip_path: false,
   }));
   // Fill the masked bounds with a solid color so the mask alpha pattern is visible.
@@ -966,6 +972,7 @@ fn stacking_context_isolated_layer_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -1069,6 +1076,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(10.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -1138,6 +1146,7 @@ fn mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1210,6 +1219,7 @@ fn hue_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1287,6 +1297,7 @@ fn saturation_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1365,6 +1376,7 @@ fn color_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1442,6 +1454,7 @@ fn luminosity_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1519,6 +1532,7 @@ fn hue_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1595,6 +1609,7 @@ fn chroma_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1667,6 +1682,7 @@ fn color_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1744,6 +1760,7 @@ fn luminosity_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1831,6 +1848,7 @@ fn plus_lighter_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1904,6 +1922,7 @@ fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1981,6 +2000,7 @@ fn saturation_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2059,6 +2079,7 @@ fn color_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2137,6 +2158,7 @@ fn hue_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2215,6 +2237,7 @@ fn luminosity_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2552,6 +2575,7 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2622,6 +2646,7 @@ fn mix_blend_mode_difference_allows_parallel_tiling_with_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2692,6 +2717,7 @@ fn mix_blend_mode_hue_matches_serial_output_under_tiling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -2775,6 +2801,7 @@ fn mix_blend_mode_hue_with_transform_triggers_serial_fallback() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -3207,6 +3234,7 @@ fn mask_layers_survive_tiling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   };
 
@@ -3317,6 +3345,7 @@ fn mask_viewport_units_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -3388,6 +3417,7 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(6.0),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -3538,6 +3568,7 @@ fn backdrop_filters_survive_tiling() {
     backdrop_filters: vec![ResolvedFilter::Blur(6.0)],
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -3616,6 +3647,7 @@ fn parallel_paint_falls_back_for_nested_backdrop_filters() {
     backdrop_filters: vec![ResolvedFilter::Blur(6.0), ResolvedFilter::Invert(1.0)],
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(outer));
@@ -3639,6 +3671,7 @@ fn parallel_paint_falls_back_for_nested_backdrop_filters() {
     backdrop_filters: vec![ResolvedFilter::Blur(6.0), ResolvedFilter::Invert(1.0)],
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(inner));
@@ -3713,6 +3746,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(root));
@@ -3737,6 +3771,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(plane));
@@ -3888,6 +3923,7 @@ fn mask_composite_respects_deadline() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -4081,6 +4117,7 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   };
 

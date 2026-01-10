@@ -65,6 +65,7 @@ fn backdrop_filter_drop_shadow_is_screen_aligned_under_affine_transform() {
     }],
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::PopStackingContext);

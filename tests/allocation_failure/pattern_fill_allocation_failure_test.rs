@@ -192,6 +192,7 @@ fn pattern_fills_survive_allocation_failures_in_sampling_tables() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    mask_border: None,
     has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {

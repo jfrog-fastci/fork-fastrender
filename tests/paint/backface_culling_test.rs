@@ -86,6 +86,7 @@ fn backface_hidden_stacking_context_survives_optimization() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -108,6 +109,7 @@ fn backface_hidden_stacking_context_survives_optimization() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 

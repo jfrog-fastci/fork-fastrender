@@ -357,6 +357,11 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "mask",
   "mask-border",
   "mask-border-source",
+  "mask-border-slice",
+  "mask-border-width",
+  "mask-border-outset",
+  "mask-border-repeat",
+  "mask-border-mode",
   "mask-image",
   "mask-position",
   "mask-size",
@@ -649,6 +654,21 @@ pub(crate) fn vendor_prefixed_property_alias(property: &str) -> Option<&'static 
   }
   if property == "-webkit-mask-box-image-source" {
     return Some("mask-border-source");
+  }
+  if property == "-webkit-mask-box-image-slice" {
+    return Some("mask-border-slice");
+  }
+  if property == "-webkit-mask-box-image-width" {
+    return Some("mask-border-width");
+  }
+  if property == "-webkit-mask-box-image-outset" {
+    return Some("mask-border-outset");
+  }
+  if property == "-webkit-mask-box-image-repeat" {
+    return Some("mask-border-repeat");
+  }
+  if property == "-webkit-mask-box-image-mode" {
+    return Some("mask-border-mode");
   }
 
   let stripped = strip_vendor_prefix(property)?;
@@ -1962,6 +1982,12 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "border-image-repeat"
       | "mask"
       | "mask-border"
+      | "mask-border-source"
+      | "mask-border-slice"
+      | "mask-border-width"
+      | "mask-border-outset"
+      | "mask-border-repeat"
+      | "mask-border-mode"
       | "mask-image"
       | "mask-position"
       | "mask-size"

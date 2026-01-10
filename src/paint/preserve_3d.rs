@@ -391,6 +391,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: crate::paint::display_list::BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }
   }
@@ -454,6 +455,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: crate::paint::display_list::BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
     let mut back = basic_context(Transform3D::identity(), 0.0);
@@ -515,6 +517,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: crate::paint::display_list::BorderRadii::ZERO,
       mask: None,
+      mask_border: None,
       has_clip_path: false,
     }));
 

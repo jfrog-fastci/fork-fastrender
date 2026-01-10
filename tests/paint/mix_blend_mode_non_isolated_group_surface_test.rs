@@ -31,6 +31,7 @@ fn sc(bounds: Rect, mix_blend_mode: BlendMode, is_isolated: bool) -> StackingCon
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }
 }
