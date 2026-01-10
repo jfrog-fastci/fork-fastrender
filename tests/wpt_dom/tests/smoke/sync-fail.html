@@ -4,8 +4,9 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
-  __fastrender_wpt_report({
-    file_status: "fail",
-    message: "intentional failing assertion",
-  });
+  async_test((t) => {
+    t.step_func_done(() => {
+      assert_true(false, "intentional failing assertion");
+    })();
+  }, "intentional failing assertion");
 </script>

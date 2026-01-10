@@ -4,24 +4,12 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
-  // Curated async smoke test for the offline runner. Avoid the full upstream testharness APIs so
-  // the vm-js backend can execute it.
-  function report_pass() {
-    __fastrender_wpt_report({ file_status: "pass" });
-  }
-
-  function report_fail(message) {
-    __fastrender_wpt_report({ file_status: "fail", message: message });
-  }
-
-  function on_timeout() {
-    // If this callback runs, timer/task plumbing works.
-    report_pass();
-  }
-
-  try {
-    setTimeout(on_timeout, 0);
-  } catch (e) {
-    report_fail("setTimeout threw");
-  }
+  async_test((t) => {
+    setTimeout(
+      t.step_func_done(() => {
+        assert_true(true);
+      }),
+      0
+    );
+  }, "async_test smoke test passes");
 </script>

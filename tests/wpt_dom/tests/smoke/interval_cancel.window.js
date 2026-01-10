@@ -1,29 +1,27 @@
 // META: script=/resources/testharness.js
 
 var fired = false;
+var fired_more_than_once = false;
 var interval_id = 0;
-
-function report(payload) {
-  __fastrender_wpt_report(payload);
-}
-
-function finish() {
-  if (fired !== true) {
-    report({ file_status: "fail", message: "interval did not fire" });
-    return;
-  }
-  report({ file_status: "pass" });
-}
 
 function tick() {
   if (fired) {
-    report({ file_status: "fail", message: "interval fired more than once" });
-    return;
+    fired_more_than_once = true;
   }
   fired = true;
   clearInterval(interval_id);
-  setTimeout(finish, 10);
 }
 
-interval_id = setInterval(tick, 0);
-
+async_test((t) => {
+  fired = false;
+  fired_more_than_once = false;
+  interval_id = setInterval(tick, 0);
+  setTimeout(
+    t.step_func_done(() => {
+      clearInterval(interval_id);
+      assert_true(fired, "interval should fire");
+      assert_false(fired_more_than_once, "interval should fire once and then be cancelled");
+    }),
+    10
+  );
+}, "setInterval fires once then cancels");

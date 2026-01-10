@@ -4,27 +4,9 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
-  // Curated Promise smoke test for the offline runner. Avoid async/await and the full upstream
-  // testharness APIs so the vm-js backend can execute it.
-  function report_pass() {
-    __fastrender_wpt_report({ file_status: "pass" });
-  }
-
-  function report_fail(message) {
-    __fastrender_wpt_report({ file_status: "fail", message: message });
-  }
-
-  function on_fulfilled(v) {
-    if (v === 42) {
-      report_pass();
-    } else {
-      report_fail("expected Promise to resolve to 42");
-    }
-  }
-
-  try {
-    Promise.resolve(42).then(on_fulfilled);
-  } catch (e) {
-    report_fail("Promise.resolve().then(...) threw");
-  }
+  promise_test(() => {
+    return Promise.resolve(42).then((v) => {
+      assert_equals(v, 42);
+    });
+  }, "promise_test smoke test passes");
 </script>
