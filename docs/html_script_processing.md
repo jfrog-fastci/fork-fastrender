@@ -50,11 +50,6 @@ What exists today (in-tree):
     - `parse_import_map_string(...)` (`parse.rs`)
     - normalized `ImportMap` + warning types (`types.rs`)
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
-- **Module scripts + import maps pipeline (milestone; not yet landed):**
-  - `src/js/html_script_scheduler.rs`: unified scheduler/state machine that models HTML’s
-    parser-blocking / "as soon as possible" / defer queues across classic + module + import map.
-  - `src/js/html_script_pipeline.rs`: end-to-end glue (streaming parser ↔ scheduler ↔ event loop)
-    that runs import map registration and script execution at the spec-defined boundaries.
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
     including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
@@ -472,11 +467,13 @@ resolution:
     ignored).
 
 ### 6) Code map for the milestone (where this should live)
-When this milestone lands, the intent is that classic/module/importmap share a single pipeline:
+No integrated module-script/import-map pipeline exists yet. When implementing it, keep the same
+boundaries as the classic-script pipeline:
 
-- `src/js/html_script_scheduler.rs`: models the HTML scheduling lists/sets for classic + module +
-  import map scripts, mapped to `prepare-a-script`.
-- `src/js/html_script_pipeline.rs`: ties together the streaming parser, the scheduler, fetch
-  integration, and `execute-the-script-block` (including import map registration).
-- `src/js/import_maps/`: import map parsing + normalization primitives used by both
-  `type=importmap` execution and module specifier resolution.
+- **Streaming parser driver:** `src/html/streaming_parser.rs` (pause/resume at `</script>`)
+- **Base URL timing:** `src/html/base_url_tracker.rs` (`BaseUrlTracker`)
+- **Import maps parsing/normalization:** `src/js/import_maps/` (already exists; see
+  [`docs/import_maps.md`](import_maps.md))
+- **Scheduler/orchestration:** likely a new or extended scheduler under `src/js/` that models HTML’s
+  scheduling lists/sets for classic + module + import map scripts and produces explicit actions for
+  the orchestrator/event loop.
