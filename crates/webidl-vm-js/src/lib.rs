@@ -402,13 +402,41 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn to_string(&mut self, value: Self::Value) -> Result<Self::String, Self::Error> {
-    let s = self.scope.heap_mut().to_string(value)?;
+    // Prefer a spec-shaped `ToString` implementation when we have access to host hooks (so
+    // `ToPrimitive` can call back into JS via `@@toPrimitive` / `valueOf` / `toString`).
+    //
+    // When no realm/intrinsics exist yet, fall back to the heap-level conversion (which is limited
+    // to primitives).
+    let s = if self.vm.intrinsics().is_some() && self.host_hooks.is_some() {
+      match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
+        (Some(host), Some(hooks)) => self.scope.to_string(self.vm, host, hooks, value)?,
+        (None, Some(hooks)) => {
+          let mut dummy_host = ();
+          self.scope.to_string(self.vm, &mut dummy_host, hooks, value)?
+        }
+        _ => self.scope.heap_mut().to_string(value)?,
+      }
+    } else {
+      self.scope.heap_mut().to_string(value)?
+    };
     self.root(Value::String(s))?;
     Ok(s)
   }
 
   fn to_number(&mut self, value: Self::Value) -> Result<f64, Self::Error> {
-    self.scope.heap_mut().to_number(value)
+    // Like `to_string`, prefer the spec-shaped conversion when host hooks are available.
+    if self.vm.intrinsics().is_some() && self.host_hooks.is_some() {
+      match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
+        (Some(host), Some(hooks)) => self.scope.to_number(self.vm, host, hooks, value),
+        (None, Some(hooks)) => {
+          let mut dummy_host = ();
+          self.scope.to_number(self.vm, &mut dummy_host, hooks, value)
+        }
+        _ => self.scope.heap_mut().to_number(value),
+      }
+    } else {
+      self.scope.heap_mut().to_number(value)
+    }
   }
 
   fn type_error(&mut self, message: &'static str) -> Self::Error {
@@ -1425,6 +1453,8 @@ mod tests {
   struct TestHostHooks {
     iterator_calls: usize,
     getter_calls: usize,
+    value_of_calls: usize,
+    to_string_calls: usize,
   }
 
   #[derive(Default)]
@@ -1513,6 +1543,44 @@ mod tests {
         .object_get_own_data_property_value(obj, &fn_key)?
         .unwrap_or(Value::Undefined),
     )
+  }
+
+  fn value_of_observes_host_ctx_and_hooks(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = host.as_any_mut().downcast_mut::<TestHostCtx>() {
+      any.host_calls += 1;
+    }
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.value_of_calls += 1;
+      }
+    }
+    Ok(Value::Number(42.0))
+  }
+
+  fn to_string_observes_host_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.to_string_calls += 1;
+      }
+    }
+    let s = scope.alloc_string("hello")?;
+    Ok(Value::String(s))
   }
 
   #[test]
@@ -1615,6 +1683,119 @@ mod tests {
     assert_eq!(host_ctx.host_calls, 1);
     assert_eq!(host_hooks.iterator_calls, 1);
     Ok(())
+  }
+
+  #[test]
+  fn to_number_calls_value_of_with_host_context_and_hooks() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+
+    let result = (|| -> Result<(), VmError> {
+      let value_of_id = vm.register_native_call(value_of_observes_host_ctx_and_hooks)?;
+
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+
+      let value_of_name = scope.alloc_string("valueOf")?;
+      let value_of_fn = scope.alloc_native_function(value_of_id, None, value_of_name, 0)?;
+      scope.push_root(Value::Object(value_of_fn))?;
+
+      let value_of_key = VmPropertyKey::from_string(scope.alloc_string("valueOf")?);
+      scope.define_property(
+        obj,
+        value_of_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(value_of_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let mut host_ctx = TestHostCtx::default();
+      let mut host_hooks = TestHostHooks::default();
+      let mut cx = VmJsWebIdlCx::from_native_call(
+        &mut vm,
+        &mut scope,
+        &mut host_ctx,
+        &mut host_hooks,
+        limits,
+        &webidl_hooks,
+      );
+      cx.scope.push_root(Value::Object(obj))?;
+
+      let n = cx.to_number(Value::Object(obj))?;
+      assert_eq!(n, 42.0);
+      drop(cx);
+      assert_eq!(host_ctx.host_calls, 1);
+      assert_eq!(host_hooks.value_of_calls, 1);
+      Ok(())
+    })();
+
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn to_string_calls_to_string_with_host_hooks() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+
+    let result = (|| -> Result<(), VmError> {
+      let to_string_id = vm.register_native_call(to_string_observes_host_hooks)?;
+
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+
+      let to_string_name = scope.alloc_string("toString")?;
+      let to_string_fn = scope.alloc_native_function(to_string_id, None, to_string_name, 0)?;
+      scope.push_root(Value::Object(to_string_fn))?;
+
+      let to_string_key = VmPropertyKey::from_string(scope.alloc_string("toString")?);
+      scope.define_property(
+        obj,
+        to_string_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(to_string_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let mut host_ctx = ();
+      let mut host_hooks = TestHostHooks::default();
+      let mut cx = VmJsWebIdlCx::from_native_call(
+        &mut vm,
+        &mut scope,
+        &mut host_ctx,
+        &mut host_hooks,
+        limits,
+        &webidl_hooks,
+      );
+      cx.scope.push_root(Value::Object(obj))?;
+
+      let s = cx.to_string(Value::Object(obj))?;
+      assert_eq!(cx.scope.heap().get_string(s)?.to_utf8_lossy(), "hello");
+      drop(cx);
+      assert_eq!(host_hooks.to_string_calls, 1);
+      Ok(())
+    })();
+
+    realm.teardown(&mut heap);
+    result
   }
 
   #[test]
