@@ -493,6 +493,38 @@ fn prelude_provides_domhighrestimestamp_typedef() {
 }
 
 #[test]
+fn prelude_provides_voidfunction_callback() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let loaded = load_combined_webidl(repo_root, &[]).unwrap();
+  let parsed = parse_webidl(&loaded.combined_idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed);
+
+  let cb = resolved
+    .callbacks
+    .get("VoidFunction")
+    .expect("expected prelude to provide VoidFunction callback");
+  assert_eq!(
+    cb.type_.replace(' ', ""),
+    "undefined()",
+    "expected VoidFunction callback signature to be `undefined()`"
+  );
+
+  // Ensure named-type resolution classifies it as a callback function so bindings route arguments
+  // through `root_callback_function` instead of treating them as opaque objects.
+  let ty = xtask::webidl::type_resolution::parse_type_with_world(&resolved, "VoidFunction", &[])
+    .expect("parse VoidFunction type");
+  match ty {
+    webidl_ir::IdlType::Named(webidl_ir::NamedType { name, kind }) => {
+      assert_eq!(name, "VoidFunction");
+      assert_eq!(kind, webidl_ir::NamedTypeKind::CallbackFunction);
+    }
+    other => panic!("expected VoidFunction to resolve to a named type, got {other:?}"),
+  }
+}
+
+#[test]
 fn typedef_resolution_expands_chains_and_detects_cycles() {
   let idl = r#"
     typedef long A;

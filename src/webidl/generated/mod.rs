@@ -20529,5 +20529,11 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
     type_: "any ((Event or DOMString) event, optional DOMString source, optional unsigned long lineno, optional unsigned long colno, optional any error)",
   },
+  WebIdlCallback {
+    name: "VoidFunction",
+    ext_attrs: &[
+    ],
+    type_: "undefined ()",
+  },
   ],
 };

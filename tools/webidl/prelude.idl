@@ -6,3 +6,6 @@
 
 typedef double DOMHighResTimeStamp;
 typedef double DOMTimeStamp;
+
+// WebIDL standard callback type used by APIs like `queueMicrotask()`.
+callback VoidFunction = undefined ();

@@ -882,7 +882,7 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(BindingValue::Object(v0));
+      converted_args.push(BindingValue::Callback(rt.root_callback_function(v0)?));
       let result = host.call_operation(rt, None, "Window", "queueMicrotask", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
     }
@@ -1070,15 +1070,6 @@ pub mod worker {
         Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
       }
       BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
