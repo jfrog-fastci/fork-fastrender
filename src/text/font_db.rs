@@ -1253,6 +1253,7 @@ impl GenericFamily {
         "Liberation Sans",
       ],
       GenericFamily::Emoji => &[
+        "FastRender Emoji",
         "Apple Color Emoji",
         "Segoe UI Emoji",
         "Noto Color Emoji",
