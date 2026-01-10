@@ -22,10 +22,14 @@ fn assert_approx(actual: f32, expected: f32, epsilon: f32, msg: &str) {
 }
 
 fn fixed_block(width: f32) -> BoxNode {
+  fixed_block_sized(width, 10.0)
+}
+
+fn fixed_block_sized(width: f32, height: f32) -> BoxNode {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;
   style.width = Some(Length::px(width));
-  style.height = Some(Length::px(10.0));
+  style.height = Some(Length::px(height));
   style.width_keyword = None;
   style.height_keyword = None;
   style.flex_grow = 0.0;
@@ -95,3 +99,68 @@ fn flex_calc_percentage_gap_with_indefinite_percentage_base_is_zero_for_intrinsi
   assert_approx(width, 150.0, 0.1, "max-content width ignores calc(%) gap");
 }
 
+#[test]
+fn flex_row_gap_calc_percentage_resolves_against_container_inner_height() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.grid_row_gap_is_normal = false;
+  container_style.grid_row_gap = calc_percent_plus_px(10.0, -5.0);
+  container_style.height = Some(Length::px(200.0));
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![
+      fixed_block_sized(40.0, 40.0),
+      fixed_block_sized(40.0, 40.0),
+      fixed_block_sized(40.0, 40.0),
+    ],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Definite(200.0)),
+    )
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 3);
+  let first = &fragment.children[0];
+  let second = &fragment.children[1];
+
+  // For 200px container block size: 10% = 20px; gap = calc(20px - 5px) = 15px.
+  let actual_gap = second.bounds.y() - (first.bounds.y() + first.bounds.height());
+  assert_approx(actual_gap, 15.0, 0.5, "gap between first and second flex items");
+}
+
+#[test]
+fn flex_row_gap_calc_percentage_with_indefinite_percentage_base_is_zero() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.grid_row_gap_is_normal = false;
+  // If `100%` cannot be resolved, the gap must not fall back to `100 - 360 = -260px`.
+  container_style.grid_row_gap = calc_percent_plus_px(100.0, -360.0);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![fixed_block_sized(40.0, 50.0), fixed_block_sized(40.0, 50.0)],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 2);
+  let first = &fragment.children[0];
+  let second = &fragment.children[1];
+  let actual_gap = second.bounds.y() - (first.bounds.y() + first.bounds.height());
+  assert_approx(actual_gap, 0.0, 0.5, "indefinite percentage base treats calc(%) row-gap as 0");
+}
