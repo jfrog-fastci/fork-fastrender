@@ -25,6 +25,8 @@ use fastrender::tree::box_tree::SelectControl;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::tree::fragment_tree::FragmentTree;
+use fastrender::ui::PointerButton;
+use fastrender::ui::PointerModifiers;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use url::Url;

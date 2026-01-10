@@ -7862,18 +7862,6 @@ impl InlineFormattingContext {
   }
 
   fn min_content_width_for_replaced(&self, replaced: &ReplacedItem) -> Option<f32> {
-    let ReplacedType::FormControl(control) = &replaced.replaced_type else {
-      return None;
-    };
-
-    use crate::tree::box_tree::FormControlKind;
-    if !matches!(
-      &control.control,
-      FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
-    ) {
-      return None;
-    }
-
     let style = replaced.style.as_ref();
     let percentage_base = 0.0;
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
@@ -7932,8 +7920,7 @@ impl InlineFormattingContext {
       )
     };
 
-    // Text inputs and textareas can scroll their internal content, so for intrinsic min-content
-    // sizing treat their content width as shrinkable to 0 while preserving padding/border.
+    // Include stable scrollbar gutters in the border-box size during intrinsic sizing.
     let reserve_gutter = style.scrollbar_gutter.stable
       && if inline_is_horizontal {
         matches!(
@@ -7961,7 +7948,54 @@ impl InlineFormattingContext {
     }
 
     let min_border_box = edges.max(0.0);
-    Some(min_border_box + replaced.margin_left + replaced.margin_right)
+
+    // Text inputs and textareas can scroll their internal content, so for intrinsic min-content
+    // sizing treat their content width as shrinkable to 0 while preserving padding/border.
+    if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+      use crate::tree::box_tree::FormControlKind;
+      if matches!(
+        &control.control,
+        FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
+      ) {
+        let min_total = min_border_box + replaced.margin_left + replaced.margin_right;
+        return Some(min_total.max(0.0).min(replaced.total_width().max(0.0)));
+      }
+    }
+
+    // During intrinsic sizing, percentage sizes in the inline axis are cyclic: resolving them
+    // against the (unknown) containing block size would require the intrinsic width itself.
+    //
+    // Per CSS Sizing, treat cyclic percentages as resolving against 0 for min-content
+    // contributions so items like `<img style="width:100%">` do not force enormous intrinsic
+    // widths (notably affecting grid/flex min-size calculations).
+    let has_cyclic_percentage = if inline_is_horizontal {
+      style.width.as_ref().is_some_and(|len| len.has_percentage())
+        || style
+          .min_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+    } else {
+      style.height.as_ref().is_some_and(|len| len.has_percentage())
+        || style
+          .min_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+    };
+
+    if !has_cyclic_percentage {
+      return None;
+    }
+
+    let min_total = min_border_box + replaced.margin_left + replaced.margin_right;
+    Some(min_total.max(0.0).min(replaced.total_width().max(0.0)))
   }
 
   fn max_content_width(&self, items: &[InlineItem]) -> f32 {
@@ -14745,6 +14779,40 @@ mod tests {
       Some(Size::new(width, height)),
       None,
     )
+  }
+
+  #[test]
+  fn intrinsic_inline_replaced_percentage_width_zeroes_min_content_contribution() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Inline;
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.max_width = Some(Length::percent(100.0));
+    replaced_style.max_width_keyword = None;
+    let replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      ReplacedType::Canvas,
+      Some(Size::new(200.0, 100.0)),
+      None,
+    );
+
+    let children = vec![replaced];
+    let child_refs: Vec<&BoxNode> = children.iter().collect();
+    let (min, max) = ifc
+      .intrinsic_widths_for_children(&container_style, child_refs.as_slice())
+      .expect("intrinsic widths");
+
+    assert!(
+      (min - 0.0).abs() < 0.001,
+      "expected min-content width 0, got {min}"
+    );
+    assert!(
+      (max - 200.0).abs() < 0.001,
+      "expected max-content width 200, got {max}"
+    );
   }
 
   #[test]

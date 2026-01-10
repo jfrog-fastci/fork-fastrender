@@ -16135,6 +16135,147 @@ mod tests {
     );
   }
 
+  #[test]
+  fn grid_item_descendant_percentage_width_does_not_expand_fr_tracks() {
+    // Regression test for cases like buzzfeed.com where a grid item contains descendants with
+    // percentage widths (e.g. `img { width: 100% }`). During grid track sizing those percentages
+    // must behave like `auto` (because the grid area is not yet definite) so they don't inflate the
+    // item's intrinsic contributions and force `fr` tracks to overflow the container.
+    let fc = GridFormattingContext::new();
+
+    let gap = 2.0;
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_column_gap = Length::px(gap);
+    grid_style.grid_row_gap = Length::px(0.0);
+    grid_style.grid_template_columns = vec![GridTrack::Fr(1.0); 10];
+    let grid_style = Arc::new(grid_style);
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.width = Some(Length::percent(100.0));
+    inner_style.height = Some(Length::px(100.0));
+    let inner_style = Arc::new(inner_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.grid_column_raw = Some("auto / span 5".to_string());
+    item_style.height = Some(Length::px(100.0));
+
+    let mut inner1 = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+    inner1.id = 4;
+    let mut item1 = BoxNode::new_block(
+      Arc::new(item_style.clone()),
+      FormattingContextType::Block,
+      vec![inner1],
+    );
+    item1.id = 2;
+
+    let mut inner2 = BoxNode::new_block(inner_style, FormattingContextType::Block, vec![]);
+    inner2.id = 5;
+    let mut item2 = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inner2]);
+    item2.id = 3;
+
+    let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item1, item2]);
+    grid.id = 1;
+
+    let container_width = 1000.0;
+    let constraints = LayoutConstraints::definite(container_width, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout");
+
+    let item1_fragment = find_block_fragment(&fragment, 2);
+    let item2_fragment = find_block_fragment(&fragment, 3);
+    let inner1_fragment = find_block_fragment(&fragment, 4);
+    let inner2_fragment = find_block_fragment(&fragment, 5);
+
+    let track_width = (container_width - gap * 9.0) / 10.0;
+    let expected_item_width = track_width * 5.0 + gap * 4.0;
+    for (label, frag) in [("item1", item1_fragment), ("item2", item2_fragment)] {
+      assert!(
+        (frag.bounds.width() - expected_item_width).abs() < 0.5,
+        "expected {label} width≈{expected_item_width:.2}, got {:.2}",
+        frag.bounds.width()
+      );
+    }
+    for (label, frag) in [("inner1", inner1_fragment), ("inner2", inner2_fragment)] {
+      assert!(
+        (frag.bounds.width() - expected_item_width).abs() < 0.5,
+        "expected {label} width≈{expected_item_width:.2}, got {:.2}",
+        frag.bounds.width()
+      );
+    }
+  }
+
+  #[test]
+  fn grid_item_descendant_replaced_percentage_width_does_not_expand_fr_tracks() {
+    use crate::tree::box_tree::ReplacedType;
+
+    let fc = GridFormattingContext::new();
+
+    let gap = 2.0;
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_column_gap = Length::px(gap);
+    grid_style.grid_row_gap = Length::px(0.0);
+    grid_style.grid_template_columns = vec![GridTrack::Fr(1.0); 10];
+    let grid_style = Arc::new(grid_style);
+
+    let mut image_style = ComputedStyle::default();
+    image_style.width = Some(Length::percent(100.0));
+    image_style.width_keyword = None;
+    let image_style = Arc::new(image_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.grid_column_raw = Some("auto / span 5".to_string());
+    item_style.height = Some(Length::px(100.0));
+
+    let mut image1 = BoxNode::new_replaced(
+      image_style.clone(),
+      ReplacedType::Canvas,
+      Some(Size::new(2000.0, 2000.0)),
+      None,
+    );
+    image1.id = 4;
+    let mut item1 = BoxNode::new_block(
+      Arc::new(item_style.clone()),
+      FormattingContextType::Block,
+      vec![image1],
+    );
+    item1.id = 2;
+
+    let mut image2 = BoxNode::new_replaced(
+      image_style,
+      ReplacedType::Canvas,
+      Some(Size::new(2000.0, 2000.0)),
+      None,
+    );
+    image2.id = 5;
+    let mut item2 = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![image2],
+    );
+    item2.id = 3;
+
+    let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item1, item2]);
+    grid.id = 1;
+
+    let container_width = 1000.0;
+    let constraints = LayoutConstraints::definite(container_width, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout");
+
+    let item1_fragment = find_block_fragment(&fragment, 2);
+    let item2_fragment = find_block_fragment(&fragment, 3);
+
+    let track_width = (container_width - gap * 9.0) / 10.0;
+    let expected_item_width = track_width * 5.0 + gap * 4.0;
+    for (label, frag) in [("item1", item1_fragment), ("item2", item2_fragment)] {
+      assert!(
+        (frag.bounds.width() - expected_item_width).abs() < 0.5,
+        "expected {label} width≈{expected_item_width:.2}, got {:.2}",
+        frag.bounds.width()
+      );
+    }
+  }
+
   // Test 8: Grid with multiple rows
   #[test]
   fn test_grid_multiple_rows() {

@@ -7190,15 +7190,30 @@ impl BlockFormattingContext {
     }
 
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
-      let edges =
-        horizontal_padding_and_borders(style, size.width, self.viewport_size, &self.font_context);
-      let result = size.width + edges;
+      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
+      let min_size = compute_replaced_size(
+        style,
+        replaced_box,
+        Some(Size::new(0.0, 0.0)),
+        self.viewport_size,
+      );
+      let (min_inline, max_inline) = if inline_is_horizontal {
+        (min_size.width, max_size.width)
+      } else {
+        (min_size.height, max_size.height)
+      };
+      let edges = if inline_is_horizontal {
+        horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+      } else {
+        vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+      };
+      let min_result = min_inline + edges;
+      let max_result = max_inline + edges;
       if allow_cache {
-        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
-        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
       }
-      return Ok((result, result));
+      return Ok((min_result, max_result));
     }
 
     let factory = &self.factory;
@@ -9781,26 +9796,27 @@ impl FormattingContext for BlockFormattingContext {
       return Ok((result, result));
     }
 
-    // Replaced elements fall back to their intrinsic content size plus padding/borders.
-    //
-    // Intrinsic *inline* sizing must follow the box's writing mode: in vertical writing modes the
-    // inline axis maps to the physical height, not width.
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
-      let inline_size = if inline_is_horizontal {
-        size.width
+      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
+      let min_size = compute_replaced_size(
+        style,
+        replaced_box,
+        Some(Size::new(0.0, 0.0)),
+        self.viewport_size,
+      );
+      let (min_inline, max_inline) = if inline_is_horizontal {
+        (min_size.width, max_size.width)
       } else {
-        size.height
+        (min_size.height, max_size.height)
       };
 
-      let edges_max = if inline_is_horizontal {
-        horizontal_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
+      let edges = if inline_is_horizontal {
+        horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
       } else {
-        vertical_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
+        vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
       };
-      let max_result = (inline_size + edges_max).max(0.0);
-
-      let mut min_result = max_result;
+      let max_result = (max_inline + edges).max(0.0);
+      let mut min_result = (min_inline + edges).max(0.0).min(max_result);
       if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced_box.replaced_type
       {
         use crate::tree::box_tree::FormControlKind;
@@ -9809,15 +9825,7 @@ impl FormattingContext for BlockFormattingContext {
           &control.control,
           FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
         ) {
-          // Text inputs and textareas can scroll their internal content. Their min-content size
-          // should therefore be able to shrink down to 0 content width while preserving
-          // padding/border.
-          let edges_min = if inline_is_horizontal {
-            horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
-          } else {
-            vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
-          };
-          min_result = edges_min.max(0.0).min(max_result);
+          min_result = edges.max(0.0).min(max_result);
         }
       }
 
@@ -13585,6 +13593,35 @@ mod tests {
 
     assert!((max - 12.0).abs() < 0.001);
     assert!((min - 12.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn intrinsic_percent_sized_replaced_elements_zero_out_min_content_contribution() {
+    use crate::tree::box_tree::ReplacedType;
+
+    let bfc = BlockFormattingContext::new();
+
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.width = Some(Length::percent(100.0));
+    style.width_keyword = None;
+    style.max_width = Some(Length::percent(100.0));
+    style.max_width_keyword = None;
+
+    let mut node = BoxNode::new_replaced(
+      Arc::new(style),
+      ReplacedType::Canvas,
+      Some(Size::new(200.0, 100.0)),
+      None,
+    );
+    node.id = 1234;
+
+    let (min, max) = bfc.compute_intrinsic_inline_sizes(&node).unwrap();
+    assert!((min - 0.0).abs() < 0.001, "expected min-content 0, got {min}");
+    assert!(
+      (max - 200.0).abs() < 0.001,
+      "expected max-content 200, got {max}"
+    );
   }
 
   #[test]
