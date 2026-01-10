@@ -71,6 +71,7 @@ mod marker_shadow_order;
 mod marker_text_shadow_vertical;
 mod marker_underline_order;
 mod mask_border_basic;
+mod mask_border;
 mod mask_multiple_layers_composite;
 mod mask_image_svg_url;
 mod mask_parallel_translation_golden;

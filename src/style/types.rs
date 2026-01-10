@@ -279,6 +279,7 @@ pub enum MaskMode {
 /// This controls how mask values are derived from the source image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskBorderMode {
+  MatchSource,
   Alpha,
   Luminance,
 }
@@ -423,7 +424,10 @@ impl Default for BorderImage {
   }
 }
 
-/// Complete `mask-border` data (CSS Masking Module Level 1).
+/// Mask border image data (`mask-border-*` longhands).
+///
+/// CSS Masking defines a "mask border image" with the same 9-slice tiling model as `border-image`,
+/// but with different initial values (notably `slice: 0` and `width: auto`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaskBorder {
   pub source: BorderImageSource,
@@ -432,6 +436,13 @@ pub struct MaskBorder {
   pub outset: BorderImageOutset,
   pub repeat: (BorderImageRepeat, BorderImageRepeat),
   pub mode: MaskBorderMode,
+}
+
+impl MaskBorder {
+  #[inline]
+  pub fn is_active(&self) -> bool {
+    matches!(self.source, BorderImageSource::Image(_))
+  }
 }
 
 impl Default for MaskBorder {
@@ -454,7 +465,7 @@ impl Default for MaskBorder {
       },
       outset: BorderImageOutset::default(),
       repeat: (BorderImageRepeat::Stretch, BorderImageRepeat::Stretch),
-      mode: MaskBorderMode::Alpha,
+      mode: MaskBorderMode::MatchSource,
     }
   }
 }

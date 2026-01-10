@@ -8204,6 +8204,7 @@ impl DisplayListRenderer {
   fn render_mask_border(
     &mut self,
     mask_border: &ResolvedMaskBorder,
+    transform: Transform,
   ) -> RenderResult<Option<OffsetMask>> {
     check_active(RenderStage::Paint)?;
     let mut reusable_mask = MASK_RENDER_SCRATCH.with(|cell| cell.borrow_mut().take());
@@ -8221,8 +8222,6 @@ impl DisplayListRenderer {
       self.canvas.width() as f32 / self.scale,
       self.canvas.height() as f32 / self.scale,
     ));
-
-    let transform = self.canvas.transform();
     let inv_transform = (transform == Transform::identity())
       .then_some(Transform::identity())
       .or_else(|| invert_transform(transform));
@@ -8526,6 +8525,7 @@ impl DisplayListRenderer {
     };
 
     let mode = match mask_border.mode {
+      MaskBorderMode::MatchSource => MaskMode::MatchSource,
       MaskBorderMode::Alpha => MaskMode::Alpha,
       MaskBorderMode::Luminance => MaskMode::Luminance,
     };
@@ -13850,12 +13850,12 @@ impl DisplayListRenderer {
              }
            }
 
-           if let Some(mask_border) = record.mask_border.as_ref() {
-             if let Some(mask) = self.render_mask_border(mask_border)? {
-               let OffsetMask {
-                 mask,
-                 origin: mask_origin,
-               } = mask;
+            if let Some(mask_border) = record.mask_border.as_ref() {
+              if let Some(mask) = self.render_mask_border(mask_border, record.warp_source_transform)? {
+                let OffsetMask {
+                  mask,
+                  origin: mask_origin,
+                } = mask;
                let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
                if mask.width() > 1 || mask.height() > 1 {
                  MASK_RENDER_SCRATCH.with(|cell| {

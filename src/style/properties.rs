@@ -7413,13 +7413,13 @@ pub(crate) fn apply_property_from_source(
     "filter" => styles.filter = source.filter.clone(),
     "backdrop-filter" => styles.backdrop_filter = source.backdrop_filter.clone(),
     "clip-path" => styles.clip_path = source.clip_path.clone(),
+    "mask-border" => styles.mask_border = source.mask_border.clone(),
     "mask-border-source" => styles.mask_border.source = source.mask_border.source.clone(),
     "mask-border-slice" => styles.mask_border.slice = source.mask_border.slice.clone(),
     "mask-border-width" => styles.mask_border.width = source.mask_border.width.clone(),
     "mask-border-outset" => styles.mask_border.outset = source.mask_border.outset.clone(),
     "mask-border-repeat" => styles.mask_border.repeat = source.mask_border.repeat,
     "mask-border-mode" => styles.mask_border.mode = source.mask_border.mode,
-    "mask-border" => styles.mask_border = source.mask_border.clone(),
     "clip" => styles.clip = source.clip.clone(),
     "transform-origin" => styles.transform_origin = source.transform_origin.clone(),
     "mix-blend-mode" => styles.mix_blend_mode = source.mix_blend_mode,
@@ -15597,9 +15597,9 @@ fn apply_declaration_with_base_internal_with_order(
 
     // Mask
     "mask-border" => {
-      if let Some(mut border) = parse_mask_border_shorthand(resolved_value) {
-        resolve_light_dark_in_border_image_source(&mut border.source, is_dark_color_scheme);
-        styles.mask_border = border;
+      if let Some(mut mask_border) = parse_mask_border_shorthand(resolved_value) {
+        resolve_light_dark_in_border_image_source(&mut mask_border.source, is_dark_color_scheme);
+        styles.mask_border = mask_border;
       }
     }
     "mask-border-source" => {
@@ -17660,6 +17660,8 @@ fn parse_mask_border_mode(value: &PropertyValue) -> Option<MaskBorderMode> {
         Some(MaskBorderMode::Alpha)
       } else if kw.eq_ignore_ascii_case("luminance") {
         Some(MaskBorderMode::Luminance)
+      } else if kw.eq_ignore_ascii_case("match-source") {
+        Some(MaskBorderMode::MatchSource)
       } else {
         None
       }
@@ -17688,15 +17690,17 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
     )
   };
 
-  let is_fill_keyword = |token: &PropertyValue| {
+  let is_fill_keyword = |token: &PropertyValue| -> bool {
     matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"))
   };
 
-  let is_mode_keyword = |token: &PropertyValue| -> bool {
+  let is_mask_border_mode_keyword = |token: &PropertyValue| -> bool {
     matches!(
       token,
       PropertyValue::Keyword(kw)
-        if kw.eq_ignore_ascii_case("alpha") || kw.eq_ignore_ascii_case("luminance")
+        if kw.eq_ignore_ascii_case("alpha")
+          || kw.eq_ignore_ascii_case("luminance")
+          || kw.eq_ignore_ascii_case("match-source")
     )
   };
 
@@ -17751,7 +17755,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
     return None;
   }
 
-  let mut img = MaskBorder::default();
+  let mut mask_border = MaskBorder::default();
 
   // Track which tokens are consumed by the slice/width/outset portions of the shorthand so we can
   // validate the remaining tokens as source/repeat/mode.
@@ -17797,7 +17801,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
       if slice_values == 0 {
         return None;
       }
-      img.slice = parse_mask_border_slice_values(&tokens[start..=end])?;
+      mask_border.slice = parse_mask_border_slice_values(&tokens[start..=end])?;
     }
   } else {
     // With slashes, the slice group must be an uninterrupted suffix before the first slash.
@@ -17836,7 +17840,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
     for idx in slice_start..first_slash {
       used[idx] = true;
     }
-    img.slice = parse_mask_border_slice_values(&tokens[slice_start..first_slash])?;
+    mask_border.slice = parse_mask_border_slice_values(&tokens[slice_start..first_slash])?;
 
     let width_start = first_slash + 1;
     if slash_positions.len() == 2 {
@@ -17850,7 +17854,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
         return None;
       }
       if !width_tokens.is_empty() {
-        img.width = parse_border_image_width_list(width_tokens)?;
+        mask_border.width = parse_border_image_width_list(width_tokens)?;
         for idx in width_start..second_slash {
           used[idx] = true;
         }
@@ -17870,7 +17874,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
       if outset_values == 0 {
         return None;
       }
-      img.outset = parse_border_image_outset_list(&tokens[outset_start..outset_end])?;
+      mask_border.outset = parse_border_image_outset_list(&tokens[outset_start..outset_end])?;
     } else {
       let mut width_end = width_start;
       let mut width_values = 0usize;
@@ -17885,7 +17889,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
       if width_values == 0 {
         return None;
       }
-      img.width = parse_border_image_width_list(&tokens[width_start..width_end])?;
+      mask_border.width = parse_border_image_width_list(&tokens[width_start..width_end])?;
     }
   }
 
@@ -17903,19 +17907,21 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
       source = Some(parsed_source);
       continue;
     }
-    if is_repeat_keyword(token) {
-      repeat_indices.push(idx);
-      if repeat_indices.len() > 2 {
-        return None;
-      }
-      continue;
-    }
-    if is_mode_keyword(token) {
+
+    if is_mask_border_mode_keyword(token) {
       if mode.is_some() {
         return None;
       }
       mode = parse_mask_border_mode(token);
       if mode.is_none() {
+        return None;
+      }
+      continue;
+    }
+
+    if is_repeat_keyword(token) {
+      repeat_indices.push(idx);
+      if repeat_indices.len() > 2 {
         return None;
       }
       continue;
@@ -17929,7 +17935,7 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
   }
 
   if let Some(src) = source {
-    img.source = src;
+    mask_border.source = src;
   }
 
   if !repeat_indices.is_empty() {
@@ -17937,14 +17943,14 @@ fn parse_mask_border_shorthand(value: &PropertyValue) -> Option<MaskBorder> {
       .into_iter()
       .map(|idx| tokens[idx].clone())
       .collect();
-    img.repeat = parse_border_image_repeat(&PropertyValue::Multiple(rep_tokens))?;
+    mask_border.repeat = parse_border_image_repeat(&PropertyValue::Multiple(rep_tokens))?;
   }
 
   if let Some(mode) = mode {
-    img.mode = mode;
+    mask_border.mode = mode;
   }
 
-  Some(img)
+  Some(mask_border)
 }
 
 fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {

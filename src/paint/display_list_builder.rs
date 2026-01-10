@@ -145,6 +145,7 @@ use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::Isolation;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
@@ -2776,8 +2777,7 @@ impl DisplayListBuilder {
       root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
     let style_has_mask_image =
       root_style.is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
-    let style_has_mask_border = root_style
-      .is_some_and(|style| matches!(style.mask_border.source, BorderImageSource::Image(_)));
+    let style_has_mask_border = root_style.is_some_and(|style| style.mask_border.is_active());
 
     is_root
       || style_has_filter
@@ -2841,8 +2841,7 @@ impl DisplayListBuilder {
       root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
     let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
-    let style_has_mask_border = root_style
-      .is_some_and(|style| matches!(style.mask_border.source, BorderImageSource::Image(_)));
+    let style_has_mask_border = root_style.is_some_and(|style| style.mask_border.is_active());
     let mask_border = root_style.and_then(|style| self.resolve_mask_border(style, root_border_bounds));
     let is_paged_media_page_root = is_root
       && root_fragment.is_some_and(|fragment| {
@@ -4421,6 +4420,40 @@ impl DisplayListBuilder {
       BorderImageSource::None => return None,
     };
 
+    // Resolve `mask-border-mode: match-source` using the image metadata while we still have access
+    // to the `ImageCache` (the renderer only sees RGBA pixels).
+    let resolved_mode = match style.mask_border.mode {
+      MaskBorderMode::MatchSource => match bg.as_ref() {
+        BackgroundImage::Url(src) => {
+          let trimmed = trim_ascii_whitespace_start(src);
+          if trimmed.starts_with('#') {
+            // Fragment-only URLs are resolved via `svg_id_defs` (see `decode_image`).
+            MaskBorderMode::Alpha
+          } else if trimmed.starts_with('<') {
+            // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
+            MaskBorderMode::Alpha
+          } else if let Some(image_cache) = self.image_cache.as_ref() {
+            let resolved_src = image_cache.resolve_url(src);
+            match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
+              Ok(cached) => {
+                if cached.is_vector || cached.image.color().has_alpha() {
+                  MaskBorderMode::Alpha
+                } else {
+                  MaskBorderMode::Luminance
+                }
+              }
+              Err(_) => MaskBorderMode::Alpha,
+            }
+          } else {
+            // Without the image cache we can't determine the source color type; fall back to alpha.
+            MaskBorderMode::Alpha
+          }
+        }
+        _ => MaskBorderMode::Alpha,
+      },
+      other => other,
+    };
+
     let source = match bg.as_ref() {
       BackgroundImage::Url(src) => self
         .decode_image(
@@ -4483,7 +4516,7 @@ impl DisplayListBuilder {
       width: style.mask_border.width.clone(),
       outset: style.mask_border.outset.clone(),
       repeat: style.mask_border.repeat,
-      mode: style.mask_border.mode,
+      mode: resolved_mode,
       rect: bounds,
       border_widths,
       current_color: style.color,

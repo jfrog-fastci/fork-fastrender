@@ -2613,7 +2613,7 @@ impl Painter {
     let mask_border = fragment
       .style
       .clone()
-      .filter(|s| matches!(s.mask_border.source, BorderImageSource::Image(_)));
+      .filter(|s| s.mask_border.is_active());
     if opacity < 1.0
       || transform.is_some()
       || transform_3d.is_some()
@@ -4650,13 +4650,25 @@ impl Painter {
       mask
     };
 
-    // Resolve the source image.
-    let (source_pixmap, img_w, img_h, target_widths, outer_rect_css) = match bg.as_ref() {
+    // Resolve the source image and resolve `mask-border-mode: match-source` while we still have
+    // access to the original image metadata.
+    let (source_pixmap, img_w, img_h, target_widths, outer_rect_css, mode) = match bg.as_ref() {
       BackgroundImage::Url(src) => {
         let resolved_src = self.image_cache.resolve_url(src);
         let image = match self.image_cache.load(&resolved_src) {
           Ok(img) => img,
           Err(_) => return Ok(None),
+        };
+        let resolved_mode = match style.mask_border.mode {
+          MaskBorderMode::MatchSource => {
+            if image.is_vector || image.image.color().has_alpha() {
+              MaskMode::Alpha
+            } else {
+              MaskMode::Luminance
+            }
+          }
+          MaskBorderMode::Alpha => MaskMode::Alpha,
+          MaskBorderMode::Luminance => MaskMode::Luminance,
         };
         let orientation = style.image_orientation.resolve(image.orientation, true);
         let intrinsic_css_size =
@@ -4766,7 +4778,7 @@ impl Painter {
           rect_css.width() + outsets.left + outsets.right,
           rect_css.height() + outsets.top + outsets.bottom,
         );
-        (pixmap, img_w, img_h, target_widths, outer_rect_css)
+        (pixmap, img_w, img_h, target_widths, outer_rect_css, resolved_mode)
       }
       BackgroundImage::LinearGradient { .. }
       | BackgroundImage::RepeatingLinearGradient { .. }
@@ -4776,6 +4788,10 @@ impl Painter {
       | BackgroundImage::RepeatingConicGradient { .. } => {
         // For generated images we don't have intrinsic CSS sizing information, so treat `auto`
         // widths as the used border widths (matching current border-image behavior).
+        let resolved_mode = match style.mask_border.mode {
+          MaskBorderMode::Luminance => MaskMode::Luminance,
+          MaskBorderMode::Alpha | MaskBorderMode::MatchSource => MaskMode::Alpha,
+        };
         let resolve_width = |value: BorderImageWidthValue, border: f32, axis: f32| -> f32 {
           match value {
             BorderImageWidthValue::Auto => border,
@@ -4819,7 +4835,7 @@ impl Painter {
           return Ok(None);
         };
         let pixmap = Arc::new(pixmap);
-        (pixmap, img_w, img_h, target_widths, outer_rect_css)
+        (pixmap, img_w, img_h, target_widths, outer_rect_css, resolved_mode)
       }
       BackgroundImage::None => return Ok(None),
     };
@@ -4863,11 +4879,7 @@ impl Painter {
       }));
     };
 
-    // Convert source pixels to an alpha mask when `mask-border-mode: luminance` is used.
-    let mode = match style.mask_border.mode {
-      MaskBorderMode::Alpha => MaskMode::Alpha,
-      MaskBorderMode::Luminance => MaskMode::Luminance,
-    };
+    // Convert source pixels to an alpha mask when luminance mode is used.
     let converted_source = match mode {
       MaskMode::Luminance => {
         let Some(tile) = mask_tile_from_image(source_pixmap.as_ref(), mode)? else {

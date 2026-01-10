@@ -1112,9 +1112,9 @@ fn invalid_mask_border_mode_does_not_clear_backdrop_root() {
         height: 20px;
         margin: 20px;
         mask-border: url(#missing) 30;
-        /* `mask-border-mode` only allows `alpha`/`luminance`. Invalid mode keywords must not clear
-           the prior mask-border value (and thus must not remove the Backdrop Root boundary). */
-        mask-border: match-source;
+        /* Invalid `mask-border-mode` keywords must not clear the prior mask-border value (and thus
+           must not remove the Backdrop Root boundary). */
+        mask-border-mode: banana;
       }
       #overlay {
         width: 40px;
