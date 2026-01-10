@@ -115,6 +115,9 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Alt+Left | Back |
 | Alt+Right | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
+| Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
+| Ctrl/Cmd+Minus | Zoom out |
+| Ctrl/Cmd+0 | Reset zoom |
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
 | Ctrl/Cmd+A (page focus) | Select all text in the focused page `<input>`/`<textarea>` |
 | Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
@@ -123,6 +126,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl+Insert (page focus, Win/Linux) | Copy selection from the focused page `<input>`/`<textarea>` |
 | Shift+Insert (page focus, Win/Linux) | Paste OS clipboard text into the focused page `<input>`/`<textarea>` |
 | Shift+Delete (page focus, Win/Linux) | Cut selection from the focused page `<input>`/`<textarea>` |
+
+Note: zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
 
 ## Code layout
 
