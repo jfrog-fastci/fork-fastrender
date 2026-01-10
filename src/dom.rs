@@ -3325,7 +3325,7 @@ pub(crate) const COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES: [&str; 5] = [
   "data-poster-image-override",
 ];
 
-pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
+pub fn img_src_is_placeholder(value: &str) -> bool {
   fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
       .as_bytes()

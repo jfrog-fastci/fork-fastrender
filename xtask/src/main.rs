@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use url::Url;
 
 mod capability_map;
+mod analyze_lazy_loading;
 mod cmd;
 mod chrome_baseline_fixtures;
 mod fixture_chrome_diff;
@@ -46,6 +47,7 @@ fn main() -> Result<()> {
     Commands::CapabilityMap(args) => capability_map::run_capability_map(args),
     Commands::FixtureChromeDiff(args) => fixture_chrome_diff::run_fixture_chrome_diff(args),
     Commands::FixtureDeterminism(args) => fixture_determinism::run_fixture_determinism(args),
+    Commands::AnalyzeLazyLoading(args) => analyze_lazy_loading::run_analyze_lazy_loading(args),
     Commands::FreezePageFixture(args) => freeze_page_fixture_cmd::run_freeze_page_fixture(args),
     Commands::ImportPageFixture(args) => import_page_fixture::run_import_page_fixture(args),
     Commands::CaptureAccuracyFixtures(args) => run_capture_accuracy_fixtures(args),
@@ -127,6 +129,8 @@ enum Commands {
   FixtureChromeDiff(fixture_chrome_diff::FixtureChromeDiffArgs),
   /// Render offline fixtures multiple times and report nondeterministic fixtures (pixel diffs between runs)
   FixtureDeterminism(fixture_determinism::FixtureDeterminismArgs),
+  /// Analyze lazy-loading `data-*` attribute conventions across offline HTML fixtures.
+  AnalyzeLazyLoading(analyze_lazy_loading::AnalyzeLazyLoadingArgs),
   /// Freeze selected pageset pages into deterministic offline fixtures under tests/pages/fixtures
   FreezePageFixture(freeze_page_fixture_cmd::FreezePageFixtureArgs),
   /// Convert a captured bundle into a pages_regression fixture

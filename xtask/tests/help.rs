@@ -23,6 +23,7 @@ fn help_lists_commands() {
       && stdout.contains("chrome-baseline-fixtures")
       && stdout.contains("fixture-chrome-diff")
       && stdout.contains("fixture-determinism")
+      && stdout.contains("analyze-lazy-loading")
       && stdout.contains("refresh-progress-accuracy")
       && stdout.contains("capture-accuracy-fixtures")
       && stdout.contains("pageset")
