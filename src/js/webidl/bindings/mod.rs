@@ -125,7 +125,7 @@ mod tests {
           let name = Self::value_to_rust_string(scope, name)?;
           let value = Self::value_to_rust_string(scope, value)?;
           params
-            .append(name, value)
+            .append(&name, &value)
             .map_err(|_| VmError::TypeError("URLSearchParams.append failed"))?;
           Ok(Value::Undefined)
         }
@@ -134,7 +134,7 @@ mod tests {
           let name = args.get(0).copied().unwrap_or(Value::Undefined);
           let name = Self::value_to_rust_string(scope, name)?;
           match params
-            .get(name)
+            .get(&name)
             .map_err(|_| VmError::TypeError("URLSearchParams.get failed"))?
           {
             None => Ok(Value::Null),
