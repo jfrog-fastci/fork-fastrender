@@ -10,8 +10,13 @@ adapter can be used like a normal FastRender crate without pulling the entire ve
 workspace into FastRender’s workspace.
 
 FastRender may also carry small embedder-specific adjustments here (for example: using
-`Vm::{call_without_host, construct_without_host}` when WebIDL helpers need to call into JS without
-an available host context).
+host-aware `Vm::call*` paths when WebIDL helpers need to call into JS (iterator protocol, callback
+invocation, object coercions) so embedder `VmHostHooks` and (when available) embedder host context
+are preserved.
+
+In particular, `VmJsWebIdlCx` has a `from_native_call` constructor intended for use inside `vm-js`
+`NativeCall`/`NativeConstruct` handlers, so conversions that call back into JS do **not** route
+through `Vm::call_without_host` (which bypasses embedder hook overrides).
 
 ## Syncing with `ecma-rs`
 
@@ -25,4 +30,3 @@ bash scripts/cargo_agent.sh test -p webidl-vm-js
 ```
 
 Do **not** depend on `vendor/ecma-rs/webidl-vm-js` directly from FastRender; use this crate.
-
