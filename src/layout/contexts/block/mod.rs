@@ -4885,23 +4885,9 @@ impl BlockFormattingContext {
         }
       };
 
-      // Inline formatting contexts currently produce fragment trees in physical coordinates when
-      // the block axis is horizontal (vertical writing modes). Block layout operates in logical
-      // inline/block space and will convert the full subtree once at the end, so map the inline
-      // fragment tree back into logical coordinates here.
-      if block_axis_is_horizontal(parent.style.writing_mode) {
-        let phys_w = inline_fragment.bounds.width();
-        let phys_h = inline_fragment.bounds.height();
-        let parent_inline = phys_h;
-        let parent_block = phys_w;
-        inline_fragment = unconvert_fragment_axes(
-          inline_fragment,
-          parent_inline,
-          parent_block,
-          parent.style.writing_mode,
-          parent.style.direction,
-        );
-      }
+      // Inline formatting contexts produce fragment trees in the parent formatting context's
+      // logical coordinate system (x = inline axis, y = block axis). Block layout will convert the
+      // full subtree once at the end, so no additional axis conversion is needed here.
 
       inline_fragment.bounds = Rect::from_xywh(
         0.0,
@@ -10765,7 +10751,7 @@ pub(crate) fn convert_fragment_axes_root(fragment: FragmentNode) -> FragmentNode
   convert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
 }
 
-fn logical_rect_to_physical(
+pub(crate) fn logical_rect_to_physical(
   rect: Rect,
   parent_inline_size: f32,
   parent_block_size: f32,
@@ -10797,7 +10783,7 @@ fn logical_rect_to_physical(
   Rect::from_xywh(phys_x, phys_y, block_size, inline_size)
 }
 
-fn physical_rect_to_logical(
+pub(crate) fn physical_rect_to_logical(
   rect: Rect,
   parent_inline_size: f32,
   parent_block_size: f32,

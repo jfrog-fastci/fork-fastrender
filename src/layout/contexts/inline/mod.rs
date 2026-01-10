@@ -6540,25 +6540,13 @@ impl InlineFormattingContext {
     }
 
     let anchor_block_position = block_offset + line.baseline - strut_metrics.baseline_offset;
-    let line_origin = if inline_vertical {
-      Point::new(block_offset, line.left_offset)
-    } else {
-      Point::new(line.left_offset, block_offset)
-    };
+    let line_origin = Point::new(line.left_offset, block_offset);
 
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
-      let (block_pos, mut inline_pos) = if inline_vertical {
-        let inline_pos = if rtl { cursor - item_width } else { cursor };
-        let block_pos = line.baseline + positioned.baseline_offset
-          - positioned.item.baseline_metrics().baseline_offset;
-        (block_pos, inline_pos)
-      } else {
-        let inline_pos = if rtl { cursor - item_width } else { cursor };
-        let block_pos = line.baseline + positioned.baseline_offset
-          - positioned.item.baseline_metrics().baseline_offset;
-        (block_pos, inline_pos)
-      };
+      let mut inline_pos = if rtl { cursor - item_width } else { cursor };
+      let block_pos = line.baseline + positioned.baseline_offset
+        - positioned.item.baseline_metrics().baseline_offset;
 
       if rtl {
         let marker_gap = match &positioned.item {
@@ -6575,11 +6563,7 @@ impl InlineFormattingContext {
         if anchor.running.is_none() && anchor.footnote.is_none() {
           if let Some(map) = anchor_positions.as_deref_mut() {
             let inline_origin = line.left_offset + inline_pos;
-            let anchor_point = if inline_vertical {
-              Point::new(anchor_block_position, inline_origin)
-            } else {
-              Point::new(inline_origin, anchor_block_position)
-            };
+            let anchor_point = Point::new(inline_origin, anchor_block_position);
             map.insert(anchor.box_id, anchor_point);
           }
         } else {
@@ -6658,11 +6642,7 @@ impl InlineFormattingContext {
       }
     }
 
-    let bounds = if inline_vertical {
-      Rect::from_xywh(block_offset, line.left_offset, line.height, line_box_width)
-    } else {
-      Rect::from_xywh(line.left_offset, block_offset, line_box_width, line.height)
-    };
+    let bounds = Rect::from_xywh(line.left_offset, block_offset, line_box_width, line.height);
     FragmentNode::new_line(bounds, line.baseline, children)
   }
 
@@ -6898,46 +6878,26 @@ impl InlineFormattingContext {
       InlineItem::Text(text_item) => {
         let paint_offset = text_item.paint_offset;
         let box_id = (text_item.box_id != 0).then_some(text_item.box_id);
-        if inline_vertical {
-          let width = text_item.metrics.height;
-          let height = text_item.advance + paint_offset.abs();
-          let bounds = Rect::from_xywh(block_pos, inline_pos + paint_offset, width, height);
-            FragmentNode::new_with_style(
-              bounds,
-              FragmentContent::Text {
-                text: Arc::from(text_item.text.clone()),
-                box_id,
-                source_range: TextSourceRange::new(text_item.source_range()),
-                baseline_offset: text_item.metrics.baseline_offset,
-                shaped: Some(Arc::from(text_item.runs.clone())),
-                is_marker: text_item.is_marker,
-                emphasis_offset: text_item.emphasis_offset,
-              },
-              vec![],
-              text_item.style.clone(),
-            )
-        } else {
-          let bounds = Rect::from_xywh(
-            inline_pos + paint_offset,
-            block_pos,
-            text_item.advance + paint_offset.abs(),
-            text_item.metrics.height,
-          );
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Text {
-              text: Arc::from(text_item.text.clone()),
-              box_id,
-              source_range: TextSourceRange::new(text_item.source_range()),
-              baseline_offset: text_item.metrics.baseline_offset,
-              shaped: Some(Arc::from(text_item.runs.clone())),
-              is_marker: text_item.is_marker,
-              emphasis_offset: text_item.emphasis_offset,
-            },
-            vec![],
-            text_item.style.clone(),
-          )
-        }
+        let bounds = Rect::from_xywh(
+          inline_pos + paint_offset,
+          block_pos,
+          text_item.advance + paint_offset.abs(),
+          text_item.metrics.height,
+        );
+        FragmentNode::new_with_style(
+          bounds,
+          FragmentContent::Text {
+            text: Arc::from(text_item.text.clone()),
+            box_id,
+            source_range: TextSourceRange::new(text_item.source_range()),
+            baseline_offset: text_item.metrics.baseline_offset,
+            shaped: Some(Arc::from(text_item.runs.clone())),
+            is_marker: text_item.is_marker,
+            emphasis_offset: text_item.emphasis_offset,
+          },
+          vec![],
+          text_item.style.clone(),
+        )
       }
       InlineItem::SoftBreak => {
         // Soft breaks should be handled by `LineBuilder` and never reach fragment construction.
@@ -6945,34 +6905,19 @@ impl InlineFormattingContext {
       }
       InlineItem::Tab(tab_item) => {
         let metrics = tab_item.metrics();
-        if inline_vertical {
-          let bounds = Rect::from_xywh(block_pos, inline_pos, metrics.height, tab_item.width());
-          FragmentNode::new_text_shaped(
-            bounds,
-            String::new(),
-            metrics.baseline_offset,
-            Vec::new(),
-            tab_item.style().clone(),
-          )
-        } else {
-          let bounds = Rect::from_xywh(inline_pos, block_pos, tab_item.width(), metrics.height);
-          FragmentNode::new_text_shaped(
-            bounds,
-            String::new(),
-            metrics.baseline_offset,
-            Vec::new(),
-            tab_item.style().clone(),
-          )
-        }
+        let bounds = Rect::from_xywh(inline_pos, block_pos, tab_item.width(), metrics.height);
+        FragmentNode::new_text_shaped(
+          bounds,
+          String::new(),
+          metrics.baseline_offset,
+          Vec::new(),
+          tab_item.style().clone(),
+        )
       }
       InlineItem::HardBreak => {
         // Hard breaks are consumed by `LineBuilder` and should never reach fragment creation.
         debug_assert!(false, "InlineItem::HardBreak should not produce fragments");
-        let bounds = if inline_vertical {
-          Rect::from_xywh(block_pos, inline_pos, 0.0, 0.0)
-        } else {
-          Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0)
-        };
+        let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0);
         FragmentNode::new_line(bounds, 0.0, Vec::new())
       }
       InlineItem::InlineBox(box_item) => {
@@ -6990,29 +6935,76 @@ impl InlineFormattingContext {
           let Some(map) = positioned_containing_blocks.as_deref_mut() else {
             return;
           };
-          // `bounds` is expressed in the coordinate space of the inline box's parent (often another
-          // inline box). Translate it into line coordinates before applying the line's own origin so
-          // containing-block rects stay correct for nested inline boxes.
-          let border_rect = bounds.translate(line_origin.translate(parent_offset_in_line));
-          let padding_width =
-            (border_rect.size.width - box_item.border_left - box_item.border_right).max(0.0);
-          let padding_height =
-            (border_rect.size.height - box_item.border_top - box_item.border_bottom).max(0.0);
-          let padding_rect = Rect::new(
-            Point::new(
-              border_rect.origin.x + box_item.border_left,
-              border_rect.origin.y + box_item.border_top,
-            ),
-            Size::new(padding_width, padding_height),
-          );
-          // Percentage offsets on absolutely positioned boxes resolve against the used height of the
-          // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
-          let cb_block_base = Some(padding_rect.size.height);
+           // `bounds` is expressed in the coordinate space of the inline box's parent (often another
+           // inline box). Translate it into line coordinates before applying the line's own origin so
+           // containing-block rects stay correct for nested inline boxes.
+           let border_rect = bounds.translate(line_origin.translate(parent_offset_in_line));
+           let style = box_item.style.as_ref();
+           let inline_positive =
+             crate::style::inline_axis_positive(style.writing_mode, style.direction);
+           let block_positive = crate::style::block_axis_positive(style.writing_mode);
+           let (inline_start_side, inline_end_side) =
+             if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+               if inline_positive {
+                 (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+               } else {
+                 (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+               }
+             } else if inline_positive {
+               (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+             } else {
+               (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+             };
+           let (block_start_side, block_end_side) =
+             if crate::style::block_axis_is_horizontal(style.writing_mode) {
+               if block_positive {
+                 (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+               } else {
+                 (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+               }
+             } else if block_positive {
+               (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+             } else {
+               (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+             };
+           let border_for = |side: crate::style::PhysicalSide| -> f32 {
+             match side {
+               crate::style::PhysicalSide::Left => box_item.border_left,
+               crate::style::PhysicalSide::Right => box_item.border_right,
+               crate::style::PhysicalSide::Top => box_item.border_top,
+               crate::style::PhysicalSide::Bottom => box_item.border_bottom,
+             }
+           };
+           let border_inline_start = border_for(inline_start_side);
+           let border_inline_end = border_for(inline_end_side);
+           let border_block_start = border_for(block_start_side);
+           let border_block_end = border_for(block_end_side);
+           let padding_width =
+             (border_rect.size.width - border_inline_start - border_inline_end).max(0.0);
+           let padding_height =
+             (border_rect.size.height - border_block_start - border_block_end).max(0.0);
+           let padding_rect = Rect::new(
+             Point::new(
+               border_rect.origin.x + border_inline_start,
+               border_rect.origin.y + border_block_start,
+             ),
+             Size::new(padding_width, padding_height),
+           );
+          // `ContainingBlock` stores percentage bases in physical axes (width/height), while the
+          // containing-block rect itself is stored in this formatting context's logical coordinate
+          // system. Map the logical size into physical bases so positioned offsets (top/left/etc)
+          // resolve against the correct axes.
+          let (cb_physical_width, cb_physical_height) =
+            if crate::style::block_axis_is_horizontal(style.writing_mode) {
+              (padding_rect.size.height, padding_rect.size.width)
+            } else {
+              (padding_rect.size.width, padding_rect.size.height)
+            };
           let new_cb = ContainingBlock::with_viewport_and_bases(
             padding_rect,
             self.viewport_size,
-            Some(padding_rect.size.width),
-            cb_block_base,
+            Some(cb_physical_width),
+            Some(cb_physical_height),
           );
 
           map
@@ -7028,330 +7020,232 @@ impl InlineFormattingContext {
                   existing.rect.max_y().max(padding_rect.max_y()),
                 ),
               );
-              let block_base = Some(union.size.height);
               *existing = ContainingBlock::with_viewport_and_bases(
                 union,
                 existing.viewport_size(),
-                Some(union.size.width),
-                block_base,
+                Some(if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                  union.size.height
+                } else {
+                  union.size.width
+                }),
+                Some(if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                  union.size.width
+                } else {
+                  union.size.height
+                }),
               );
             })
-            .or_insert(new_cb);
-        };
-
-          if inline_vertical {
-            let (baseline, _height, child_offsets) =
-              compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
-            let mut child_inline = box_item.start_edge;
-            let mut children = Vec::with_capacity(box_item.children.len());
-            for (idx, child) in box_item.children.iter().enumerate() {
-              let child_block =
-                box_item.content_offset_y + baseline + child_offsets[idx]
-                  - child.baseline_metrics().baseline_offset;
-              let fragment = self.create_item_fragment_oriented(
-                child,
-                child_block,
-                child_inline,
-                inline_vertical,
-                line_origin,
-                parent_offset_in_line.translate(Point::new(block_pos, inline_pos)),
-                relative_cb,
-                anchor_positions.as_deref_mut(),
-                positioned_containing_blocks.as_deref_mut(),
-              );
-              child_inline += child.width();
-              if let Some(extra) = box_item.justify_gaps.get(idx) {
-                child_inline += *extra;
-              }
-              children.push(fragment);
-            }
-          let bounds = Rect::from_xywh(
-            block_pos,
-            inline_pos,
-            box_item.metrics.height,
-            box_item.width(),
-          );
-          record_containing_block(
-            bounds,
-            parent_offset_in_line,
-            &mut positioned_containing_blocks,
-          );
-          let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Inline {
-              box_id,
-              fragment_index: box_item.box_index,
-            },
-            children,
-            box_item.paint_style(),
-          )
-        } else {
-          let (baseline, _height, child_offsets) =
-            compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
-          let mut child_x = box_item.start_edge;
-          let mut children = Vec::with_capacity(box_item.children.len());
-          // CSS 2.1 §10.6.1: for inline non-replaced elements, vertical padding/borders are
-          // applied around the *content area* (font metrics), not the line-height strut.
-          //
-          // This means that when `line-height` introduces leading, the border box should sit
-          // *inside* the line-height box, offset by half-leading.
-          let half_leading = box_item.strut_metrics.half_leading();
-          let line_box_origin_y = box_item.content_offset_y - half_leading;
-          let paint_origin_y = block_pos + half_leading - box_item.content_offset_y;
-          for (idx, child) in box_item.children.iter().enumerate() {
-            let child_y = line_box_origin_y + baseline + child_offsets[idx]
-              - child.baseline_metrics().baseline_offset;
-            let fragment = self.create_item_fragment_oriented(
-              child,
-              child_y,
-              child_x,
-              inline_vertical,
-              line_origin,
-              parent_offset_in_line.translate(Point::new(inline_pos, paint_origin_y)),
-              relative_cb,
-              anchor_positions.as_deref_mut(),
-              positioned_containing_blocks.as_deref_mut(),
-            );
-            child_x += child.width();
-            if let Some(extra) = box_item.justify_gaps.get(idx) {
-              child_x += *extra;
-            }
-            children.push(fragment);
-          }
-
-          let content_height =
-            (box_item.strut_metrics.ascent + box_item.strut_metrics.descent).max(0.0);
-          let bounds = Rect::from_xywh(
-            inline_pos,
-            paint_origin_y,
-            box_item.width(),
-            content_height + box_item.content_offset_y + box_item.bottom_inset,
-          );
-          record_containing_block(
-            bounds,
-            parent_offset_in_line,
-            &mut positioned_containing_blocks,
-          );
-          let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Inline {
-              box_id,
-              fragment_index: box_item.box_index,
-            },
-            children,
-            box_item.paint_style(),
-          )
-        }
+           .or_insert(new_cb);
+         };
+ 
+         let (baseline, _height, child_offsets) =
+           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
+         let mut child_inline = box_item.start_edge;
+         let mut children = Vec::with_capacity(box_item.children.len());
+ 
+         // CSS 2.1 §10.6.1: for inline non-replaced elements, vertical padding/borders are applied
+         // around the *content area* (font metrics), not the line-height strut. When `line-height`
+         // introduces leading, the border box should sit *inside* the line-height box, offset by
+         // half-leading.
+         let half_leading = box_item.strut_metrics.half_leading();
+         let line_box_origin_block = box_item.content_offset_y - half_leading;
+         let paint_origin_block = block_pos + half_leading - box_item.content_offset_y;
+ 
+         for (idx, child) in box_item.children.iter().enumerate() {
+           let child_block = line_box_origin_block + baseline + child_offsets[idx]
+             - child.baseline_metrics().baseline_offset;
+           let fragment = self.create_item_fragment_oriented(
+             child,
+             child_block,
+             child_inline,
+             inline_vertical,
+             line_origin,
+             parent_offset_in_line.translate(Point::new(inline_pos, paint_origin_block)),
+             relative_cb,
+             anchor_positions.as_deref_mut(),
+             positioned_containing_blocks.as_deref_mut(),
+           );
+           child_inline += child.width();
+           if let Some(extra) = box_item.justify_gaps.get(idx) {
+             child_inline += *extra;
+           }
+           children.push(fragment);
+         }
+ 
+         let content_height =
+           (box_item.strut_metrics.ascent + box_item.strut_metrics.descent).max(0.0);
+         let bounds = Rect::from_xywh(
+           inline_pos,
+           paint_origin_block,
+           box_item.width(),
+           content_height + box_item.content_offset_y + box_item.bottom_inset,
+         );
+         record_containing_block(bounds, parent_offset_in_line, &mut positioned_containing_blocks);
+         let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
+         FragmentNode::new_with_style(
+           bounds,
+           FragmentContent::Inline {
+             box_id,
+             fragment_index: box_item.box_index,
+           },
+           children,
+           box_item.paint_style(),
+         )
       }
       InlineItem::Ruby(_) => self.create_item_fragment(item, inline_pos, block_pos),
       InlineItem::InlineBlock(block_item) => {
         let mut fragment = block_item.fragment.clone();
-        if fragment
-          .style
-          .as_ref()
-          .is_some_and(|s| crate::style::block_axis_is_horizontal(s.writing_mode))
-        {
-          fragment = crate::layout::contexts::block::convert_fragment_axes_root(fragment);
-        }
-        if inline_vertical {
-          fragment.bounds = Rect::from_xywh(
-            block_pos + block_item.margin_top,
-            inline_pos + block_item.margin_left,
-            block_item.height,
-            block_item.width,
-          );
-        } else {
-          fragment.bounds = Rect::from_xywh(
-            inline_pos + block_item.margin_left,
-            block_pos + block_item.margin_top,
-            block_item.width,
-            block_item.height,
-          );
-        }
+        fragment.bounds = Rect::from_xywh(
+          inline_pos + block_item.margin_left,
+          block_pos + block_item.margin_top,
+          block_item.width,
+          block_item.height,
+        );
         fragment
       }
       InlineItem::Replaced(replaced_item) => {
         let paint_offset = replaced_item.paint_offset;
         let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
-        if inline_vertical {
-          let bounds = Rect::from_xywh(
-            block_pos + replaced_item.margin_top,
-            inline_pos + paint_offset + replaced_item.margin_left,
-            replaced_item.height,
-            replaced_item.width,
-          );
-          if let Some(id) = box_id {
-            if replaced_item.style.establishes_abs_containing_block()
-              || replaced_item.style.establishes_fixed_containing_block()
-            {
-              if let Some(map) = positioned_containing_blocks.as_deref_mut() {
-                let percentage_base_px = bounds.width().max(0.0);
-                let border_left = resolve_length_for_width(
-                  replaced_item.style.used_border_left_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_right = resolve_length_for_width(
-                  replaced_item.style.used_border_right_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_top = resolve_length_for_width(
-                  replaced_item.style.used_border_top_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_bottom = resolve_length_for_width(
-                  replaced_item.style.used_border_bottom_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let padding_rect = Rect::from_xywh(
-                  bounds.x() + border_left,
-                  bounds.y() + border_top,
-                  (bounds.width() - border_left - border_right).max(0.0),
-                  (bounds.height() - border_top - border_bottom).max(0.0),
-                );
-                let cb_block_base = Some(padding_rect.size.height);
-                let new_cb = ContainingBlock::with_viewport_and_bases(
-                  padding_rect,
-                  self.viewport_size,
-                  Some(padding_rect.size.width),
-                  cb_block_base,
-                );
-                map
-                  .entry(id)
-                  .and_modify(|existing| {
-                    let union = Rect::from_points(
-                      Point::new(
-                        existing.rect.min_x().min(padding_rect.min_x()),
-                        existing.rect.min_y().min(padding_rect.min_y()),
-                      ),
-                      Point::new(
-                        existing.rect.max_x().max(padding_rect.max_x()),
-                        existing.rect.max_y().max(padding_rect.max_y()),
-                      ),
-                    );
-                    let block_base = Some(union.size.height);
-                    *existing = ContainingBlock::with_viewport_and_bases(
-                      union,
-                      existing.viewport_size(),
-                      Some(union.size.width),
-                      block_base,
-                    );
-                  })
-                  .or_insert(new_cb);
-              }
+        let bounds = Rect::from_xywh(
+          inline_pos + replaced_item.margin_left + paint_offset,
+          block_pos + replaced_item.margin_top,
+          replaced_item.width,
+          replaced_item.height,
+        );
+        if let Some(id) = box_id {
+          if replaced_item.style.establishes_abs_containing_block()
+            || replaced_item.style.establishes_fixed_containing_block()
+          {
+            if let Some(map) = positioned_containing_blocks.as_deref_mut() {
+              let style = replaced_item.style.as_ref();
+              let percentage_base_px = bounds.width().max(0.0);
+              let border_left = resolve_length_for_width(
+                style.used_border_left_width(),
+                percentage_base_px,
+                style,
+                &self.font_context,
+                self.viewport_size,
+              );
+              let border_right = resolve_length_for_width(
+                style.used_border_right_width(),
+                percentage_base_px,
+                style,
+                &self.font_context,
+                self.viewport_size,
+              );
+              let border_top = resolve_length_for_width(
+                style.used_border_top_width(),
+                percentage_base_px,
+                style,
+                &self.font_context,
+                self.viewport_size,
+              );
+              let border_bottom = resolve_length_for_width(
+                style.used_border_bottom_width(),
+                percentage_base_px,
+                style,
+                &self.font_context,
+                self.viewport_size,
+              );
+
+              let inline_positive =
+                crate::style::inline_axis_positive(style.writing_mode, style.direction);
+              let block_positive = crate::style::block_axis_positive(style.writing_mode);
+              let (inline_start_side, inline_end_side) =
+                if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+                  if inline_positive {
+                    (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+                  } else {
+                    (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+                  }
+                } else if inline_positive {
+                  (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+                } else {
+                  (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+                };
+              let (block_start_side, block_end_side) =
+                if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                  if block_positive {
+                    (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+                  } else {
+                    (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+                  }
+                } else if block_positive {
+                  (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+                } else {
+                  (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+                };
+              let border_for = |side: crate::style::PhysicalSide| -> f32 {
+                match side {
+                  crate::style::PhysicalSide::Left => border_left,
+                  crate::style::PhysicalSide::Right => border_right,
+                  crate::style::PhysicalSide::Top => border_top,
+                  crate::style::PhysicalSide::Bottom => border_bottom,
+                }
+              };
+              let border_inline_start = border_for(inline_start_side);
+              let border_inline_end = border_for(inline_end_side);
+              let border_block_start = border_for(block_start_side);
+              let border_block_end = border_for(block_end_side);
+              let padding_rect = Rect::from_xywh(
+                bounds.x() + border_inline_start,
+                bounds.y() + border_block_start,
+                (bounds.width() - border_inline_start - border_inline_end).max(0.0),
+                (bounds.height() - border_block_start - border_block_end).max(0.0),
+              );
+              let (cb_physical_width, cb_physical_height) =
+                if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                  (padding_rect.size.height, padding_rect.size.width)
+                } else {
+                  (padding_rect.size.width, padding_rect.size.height)
+                };
+              let new_cb = ContainingBlock::with_viewport_and_bases(
+                padding_rect,
+                self.viewport_size,
+                Some(cb_physical_width),
+                Some(cb_physical_height),
+              );
+              map
+                .entry(id)
+                .and_modify(|existing| {
+                  let union = Rect::from_points(
+                    Point::new(
+                      existing.rect.min_x().min(padding_rect.min_x()),
+                      existing.rect.min_y().min(padding_rect.min_y()),
+                    ),
+                    Point::new(
+                      existing.rect.max_x().max(padding_rect.max_x()),
+                      existing.rect.max_y().max(padding_rect.max_y()),
+                    ),
+                  );
+                  *existing = ContainingBlock::with_viewport_and_bases(
+                    union,
+                    existing.viewport_size(),
+                    Some(if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                      union.size.height
+                    } else {
+                      union.size.width
+                    }),
+                    Some(if crate::style::block_axis_is_horizontal(style.writing_mode) {
+                      union.size.width
+                    } else {
+                      union.size.height
+                    }),
+                  );
+                })
+                .or_insert(new_cb);
             }
           }
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Replaced {
-              replaced_type: replaced_item.replaced_type.clone(),
-              box_id,
-            },
-            vec![],
-            replaced_item.style.clone(),
-          )
-        } else {
-          let bounds = Rect::from_xywh(
-            inline_pos + replaced_item.margin_left + paint_offset,
-            block_pos + replaced_item.margin_top,
-            replaced_item.width,
-            replaced_item.height,
-          );
-          if let Some(id) = box_id {
-            if replaced_item.style.establishes_abs_containing_block()
-              || replaced_item.style.establishes_fixed_containing_block()
-            {
-              if let Some(map) = positioned_containing_blocks.as_deref_mut() {
-                let percentage_base_px = bounds.width().max(0.0);
-                let border_left = resolve_length_for_width(
-                  replaced_item.style.used_border_left_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_right = resolve_length_for_width(
-                  replaced_item.style.used_border_right_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_top = resolve_length_for_width(
-                  replaced_item.style.used_border_top_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let border_bottom = resolve_length_for_width(
-                  replaced_item.style.used_border_bottom_width(),
-                  percentage_base_px,
-                  replaced_item.style.as_ref(),
-                  &self.font_context,
-                  self.viewport_size,
-                );
-                let padding_rect = Rect::from_xywh(
-                  bounds.x() + border_left,
-                  bounds.y() + border_top,
-                  (bounds.width() - border_left - border_right).max(0.0),
-                  (bounds.height() - border_top - border_bottom).max(0.0),
-                );
-                let cb_block_base = Some(padding_rect.size.height);
-                let new_cb = ContainingBlock::with_viewport_and_bases(
-                  padding_rect,
-                  self.viewport_size,
-                  Some(padding_rect.size.width),
-                  cb_block_base,
-                );
-                map
-                  .entry(id)
-                  .and_modify(|existing| {
-                    let union = Rect::from_points(
-                      Point::new(
-                        existing.rect.min_x().min(padding_rect.min_x()),
-                        existing.rect.min_y().min(padding_rect.min_y()),
-                      ),
-                      Point::new(
-                        existing.rect.max_x().max(padding_rect.max_x()),
-                        existing.rect.max_y().max(padding_rect.max_y()),
-                      ),
-                    );
-                    let block_base = Some(union.size.height);
-                    *existing = ContainingBlock::with_viewport_and_bases(
-                      union,
-                      existing.viewport_size(),
-                      Some(union.size.width),
-                      block_base,
-                    );
-                  })
-                  .or_insert(new_cb);
-              }
-            }
-          }
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Replaced {
-              replaced_type: replaced_item.replaced_type.clone(),
-              box_id,
-            },
-            vec![],
-            replaced_item.style.clone(),
-          )
         }
+        FragmentNode::new_with_style(
+          bounds,
+          FragmentContent::Replaced {
+            replaced_type: replaced_item.replaced_type.clone(),
+            box_id,
+          },
+          vec![],
+          replaced_item.style.clone(),
+        )
       }
       InlineItem::Floating(_) => {
         // Floats are laid out separately by the float integration logic; skip any stray placeholders.
@@ -7361,23 +7255,13 @@ impl InlineFormattingContext {
         if let Some(map) = anchor_positions.as_deref_mut() {
           // Nested anchors must include any inline box offsets (e.g. padding) that affect where the
           // positioned element would have appeared in flow.
-          let anchor_point = if inline_vertical {
-            line_origin
-              .translate(parent_offset_in_line)
-              .translate(Point::new(block_pos, inline_pos))
-          } else {
-            line_origin
-              .translate(parent_offset_in_line)
-              .translate(Point::new(inline_pos, block_pos))
-          };
+          let anchor_point = line_origin
+            .translate(parent_offset_in_line)
+            .translate(Point::new(inline_pos, block_pos));
           map.insert(anchor.box_id, anchor_point);
         }
         if let Some(running) = anchor.running.as_ref() {
-          let bounds = if inline_vertical {
-            Rect::from_xywh(block_pos, inline_pos, 0.0, 0.01)
-          } else {
-            Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01)
-          };
+          let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
           let mut fragment = FragmentNode::new_running_anchor(
             bounds,
             running.name.clone(),
@@ -7386,11 +7270,7 @@ impl InlineFormattingContext {
           fragment.style = Some(running.style.clone());
           fragment
         } else if let Some(footnote) = anchor.footnote.as_ref() {
-          let bounds = if inline_vertical {
-            Rect::from_xywh(block_pos, inline_pos, 0.0, 0.01)
-          } else {
-            Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01)
-          };
+          let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
           FragmentNode::new_footnote_anchor(bounds, footnote.snapshot.clone())
         } else {
           FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
@@ -10141,11 +10021,14 @@ impl FormattingContext for InlineFormattingContext {
       }
       let mut fragment = self.layout_with_floats(box_node, constraints, None, 0.0, 0.0)?;
       let style_override = crate::layout::style_override::style_override_for(box_node.id);
-      let style: &ComputedStyle = style_override
-        .as_deref()
-        .unwrap_or_else(|| box_node.style.as_ref());
+      let style_arc = style_override.unwrap_or_else(|| box_node.style.clone());
+      let style: &ComputedStyle = style_arc.as_ref();
+      fragment.style = Some(style_arc.clone());
       fragment.scrollbar_reservation =
         crate::layout::utils::scrollbar_reservation_for_style(style);
+      if crate::style::block_axis_is_horizontal(style.writing_mode) {
+        fragment = crate::layout::contexts::block::convert_fragment_axes_root(fragment);
+      }
       return Ok(fragment);
     }
 
@@ -11781,13 +11664,15 @@ impl InlineFormattingContext {
         total
       }
       eprintln!(
-                "ifc start display={:?} children={} text_desc={} available_inline={:.2} available_block={:.2}",
-                box_node.style.display,
-                box_node.children.len(),
-                count_text_nodes(box_node),
-                constraints.width().unwrap_or(f32::MAX),
-                constraints.height().unwrap_or(f32::MAX)
-            );
+        "ifc start display={:?} writing_mode={:?} font_size={:.2} children={} text_desc={} available_inline={:.2} available_block={:.2}",
+        box_node.style.display,
+        box_node.style.writing_mode,
+        box_node.style.font_size,
+        box_node.children.len(),
+        count_text_nodes(box_node),
+        constraints.width().unwrap_or(f32::MAX),
+        constraints.height().unwrap_or(f32::MAX)
+      );
     }
     let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let inline_space = if inline_vertical {
@@ -11822,17 +11707,46 @@ impl InlineFormattingContext {
     // When a parent layout mode provides a definite used border-box inline size (e.g. flex/grid
     // item sizing or shrink-to-fit resolution), lay out the inline contents within the resulting
     // content box rather than the containing block size passed in `available_width`.
-    if let Some(used_border_box) = constraints.used_border_box_width.filter(|w| w.is_finite()) {
-      if !inline_vertical {
+    if inline_vertical {
+      if let Some(used_border_box) = constraints.used_border_box_height.filter(|h| h.is_finite()) {
         let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
-        let edges = horizontal_padding_and_borders(
-          style,
+        let edges = resolve_length_for_width(
+          style.padding_top,
           percentage_base_px,
-          self.viewport_size,
+          style,
           &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.padding_bottom,
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.used_border_top_width(),
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.used_border_bottom_width(),
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
         );
         available_inline = (used_border_box - edges).max(0.0);
       }
+    } else if let Some(used_border_box) = constraints.used_border_box_width.filter(|w| w.is_finite())
+    {
+      let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
+      let edges = horizontal_padding_and_borders(
+        style,
+        percentage_base_px,
+        self.viewport_size,
+        &self.font_context,
+      );
+      available_inline = (used_border_box - edges).max(0.0);
     }
     if crate::layout::contexts::inline::line_builder::log_line_width_enabled() {
       eprintln!(
@@ -12054,7 +11968,9 @@ impl InlineFormattingContext {
     let mut use_first_line_width = true;
     let mut local_float_ctx: Option<FloatContext> = None;
     let mut flow_order: Vec<FlowChunk> = Vec::new();
-    let mut block_run_max_width: f32 = 0.0;
+    // Track the maximum inline-axis extent contributed by block-level segments so the formatting
+    // context can compute an intrinsic inline size when the available inline space is indefinite.
+    let mut block_max_inline: f32 = 0.0;
     let mut deadline_counter = 0usize;
     // Inline segments that contain only static-position anchors (e.g. blocks containing only
     // abspos/fixed descendants) should not generate line boxes, but we still need to record a
@@ -12163,11 +12079,9 @@ impl InlineFormattingContext {
           indent_for_line
         };
         let inline_x = line_left_edge + indent_offset;
-        let anchor_point = if inline_vertical {
-          Point::new(line_y, inline_x)
-        } else {
-          Point::new(inline_x, line_y)
-        };
+        // Anchor positions are stored in the formatting context's logical coordinate system
+        // (x = inline axis, y = block axis) regardless of writing mode.
+        let anchor_point = Point::new(inline_x, line_y);
         for id in anchor_ids {
           anchor_positions.insert(id, anchor_point);
         }
@@ -12385,63 +12299,58 @@ impl InlineFormattingContext {
             local_float_ctx = Some(FloatContext::new(available_inline.max(0.0)));
           }
 
-          let percentage_base = available_inline;
-          let _margin_left = block_node
-            .style
-            .margin_left
-            .as_ref()
-            .map(|m| {
-              resolve_length_for_width(
-                *m,
-                percentage_base,
-                &block_node.style,
-                &self.font_context,
-                self.viewport_size,
-              )
-            })
-            .unwrap_or(0.0);
-          let margin_right = block_node
-            .style
-            .margin_right
-            .as_ref()
-            .map(|m| {
-              resolve_length_for_width(
-                *m,
-                percentage_base,
-                &block_node.style,
-                &self.font_context,
-                self.viewport_size,
-              )
-            })
-            .unwrap_or(0.0);
-          let margin_top = block_node
-            .style
-            .margin_top
-            .as_ref()
-            .map(|m| {
-              resolve_length_for_width(
-                *m,
-                percentage_base,
-                &block_node.style,
-                &self.font_context,
-                self.viewport_size,
-              )
-            })
-            .unwrap_or(0.0);
-          let margin_bottom = block_node
-            .style
-            .margin_bottom
-            .as_ref()
-            .map(|m| {
-              resolve_length_for_width(
-                *m,
-                percentage_base,
-                &block_node.style,
-                &self.font_context,
-                self.viewport_size,
-              )
-            })
-            .unwrap_or(0.0);
+          let percentage_base = available_inline.max(0.0);
+          let inline_positive =
+            crate::style::inline_axis_positive(style.writing_mode, style.direction);
+          let block_positive = crate::style::block_axis_positive(style.writing_mode);
+          let (inline_start_side, inline_end_side) =
+            if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+              if inline_positive {
+                (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+              } else {
+                (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+              }
+            } else if inline_positive {
+              (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+            } else {
+              (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+            };
+          let (block_start_side, block_end_side) =
+            if crate::style::block_axis_is_horizontal(style.writing_mode) {
+              if block_positive {
+                (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+              } else {
+                (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+              }
+            } else if block_positive {
+              (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+            } else {
+              (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+            };
+          let resolve_margin_side = |side: crate::style::PhysicalSide| -> f32 {
+            let raw = match side {
+              crate::style::PhysicalSide::Left => block_node.style.margin_left,
+              crate::style::PhysicalSide::Right => block_node.style.margin_right,
+              crate::style::PhysicalSide::Top => block_node.style.margin_top,
+              crate::style::PhysicalSide::Bottom => block_node.style.margin_bottom,
+            };
+            raw
+              .as_ref()
+              .map(|m| {
+                resolve_length_for_width(
+                  *m,
+                  percentage_base,
+                  &block_node.style,
+                  &self.font_context,
+                  self.viewport_size,
+                )
+              })
+              .unwrap_or(0.0)
+          };
+          let _margin_inline_start = resolve_margin_side(inline_start_side);
+          let margin_inline_end = resolve_margin_side(inline_end_side);
+          let margin_block_start = resolve_margin_side(block_start_side);
+          let margin_block_end = resolve_margin_side(block_end_side);
 
           let _ = flush_pending(
             &mut pending,
@@ -12467,16 +12376,24 @@ impl InlineFormattingContext {
             .formatting_context()
             .unwrap_or(FormattingContextType::Block);
           let fc = self.factory.get(fc_type);
-          let child_constraints = LayoutConstraints::new(
-            AvailableSpace::Definite(available_inline),
-            constraints.available_height,
-          );
+          let child_constraints = if inline_vertical {
+            LayoutConstraints::new(
+              constraints.available_width,
+              AvailableSpace::Definite(available_inline),
+            )
+          } else {
+            LayoutConstraints::new(
+              AvailableSpace::Definite(available_inline),
+              constraints.available_height,
+            )
+          };
           let mut translated = fc.layout(block_node, &child_constraints)?;
-          let translate_y = line_offset + margin_top - translated.bounds.y();
+          translated = crate::layout::contexts::block::unconvert_fragment_axes_root(translated);
+          let translate_y = line_offset + margin_block_start - translated.bounds.y();
           translated.translate_root_in_place(Point::new(0.0, translate_y));
-          block_run_max_width = block_run_max_width
-            .max(translated.bounds.x() + translated.bounds.width() + margin_right);
-          line_offset += margin_top + translated.bounds.height() + margin_bottom;
+          block_max_inline = block_max_inline
+            .max(translated.bounds.x() + translated.bounds.width() + margin_inline_end);
+          line_offset += margin_block_start + translated.bounds.height() + margin_block_end;
           flow_order.push(FlowChunk::Block {
             index: block_fragments.len(),
           });
@@ -12532,27 +12449,9 @@ impl InlineFormattingContext {
     let inline_extent = if available_inline.is_finite() {
       available_inline
     } else {
-      line_max_inline.max(float_max_inline)
+      line_max_inline.max(float_max_inline).max(block_max_inline)
     };
-    let block_extent = total_height.max(block_run_max_width);
-    let container_block_extent = if inline_vertical {
-      constraints.width().unwrap_or(block_extent)
-    } else {
-      block_extent.min(available_inline)
-    };
-
-    // Compute block shift for vertical-rl so block-start aligns to the right edge when a definite block size exists.
-    let block_shift = if inline_vertical
-      && matches!(
-        style.writing_mode,
-        crate::style::types::WritingMode::VerticalRl
-      )
-      && container_block_extent.is_finite()
-    {
-      (container_block_extent - block_extent).max(0.0)
-    } else {
-      0.0
-    };
+    let block_extent = total_height;
 
     // Create fragments
     let paragraph_info = compute_paragraph_line_flags(&lines);
@@ -12617,21 +12516,7 @@ impl InlineFormattingContext {
       // Anchor static position to the hypothetical inline box origin: start of the line and
       // the strut baseline offset applied to the line's baseline.
       let start_y = first_line.y_offset + first_line.baseline - strut_metrics.baseline_offset;
-      let mut pos = if inline_vertical {
-        Point::new(start_y, start_x)
-      } else {
-        Point::new(start_x, start_y)
-      };
-      if inline_vertical
-        && matches!(
-          style.writing_mode,
-          crate::style::types::WritingMode::VerticalRl
-        )
-        && block_shift.abs() > f32::EPSILON
-      {
-        pos = Point::new(pos.x + block_shift, pos.y);
-      }
-      pos
+      Point::new(start_x, start_y)
     } else {
       Point::ZERO
     };
@@ -12725,50 +12610,30 @@ impl InlineFormattingContext {
       }
     }
 
-    // Create containing fragment
-    if block_shift.abs() > f32::EPSILON {
-      for child in &mut merged_children {
-        if let Err(RenderError::Timeout { elapsed, .. }) =
-          check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
-        {
-          return Err(LayoutError::Timeout { elapsed });
-        }
-        child.translate_root_in_place(Point::new(block_shift, 0.0));
-      }
-    }
+    // Create containing fragment bounds in the formatting context's logical coordinate system
+    // (x = inline axis, y = block axis) regardless of writing mode.
+    let mut bounds = Rect::from_xywh(0.0, 0.0, inline_extent, block_extent);
 
-    if inline_vertical
-      && matches!(
-        style.writing_mode,
-        crate::style::types::WritingMode::VerticalRl
-      )
-      && block_shift.abs() > f32::EPSILON
-    {
-      for pos in anchor_positions.values_mut() {
-        pos.x += block_shift;
-      }
-      for cb in positioned_containing_blocks.values_mut() {
-        cb.rect.origin.x += block_shift;
-      }
-    }
-    let mut bounds = if inline_vertical {
-      Rect::from_xywh(
-        0.0,
-        0.0,
-        container_block_extent.max(block_extent),
-        inline_extent,
-      )
+    // `LayoutConstraints::used_border_box_{width,height}` are expressed in physical axes. Map them
+    // into logical inline/block sizes so the fragment tree stays in logical coordinates.
+    let used_inline_size = if inline_vertical {
+      constraints.used_border_box_height
     } else {
-      Rect::from_xywh(0.0, 0.0, inline_extent.min(available_inline), total_height)
+      constraints.used_border_box_width
     };
-    if let Some(used_width) = constraints.used_border_box_width {
-      if used_width.is_finite() {
-        bounds.size.width = used_width.max(0.0);
+    let used_block_size = if inline_vertical {
+      constraints.used_border_box_width
+    } else {
+      constraints.used_border_box_height
+    };
+    if let Some(used_inline) = used_inline_size {
+      if used_inline.is_finite() {
+        bounds.size.width = used_inline.max(0.0);
       }
     }
-    if let Some(used_height) = constraints.used_border_box_height {
-      if used_height.is_finite() {
-        bounds.size.height = used_height.max(0.0);
+    if let Some(used_block) = used_block_size {
+      if used_block.is_finite() {
+        bounds.size.height = used_block.max(0.0);
       }
     }
 
@@ -12791,6 +12656,39 @@ impl InlineFormattingContext {
           direction: style.direction,
         },
       );
+      let mut anchor_index_physical: Option<crate::layout::anchor_positioning::AnchorIndex> = None;
+      if crate::style::block_axis_is_horizontal(style.writing_mode) {
+        let style_arc = style_override
+          .as_ref()
+          .cloned()
+          .unwrap_or_else(|| box_node.style.clone());
+        let logical_root = FragmentNode::new_with_style(
+          Rect::new(Point::ZERO, bounds.size),
+          FragmentContent::Block {
+            box_id: Some(root_box_id),
+          },
+          merged_children.clone(),
+          style_arc,
+        );
+        let physical_root = crate::layout::contexts::block::convert_fragment_axes_root(logical_root);
+        let mut physical_index =
+          crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+            physical_root.children.as_slice(),
+            root_box_id,
+            &style.anchor_scope,
+            self.viewport_size,
+          );
+        physical_index.insert_names_for_box(
+          root_box_id,
+          &style.anchor_names,
+          crate::layout::anchor_positioning::AnchorBox {
+            rect: Rect::new(Point::ZERO, physical_root.bounds.size),
+            writing_mode: style.writing_mode,
+            direction: style.direction,
+          },
+        );
+        anchor_index_physical = Some(physical_index);
+      }
       let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
       let padding_left = resolve_length_for_width(
         style.padding_left,
@@ -12849,6 +12747,59 @@ impl InlineFormattingContext {
         self.viewport_size,
       );
 
+      // Convert physical padding/border edges into this formatting context's logical axes. The
+      // fragment tree produced by the inline formatting context uses logical coordinates
+      // (x = inline axis, y = block axis), so containing blocks and static positions need to be
+      // computed in the same space.
+      let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
+      let block_positive = crate::style::block_axis_positive(style.writing_mode);
+      let (inline_start_side, inline_end_side) = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        if inline_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if inline_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      } else {
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
+      let (block_start_side, block_end_side) = if crate::style::block_axis_is_horizontal(style.writing_mode) {
+        if block_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if block_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      } else {
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
+      let padding_for = |side: crate::style::PhysicalSide| -> f32 {
+        match side {
+          crate::style::PhysicalSide::Left => padding_left,
+          crate::style::PhysicalSide::Right => padding_right,
+          crate::style::PhysicalSide::Top => padding_top,
+          crate::style::PhysicalSide::Bottom => padding_bottom,
+        }
+      };
+      let border_for = |side: crate::style::PhysicalSide| -> f32 {
+        match side {
+          crate::style::PhysicalSide::Left => border_left,
+          crate::style::PhysicalSide::Right => border_right,
+          crate::style::PhysicalSide::Top => border_top,
+          crate::style::PhysicalSide::Bottom => border_bottom,
+        }
+      };
+      let padding_inline_start = padding_for(inline_start_side);
+      let padding_inline_end = padding_for(inline_end_side);
+      let padding_block_start = padding_for(block_start_side);
+      let padding_block_end = padding_for(block_end_side);
+      let border_inline_start = border_for(inline_start_side);
+      let border_inline_end = border_for(inline_end_side);
+      let border_block_start = border_for(block_start_side);
+      let border_block_end = border_for(block_end_side);
+
       // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
       // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
       // (border box minus borders).
@@ -12862,29 +12813,35 @@ impl InlineFormattingContext {
       );
       let (padding_origin, padding_size) = if root_inline_container {
         (
-          Point::new(-padding_left, -padding_top),
+          Point::new(-padding_inline_start, -padding_block_start),
           Size::new(
-            (bounds.width() + padding_left + padding_right).max(0.0),
-            (bounds.height() + padding_top + padding_bottom).max(0.0),
+            (bounds.width() + padding_inline_start + padding_inline_end).max(0.0),
+            (bounds.height() + padding_block_start + padding_block_end).max(0.0),
           ),
         )
       } else {
         (
-          Point::new(border_left, border_top),
+          Point::new(border_inline_start, border_block_start),
           Size::new(
-            (bounds.width() - border_left - border_right).max(0.0),
-            (bounds.height() - border_top - border_bottom).max(0.0),
+            (bounds.width() - border_inline_start - border_inline_end).max(0.0),
+            (bounds.height() - border_block_start - border_block_end).max(0.0),
           ),
         )
       };
       let padding_rect = Rect::new(padding_origin, padding_size);
       // Percentage offsets on absolutely positioned boxes resolve against the used height of the
       // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
-      let cb_block_base = Some(padding_rect.size.height);
+      let (cb_physical_width, cb_physical_height) =
+        if crate::style::block_axis_is_horizontal(style.writing_mode) {
+          (padding_rect.size.height, padding_rect.size.width)
+        } else {
+          (padding_rect.size.width, padding_rect.size.height)
+        };
+      let cb_block_base = Some(cb_physical_height);
       let cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
-        Some(padding_rect.size.width),
+        Some(cb_physical_width),
         cb_block_base,
       );
       // The inline formatting context is often invoked on synthetic wrapper boxes created during
@@ -13029,8 +12986,8 @@ impl InlineFormattingContext {
           // When the positioned containing block is the padding box (bounded by the padding edge),
           // translate them so they're relative to the padding edge instead.
           child_static_position = Point::new(
-            child_static_position.x + padding_left,
-            child_static_position.y + padding_top,
+            child_static_position.x + padding_inline_start,
+            child_static_position.y + padding_block_start,
           );
         }
         if adjust_static_position {
@@ -13077,18 +13034,58 @@ impl InlineFormattingContext {
           .formatting_context()
           .unwrap_or(crate::style::display::FormattingContextType::Block);
         let fc = factory.get(fc_type);
+        // Absolute positioning logic (inset properties, anchors, etc.) works in physical
+        // coordinates. Inline layout stores fragments (and thus containing blocks/static positions)
+        // in logical coordinates, so vertical writing modes need a conversion step.
+        let needs_physical_conversion = crate::style::block_axis_is_horizontal(style.writing_mode)
+          && (child_cb == cb || custom_cb.is_some());
+        let (anchors_for_cb, positioning_cb, static_position_for_abs) = if needs_physical_conversion
+        {
+          let cb_rect_physical = crate::layout::contexts::block::logical_rect_to_physical(
+            child_cb.rect,
+            bounds.size.width,
+            bounds.size.height,
+            style.writing_mode,
+            style.direction,
+          );
+          let physical_cb = ContainingBlock::with_viewport_and_bases(
+            cb_rect_physical,
+            viewport_size,
+            child_cb.inline_percentage_base(),
+            child_cb.block_percentage_base(),
+          );
+          let anchors = Some(
+            anchor_index_physical
+              .as_ref()
+              .expect("physical anchor index should exist for vertical writing modes"),
+          );
+          // Static positions are tracked in this inline formatting context's logical coordinate
+          // system. Convert them into physical coordinates so the absolute positioning algorithm
+          // can consume them consistently.
+          let static_position_for_abs = crate::layout::contexts::block::logical_rect_to_physical(
+            Rect::new(child_static_position, Size::new(0.0, 0.0)),
+            child_cb.rect.size.width,
+            child_cb.rect.size.height,
+            style.writing_mode,
+            style.direction,
+          )
+          .origin;
+          (anchors, physical_cb, static_position_for_abs)
+        } else {
+          (Some(&anchor_index), child_cb, child_static_position)
+        };
+
         let child_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(child_cb.rect.size.width),
-          child_cb
+          AvailableSpace::Definite(positioning_cb.rect.size.width),
+          positioning_cb
             .block_percentage_base()
             .map(AvailableSpace::Definite)
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
-        let anchors_for_cb = Some(&anchor_index);
         let positioned_style = resolve_positioned_style_with_anchors(
           &original_style,
-          &child_cb,
+          &positioning_cb,
           viewport_size,
           &font_context,
           anchors_for_cb,
@@ -13182,7 +13179,7 @@ impl InlineFormattingContext {
         );
 
         let mut input =
-          AbsoluteLayoutInput::new(positioned_style, intrinsic_size, child_static_position);
+          AbsoluteLayoutInput::new(positioned_style, intrinsic_size, static_position_for_abs);
         input.is_replaced = is_replaced;
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
@@ -13193,22 +13190,35 @@ impl InlineFormattingContext {
             &abs,
             &input,
             &original_style,
-            &child_cb,
+            &positioning_cb,
             viewport_size,
             &font_context,
             anchors_for_cb,
             parent_box_id,
           )?;
-        let border_size = Size::new(
+        let border_size_physical = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,
         );
-        let border_origin = Point::new(
+        let border_origin_physical = Point::new(
           result.position.x - content_offset.x,
           result.position.y - content_offset.y,
         );
-        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+        let (border_origin, border_size) = if needs_physical_conversion {
+          let border_rect = Rect::new(border_origin_physical, border_size_physical);
+          let logical_rect = crate::layout::contexts::block::physical_rect_to_logical(
+            border_rect,
+            bounds.size.width,
+            bounds.size.height,
+            style.writing_mode,
+            style.direction,
+          );
+          (logical_rect.origin, logical_rect.size)
+        } else {
+          (border_origin_physical, border_size_physical)
+        };
+        let needs_relayout = (border_size_physical.width - child_fragment.bounds.width()).abs() > 0.01
+          || (border_size_physical.height - child_fragment.bounds.height()).abs() > 0.01;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,
@@ -13218,7 +13228,7 @@ impl InlineFormattingContext {
               | FormattingContextType::Inline
           );
           let relayout_constraints = child_constraints
-            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+            .with_used_border_box_size(Some(border_size_physical.width), Some(border_size_physical.height));
           let width_auto =
             layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
           let height_auto =
@@ -13229,8 +13239,8 @@ impl InlineFormattingContext {
             let mut relayout_style = layout_child.style.clone();
             {
               let s = Arc::make_mut(&mut relayout_style);
-              s.width = Some(Length::px(border_size.width));
-              s.height = Some(Length::px(border_size.height));
+              s.width = Some(Length::px(border_size_physical.width));
+              s.height = Some(Length::px(border_size_physical.height));
               s.width_keyword = None;
               s.height_keyword = None;
             }
@@ -13238,6 +13248,7 @@ impl InlineFormattingContext {
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           }
         }
+        child_fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(child_fragment);
         child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
         match &mut child_fragment.content {
@@ -13449,19 +13460,99 @@ impl InlineFormattingContext {
         self.viewport_size,
       );
 
-      let offset = Point::new(padding_left + border_left, padding_top + border_top);
+      // Map physical padding/border edges to this formatting context's logical axes.
+      let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
+      let block_positive = crate::style::block_axis_positive(style.writing_mode);
+      let (inline_start_side, inline_end_side) =
+        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+          if inline_positive {
+            (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+          } else {
+            (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+          }
+        } else if inline_positive {
+          (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+        } else {
+          (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+        };
+      let (block_start_side, block_end_side) =
+        if crate::style::block_axis_is_horizontal(style.writing_mode) {
+          if block_positive {
+            (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+          } else {
+            (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+          }
+        } else if block_positive {
+          (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+        } else {
+          (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+        };
+      let padding_for = |side: crate::style::PhysicalSide| -> f32 {
+        match side {
+          crate::style::PhysicalSide::Left => padding_left,
+          crate::style::PhysicalSide::Right => padding_right,
+          crate::style::PhysicalSide::Top => padding_top,
+          crate::style::PhysicalSide::Bottom => padding_bottom,
+        }
+      };
+      let border_for = |side: crate::style::PhysicalSide| -> f32 {
+        match side {
+          crate::style::PhysicalSide::Left => border_left,
+          crate::style::PhysicalSide::Right => border_right,
+          crate::style::PhysicalSide::Top => border_top,
+          crate::style::PhysicalSide::Bottom => border_bottom,
+        }
+      };
+      let padding_inline_start = padding_for(inline_start_side);
+      let padding_inline_end = padding_for(inline_end_side);
+      let padding_block_start = padding_for(block_start_side);
+      let padding_block_end = padding_for(block_end_side);
+      let border_inline_start = border_for(inline_start_side);
+      let border_inline_end = border_for(inline_end_side);
+      let border_block_start = border_for(block_start_side);
+      let border_block_end = border_for(block_end_side);
+
+      let offset = Point::new(
+        padding_inline_start + border_inline_start,
+        padding_block_start + border_block_start,
+      );
       if offset.x.abs() > f32::EPSILON || offset.y.abs() > f32::EPSILON {
         for child in &mut merged_children {
           child.translate_root_in_place(offset);
         }
       }
 
-      if constraints.used_border_box_width.is_none() {
-        bounds.size.width = (bounds.size.width + padding_left + padding_right + border_left + border_right).max(0.0);
+      // `used_border_box_{width,height}` are expressed in physical axes; map them into logical
+      // inline/block sizes before deciding whether to expand the root bounds.
+      let used_inline_size = if inline_vertical {
+        constraints.used_border_box_height
+      } else {
+        constraints.used_border_box_width
       }
-      if constraints.used_border_box_height.is_none() {
+      .filter(|v| v.is_finite());
+      let used_block_size = if inline_vertical {
+        constraints.used_border_box_width
+      } else {
+        constraints.used_border_box_height
+      }
+      .filter(|v| v.is_finite());
+
+      if used_inline_size.is_none() {
+        bounds.size.width = (bounds.size.width
+          + padding_inline_start
+          + padding_inline_end
+          + border_inline_start
+          + border_inline_end)
+          .max(0.0);
+      }
+      if used_block_size.is_none() {
         bounds.size.height =
-          (bounds.size.height + padding_top + padding_bottom + border_top + border_bottom).max(0.0);
+          (bounds.size.height
+            + padding_block_start
+            + padding_block_end
+            + border_block_start
+            + border_block_end)
+            .max(0.0);
       }
     }
 
