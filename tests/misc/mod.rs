@@ -36,6 +36,7 @@ mod device_width_media_query_test;
 mod dl_default_margins;
 mod docs_conformance_presence;
 mod docs_presence;
+mod ecma_rs_workspace_exclude_guard;
 mod embed_object_html_renders_document;
 mod error_format_snapshot;
 mod external_stylesheet_integration;
