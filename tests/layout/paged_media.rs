@@ -1,5 +1,6 @@
 use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking, RenderOptions};
 use fastrender::style::media::MediaType;
+use fastrender::style::types::BreakInside;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::Rgba;
@@ -2887,6 +2888,61 @@ fn page_break_before_forces_new_page() {
     find_text(second, "After").is_some(),
     "following content should flow after the forced page break"
   );
+}
+
+#[test]
+fn page_break_inside_avoid_does_not_prevent_column_breaks() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          div { margin: 0; padding: 0; }
+          #multicol { column-count: 2; column-gap: 0; width: 200px; height: 100px; }
+          #a { height: 60px; }
+          /* Legacy page-break-inside: avoid should map to break-inside: avoid-page, which must not
+             suppress column breaks (only page breaks). */
+          #b { page-break-inside: avoid; background: rgb(1, 2, 3); }
+          #b1 { height: 40px; }
+          #b2 { height: 20px; }
+          #c { height: 10px; }
+        </style>
+      </head>
+      <body>
+        <div id="multicol">
+          <div id="a">A</div>
+          <div id="b">
+            <div id="b1">B1</div>
+            <div id="b2">B2</div>
+          </div>
+          <div id="c">C</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  let page = page_roots[0];
+
+  let b_fragment =
+    find_fragment_by_background(page, Rgba::rgb(1, 2, 3)).expect("#b fragment with background");
+  let style = b_fragment.style.as_ref().expect("#b computed style");
+  assert_eq!(
+    style.break_inside,
+    BreakInside::AvoidPage,
+    "page-break-inside: avoid must map to break-inside: avoid-page"
+  );
+
+  // Also sanity-check that the multicol container actually fragmented: at least one of the
+  // descendants should land in the right half of the page content.
+  let (_, b2_right) = count_text_fragments_by_column(page, "B2");
+  assert_eq!(b2_right, 1);
 }
 
 #[test]

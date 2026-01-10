@@ -13218,11 +13218,14 @@ fn apply_declaration_with_base_internal_with_order(
     "break-inside" | "column-break-inside" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let column_alias = decl.property.as_str() == "column-break-inside";
+        let from_page_break = decl.property.as_str() == "page-break-inside";
         let kw = kw.to_ascii_lowercase();
         styles.break_inside = match kw.as_str() {
           "auto" => BreakInside::Auto,
           "avoid" => {
-            if column_alias {
+            if from_page_break {
+              BreakInside::AvoidPage
+            } else if column_alias {
               BreakInside::AvoidColumn
             } else {
               BreakInside::Avoid
