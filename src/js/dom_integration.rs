@@ -87,6 +87,12 @@ where
       return (None, false);
     }
 
+    // HTML element post-connection steps: parser-inserted scripts are prepared by the parser, not by
+    // DOM insertion.
+    if dom.node(script).script_parser_document {
+      return (None, false);
+    }
+
     // HTML: scripts inside inert `<template>` contents are treated as disconnected and must not
     // execute.
     if !dom.is_connected_for_scripting(script) {
@@ -274,7 +280,7 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{build_non_parser_inserted_script_spec, prepare_dynamic_script_on_insertion};
-  use crate::dom2::{parse_html, Document};
+  use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::{
     ClassicScriptScheduler, DomHost, EventLoop, JsExecutionOptions, RunLimits, ScriptElementEvent,
@@ -598,9 +604,16 @@ mod tests {
 
   #[test]
   fn dynamic_inline_nomodule_script_executes_when_module_scripts_not_supported() -> Result<()> {
-    let dom =
-      parse_html("<!doctype html><html><body><script id=s nomodule>RUN</script></body></html>")?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    // This test exercises dynamic insertion behavior, so construct the element via DOM APIs rather
+    // than HTML parsing (which marks scripts as parser-inserted and prepares them elsewhere).
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .set_bool_attribute(script, "nomodule", true)
+      .expect("set_bool_attribute");
+    let text = dom.create_text("RUN");
+    dom.append_child(script, text).expect("append_child");
+    dom.append_child(dom.root(), script).expect("append_child");
 
     let mut host = TestHost::new(dom);
     let mut options = JsExecutionOptions::default();
@@ -622,10 +635,15 @@ mod tests {
 
   #[test]
   fn dynamic_external_nomodule_script_starts_fetch_when_module_scripts_not_supported() -> Result<()> {
-    let dom = parse_html(
-      "<!doctype html><html><body><script id=s nomodule src=a.js></script></body></html>",
-    )?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    // This test exercises dynamic insertion behavior, so construct the element via DOM APIs rather
+    // than HTML parsing (which marks scripts as parser-inserted and prepares them elsewhere).
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .set_bool_attribute(script, "nomodule", true)
+      .expect("set_bool_attribute");
+    dom.set_attribute(script, "src", "a.js").expect("set_attribute");
+    dom.append_child(dom.root(), script).expect("append_child");
 
     let mut host = TestHost::new(dom);
     let mut options = JsExecutionOptions::default();
@@ -951,6 +969,31 @@ mod dynamic_mutation_tests {
       "empty dynamic scripts must not be marked already started"
     );
     assert!(host.executed.is_empty(), "empty scripts should not execute");
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_scripts_are_ignored_by_insertion_helper() -> Result<()> {
+    let mut host = Host::new(Document::new(selectors::context::QuirksMode::NoQuirks));
+    let script = host.dom.create_element("script", "");
+    host
+      .dom
+      .set_attribute(script, "src", "https://example.com/a.js")
+      .unwrap();
+    host.dom.append_child(host.dom.root(), script).unwrap();
+    host.dom.node_mut(script).script_parser_document = true;
+
+    let mut scheduler = ClassicScriptScheduler::<Host>::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+
+    assert!(
+      !host.dom.node(script).script_already_started,
+      "parser-inserted scripts should be prepared by the parser, not DOM insertion"
+    );
+    assert!(host.started_urls.is_empty());
+    assert!(host.executed.is_empty());
     Ok(())
   }
 
