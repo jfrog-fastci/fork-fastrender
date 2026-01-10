@@ -157,6 +157,7 @@ mod tests {
   use crate::html::base_url_tracker::BaseUrlTracker;
   use crate::js::streaming::build_parser_inserted_script_element_spec;
   use crate::js::ScriptType;
+  use crate::resource::CorsMode;
   use selectors::context::QuirksMode;
 
   #[test]
@@ -271,6 +272,34 @@ mod tests {
     let base = BaseUrlTracker::new(None);
     let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
     assert!(spec.nomodule_attr);
+  }
+
+  #[test]
+  fn dom2_builder_crossorigin_trims_ascii_whitespace_only() {
+    fn crossorigin_for_attr(value: &str) -> Option<CorsMode> {
+      let mut doc = Dom2Document::new(QuirksMode::NoQuirks);
+      let script = doc.create_element("script", "");
+      doc
+        .set_attribute(script, "crossorigin", value)
+        .expect("set_attribute");
+      doc.append_child(doc.root(), script).expect("append_child");
+      let base = BaseUrlTracker::new(None);
+      build_parser_inserted_script_element_spec_dom2(&doc, script, &base).crossorigin
+    }
+
+    // HTML trims ASCII whitespace in attribute value processing.
+    assert_eq!(
+      crossorigin_for_attr(" \tuse-credentials\r\n"),
+      Some(CorsMode::UseCredentials)
+    );
+
+    // U+00A0 NBSP is *not* ASCII whitespace and must not be stripped.
+    let nbsp_wrapped = format!("\u{00A0}use-credentials\u{00A0}");
+    assert_eq!(crossorigin_for_attr(&nbsp_wrapped), Some(CorsMode::Anonymous));
+
+    // U+000B VT is also not included in HTML's ASCII whitespace set.
+    let vt_wrapped = format!("\u{000B}use-credentials\u{000B}");
+    assert_eq!(crossorigin_for_attr(&vt_wrapped), Some(CorsMode::Anonymous));
   }
 
   fn find_first_script_dom2(doc: &Dom2Document) -> NodeId {
