@@ -184,13 +184,31 @@ impl WindowRealm {
 
     let (console_sink_id, current_script_source_id, match_media_env_id) =
       init_window_globals(vm, heap, realm, &config)?;
-    let time_bindings = crate::js::time::install_time_bindings(
+    let time_bindings = match crate::js::time::install_time_bindings(
       vm,
       realm,
       heap,
       Arc::clone(&config.clock),
       config.web_time,
-    )?;
+    ) {
+      Ok(bindings) => bindings,
+      Err(err) => {
+        // `init_window_globals` registers host-owned resources (console sink IDs, matchMedia envs,
+        // and URL binding state) that must not leak when WindowRealm initialization fails midway
+        // through.
+        if let Some(id) = console_sink_id {
+          unregister_console_sink(id);
+        }
+        if let Some(id) = current_script_source_id {
+          unregister_current_script_source(id);
+        }
+        if let Some(id) = match_media_env_id {
+          unregister_match_media_env(id);
+        }
+        crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, heap);
+        return Err(err);
+      }
+    };
     Ok(Self {
       runtime,
       realm_id,
@@ -10271,14 +10289,17 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
-  fn get_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Value {
-    let key_s = scope.alloc_string(name).unwrap();
-    let key = PropertyKey::from_string(key_s);
-    scope
-      .heap()
-      .object_get_own_data_property_value(obj, &key)
-      .unwrap()
-      .unwrap()
+  fn get_prop(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+    name: &str,
+  ) -> Result<Value, VmError> {
+    // Root the object while allocating the property key: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    let key = alloc_key(&mut scope, name)?;
+    vm.get(&mut scope, obj, key)
   }
 
   fn unwrap_thrown_object(err: VmError) -> GcObject {
@@ -10545,12 +10566,12 @@ mod tests {
       VmError::TypeError(msg) => assert_eq!(msg, "Illegal invocation"),
       other => {
         let obj = unwrap_thrown_object(other);
-        let (_vm, heap) = realm.vm_and_heap_mut();
+        let (vm, heap) = realm.vm_and_heap_mut();
         let mut scope = heap.scope();
         scope.push_root(Value::Object(obj))?;
-        let name = get_prop(&mut scope, obj, "name");
+        let name = get_prop(vm, &mut scope, obj, "name")?;
         assert_eq!(get_string(scope.heap(), name), "TypeError");
-        let message = get_prop(&mut scope, obj, "message");
+        let message = get_prop(vm, &mut scope, obj, "message")?;
         assert_eq!(get_string(scope.heap(), message), "Illegal invocation");
       }
     }
@@ -10565,11 +10586,11 @@ mod tests {
       });
 
       let global = realm_ref.global_object();
-      let document_obj = match get_prop(&mut scope, global, "document") {
+      let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
         Value::Object(obj) => obj,
         other => panic!("expected document object, got {other:?}"),
       };
-      let event_obj = match get_prop(&mut scope, global, "__ev") {
+      let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
@@ -10636,11 +10657,11 @@ mod tests {
         script_or_module: None,
       });
       let global = realm_ref.global_object();
-      let document_obj = match get_prop(&mut scope, global, "document") {
+      let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
         Value::Object(obj) => obj,
         other => panic!("expected document object, got {other:?}"),
       };
-      let event_obj = match get_prop(&mut scope, global, "__ev") {
+      let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
@@ -10706,11 +10727,11 @@ mod tests {
         script_or_module: None,
       });
       let global = realm_ref.global_object();
-      let document_obj = match get_prop(&mut scope, global, "document") {
+      let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
         Value::Object(obj) => obj,
         other => panic!("expected document object, got {other:?}"),
       };
-      let event_obj = match get_prop(&mut scope, global, "__ev") {
+      let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
@@ -10765,21 +10786,21 @@ mod tests {
 
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
-    let global = realm_ref.global_object();
-    let document_obj = match get_prop(&mut scope, global, "document") {
-      Value::Object(obj) => obj,
-      other => panic!("expected document object, got {other:?}"),
-    };
-    let event_obj = match get_prop(&mut scope, global, "__ev") {
-      Value::Object(obj) => obj,
-      other => panic!("expected Event object, got {other:?}"),
-    };
-    let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+      let global = realm_ref.global_object();
+      let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected document object, got {other:?}"),
+      };
+      let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
+        Value::Object(obj) => obj,
+        other => panic!("expected Event object, got {other:?}"),
+      };
+      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
     let mut hooks = NoopHostHooks::default();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,
@@ -11422,15 +11443,15 @@ mod tests {
     let (vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
 
-    let window = get_prop(&mut scope, global, "window");
-    let global_this = get_prop(&mut scope, global, "globalThis");
-    let self_ = get_prop(&mut scope, global, "self");
+    let window = get_prop(vm, &mut scope, global, "window")?;
+    let global_this = get_prop(vm, &mut scope, global, "globalThis")?;
+    let self_ = get_prop(vm, &mut scope, global, "self")?;
 
     assert_eq!(window, global_this);
     assert_eq!(self_, window);
     assert_eq!(window, Value::Object(global));
 
-    let location = get_prop(&mut scope, global, "location");
+    let location = get_prop(vm, &mut scope, global, "location")?;
     let Value::Object(location_obj) = location else {
       panic!("expected object");
     };
@@ -11446,21 +11467,21 @@ mod tests {
     let origin = vm.get(&mut scope, location_obj, origin_key)?;
     assert_eq!(get_string(scope.heap(), origin), "https://example.com");
 
-    let document = get_prop(&mut scope, global, "document");
+    let document = get_prop(vm, &mut scope, global, "document")?;
     let Value::Object(document_obj) = document else {
       panic!("expected object");
     };
-    let doc_url = get_prop(&mut scope, document_obj, "URL");
+    let doc_url = get_prop(vm, &mut scope, document_obj, "URL")?;
     assert_eq!(get_string(scope.heap(), doc_url), url);
 
-    let doc_location = get_prop(&mut scope, document_obj, "location");
+    let doc_location = get_prop(vm, &mut scope, document_obj, "location")?;
     assert_eq!(doc_location, Value::Object(location_obj));
 
-    let console = get_prop(&mut scope, global, "console");
+    let console = get_prop(vm, &mut scope, global, "console")?;
     let Value::Object(console_obj) = console else {
       panic!("expected object");
     };
-    let log = get_prop(&mut scope, console_obj, "log");
+    let log = get_prop(vm, &mut scope, console_obj, "log")?;
     let Value::Object(log_func) = log else {
       panic!("expected console.log to be a function object");
     };
@@ -11657,11 +11678,11 @@ mod tests {
     let (vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
 
-    let console = get_prop(&mut scope, global, "console");
+    let console = get_prop(vm, &mut scope, global, "console")?;
     let Value::Object(console_obj) = console else {
       panic!("expected object");
     };
-    let log = get_prop(&mut scope, console_obj, "log");
+    let log = get_prop(vm, &mut scope, console_obj, "log")?;
 
     let mut host_hooks = NoopHostHooks::default();
     let call_result = vm.call_with_host(
@@ -11706,7 +11727,7 @@ mod tests {
       let (_vm, heap) = realm.vm_and_heap_mut();
       let mut scope = heap.scope();
       scope.push_root(Value::Object(obj))?;
-      let name = get_prop(&mut scope, obj, "name");
+      let name = get_prop(_vm, &mut scope, obj, "name")?;
       assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
     }
 
@@ -11718,7 +11739,7 @@ mod tests {
       let (_vm, heap) = realm.vm_and_heap_mut();
       let mut scope = heap.scope();
       scope.push_root(Value::Object(obj))?;
-      let name = get_prop(&mut scope, obj, "name");
+      let name = get_prop(_vm, &mut scope, obj, "name")?;
       assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
     }
 
