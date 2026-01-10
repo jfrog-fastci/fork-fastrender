@@ -2130,7 +2130,7 @@ mod tests {
     assert_eq!(host.count, 5);
   }
 
-  #[test]
+    #[test]
   fn limited_microtask_checkpoint_stops_infinite_microtask_chains() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());

@@ -222,9 +222,11 @@ fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<Property
   Ok(PropertyKey::from_symbol(sym))
 }
 
-fn current_document_base_url(vm: &mut Vm) -> Option<String> {
-  vm.user_data_mut::<WindowRealmUserData>()
-    .and_then(|data| data.base_url.clone())
+fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>, VmError> {
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+    return Ok(data.base_url.clone());
+  }
+  with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
 }
 
 fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
@@ -1073,6 +1075,41 @@ fn headers_get_native(
   }
 }
 
+fn headers_get_set_cookie_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
+  let values = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.get_set_cookie())
+  })?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let arr = scope.alloc_array(values.len())?;
+  scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intr.array_prototype()))?;
+  scope.push_root(Value::Object(arr))?;
+
+  for (idx, value) in values.iter().enumerate() {
+    let value_s = scope.alloc_string(value)?;
+    // Root the element while allocating the property key: `alloc_key` can trigger GC.
+    scope.push_root(Value::String(value_s))?;
+    let key = alloc_key(scope, &idx.to_string())?;
+    scope.define_property(arr, key, data_desc(Value::String(value_s), true))?;
+  }
+
+  Ok(Value::Object(arr))
+}
+
 fn headers_for_each_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1708,7 +1745,7 @@ fn request_ctor_construct(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = current_document_base_url(vm);
+    let base_url = current_document_base_url(vm, env_id)?;
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
@@ -2151,7 +2188,7 @@ fn response_redirect_native(
     max_url_bytes,
     FETCH_URL_TOO_LONG_ERROR,
   )?;
-  let base_url = current_document_base_url(vm);
+  let base_url = current_document_base_url(vm, env_id)?;
   let resolved_url = match resolve_url(&url_input, base_url.as_deref()) {
     Ok(url) => url,
     Err(UrlResolveError::RelativeUrlWithoutBase) => {
@@ -2776,7 +2813,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       limits.max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
-    let base_url = current_document_base_url(vm);
+    let base_url = current_document_base_url(vm, env_id)?;
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
@@ -3383,6 +3420,21 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     let get_fn = scope.alloc_native_function(get_id, None, get_name, 1)?;
     scope.heap_mut().object_set_prototype(get_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "get", Value::Object(get_fn), true)?;
+
+    let get_set_cookie_id = vm.register_native_call(headers_get_set_cookie_native)?;
+    let get_set_cookie_name = scope.alloc_string("getSetCookie")?;
+    scope.push_root(Value::String(get_set_cookie_name))?;
+    let get_set_cookie_fn = scope.alloc_native_function(get_set_cookie_id, None, get_set_cookie_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(get_set_cookie_fn, Some(func_proto))?;
+    set_data_prop(
+      &mut scope,
+      proto,
+      "getSetCookie",
+      Value::Object(get_set_cookie_fn),
+      true,
+    )?;
 
     let has_id = vm.register_native_call(headers_has_native)?;
     let has_name = scope.alloc_string("has")?;
@@ -4451,94 +4503,100 @@ mod tests {
         Some("https://example.com/dir/page".to_string()),
       ),
     )?;
-    let mut scope = heap.scope();
-
-    let global = realm.global_object();
-    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
-      return Err(VmError::InvariantViolation("Response constructor missing"));
-    };
-    let redirect_key = alloc_key(&mut scope, "redirect")?;
-    let redirect_fn = vm.get(&mut scope, response_ctor, redirect_key)?;
-    let Value::Object(redirect_fn) = redirect_fn else {
-      return Err(VmError::InvariantViolation("Response.redirect missing"));
-    };
-
-    let url = scope.alloc_string("foo")?;
-    scope.push_root(Value::String(url))?;
 
     let mut host_state = ();
     let mut hooks = NoopHooks;
-    let Value::Object(resp_obj) = response_redirect_native(
-      &mut vm,
-      &mut scope,
-      &mut host_state,
-      &mut hooks,
-      redirect_fn,
-      Value::Object(response_ctor),
-      &[Value::String(url), Value::Number(302.0)],
-    )?
-    else {
-      return Err(VmError::InvariantViolation("Response.redirect must return an object"));
-    };
 
-    assert!(matches!(
-      get_data_prop(&mut scope, resp_obj, "status")?,
-      Value::Number(n) if n == 302.0
-    ));
+    let result = (|| -> Result<(), VmError> {
+      let mut scope = heap.scope();
 
-    let Value::Object(headers_obj) = get_data_prop(&mut scope, resp_obj, "headers")? else {
-      return Err(VmError::InvariantViolation("Response.headers missing"));
-    };
+      let global = realm.global_object();
+      let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+        return Err(VmError::InvariantViolation("Response constructor missing"));
+      };
+      let redirect_key = alloc_key(&mut scope, "redirect")?;
+      let redirect_fn = vm.get(&mut scope, response_ctor, redirect_key)?;
+      let Value::Object(redirect_fn) = redirect_fn else {
+        return Err(VmError::InvariantViolation("Response.redirect missing"));
+      };
 
-    let loc_name = scope.alloc_string("Location")?;
-    scope.push_root(Value::String(loc_name))?;
-    let callee = scope.alloc_object()?;
-    let loc_value = headers_get_native(
-      &mut vm,
-      &mut scope,
-      &mut host_state,
-      &mut hooks,
-      callee,
-      Value::Object(headers_obj),
-      &[Value::String(loc_name)],
-    )?;
-    let Value::String(loc_s) = loc_value else {
-      return Err(VmError::InvariantViolation("Location header missing"));
-    };
-    let loc = scope.heap().get_string(loc_s)?.to_utf8_lossy();
-    assert_eq!(loc, "https://example.com/dir/foo");
+      let url = scope.alloc_string("foo")?;
+      scope.push_root(Value::String(url))?;
 
-    let name = scope.alloc_string("x-test")?;
-    scope.push_root(Value::String(name))?;
-    let value = scope.alloc_string("a")?;
-    scope.push_root(Value::String(value))?;
-    let callee = scope.alloc_object()?;
-    let err = headers_set_native(
-      &mut vm,
-      &mut scope,
-      &mut host_state,
-      &mut hooks,
-      callee,
-      Value::Object(headers_obj),
-      &[Value::String(name), Value::String(value)],
-    )
-    .expect_err("expected Response.redirect headers to be immutable");
+      let Value::Object(resp_obj) = response_redirect_native(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        redirect_fn,
+        Value::Object(response_ctor),
+        &[Value::String(url), Value::Number(302.0)],
+      )?
+      else {
+        return Err(VmError::InvariantViolation("Response.redirect must return an object"));
+      };
 
-    let VmError::Throw(Value::Object(err_obj)) = err else {
-      panic!("expected thrown TypeError, got {err}");
-    };
-    let name_key = alloc_key(&mut scope, "name")?;
-    let name_val = vm.get(&mut scope, err_obj, name_key)?;
-    let Value::String(name_s) = name_val else {
-      panic!("expected error.name to be a string, got {name_val:?}");
-    };
-    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
-    assert_eq!(name, "TypeError");
+      assert!(matches!(
+        get_data_prop(&mut scope, resp_obj, "status")?,
+        Value::Number(n) if n == 302.0
+      ));
 
-    drop(scope);
+      let Value::Object(headers_obj) = get_data_prop(&mut scope, resp_obj, "headers")? else {
+        return Err(VmError::InvariantViolation("Response.headers missing"));
+      };
+
+      let loc_name = scope.alloc_string("Location")?;
+      scope.push_root(Value::String(loc_name))?;
+      let callee = scope.alloc_object()?;
+      let loc_value = headers_get_native(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        callee,
+        Value::Object(headers_obj),
+        &[Value::String(loc_name)],
+      )?;
+      let Value::String(loc_s) = loc_value else {
+        return Err(VmError::InvariantViolation("Location header missing"));
+      };
+      let loc = scope.heap().get_string(loc_s)?.to_utf8_lossy();
+      assert_eq!(loc, "https://example.com/dir/foo");
+
+      let name = scope.alloc_string("x-test")?;
+      scope.push_root(Value::String(name))?;
+      let value = scope.alloc_string("a")?;
+      scope.push_root(Value::String(value))?;
+      let callee = scope.alloc_object()?;
+      let err = headers_set_native(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        callee,
+        Value::Object(headers_obj),
+        &[Value::String(name), Value::String(value)],
+      )
+      .expect_err("expected Response.redirect headers to be immutable");
+
+      let VmError::Throw(Value::Object(err_obj)) = err else {
+        panic!("expected thrown TypeError, got {err}");
+      };
+      let name_key = alloc_key(&mut scope, "name")?;
+      let name_val = vm.get(&mut scope, err_obj, name_key)?;
+      let Value::String(name_s) = name_val else {
+        panic!("expected error.name to be a string, got {name_val:?}");
+      };
+      let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+      assert_eq!(name, "TypeError");
+
+      drop(scope);
+      Ok(())
+    })();
+
     drop(bindings);
     realm.teardown(&mut heap);
-    Ok(())
+    result
   }
 
   #[test]
@@ -4753,6 +4811,97 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn headers_get_set_cookie_returns_values_in_order() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(headers_ctor) = get_data_prop(&mut scope, global, "Headers")? else {
+      return Err(VmError::InvariantViolation("Headers constructor missing"));
+    };
+
+    // new Headers({ "Set-Cookie": "a=1", "Other": "x", "set-cookie": "b=2" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let a_val = scope.alloc_string("a=1")?;
+    scope.push_root(Value::String(a_val))?;
+    let x_val = scope.alloc_string("x")?;
+    scope.push_root(Value::String(x_val))?;
+    let b_val = scope.alloc_string("b=2")?;
+    scope.push_root(Value::String(b_val))?;
+    set_data_prop(&mut scope, init_obj, "Set-Cookie", Value::String(a_val), true)?;
+    set_data_prop(&mut scope, init_obj, "Other", Value::String(x_val), true)?;
+    set_data_prop(&mut scope, init_obj, "set-cookie", Value::String(b_val), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(headers_obj) = headers_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      headers_ctor,
+      &[Value::Object(init_obj)],
+      Value::Object(headers_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Headers constructor must return an object"));
+    };
+
+    // headers.getSetCookie()
+    let get_set_cookie_key = alloc_key(&mut scope, "getSetCookie")?;
+    let get_set_cookie_fn = vm.get(&mut scope, headers_obj, get_set_cookie_key)?;
+    let Value::Object(get_set_cookie_fn_obj) = get_set_cookie_fn else {
+      return Err(VmError::InvariantViolation("Headers.getSetCookie missing"));
+    };
+    let cookies = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      Value::Object(get_set_cookie_fn_obj),
+      Value::Object(headers_obj),
+      &[],
+    )?;
+    let Value::Object(arr) = cookies else {
+      return Err(VmError::InvariantViolation("Headers.getSetCookie must return an object"));
+    };
+
+    let len_key = alloc_key(&mut scope, "length")?;
+    let len = vm.get(&mut scope, arr, len_key)?;
+    assert_eq!(number_to_u64(len)?, 2);
+
+    let idx0 = alloc_key(&mut scope, "0")?;
+    let idx1 = alloc_key(&mut scope, "1")?;
+    let Value::String(v0_s) = vm.get(&mut scope, arr, idx0)? else {
+      return Err(VmError::InvariantViolation("cookies[0] missing"));
+    };
+    let Value::String(v1_s) = vm.get(&mut scope, arr, idx1)? else {
+      return Err(VmError::InvariantViolation("cookies[1] missing"));
+    };
+    assert_eq!(scope.heap().get_string(v0_s)?.to_utf8_lossy(), "a=1");
+    assert_eq!(scope.heap().get_string(v1_s)?.to_utf8_lossy(), "b=2");
+
+    drop(scope);
+    drop(bindings);
     realm.teardown(&mut heap);
     Ok(())
   }
