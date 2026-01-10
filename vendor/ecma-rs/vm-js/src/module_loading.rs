@@ -773,19 +773,11 @@ pub fn inner_module_loading(
       vm.tick()?;
       // `AllImportAttributesSupported`.
       let supported = host.host_get_supported_import_attributes();
-      if !all_import_attributes_supported(supported, &request.attributes) {
+      let unsupported_key = first_unsupported_import_attribute_key(vm, supported, &request.attributes)?;
+      if let Some(unsupported_key) = unsupported_key {
         // Per ECMA-262, unsupported import attributes are a thrown SyntaxError.
         if let Some(intrinsics) = vm.intrinsics() {
-          let unsupported_key = request
-            .attributes
-            .iter()
-            .find(|attr| !supported.iter().any(|k| *k == attr.key.as_str()))
-            .map(|attr| attr.key.as_str());
-
-          let message = match unsupported_key {
-            Some(key) => format!("Unsupported import attribute: {key}"),
-            None => "Unsupported import attributes".to_string(),
-          };
+          let message = format!("Unsupported import attribute: {unsupported_key}");
 
           let err_value = crate::new_error(
             scope,
@@ -1196,6 +1188,26 @@ pub fn all_import_attributes_supported(supported_keys: &[&str], attributes: &[Im
     .all(|attr| supported_keys.iter().any(|k| *k == attr.key.as_str()))
 }
 
+fn first_unsupported_import_attribute_key<'a>(
+  vm: &mut Vm,
+  supported_keys: &[&str],
+  attributes: &'a [ImportAttribute],
+) -> Result<Option<&'a str>, VmError> {
+  // Attribute lists are user-controlled (bounded by source size / host objects), and the module
+  // loading algorithms may scan them even when the graph contains a single request. Budget the scan
+  // so a large list cannot do unbounded work within a single `vm.tick()` interval.
+  const TICK_EVERY: usize = 32;
+  for (i, attr) in attributes.iter().enumerate() {
+    if i % TICK_EVERY == 0 && i != 0 {
+      vm.tick()?;
+    }
+    if !supported_keys.iter().any(|k| *k == attr.key.as_str()) {
+      return Ok(Some(attr.key.as_str()));
+    }
+  }
+  Ok(None)
+}
+
 /// Spec-shaped dynamic import entry point (EvaluateImportCall).
 pub fn start_dynamic_import(
   vm: &mut Vm,
@@ -1373,11 +1385,14 @@ pub fn continue_dynamic_import(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::Budget;
   use crate::property::PropertyDescriptor;
   use crate::property::PropertyKey as HeapPropertyKey;
   use crate::property::PropertyKind as HeapPropertyKind;
   use crate::Heap;
   use crate::HeapLimits;
+  use crate::MicrotaskQueue;
+  use crate::TerminationReason;
   use crate::Job;
   use crate::Realm;
   use crate::RealmId;
@@ -1510,6 +1525,36 @@ mod tests {
   }
 
   #[test]
+  fn all_import_attributes_supported_scan_consumes_fuel() {
+    // `InnerModuleLoading` checks `AllImportAttributesSupported` while traversing the static import
+    // graph. Import attribute lists can be large and may not involve nested parsing/evaluation work,
+    // so the scan must be budgeted.
+    let mut vm = Vm::new(VmOptions {
+      check_time_every: 1,
+      ..VmOptions::default()
+    });
+    vm.set_budget(Budget {
+      // With `TICK_EVERY=32`, we should trip fuel exhaustion quickly even though the scan itself is
+      // just a tight loop.
+      fuel: Some(1),
+      deadline: None,
+      check_time_every: 1,
+    });
+
+    let supported = ["type"];
+    let mut attrs = Vec::<ImportAttribute>::new();
+    for _ in 0..5000 {
+      attrs.push(ImportAttribute::new("type", "json"));
+    }
+
+    let err = first_unsupported_import_attribute_key(&mut vm, &supported, &attrs).unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+      other => panic!("expected OutOfFuel termination, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn continue_dynamic_import_rejects_on_invalid_payload() {
     let payload = ModuleLoadPayload::graph_loading_state(GraphLoadingState(Rc::new(RefCell::new(
       GraphLoadingStateInner {
@@ -1541,7 +1586,7 @@ mod tests {
       payload,
       Ok(ModuleId::from_raw(1)),
     )
-      .unwrap_err();
+    .unwrap_err();
     assert!(matches!(err, VmError::InvariantViolation(_)));
   }
 
