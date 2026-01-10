@@ -217,44 +217,32 @@ impl ClassicScriptPipelineState {
     script_node_id: NodeId,
     base_url_at_discovery: Option<String>,
   ) -> Result<()> {
-    // HTML: "prepare a script" immediately returns when the script element is not connected.
+    // HTML: When a parser-inserted script end tag is seen, perform a microtask checkpoint *before*
+    // preparing the script, but only when the JS execution context stack is empty.
+    if self.js_execution_depth.get() == 0 {
+      event_loop.perform_microtask_checkpoint(host)?;
+    }
+
+    // HTML: "prepare the script element" early-outs when the element is not connected. However, the
+    // algorithm still clears the parser document slot (and may set force-async) so that if the
+    // script is later inserted into the document it behaves like a dynamic script.
     //
-    // This is critical for scripts that appear inside inert `<template>` contents: html5ever still
-    // yields `</script>` pause points for those scripts, but they must not be scheduled, fetched, or
-    // allowed to block the parser.
-    //
-    // Note: we do this check *before* calling into `ScriptScheduler` because the scheduler can emit
-    // `BlockParserUntilExecuted` for external scripts, which would incorrectly stall parsing if the
-    // script is disconnected.
+    // Note: this check must be performed *after* the pre-script microtask checkpoint, since queued
+    // microtasks may have removed/detached the script element.
     {
       let mut dom = self.parser.document_mut().ok_or_else(|| {
         Error::Other("internal error: parser document unavailable at script boundary".to_string())
       })?;
       if !dom.is_connected_for_scripting(script_node_id) {
-        if let NodeKind::Element {
-          tag_name,
-          namespace,
-          ..
-        } = &dom.node(script_node_id).kind
-        {
-          if tag_name.eq_ignore_ascii_case("script")
-            && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-          {
-            let parser_document = dom.node(script_node_id).script_parser_document;
-            dom.node_mut(script_node_id).script_parser_document = false;
-            if parser_document && !dom.has_attribute(script_node_id, "async").unwrap_or(false) {
-              dom.node_mut(script_node_id).script_force_async = true;
-            }
-          }
+        let was_parser_inserted = dom.node(script_node_id).script_parser_document;
+        let has_async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
+        let node = dom.node_mut(script_node_id);
+        node.script_parser_document = false;
+        if was_parser_inserted && !has_async_attr {
+          node.script_force_async = true;
         }
         return Ok(());
       }
-    }
-
-    // HTML: When a parser-inserted script end tag is seen, perform a microtask checkpoint *before*
-    // preparing the script, but only when the JS execution context stack is empty.
-    if self.js_execution_depth.get() == 0 {
-      event_loop.perform_microtask_checkpoint(host)?;
     }
 
     // Scope the `document()` borrow so we can later mutably borrow `self` when applying actions.
@@ -731,7 +719,10 @@ impl<Host: ClassicScriptPipelineHost> ScriptBlockExecutor<Host> for HostExecutor
 mod tests {
   use super::*;
   use crate::dom::SVG_NAMESPACE;
-  use crate::js::{CurrentScriptStateHandle, EventLoop, RunLimits};
+  use crate::js::{
+    ClassicScriptScheduler, CurrentScriptStateHandle, EventLoop, RunLimits, ScriptElementEvent,
+    ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
+  };
   use selectors::context::QuirksMode;
 
   struct Host {
@@ -806,6 +797,56 @@ mod tests {
         host.log.push(micro);
         Ok(())
       })?;
+      Ok(())
+    }
+  }
+
+  impl ScriptLoader for Host {
+    type Handle = usize;
+
+    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+      Err(Error::Other(format!(
+        "unexpected load_blocking for url={url} (test host has no external loader)"
+      )))
+    }
+
+    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+      Err(Error::Other(format!(
+        "unexpected start_load for url={url} (test host has no external loader)"
+      )))
+    }
+
+    fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+      Ok(None)
+    }
+  }
+
+  impl ScriptExecutor for Host {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      if let Some(assert) = &self.assert_dom_state_on_execute {
+        assert(&self.dom);
+      }
+      self.log.push(script_text.to_string());
+      let micro = format!("m{script_text}");
+      event_loop.queue_microtask(move |host, _| {
+        host.log.push(micro);
+        Ok(())
+      })?;
+      Ok(())
+    }
+  }
+
+  impl ScriptEventDispatcher for Host {
+    fn dispatch_script_event(
+      &mut self,
+      _event: ScriptElementEvent,
+      _spec: &ScriptElementSpec,
+    ) -> Result<()> {
       Ok(())
     }
   }
@@ -928,6 +969,92 @@ mod tests {
     assert!(
       !script_node.script_already_started,
       "expected already started to remain false for disconnected parser-inserted scripts"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn template_script_is_converted_to_dynamic_and_executes_when_inserted() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+
+    p.feed_str(r#"<!doctype html><template><script>INERT</script></template><script>LIVE</script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    // Only the live script should execute during parsing.
+    assert_eq!(host.log, vec!["LIVE".to_string(), "mLIVE".to_string()]);
+
+    let mut doc = p
+      .finished_document()
+      .expect("expected pipeline to produce a finished document");
+
+    // Find the script inside the inert <template>.
+    let mut inert_script: Option<NodeId> = None;
+    for (idx, node) in doc.nodes().iter().enumerate() {
+      let NodeKind::Element { tag_name, .. } = &node.kind else {
+        continue;
+      };
+      if !tag_name.eq_ignore_ascii_case("script") {
+        continue;
+      }
+      let id = NodeId::from_index(idx);
+      if doc.is_descendant_of_inert_template(id) {
+        inert_script = Some(id);
+        break;
+      }
+    }
+    let inert_script = inert_script.expect("expected <script> inside <template>");
+
+    assert!(
+      !doc.is_connected_for_scripting(inert_script),
+      "template script should remain disconnected for scripting"
+    );
+
+    // HTML: prepare-a-script early-outs for disconnected scripts but still clears the parser
+    // document slot and sets force-async when `async` is absent.
+    assert!(
+      !doc.node(inert_script).script_parser_document,
+      "expected disconnected parser-created template script to have parser_document cleared"
+    );
+    assert!(
+      doc.node(inert_script).script_force_async,
+      "expected disconnected parser-created template script to have force_async set"
+    );
+    assert!(
+      !doc.node(inert_script).script_already_started,
+      "expected disconnected template script not to be marked already started during parsing"
+    );
+
+    // Move the inert script into the live document tree and run the dynamic script insertion steps.
+    let body = doc.body().expect("document should have a body element");
+    let old_parent = doc.node(inert_script).parent.expect("expected parent");
+    doc.remove_child(old_parent, inert_script).expect("remove_child");
+    doc.append_child(body, inert_script).expect("append_child");
+    assert!(doc.is_connected_for_scripting(inert_script));
+
+    host.dom = doc;
+
+    let mut scheduler = ClassicScriptScheduler::<Host>::new();
+    crate::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion(
+      &mut host,
+      &mut scheduler,
+      p.event_loop(),
+      inert_script,
+    )?;
+
+    // Dynamic insertion queues a script task; it should not execute synchronously.
+    assert_eq!(host.log, vec!["LIVE".to_string(), "mLIVE".to_string()]);
+
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(
+      host.log,
+      vec![
+        "LIVE".to_string(),
+        "mLIVE".to_string(),
+        "INERT".to_string(),
+        "mINERT".to_string()
+      ]
     );
     Ok(())
   }

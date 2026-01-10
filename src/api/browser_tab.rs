@@ -1780,6 +1780,24 @@ impl BrowserTab {
             .host
             .executor
             .on_document_base_url_updated(self.host.base_url.as_deref());
+ 
+          // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
+          // microtask checkpoint when the JS execution context stack is empty.
+          //
+          // Parsing may be driven outside the event loop (e.g. parse-time script execution) or
+          // inside event-loop tasks; use explicit JS execution depth tracking rather than
+          // `EventLoop::currently_running_task()`.
+          if self.host.js_execution_depth.get() == 0 {
+            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+          }
+
+          // HTML: "prepare the script element" returns early when the script element is not
+          // connected. However, it still clears the "parser document" internal slot (and may set
+          // force-async) so that if the script is later inserted into the document it behaves like a
+          // dynamically inserted script.
+          //
+          // This must be checked *after* the pre-script microtask checkpoint, since microtasks may
+          // have removed/detached the script element.
           if !self.host.dom().is_connected_for_scripting(script) {
             self.host.mutate_dom(|dom| {
               if let NodeKind::Element {
@@ -1801,6 +1819,8 @@ impl BrowserTab {
               ((), false)
             });
 
+            // Sync any DOM mutations (including the internal-slot updates above) back into the
+            // streaming parser's live DOM before resuming parsing.
             let updated = self.host.dom().clone_with_events();
             {
               let Some(mut doc) = parser.document_mut() else {
@@ -1812,17 +1832,6 @@ impl BrowserTab {
             }
             continue;
           }
-
-          // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
-          // microtask checkpoint when the JS execution context stack is empty.
-          //
-          // Parsing may be driven outside the event loop (e.g. parse-time script execution) or
-          // inside event-loop tasks; use explicit JS execution depth tracking rather than
-          // `EventLoop::currently_running_task()`.
-          if self.host.js_execution_depth.get() == 0 {
-            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
-          }
-
           let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
             self.host.dom(),

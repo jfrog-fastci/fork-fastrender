@@ -350,7 +350,7 @@ mod tests {
     let mut pipeline = HtmlScriptPipeline::<Host>::new();
     let script = script_node();
 
-      let _id = pipeline.discovered_parser_script(
+    let _id = pipeline.discovered_parser_script(
       &mut host,
       script,
       ScriptElementSpec {

@@ -351,6 +351,9 @@ impl Document {
       };
       if is_html_script {
         self.nodes[node_id.index()].script_already_started = false;
+        // HTML Range.createContextualFragment also clears the "parser document" internal slot so
+        // scripts in the returned fragment are not treated as parser-inserted.
+        self.nodes[node_id.index()].script_parser_document = false;
       }
     }
 
