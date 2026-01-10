@@ -79,7 +79,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
       default_fuel: config.fuel,
       default_deadline: config.deadline,
       check_time_every: config.check_time_every,
-      interrupt_flag: Some(render_control::interrupt_flag()),
+      external_interrupt_flag: Some(render_control::interrupt_flag()),
       ..VmOptions::default()
     };
     let mut vm = Vm::new(vm_options);

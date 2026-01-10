@@ -49,6 +49,18 @@
 //! [`InterruptToken`]), so the host can cooperatively cancel execution by setting the flag to
 //! `true`.
 //!
+//! This flag is considered **internal** to the VM: it is also used by [`InterruptHandle`], and it
+//! is cleared by [`Vm::reset_interrupt`].
+//!
+//! ## External host cancellation (`external_interrupt_flag`)
+//!
+//! Some embeddings have a long-lived cancellation flag (e.g. render-wide abort) that should be
+//! observed by the VM but must **not** be cleared by [`Vm::reset_interrupt`] (which is often called
+//! between tasks/callbacks). Use [`VmOptions::external_interrupt_flag`] for this.
+//!
+//! The VM treats itself as interrupted when either `interrupt_flag` (internal) or
+//! `external_interrupt_flag` (external) is set.
+//!
 //! ## Per-task budgets
 //!
 //! - Use [`Vm::set_budget`] to apply a per-task [`Budget`] (fuel and/or deadline).

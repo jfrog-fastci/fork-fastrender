@@ -111,11 +111,11 @@ pub struct VmOptions {
   /// If provided, the VM will use this flag for its interrupt token so hosts can cancel execution
   /// by setting the flag to `true`.
   pub interrupt_flag: Option<Arc<AtomicBool>>,
-  /// Optional additional interrupt flag observed for cooperative cancellation.
+  /// Optional external interrupt flag observed for cooperative cancellation.
   ///
-  /// This is intended for *embedding-wide* cancellation tokens (for example a renderer-level
-  /// cancellation flag) that should interrupt JS execution but must **not** be cleared by
-  /// [`Vm::reset_interrupt`].
+  /// This flag is observed **in addition to** [`VmOptions::interrupt_flag`], but is never cleared by
+  /// [`Vm::reset_interrupt`] or the VM-owned [`InterruptHandle`]. This is intended for embedding-wide
+  /// cancellation tokens (for example, a renderer/render-wide cancellation flag).
   pub external_interrupt_flag: Option<Arc<AtomicBool>>,
 }
 
@@ -378,10 +378,12 @@ impl Vm {
   }
 
   pub fn new(options: VmOptions) -> Self {
-    let (interrupt, interrupt_handle) = match &options.interrupt_flag {
-      Some(flag) => InterruptToken::from_shared_flag(flag.clone()),
-      None => InterruptToken::new(),
+    let internal = match &options.interrupt_flag {
+      Some(flag) => flag.clone(),
+      None => Arc::new(AtomicBool::new(false)),
     };
+    let external = options.external_interrupt_flag.clone();
+    let (interrupt, interrupt_handle) = InterruptToken::from_internal_and_external_flags(internal, external);
     let check_time_every = options.check_time_every;
     let mut vm = Self {
       options,

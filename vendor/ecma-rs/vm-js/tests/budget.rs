@@ -174,6 +174,37 @@ fn vm_reset_interrupt_clears_shared_interrupt_flag() {
 }
 
 #[test]
+fn external_interrupt_flag_is_not_cleared_by_vm_reset_interrupt() {
+  let flag = Arc::new(AtomicBool::new(false));
+  let mut vm = Vm::new(VmOptions {
+    max_stack_depth: 16,
+    default_fuel: None,
+    default_deadline: None,
+    check_time_every: 1,
+    interrupt_flag: None,
+    external_interrupt_flag: Some(flag.clone()),
+  });
+  vm.set_budget(Budget::unlimited(1));
+
+  flag.store(true, Ordering::Relaxed);
+
+  let err = vm.tick().unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  vm.reset_interrupt();
+  assert!(flag.load(Ordering::Relaxed));
+
+  let err = vm.tick().unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
+    other => panic!("expected termination, got {other:?}"),
+  }
+}
+
+#[test]
 fn reset_budget_to_default_recomputes_deadline_relative_to_now() {
   let mut vm = Vm::new(VmOptions {
     max_stack_depth: 16,
