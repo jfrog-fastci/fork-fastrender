@@ -133,6 +133,10 @@ FASTR_RENDER_TIMINGS=1 FASTR_LOG_FRAG_BOUNDS=1 \
 
 To turn the committed `progress/pages/*.json` scoreboard (timings/hotspots/accuracy) plus the latest offline fixture-vs-Chrome diffs into an actionable per-page template:
 
+- Each page section reports whether `tests/pages/fixtures/<stem>/index.html` exists.
+- The generated markdown includes a ready-to-run `xtask page-loop` command for each page.
+- When a fixture is missing, the report also includes turnkey `bundle_page fetch` → `xtask import-page-fixture` → `xtask validate-page-fixtures` commands to capture/import/validate the offline repro.
+
 ```bash
 # Optional: generate/update the fixture diff report first.
 bash scripts/cargo_agent.sh xtask fixture-chrome-diff --from-progress progress/pages --only-failures --top-worst-accuracy 20

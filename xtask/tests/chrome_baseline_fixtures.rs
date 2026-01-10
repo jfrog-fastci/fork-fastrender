@@ -728,6 +728,10 @@ fn chrome_baseline_fixtures_falls_back_to_legacy_headless() {
     log.contains("# Retrying with --headless") && log.contains("--headless "),
     "log should contain retry note and legacy headless args; got:\n{log}"
   );
+  assert!(
+    log.contains("--disable-gpu"),
+    "legacy headless retry should include --disable-gpu; got:\n{log}"
+  );
 
   let meta: serde_json::Value =
     serde_json::from_slice(&fs::read(out_dir.join("hello.json")).expect("read metadata json"))

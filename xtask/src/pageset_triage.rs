@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 const DEFAULT_PROGRESS_DIR: &str = "progress/pages";
 const DEFAULT_OUT_PATH: &str = "target/pageset_triage/report.md";
 const DEFAULT_FIXTURE_INDEX_ROOT: &str = "tests/pages/fixtures";
+const DEFAULT_FIXTURE_BUNDLE_OUT_DIR: &str = "target/page-fixture-bundles";
+const DEFAULT_PAGE_LOOP_VIEWPORT: &str = "1200x800";
+const DEFAULT_PAGE_LOOP_DPR: &str = "1.0";
+const DEFAULT_PAGE_LOOP_MEDIA: &str = "screen";
  
 #[derive(Args, Debug)]
 pub struct PagesetTriageArgs {
@@ -187,8 +191,8 @@ pub fn run_pageset_triage(mut args: PagesetTriageArgs) -> Result<()> {
     args.top_slowest,
     diff_entries.as_ref(),
   );
- 
-  let markdown = render_markdown(&selected_pages, diff_entries.as_ref());
+
+  let markdown = render_markdown(&repo_root, &selected_pages, diff_entries.as_ref());
  
   if let Some(parent) = args.out.parent() {
     if !parent.as_os_str().is_empty() {
@@ -344,6 +348,7 @@ fn read_diff_report(report_path: &Path) -> Result<BTreeMap<String, DiffReportEnt
 }
  
 fn render_markdown(
+  repo_root: &Path,
   pages: &[PageTriageRow],
   diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
 ) -> String {
@@ -357,13 +362,17 @@ fn render_markdown(
     if idx > 0 {
       out.push('\n');
     }
-    out.push_str(&render_page_section(page, diff_entries.and_then(|m| m.get(&page.stem))));
+    out.push_str(&render_page_section(
+      repo_root,
+      page,
+      diff_entries.and_then(|m| m.get(&page.stem)),
+    ));
   }
  
   out
 }
  
-fn render_page_section(page: &PageTriageRow, diff: Option<&DiffReportEntry>) -> String {
+fn render_page_section(repo_root: &Path, page: &PageTriageRow, diff: Option<&DiffReportEntry>) -> String {
   let mut out = String::new();
   out.push_str(&format!("## {}\n\n", page.stem));
  
@@ -371,10 +380,20 @@ fn render_page_section(page: &PageTriageRow, diff: Option<&DiffReportEntry>) -> 
     "- URL: {}\n",
     page.url.as_deref().unwrap_or("n/a")
   ));
-  out.push_str(&format!(
-    "- Fixture: `{}/{}/index.html`\n",
-    DEFAULT_FIXTURE_INDEX_ROOT, page.stem
-  ));
+  let fixture_rel_path = format!("{}/{}/index.html", DEFAULT_FIXTURE_INDEX_ROOT, page.stem);
+  let fixture_index_path = repo_root
+    .join(DEFAULT_FIXTURE_INDEX_ROOT)
+    .join(&page.stem)
+    .join("index.html");
+  let fixture_exists = fixture_index_path.is_file();
+  if fixture_exists {
+    out.push_str(&format!("- Fixture: OK (`{}`)\n", fixture_rel_path));
+  } else {
+    out.push_str(&format!(
+      "- Fixture: MISSING (expected `{}`)\n",
+      fixture_rel_path
+    ));
+  }
  
   out.push_str("- Progress: ");
   out.push_str(&format!(
@@ -469,7 +488,44 @@ fn render_page_section(page: &PageTriageRow, diff: Option<&DiffReportEntry>) -> 
       out.push_str(&format!("  - error: {}\n", error));
     }
   }
- 
+
+  out.push_str("\n### Commands\n\n");
+  out.push_str("```bash\n");
+  out.push_str("bash scripts/cargo_agent.sh xtask page-loop");
+  if fixture_exists {
+    out.push_str(&format!(" --fixture {}", page.stem));
+  } else {
+    let selector = page
+      .url
+      .as_deref()
+      .unwrap_or_else(|| page.stem.as_str());
+    out.push_str(&format!(" --pageset {}", selector));
+  }
+  out.push_str(&format!(
+    " --viewport {} --dpr {} --media {} --chrome --overlay --write-snapshot\n",
+    DEFAULT_PAGE_LOOP_VIEWPORT, DEFAULT_PAGE_LOOP_DPR, DEFAULT_PAGE_LOOP_MEDIA
+  ));
+  out.push_str("```\n");
+
+  if !fixture_exists {
+    out.push_str("\nCapture fixture:\n\n");
+    out.push_str("```bash\n");
+    let url = page.url.as_deref().unwrap_or("<URL>");
+    out.push_str(&format!(
+      "bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch {url} --no-render --out {DEFAULT_FIXTURE_BUNDLE_OUT_DIR}/{stem}.tar --viewport {DEFAULT_PAGE_LOOP_VIEWPORT} --dpr {DEFAULT_PAGE_LOOP_DPR}\n",
+      stem = page.stem
+    ));
+    out.push_str(&format!(
+      "bash scripts/cargo_agent.sh xtask import-page-fixture {DEFAULT_FIXTURE_BUNDLE_OUT_DIR}/{stem}.tar {stem}\n",
+      stem = page.stem
+    ));
+    out.push_str(&format!(
+      "bash scripts/cargo_agent.sh xtask validate-page-fixtures --only {stem}\n",
+      stem = page.stem
+    ));
+    out.push_str("```\n");
+  }
+  
   out.push_str("\n### Brokenness inventory\n");
   out.push_str("- Layout:\n  - [ ] ...\n");
   out.push_str("- Text:\n  - [ ] ...\n");

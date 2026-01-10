@@ -9,21 +9,21 @@ fn pageset_triage_markdown_is_deterministic() {
   fs::create_dir_all(&progress_dir).expect("create progress dir");
 
   fs::write(
-    progress_dir.join("a.com.json"),
+    progress_dir.join("example.net.json"),
     r#"{
-  "url": "https://a.com/",
+  "url": "https://example.net/",
   "status": "ok",
   "hotspot": "layout",
   "total_ms": 100.0
 }
 "#,
   )
-  .expect("write progress a.com");
+  .expect("write progress example.net");
 
   fs::write(
-    progress_dir.join("b.com.json"),
+    progress_dir.join("example.com.json"),
     r#"{
-  "url": "https://b.com/",
+  "url": "https://example.com/",
   "status": "ok",
   "hotspot": "paint",
   "total_ms": 200.0,
@@ -34,12 +34,12 @@ fn pageset_triage_markdown_is_deterministic() {
 }
 "#,
   )
-  .expect("write progress b.com");
+  .expect("write progress example.com");
 
   fs::write(
-    progress_dir.join("c.com.json"),
+    progress_dir.join("example.org.json"),
     r#"{
-  "url": "https://c.com/",
+  "url": "https://example.org/",
   "status": "error",
   "hotspot": "fetch",
   "total_ms": 300.0,
@@ -47,7 +47,7 @@ fn pageset_triage_markdown_is_deterministic() {
 }
 "#,
   )
-  .expect("write progress c.com");
+  .expect("write progress example.org");
 
   let report_path = tmp.path().join("report.json");
   fs::write(
@@ -55,21 +55,21 @@ fn pageset_triage_markdown_is_deterministic() {
     r#"{
   "results": [
     {
-      "name": "b.com",
+      "name": "example.com",
       "status": "diff",
-      "before": "chrome/b.com.png",
-      "after": "fastrender/b.com.png",
-      "diff": "report_files/diffs/b.com.png",
+      "before": "chrome/example.com.png",
+      "after": "fastrender/example.com.png",
+      "diff": "report_files/diffs/example.com.png",
       "metrics": {
         "diff_percentage": 50.0,
         "perceptual_distance": 0.5
       }
     },
     {
-      "name": "c.com",
+      "name": "example.org",
       "status": "error",
-      "before": "chrome/c.com.png",
-      "after": "fastrender/c.com.png",
+      "before": "chrome/example.org.png",
+      "after": "fastrender/example.org.png",
       "error": "boom"
     }
   ]
@@ -111,16 +111,22 @@ This is an editable template. Fill in the **Brokenness inventory** section for e
 
 Pages: 2
 
-## b.com
+## example.com
 
-- URL: https://b.com/
-- Fixture: `tests/pages/fixtures/b.com/index.html`
+- URL: https://example.com/
+- Fixture: OK (`tests/pages/fixtures/example.com/index.html`)
 - Progress: status=ok hotspot=paint total_ms=200.00
 - Accuracy: diff_percent=50.0000% perceptual=0.5000
-- Diff report: status=diff (`report.html#entry-71f72aa5a9d6bd42`)
-  - before: `chrome/b.com.png`
-  - after: `fastrender/b.com.png`
-  - diff: `report_files/diffs/b.com.png`
+- Diff report: status=diff (`report.html#entry-576846634e2714c6`)
+  - before: `chrome/example.com.png`
+  - after: `fastrender/example.com.png`
+  - diff: `report_files/diffs/example.com.png`
+
+### Commands
+
+```bash
+bash scripts/cargo_agent.sh xtask page-loop --fixture example.com --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --write-snapshot
+```
 
 ### Brokenness inventory
 - Layout:
@@ -132,16 +138,30 @@ Pages: 2
 - Resources:
   - [ ] ...
 
-## c.com
+## example.org
 
-- URL: https://c.com/
-- Fixture: `tests/pages/fixtures/c.com/index.html`
+- URL: https://example.org/
+- Fixture: MISSING (expected `tests/pages/fixtures/example.org/index.html`)
 - Progress: status=error hotspot=fetch total_ms=300.00
 - Auto notes: missing cache
-- Diff report: status=error (`report.html#entry-cb54b39b547bf659`)
-  - before: `chrome/c.com.png`
-  - after: `fastrender/c.com.png`
+- Diff report: status=error (`report.html#entry-ee7160631269bf51`)
+  - before: `chrome/example.org.png`
+  - after: `fastrender/example.org.png`
   - error: boom
+
+### Commands
+
+```bash
+bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.org/ --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --write-snapshot
+```
+
+Capture fixture:
+
+```bash
+bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch https://example.org/ --no-render --out target/page-fixture-bundles/example.org.tar --viewport 1200x800 --dpr 1.0
+bash scripts/cargo_agent.sh xtask import-page-fixture target/page-fixture-bundles/example.org.tar example.org
+bash scripts/cargo_agent.sh xtask validate-page-fixtures --only example.org
+```
 
 ### Brokenness inventory
 - Layout:
