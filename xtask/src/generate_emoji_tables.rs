@@ -38,7 +38,7 @@ pub fn run_generate_emoji_tables(args: GenerateEmojiTablesArgs) -> Result<()> {
     let existing = fs::read_to_string(&output).with_context(|| format!("reading {output:?}"))?;
     if existing != generated {
       bail!(
-        "emoji tables out of date: re-run `cargo xtask generate-emoji-tables` (diff against {output:?})"
+        "emoji tables out of date: re-run `bash scripts/cargo_agent.sh xtask generate-emoji-tables` (diff against {output:?})"
       );
     }
     return Ok(());

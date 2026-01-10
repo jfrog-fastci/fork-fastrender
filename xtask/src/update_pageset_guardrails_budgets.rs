@@ -257,7 +257,7 @@ fn run_perf_smoke(
 
   let status = cmd
     .status()
-    .context("failed to invoke perf_smoke via cargo run")?;
+    .context("failed to invoke perf_smoke via cargo_agent")?;
   if !status.success() {
     bail!("perf_smoke failed with status {status}");
   }

@@ -726,8 +726,8 @@ fn apply_progress_selection(
       ));
       if total_with_accuracy == 0 {
         msg.push_str(
-          "    Hint: progress JSON needs `accuracy.diff_percent`; run `cargo xtask pageset --accuracy ...` \
-or `cargo xtask sync-progress-accuracy --report <fixture_chrome_diff_report.json>`.\n",
+          "    Hint: progress JSON needs `accuracy.diff_percent`; run `bash scripts/cargo_agent.sh xtask pageset --accuracy ...` \
+or `bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report <fixture_chrome_diff_report.json>`.\n",
         );
       } else if candidates_len == 0 {
         msg.push_str(&format!(
@@ -767,8 +767,8 @@ or `cargo xtask sync-progress-accuracy --report <fixture_chrome_diff_report.json
       eprintln!("Progress selection: skipping missing fixtures (--skip-missing-fixtures set).");
     } else {
       bail!(
-        "missing offline fixture(s); run `cargo xtask pageset --capture-missing-failure-fixtures` \
-or `cargo xtask import-page-fixture <bundle> <stem>` to create them (or pass --skip-missing-fixtures)"
+        "missing offline fixture(s); run `bash scripts/cargo_agent.sh xtask pageset --capture-missing-failure-fixtures` \
+or `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <stem>` to create them (or pass --skip-missing-fixtures)"
       );
     }
   }

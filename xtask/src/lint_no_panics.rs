@@ -490,7 +490,7 @@ fn load_baseline(repo_root: &Path) -> Result<HashMap<BaselineKey, usize>> {
   let path = repo_root.join(BASELINE_PATH);
   if !path.exists() {
     bail!(
-      "missing {BASELINE_PATH}. Run `cargo xtask lint-no-panics --update-baseline` to generate it."
+      "missing {BASELINE_PATH}. Run `bash scripts/cargo_agent.sh xtask lint-no-panics --update-baseline` to generate it."
     );
   }
   let raw =

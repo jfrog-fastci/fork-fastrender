@@ -348,7 +348,7 @@ struct PagesetArgs {
   ///
   /// This scans `progress/pages/*.json`, finds pages with `status != ok`, and (when
   /// `tests/pages/fixtures/<stem>/index.html` is missing) captures a bundle from the warmed disk
-  /// cache via `bundle_page cache`, then imports it via `cargo xtask import-page-fixture`.
+  /// cache via `bundle_page cache`, then imports it via `bash scripts/cargo_agent.sh xtask import-page-fixture`.
   #[arg(long)]
   capture_missing_failure_fixtures: bool,
 
@@ -378,7 +378,7 @@ struct PagesetArgs {
   /// This scans `progress/pages/*.json`, selects `status=ok` pages with an `accuracy.diff_percent`
   /// above `--capture-worst-accuracy-fixtures-min-diff-percent` and/or in the top-N worst diffs,
   /// then captures/imports missing fixtures from the warmed disk cache via `bundle_page cache` and
-  /// `cargo xtask import-page-fixture`.
+  /// `bash scripts/cargo_agent.sh xtask import-page-fixture`.
   #[arg(long)]
   capture_worst_accuracy_fixtures: bool,
 
@@ -493,7 +493,7 @@ fn cpu_budget() -> usize {
 
 #[derive(Args)]
 struct PagesetDiffArgs {
-  /// Skip running `cargo xtask pageset` before comparing progress files
+  /// Skip running `bash scripts/cargo_agent.sh xtask pageset` before comparing progress files
   #[arg(long)]
   no_run: bool,
 
@@ -689,7 +689,7 @@ struct DiffRendersArgs {
 
   /// Exit non-zero when differences/missing/errors are present in the report.
   ///
-  /// By default `cargo xtask diff-renders` exits 0 even when diffs are found so it can be used as a
+  /// By default `bash scripts/cargo_agent.sh xtask diff-renders` exits 0 even when diffs are found so it can be used as a
   /// non-gating local inspection loop.
   #[arg(long)]
   fail_on_differences: bool,
@@ -706,7 +706,7 @@ struct DiffRendersArgs {
 
   /// Maximum percent of pixels allowed to differ (0-100).
   ///
-  /// Defaults to 0 so any differences are flagged, matching the historical `cargo xtask diff-renders`
+  /// Defaults to 0 so any differences are flagged, matching the historical `bash scripts/cargo_agent.sh xtask diff-renders`
   /// behavior.
   #[arg(long, default_value_t = 0.0)]
   max_diff_percent: f64,
@@ -816,7 +816,7 @@ struct PerfSmokeArgs {
 
   /// Fail when a pageset-guardrails manifest fixture is missing locally.
   ///
-  /// When running `--suite pageset-guardrails` via `cargo xtask perf-smoke`, this gate is enabled by
+  /// When running `--suite pageset-guardrails` via `bash scripts/cargo_agent.sh xtask perf-smoke`, this gate is enabled by
   /// default unless explicitly disabled with `--allow-missing-fixtures`.
   #[arg(long, conflicts_with = "allow_missing_fixtures")]
   fail_on_missing_fixtures: bool,
@@ -824,7 +824,7 @@ struct PerfSmokeArgs {
   /// Allow missing pageset-guardrails fixtures (skip them instead of failing).
   ///
   /// This disables the default `--fail-on-missing-fixtures` behavior for the `pageset-guardrails`
-  /// suite when running via `cargo xtask perf-smoke`.
+  /// suite when running via `bash scripts/cargo_agent.sh xtask perf-smoke`.
   #[arg(long, conflicts_with = "fail_on_missing_fixtures")]
   allow_missing_fixtures: bool,
 

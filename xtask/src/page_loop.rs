@@ -590,7 +590,7 @@ fn resolve_fixture_stem_from_progress(repo_root: &Path, args: &PageLoopArgs) -> 
       if candidates.is_empty() {
         bail!(
           "no ok pages with accuracy metrics found under {}.\n\
-           hint: run `cargo xtask pageset --accuracy ...` or `cargo xtask refresh-progress-accuracy ...` to populate `accuracy.diff_percent`.",
+           hint: run `bash scripts/cargo_agent.sh xtask pageset --accuracy ...` or `bash scripts/cargo_agent.sh xtask refresh-progress-accuracy ...` to populate `accuracy.diff_percent`.",
           progress_dir.display()
         );
       }
@@ -667,7 +667,7 @@ fn resolve_fixture_stem_from_progress(repo_root: &Path, args: &PageLoopArgs) -> 
   bail!(
     "selected page '{}' does not have an offline fixture.\n\
      Expected: {}\n\
-     Hint: run `cargo xtask import-page-fixture <bundle.tar> {}` or `cargo xtask recapture-page-fixtures ...` to create it.",
+     Hint: run `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle.tar> {}` or `bash scripts/cargo_agent.sh xtask recapture-page-fixtures ...` to create it.",
     selected.stem,
     selected.fixture_index_path.display(),
     selected.stem

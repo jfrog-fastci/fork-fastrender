@@ -343,7 +343,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
     match args.capture_mode {
       FixtureCaptureMode::Render => {
         eprintln!(
-          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}'{}{} --viewport {}x{} --dpr {}",
+          "      bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch '{}' --out '{}'{}{} --viewport {}x{} --dpr {}",
           entry.url,
           bundle_path.display(),
           fetch_timeout_flag,
@@ -355,7 +355,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
       FixtureCaptureMode::Crawl => {
         eprintln!(
-          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}' --no-render{}{} --viewport {}x{} --dpr {}",
+          "      bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch '{}' --out '{}' --no-render{}{} --viewport {}x{} --dpr {}",
           entry.url,
           bundle_path.display(),
           fetch_timeout_flag,
@@ -367,7 +367,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
       FixtureCaptureMode::Cache => {
         eprintln!(
-          "      cargo run --release --features disk_cache --bin bundle_page -- cache '{}' --out '{}'{}{}{}{}{} --viewport {}x{} --dpr {}",
+          "      bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache '{}' --out '{}'{}{}{}{}{} --viewport {}x{} --dpr {}",
           entry.name,
           bundle_path.display(),
           cache_dir_flag,
@@ -390,7 +390,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
     }
     eprintln!(
-      "      cargo xtask import-page-fixture '{}' '{}' --output-root '{}'{}{}{}",
+      "      bash scripts/cargo_agent.sh xtask import-page-fixture '{}' '{}' --output-root '{}'{}{}{}",
       bundle_path.display(),
       entry.name,
       args.fixtures_root.display(),
