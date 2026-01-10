@@ -841,17 +841,23 @@ globalThis.__ur = Promise.reject('boom');
 }
 
 #[test]
-fn abort_signal_onabort_callbacks_can_mutate_dom() -> Result<()> {
+fn abort_signal_abort_event_handlers_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
+  assert!(host.dom().get_element_by_id("abl").is_none());
   assert!(host.dom().get_element_by_id("abo").is_none());
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 const controller = new AbortController();
+controller.signal.addEventListener('abort', () => {
+  const d = document.createElement('div');
+  d.id = 'abl';
+  document.body.appendChild(d);
+});
 controller.signal.onabort = () => {
   const d = document.createElement('div');
   d.id = 'abo';
@@ -865,6 +871,10 @@ controller.abort();
   // don't affect assertions.
   event_loop.perform_microtask_checkpoint(&mut host)?;
 
+  assert!(
+    host.dom().get_element_by_id("abl").is_some(),
+    "expected AbortSignal abort event listener to mutate the host DOM"
+  );
   assert!(
     host.dom().get_element_by_id("abo").is_some(),
     "expected AbortSignal onabort handler to mutate the host DOM"
