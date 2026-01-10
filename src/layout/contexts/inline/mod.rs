@@ -1144,7 +1144,7 @@ impl InlineFormattingContext {
 
           let bottom_inset = padding_bottom + border_bottom;
           let fallback_metrics = self.compute_strut_metrics_for_segments(&child.style, &child_segments);
-          let first_inline_segment = child_segments.iter().enumerate().find_map(|(idx, seg)| {
+          let mut first_inline_segment = child_segments.iter().enumerate().find_map(|(idx, seg)| {
             let InlineFlowSegment::InlineItems(items) = seg else {
               return None;
             };
@@ -1157,7 +1157,7 @@ impl InlineFormattingContext {
               });
             (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
           });
-          let last_inline_segment =
+          let mut last_inline_segment =
             child_segments
               .iter()
               .enumerate()
@@ -1175,6 +1175,21 @@ impl InlineFormattingContext {
                   });
                 (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
               });
+
+          // Inline boxes can contain only out-of-flow descendants (represented by static position
+          // anchors). In that case `child_segments` contains no "real" in-flow items, but the inline
+          // box still needs a first/last fragment to carry border/padding edges and establish the
+          // containing block for positioned descendants.
+          if first_inline_segment.is_none() {
+            first_inline_segment = child_segments.iter().position(|seg| {
+              matches!(seg, InlineFlowSegment::InlineItems(_))
+            });
+          }
+          if last_inline_segment.is_none() {
+            last_inline_segment = child_segments.iter().rposition(|seg| {
+              matches!(seg, InlineFlowSegment::InlineItems(_))
+            });
+          }
 
           for (segment_index, segment) in child_segments.into_iter().enumerate() {
             match segment {
@@ -7122,6 +7137,19 @@ impl InlineFormattingContext {
          // introduces leading, the border box should sit *inside* the line-height box, offset by
          // half-leading.
          let half_leading = box_item.strut_metrics.half_leading();
+         // `vertical-align: top/bottom` aligns the border box with the line box edge. The line
+         // builder positions the inline box using its line-height strut (which excludes
+         // padding/borders), so shift the line-height origin here so the painted border box meets
+         // the expected alignment.
+         match box_item.vertical_align {
+           VerticalAlign::Top => {
+             block_pos += box_item.content_offset_y - half_leading;
+           }
+           VerticalAlign::Bottom => {
+             block_pos += half_leading - box_item.bottom_inset;
+           }
+           _ => {}
+         }
          let line_box_origin_block = box_item.content_offset_y - half_leading;
          let paint_origin_block = block_pos + half_leading - box_item.content_offset_y;
  
