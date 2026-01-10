@@ -22020,7 +22020,7 @@ mod tests {
     );
     assert_eq!(
       (alloc.width, alloc.height),
-      (44, 44),
+      (32, 32),
       "unexpected offscreen allocation size for box shadow: {alloc:?}"
     );
   }
@@ -22066,7 +22066,7 @@ mod tests {
     );
 
     let alloc = renderer_allocs[0];
-    let blur_pad = (item.blur_radius.abs() * 3.0).ceil() as u32;
+    let blur_pad = (box_shadow_blur_radius_to_sigma(item.blur_radius) * 3.0).ceil() as u32;
     let canvas_w = renderer.canvas.width();
     let canvas_h = renderer.canvas.height();
     let max_w = canvas_w + (blur_pad + 4) * 2;
