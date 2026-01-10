@@ -646,6 +646,49 @@ setTimeout(() => {
 }
 
 #[test]
+fn set_timeout_callbacks_can_schedule_microtasks_that_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+setTimeout(() => {
+  queueMicrotask(() => {
+    const d = document.createElement('div');
+    d.id = 'tm';
+    document.body.appendChild(d);
+  });
+}, 0);
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("tm").is_none(),
+    "element should not exist before the event loop runs"
+  );
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after firing the timeout and draining microtasks"
+  );
+  assert!(
+    host.dom().get_element_by_id("tm").is_some(),
+    "expected microtask scheduled from setTimeout callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn event_listener_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
