@@ -1,6 +1,9 @@
 //! WebIDL-driven JavaScript bindings.
 //!
-//! - [`generated`] contains generic WebIDL-to-host glue (calls into [`host`]).
+//! - [`generated`] contains `vm-js` realm WebIDL-to-host glue (calls into the embedder via
+//!   [`webidl_vm_js::WebIdlBindingsHost`] + [`webidl_vm_js::host_from_hooks`]).
+//! - [`generated_legacy`] contains legacy `webidl-js-runtime` bindings (kept temporarily for
+//!   migration and for unit tests that exercise the old bindings/runtime surface).
 //!
 //! Alongside the generated scaffolding we keep a small set of handwritten helpers (e.g.
 //! `DOMException`) that provide spec-shaped behaviour needed by early bindings/tests.
@@ -9,34 +12,54 @@ pub mod document;
 pub mod dom_exception;
 pub mod dom_exception_vmjs;
 pub mod generated;
+pub mod generated_legacy;
 pub mod host;
-mod vm_js_window;
 pub use document::install_document_query_selector_bindings;
 pub use dom_exception::DomExceptionClass;
 pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
-pub use generated::install_window_bindings;
-pub use generated::install_worker_bindings;
-pub use host::{BindingValue, VmJsBindingsHost, WebHostBindings};
+pub use generated::{install_window_bindings_vm_js, install_worker_bindings_vm_js};
+pub use generated_legacy::{install_window_bindings, install_worker_bindings};
+pub use host::{BindingValue, WebHostBindings};
 pub use crate::js::vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
-pub use vm_js_window::install_window_bindings as install_window_bindings_vm_js;
 
 #[cfg(test)]
 mod tests {
   use super::{
-    install_window_bindings, install_window_bindings_vm_js, BindingValue, VmJsBindingsHost,
-    WebHostBindings,
+    install_window_bindings, install_window_bindings_vm_js, BindingValue, WebHostBindings,
   };
   use crate::js::{UrlLimits, UrlSearchParams};
   use crate::js::webidl::{
     InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
   };
   use crate::js::webidl_runtime_vmjs::WebIdlBindingsRuntime;
+  use std::any::Any;
   use std::collections::HashMap;
   use vm_js::{
-    Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-    VmOptions, WeakGcObject,
+    Heap, HeapLimits, Job, MicrotaskQueue, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+    VmError, VmHostHooks, VmOptions, WeakGcObject,
   };
   use webidl_js_runtime::JsRuntime as _;
+  use webidl_vm_js::{WebIdlBindingsHost, WebIdlBindingsHostSlot};
+
+  struct HostHooksWithBindingsHost {
+    slot: WebIdlBindingsHostSlot,
+  }
+
+  impl HostHooksWithBindingsHost {
+    fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
+      Self {
+        slot: WebIdlBindingsHostSlot::new(host),
+      }
+    }
+  }
+
+  impl VmHostHooks for HostHooksWithBindingsHost {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.slot)
+    }
+  }
 
   #[derive(Default)]
   struct UrlSearchParamsHost {
@@ -61,16 +84,17 @@ mod tests {
     }
   }
 
-  impl VmJsBindingsHost for UrlSearchParamsHost {
+  impl WebIdlBindingsHost for UrlSearchParamsHost {
     fn call_operation(
       &mut self,
+      _vm: &mut Vm,
       scope: &mut Scope<'_>,
       receiver: Option<Value>,
       interface: &'static str,
       operation: &'static str,
       _overload: usize,
-      args: Vec<BindingValue<Value>>,
-    ) -> Result<BindingValue<Value>, VmError> {
+      args: &[Value],
+    ) -> Result<Value, VmError> {
       match (interface, operation) {
         ("URLSearchParams", "constructor") => {
           let Some(Value::Object(obj)) = receiver else {
@@ -79,11 +103,9 @@ mod tests {
             ));
           };
 
-          let init = match args.get(0) {
-            None => String::new(),
-            Some(BindingValue::String(s)) => s.clone(),
-            Some(BindingValue::Object(v)) => Self::value_to_rust_string(scope, *v)?,
-            Some(_) => String::new(),
+          let init = match args.first().copied().unwrap_or(Value::Undefined) {
+            Value::Undefined => String::new(),
+            value => Self::value_to_rust_string(scope, value)?,
           };
 
           let params = if init.is_empty() {
@@ -94,36 +116,45 @@ mod tests {
           };
 
           self.params.insert(WeakGcObject::from(obj), params);
-          Ok(BindingValue::Undefined)
+          Ok(Value::Undefined)
         }
         ("URLSearchParams", "append") => {
           let params = self.require_params(receiver)?;
-          let Some(BindingValue::String(name)) = args.get(0) else {
-            return Err(VmError::TypeError("URLSearchParams.append: expected name"));
-          };
-          let Some(BindingValue::String(value)) = args.get(1) else {
-            return Err(VmError::TypeError("URLSearchParams.append: expected value"));
-          };
+          let name = args.get(0).copied().unwrap_or(Value::Undefined);
+          let value = args.get(1).copied().unwrap_or(Value::Undefined);
+          let name = Self::value_to_rust_string(scope, name)?;
+          let value = Self::value_to_rust_string(scope, value)?;
           params
             .append(name, value)
             .map_err(|_| VmError::TypeError("URLSearchParams.append failed"))?;
-          Ok(BindingValue::Undefined)
+          Ok(Value::Undefined)
         }
         ("URLSearchParams", "get") => {
           let params = self.require_params(receiver)?;
-          let Some(BindingValue::String(name)) = args.get(0) else {
-            return Err(VmError::TypeError("URLSearchParams.get: expected name"));
-          };
+          let name = args.get(0).copied().unwrap_or(Value::Undefined);
+          let name = Self::value_to_rust_string(scope, name)?;
           match params
             .get(name)
             .map_err(|_| VmError::TypeError("URLSearchParams.get failed"))?
           {
-            None => Ok(BindingValue::Null),
-            Some(v) => Ok(BindingValue::String(v)),
+            None => Ok(Value::Null),
+            Some(v) => Ok(Value::String(scope.alloc_string(&v)?)),
           }
         }
         _ => Err(VmError::TypeError("unimplemented host operation")),
       }
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::TypeError("unimplemented host constructor"))
     }
   }
 
@@ -140,10 +171,10 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
-    install_window_bindings_vm_js::<UrlSearchParamsHost>(&mut vm, &mut heap, &realm)?;
-
     let mut host = UrlSearchParamsHost::default();
-    let mut hooks = MicrotaskQueue::new();
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host);
     let mut scope = heap.scope();
 
     // globalThis.URLSearchParams
@@ -160,8 +191,7 @@ mod tests {
     scope.push_root(Value::String(init_str))?;
     let init = Value::String(init_str);
 
-    let params_val =
-      vm.construct_with_host_and_hooks(&mut host, &mut scope, &mut hooks, ctor, &[init], ctor)?;
+    let params_val = vm.construct_with_host(&mut scope, &mut hooks, ctor, &[init], ctor)?;
     scope.push_root(params_val)?;
     let Value::Object(params_obj) = params_val else {
       panic!("URLSearchParams constructor should return an object");
@@ -176,20 +206,12 @@ mod tests {
     scope.push_root(Value::String(a_str))?;
     let c = Value::String(c_str);
     let a = Value::String(a_str);
-    vm.call_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      append,
-      params_val,
-      &[c, a],
-    )?;
+    vm.call_with_host(&mut scope, &mut hooks, append, params_val, &[c, a])?;
 
     // params.get("c") === "a"
     let get_key = alloc_key(&mut scope, "get")?;
     let get = vm.get(&mut scope, params_obj, get_key)?;
-    let out =
-      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, params_val, &[c])?;
+    let out = vm.call_with_host(&mut scope, &mut hooks, get, params_val, &[c])?;
 
     let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
     assert_eq!(out_s, "a");

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsCodegenConfig,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
   WebIdlBindingsGenerationMode,
 };
 
@@ -39,6 +39,7 @@ fn generated_webidl_bindings_include_attributes_and_constants() {
     &rustfmt_config,
     ExposureTarget::Window,
     config,
+    WebIdlBindingsBackend::Legacy,
   )
   .unwrap();
 

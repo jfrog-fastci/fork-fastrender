@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use crate::js::webidl::WebIdlBindingsRuntime;
-use vm_js::{Scope, Value, VmError};
 use webidl_vm_js::CallbackHandle;
 
 /// A minimally-typed value container used by the generated binding shims when crossing into the
@@ -68,24 +67,4 @@ where
     let _ = (receiver, interface, name, value);
     Err(rt.throw_type_error("unimplemented host attribute setter"))
   }
-}
-
-/// Host-defined behavior implementation for *realm-based* (`vm-js`) WebIDL bindings.
-///
-/// This mirrors [`WebHostBindings`], but is used by bindings installed directly into a `vm-js`
-/// [`Realm`](vm_js::Realm) and invoked via [`vm_js::Vm::call_with_host_and_hooks`] /
-/// [`vm_js::Vm::construct_with_host_and_hooks`].
-///
-/// Unlike `WebHostBindings`, this trait is **not** generic over a runtime adapter: it uses
-/// `vm-js`'s native [`Value`] type directly.
-pub trait VmJsBindingsHost {
-  fn call_operation(
-    &mut self,
-    scope: &mut Scope<'_>,
-    receiver: Option<Value>,
-    interface: &'static str,
-    operation: &'static str,
-    overload: usize,
-    args: Vec<BindingValue<Value>>,
-  ) -> Result<BindingValue<Value>, VmError>;
 }

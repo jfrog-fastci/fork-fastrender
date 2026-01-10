@@ -3,7 +3,7 @@ use std::path::Path;
 
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsCodegenConfig,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
   WebIdlBindingsGenerationMode,
 };
 
@@ -47,9 +47,14 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     prototype_chains: true,
   };
 
-  let window =
-    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Window, config.clone())
-      .expect("generate window bindings");
+  let window = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config.clone(),
+    WebIdlBindingsBackend::Legacy,
+  )
+  .expect("generate window bindings");
   assert!(
     window.contains("proto_window_only"),
     "Window target should include the WindowOnly interface"
@@ -75,9 +80,14 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Window target should not include worker-only members"
   );
 
-  let worker =
-    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Worker, config)
-      .expect("generate worker bindings");
+  let worker = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Worker,
+    config,
+    WebIdlBindingsBackend::Legacy,
+  )
+  .expect("generate worker bindings");
   assert!(
     !worker.contains("proto_window_only"),
     "Worker target should not include the WindowOnly interface"

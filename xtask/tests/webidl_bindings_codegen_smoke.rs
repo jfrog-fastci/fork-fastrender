@@ -26,11 +26,15 @@ fn generated_bindings_snapshots_contain_known_members() {
     .collect();
 
   assert!(
-    window_bindings_no_whitespace.contains("rt.define_constructor(global,\"URL\","),
+    window_bindings_no_whitespace.contains("pubfninstall_window_bindings_vm_js"),
+    "expected window bindings to export the vm-js install entrypoint"
+  );
+  assert!(
+    window_bindings_no_whitespace.contains("rt.define_data_property_str(global,\"URL\","),
     "expected window bindings to install URL constructor"
   );
   assert!(
-    window_bindings_no_whitespace.contains("rt.define_constructor(global,\"URLSearchParams\","),
+    window_bindings_no_whitespace.contains("rt.define_data_property_str(global,\"URLSearchParams\","),
     "expected window bindings to install URLSearchParams constructor"
   );
   assert!(
@@ -55,8 +59,12 @@ fn generated_bindings_snapshots_contain_known_members() {
     .find("pub mod worker")
     .expect("expected generated bindings to include a worker module");
   let worker_bindings = &window_bindings[worker_start..];
+  let worker_bindings_no_whitespace: String = worker_bindings
+    .chars()
+    .filter(|c| !c.is_whitespace())
+    .collect();
   assert!(
-    worker_bindings.contains("BindingValue::FrozenArray"),
-    "expected worker bindings to handle FrozenArray values when converting results back to JS"
+    worker_bindings_no_whitespace.contains("pubfninstall_worker_bindings_vm_js"),
+    "expected worker bindings to export the vm-js install entrypoint"
   );
 }

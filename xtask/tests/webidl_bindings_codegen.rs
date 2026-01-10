@@ -4,14 +4,14 @@ use std::path::Path;
 use xtask::webidl::generate::{rustfmt, FORBIDDEN_TOKENS};
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
-  generate_bindings_module_from_idl_with_config, WebIdlBindingsCodegenConfig,
+  generate_bindings_module_from_idl_with_config, WebIdlBindingsBackend, WebIdlBindingsCodegenConfig,
   WebIdlBindingsGenerationMode,
 };
 
-const EXPECTED: &str = include_str!("goldens/webidl_bindings_codegen_expected.rs");
+const EXPECTED_LEGACY: &str = include_str!("goldens/webidl_bindings_codegen_expected.rs");
+const EXPECTED_VMJS: &str = include_str!("goldens/webidl_bindings_codegen_expected_vmjs.rs");
 
-#[test]
-fn generated_webidl_bindings_are_deterministic_and_match_golden() {
+fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str) {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
     .expect("xtask has a parent dir");
@@ -42,31 +42,42 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
     prototype_chains: true,
   };
 
-  let out1 =
-    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Window, config.clone()).unwrap();
-  let out2 =
-    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Window, config).unwrap();
+  let out1 = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config.clone(),
+    backend,
+  )
+  .unwrap();
+  let out2 = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    backend,
+  )
+  .unwrap();
   assert_eq!(out1, out2, "expected deterministic output across runs");
 
-  // Spot-check that overload resolution is driven by an argument-count dispatch plan (not the old
-  // `args.len() >= ... && predicate(...)` heuristic).
-  assert!(
-    out1.contains("match argcount"),
-    "expected overload dispatch to group by argument count"
-  );
-  assert!(
-    out1.contains("rt.is_number("),
-    "expected overload dispatch to use a runtime type predicate"
-  );
-  assert!(
-    !out1.contains("args.len() >= 1 && args.len() <= 1"),
-    "expected old overload-dispatch heuristic to be absent"
-  );
+  // Spot-check that the legacy backend keeps its (newer) overload resolution strategy. The vm-js
+  // backend will be migrated in follow-ups.
+  if backend == WebIdlBindingsBackend::Legacy {
+    assert!(
+      out1.contains("match argcount"),
+      "expected overload dispatch to group by argument count"
+    );
+    assert!(
+      out1.contains("rt.is_number("),
+      "expected overload dispatch to use a runtime type predicate"
+    );
+    assert!(
+      !out1.contains("args.len() >= 1 && args.len() <= 1"),
+      "expected old overload-dispatch heuristic to be absent"
+    );
+  }
 
-  assert_eq!(
-    out1, EXPECTED,
-    "expected generated output to match the committed golden snapshot"
-  );
+  assert_eq!(out1, expected, "expected generated output to match golden");
 
   // Ensure rustfmt is stable (what CI's `cargo fmt -- --check` effectively enforces).
   let formatted_again = rustfmt(&out1, &rustfmt_config).expect("rustfmt generated output");
@@ -81,6 +92,16 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
       "generated output unexpectedly contains forbidden token: {token}"
     );
   }
+}
+
+#[test]
+fn generated_webidl_bindings_vmjs_are_deterministic_and_match_golden() {
+  assert_backend_matches_golden(WebIdlBindingsBackend::Vmjs, EXPECTED_VMJS);
+}
+
+#[test]
+fn generated_webidl_bindings_legacy_still_match_golden() {
+  assert_backend_matches_golden(WebIdlBindingsBackend::Legacy, EXPECTED_LEGACY);
 }
 
 #[test]
@@ -134,6 +155,7 @@ fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
     &rustfmt_config,
     ExposureTarget::Window,
     config,
+    WebIdlBindingsBackend::Legacy,
   )
   .unwrap();
 
