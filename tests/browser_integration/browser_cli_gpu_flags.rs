@@ -44,18 +44,18 @@ fn browser_accepts_gpu_flag_values() {
     assert_browser_ok(&output);
   }
 
-  let output = run_browser(&[
-    "--exit-immediately",
-    "--force-fallback-adapter",
-    "--power-preference",
-    "high",
-  ]);
-  assert_browser_ok(&output);
+  for flag in ["--force-fallback-adapter", "--wgpu-fallback"] {
+    let output = run_browser(&["--exit-immediately", flag, "--power-preference", "high"]);
+    assert_browser_ok(&output);
+  }
 
   for backends in ["all", "vulkan", "gl", "vulkan,gl"] {
     let output = run_browser(&["--exit-immediately", "--wgpu-backends", backends]);
     assert_browser_ok(&output);
   }
+
+  let output = run_browser(&["--exit-immediately", "--wgpu-backend", "gl"]);
+  assert_browser_ok(&output);
 }
 
 #[test]
@@ -75,5 +75,8 @@ fn browser_rejects_invalid_gpu_flag_values() {
   );
 
   let output = run_browser(&["--exit-immediately", "--wgpu-backends", "potato"]);
+  assert_browser_clap_error(&output);
+
+  let output = run_browser(&["--exit-immediately", "--wgpu-backend", "potato"]);
   assert_browser_clap_error(&output);
 }

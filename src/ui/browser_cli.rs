@@ -275,18 +275,39 @@ mod tests {
     assert_eq!(parse_wgpu_fallback_env(Some("0")), Ok(false));
     assert_eq!(parse_wgpu_fallback_env(Some("1")), Ok(true));
     assert_eq!(parse_wgpu_fallback_env(Some("true")), Ok(true));
+    assert_eq!(parse_wgpu_fallback_env(Some("yes")), Ok(true));
+    assert_eq!(parse_wgpu_fallback_env(Some("on")), Ok(true));
+    assert_eq!(parse_wgpu_fallback_env(Some("no")), Ok(false));
+    assert_eq!(parse_wgpu_fallback_env(Some("off")), Ok(false));
     assert!(parse_wgpu_fallback_env(Some("maybe")).is_err());
   }
 
   #[test]
   fn parse_wgpu_backends_values() {
     assert_eq!(parse_wgpu_backends("gl"), Ok(wgpu::Backends::GL));
+    assert_eq!(parse_wgpu_backends("all"), Ok(wgpu::Backends::all()));
+    assert_eq!(parse_wgpu_backends("auto"), Ok(wgpu::Backends::all()));
+    assert_eq!(parse_wgpu_backends("default"), Ok(wgpu::Backends::all()));
     assert_eq!(
       parse_wgpu_backends("vulkan,gl"),
       Ok(wgpu::Backends::VULKAN | wgpu::Backends::GL)
     );
     assert!(parse_wgpu_backends("").is_err());
     assert!(parse_wgpu_backends("wat").is_err());
+  }
+
+  #[test]
+  fn parse_wgpu_backends_env_values() {
+    assert_eq!(parse_wgpu_backends_env(None), Ok(None));
+    assert_eq!(parse_wgpu_backends_env(Some("")), Ok(None));
+    assert_eq!(parse_wgpu_backends_env(Some("gl")), Ok(Some(wgpu::Backends::GL)));
+
+    let err = parse_wgpu_backends_env(Some("wat")).expect_err("expected error");
+    assert!(
+      err.message.contains(ENV_WGPU_BACKENDS),
+      "expected error to mention env var name, got: {}",
+      err.message
+    );
   }
 
   #[test]
@@ -301,5 +322,11 @@ mod tests {
     assert!(options.force_fallback_adapter);
     assert_eq!(options.backends, wgpu::Backends::GL);
   }
-}
 
+  #[test]
+  fn resolve_wgpu_options_uses_env_when_cli_is_unset() {
+    let options = resolve_wgpu_options(false, None, Some("1"), Some("gl")).unwrap();
+    assert!(options.force_fallback_adapter);
+    assert_eq!(options.backends, wgpu::Backends::GL);
+  }
+}
