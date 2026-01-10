@@ -1279,7 +1279,6 @@ mod tests {
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
-      force_async: false,
       crossorigin: None,
       integrity: None,
       referrer_policy: None,
