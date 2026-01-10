@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -286,6 +288,151 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
     .send(UiToWorker::Copy { tab_id })
     .expect("copy after paste");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "world");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
+
+#[test]
+fn ui_clipboard_respects_readonly_input() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+
+      #t {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 180px;
+        height: 30px;
+      }
+
+      /* A probe element whose background is driven by the input's current value attribute. */
+      #probe {
+        position: absolute;
+        left: 10px;
+        top: 50px;
+        width: 20px;
+        height: 20px;
+        background: rgb(0, 0, 0);
+      }
+
+      #t[value="hello"] + #probe { background: rgb(0, 255, 0); }
+      #t[value=""] + #probe { background: rgb(255, 0, 0); }
+      #t[value="world"] + #probe { background: rgb(0, 0, 255); }
+    </style>
+  </head>
+  <body>
+    <input id="t" type="text" value="hello" readonly><div id="probe"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-clipboard-readonly-input").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url.clone()),
+      cancel: Default::default(),
+    })
+    .expect("create tab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 100),
+      dpr: 1.0,
+    })
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  // Wait for the initial paint and assert the probe is green (value="hello").
+  let frame0 = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 20, 60),
+    [0, 255, 0, 255],
+    "expected probe to reflect initial readonly input value"
+  );
+
+  // Click the input to focus it.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+  let _ = next_frame_ready(&ui_rx, tab_id);
+
+  // Select all.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all");
+
+  // Cut: should still write to clipboard, but must not mutate the readonly value.
+  ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
+  ui_tx
+    .send(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Explicit,
+    })
+    .expect("request repaint after cut");
+  let frame_cut = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame_cut.pixmap, 20, 60),
+    [0, 255, 0, 255],
+    "expected readonly input value to remain unchanged after cut"
+  );
+
+  // Paste: should be ignored for readonly controls.
+  ui_tx
+    .send(UiToWorker::Paste {
+      tab_id,
+      text: "world".to_string(),
+    })
+    .expect("paste");
+  ui_tx
+    .send(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Explicit,
+    })
+    .expect("request repaint after paste");
+  let frame_paste = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame_paste.pixmap, 20, 60),
+    [0, 255, 0, 255],
+    "expected readonly input value to remain unchanged after paste"
+  );
+
+  // Copy again to ensure the value stayed intact.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all after paste");
+  ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
 
   drop(ui_tx);
   join.join().expect("join ui worker thread");
