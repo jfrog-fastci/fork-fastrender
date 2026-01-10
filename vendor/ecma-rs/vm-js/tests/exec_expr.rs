@@ -68,6 +68,37 @@ fn array_literal_index_get() {
 }
 
 #[test]
+fn array_prototype_slice_copies_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var a=[1,2,3]; var b=a.slice(1); b.length===2 && b[0]===2 && b[1]===3"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_slice_is_generic_and_boxes_primitives() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var b = Array.prototype.slice.call("ab"); b.length===2 && b[0]==="a" && b[1]==="b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_slice_converts_start_end_via_to_number() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3,4]; var start={valueOf:function(){return 1;}}; var end={valueOf:function(){return 3;}}; var b=a.slice(start,end); b.length===2 && b[0]===2 && b[1]===3"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn arithmetic_precedence() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"1 + 2 * 3 === 7"#).unwrap();

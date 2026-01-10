@@ -72,7 +72,10 @@ fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Res
 }
 
 fn slice_index_from_value(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   value: Value,
   len: usize,
   default: usize,
@@ -80,7 +83,7 @@ fn slice_index_from_value(
   if matches!(value, Value::Undefined) {
     return Ok(default);
   }
-  let n = scope.heap_mut().to_number(value)?;
+  let n = scope.to_number(vm, host, hooks, value)?;
   if n.is_nan() {
     return Ok(0);
   }
@@ -96,12 +99,19 @@ fn slice_index_from_value(
   Ok((idx.clamp(0.0, len as f64)) as usize)
 }
 
-fn slice_range_from_args(scope: &mut Scope<'_>, len: usize, args: &[Value]) -> Result<(usize, usize), VmError> {
+fn slice_range_from_args(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  len: usize,
+  args: &[Value],
+) -> Result<(usize, usize), VmError> {
   let begin = args.get(0).copied().unwrap_or(Value::Undefined);
   let end = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let start = slice_index_from_value(scope, begin, len, 0)?;
-  let mut finish = slice_index_from_value(scope, end, len, len)?;
+  let start = slice_index_from_value(vm, scope, host, hooks, begin, len, 0)?;
+  let mut finish = slice_index_from_value(vm, scope, host, hooks, end, len, len)?;
   if finish < start {
     finish = start;
   }
@@ -736,8 +746,8 @@ pub fn array_buffer_prototype_byte_length_get(
 pub fn array_buffer_prototype_slice(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -751,7 +761,7 @@ pub fn array_buffer_prototype_slice(
     .array_buffer_byte_length(obj)
     .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.slice called on incompatible receiver"))?;
 
-  let (start, end) = slice_range_from_args(scope, len, args)?;
+  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
 
   let bytes = {
     let data = scope.heap().array_buffer_data(obj).map_err(|_| VmError::InvalidHandle)?;
@@ -938,8 +948,8 @@ pub fn uint8_array_prototype_buffer_get(
 pub fn uint8_array_prototype_slice(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -953,7 +963,7 @@ pub fn uint8_array_prototype_slice(
     .uint8_array_length(obj)
     .map_err(|_| VmError::TypeError("Uint8Array.prototype.slice called on incompatible receiver"))?;
 
-  let (start, end) = slice_range_from_args(scope, len, args)?;
+  let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
 
   let bytes = {
     let data = scope.heap().uint8_array_data(obj).map_err(|_| VmError::InvalidHandle)?;
@@ -3795,6 +3805,69 @@ pub fn array_prototype_join(
 
   let s = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(s))
+}
+
+/// `Array.prototype.slice` (minimal).
+///
+/// This is intentionally spec-shaped enough to support common JS patterns like:
+/// - `arr.slice(1)`
+/// - `Array.prototype.slice.call("ab")`
+pub fn array_prototype_slice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  let (start, end) = slice_range_from_args(vm, &mut scope, host, hooks, len, args)?;
+  let count = end.saturating_sub(start);
+
+  let intr = require_intrinsics(vm)?;
+  let out = scope.alloc_array(count)?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.array_prototype()))?;
+
+  for k in 0..count {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let from = start.saturating_add(k);
+
+    let mut iter_scope = scope.reborrow();
+
+    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let to_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(to_s))?;
+
+    let from_key = PropertyKey::from_string(from_s);
+    let to_key = PropertyKey::from_string(to_s);
+
+    if !iter_scope.ordinary_has_property(obj, from_key)? {
+      continue;
+    }
+
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+    iter_scope.create_data_property_or_throw(out, to_key, value)?;
+  }
+
+  Ok(Value::Object(out))
 }
 
 /// `String` constructor called as a function.
