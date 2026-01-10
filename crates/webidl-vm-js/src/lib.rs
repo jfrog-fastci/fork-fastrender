@@ -11,8 +11,8 @@
 //! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime, PropertyKey as VmPropertyKey,
-  Realm, Scope, Value, Vm, VmError,
+  GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
+  PropertyKey as VmPropertyKey, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use webidl::{
   InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, PropertyKey,
@@ -49,6 +49,8 @@ pub struct VmJsWebIdlCx<'a> {
   pub scope: Scope<'a>,
   pub limits: WebIdlLimits,
   pub hooks: &'a dyn WebIdlHooks<Value>,
+  host: Option<&'a mut dyn VmHost>,
+  host_hooks: Option<&'a mut dyn VmHostHooks>,
   well_known_iterator: Option<GcSymbol>,
   well_known_async_iterator: Option<GcSymbol>,
 }
@@ -65,6 +67,8 @@ impl<'a> VmJsWebIdlCx<'a> {
       scope,
       limits,
       hooks,
+      host: None,
+      host_hooks: None,
       well_known_iterator: None,
       well_known_async_iterator: None,
     }
@@ -90,6 +94,33 @@ impl<'a> VmJsWebIdlCx<'a> {
       scope: scope.reborrow(),
       limits,
       hooks,
+      host: None,
+      host_hooks: None,
+      well_known_iterator: None,
+      well_known_async_iterator: None,
+    }
+  }
+
+  /// Creates a conversion context suitable for use inside a `vm-js` native call/construct handler.
+  ///
+  /// This captures the active embedder host context and host hooks so WebIDL conversions that need
+  /// to call back into JS (iterator protocol, callbacks, etc.) can route through the embedder's
+  /// active `VmHostHooks` instead of `Vm::call_without_host`.
+  pub fn from_native_call(
+    vm: &'a mut Vm,
+    scope: &'a mut Scope<'_>,
+    host: &'a mut dyn VmHost,
+    host_hooks: &'a mut dyn VmHostHooks,
+    limits: WebIdlLimits,
+    hooks: &'a dyn WebIdlHooks<Value>,
+  ) -> Self {
+    Self {
+      vm,
+      scope: scope.reborrow(),
+      limits,
+      hooks,
+      host: Some(host),
+      host_hooks: Some(host_hooks),
       well_known_iterator: None,
       well_known_async_iterator: None,
     }
@@ -110,6 +141,20 @@ impl<'a> VmJsWebIdlCx<'a> {
   fn root(&mut self, value: Value) -> Result<(), VmError> {
     self.scope.push_root(value)?;
     Ok(())
+  }
+
+  fn call_js(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+    match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
+      (Some(host), Some(hooks)) => self
+        .vm
+        .call_with_host_and_hooks(host, &mut self.scope, hooks, callee, this, args),
+      (Some(host), None) => self.vm.call(host, &mut self.scope, callee, this, args),
+      (None, Some(hooks)) => self.vm.call_with_host(&mut self.scope, hooks, callee, this, args),
+      (None, None) => {
+        let mut dummy_host = ();
+        self.vm.call(&mut dummy_host, &mut self.scope, callee, this, args)
+      }
+    }
   }
 
   fn to_vm_property_key(key: PropertyKey<GcString, GcSymbol>) -> VmPropertyKey {
@@ -393,9 +438,7 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     self.root(Value::Object(object))?;
     self.root(method)?;
 
-    let iterator = self
-      .vm
-      .call_without_host(&mut self.scope, method, Value::Object(object), &[])?;
+    let iterator = self.call_js(method, Value::Object(object), &[])?;
     let Value::Object(iterator) = iterator else {
       return Err(self.type_error("Iterator method did not return an object"));
     };
@@ -414,9 +457,7 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
       return Err(self.type_error("IteratorNext(iterator): next is undefined/null"));
     };
 
-    let result = self
-      .vm
-      .call_without_host(&mut self.scope, next_method, Value::Object(iterator), &[])?;
+    let result = self.call_js(next_method, Value::Object(iterator), &[])?;
     let Value::Object(result_obj) = result else {
       return Err(self.type_error("IteratorNext(iterator): next() did not return an object"));
     };
@@ -619,8 +660,9 @@ impl WebIdlJsRuntime for VmJsWebIdlCx<'_> {
 mod tests {
   use super::VmJsWebIdlCx;
   use vm_js::{
-    GcObject, Heap, HeapLimits, NativeFunctionId, PropertyDescriptor, PropertyKey as VmPropertyKey,
-    PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+    GcObject, Heap, HeapLimits, Job, NativeFunctionId, PropertyDescriptor,
+    PropertyKey as VmPropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost,
+    VmHostHooks, VmOptions,
   };
   use webidl::{
     conversions, index_to_property_key, record_to_js_object, sequence_to_js_array, DomString,
@@ -1256,6 +1298,87 @@ mod tests {
     }
 
     assert_eq!(out, vec!["a", "b", "c"]);
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct TestHostHooks {
+    iterator_calls: usize,
+  }
+
+  impl VmHostHooks for TestHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+      panic!("unexpected promise job enqueued during iterator conversion");
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+      Some(self)
+    }
+  }
+
+  fn iterator_method_observes_host_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.iterator_calls += 1;
+      }
+    }
+
+    // Return any object to satisfy `GetIteratorFromMethod`.
+    let iter_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(iter_obj))?;
+    Ok(Value::Object(iter_obj))
+  }
+
+  #[test]
+  fn iterator_method_call_propagates_embedder_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_hooks = TestHostHooks::default();
+
+    vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
+      let mut cx = VmJsWebIdlCx::new(vm, &mut heap, limits, &hooks);
+
+      // iterable = { [Symbol.iterator]: <native fn> }
+      let iterable = cx.scope.alloc_object()?;
+      cx.scope.push_root(Value::Object(iterable))?;
+
+      let iter_name = cx.scope.alloc_string("iterator")?;
+      let iter_id = cx.vm.register_native_call(iterator_method_observes_host_hooks)?;
+      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      cx.scope.push_root(Value::Object(iter_fn))?;
+
+      let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
+      let key = VmPropertyKey::from_symbol(sym);
+      cx.scope.define_property(
+        iterable,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(iter_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let iterator = cx.get_iterator(Value::Object(iterable))?;
+      cx.scope.push_root(Value::Object(iterator))?;
+      Ok(())
+    })?;
+
+    assert_eq!(host_hooks.iterator_calls, 1);
     Ok(())
   }
 
