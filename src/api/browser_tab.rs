@@ -4188,7 +4188,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
@@ -4294,7 +4294,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
