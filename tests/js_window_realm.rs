@@ -255,6 +255,20 @@ fn document_base_uri_falls_back_to_document_url() -> Result<()> {
 }
 
 #[test]
+fn document_charset_properties_are_exposed() -> Result<()> {
+  let url = "https://example.com/";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("document.characterSet + '|' + document.charset + '|' + document.inputEncoding")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let (_vm, heap) = realm.vm_and_heap_mut();
+  assert_eq!(get_string(heap, value), "UTF-8|UTF-8|UTF-8");
+  Ok(())
+}
+
+#[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
   struct RecordingExecutor {

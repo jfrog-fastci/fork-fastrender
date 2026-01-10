@@ -10772,6 +10772,29 @@ fn init_window_globals(
     },
   )?;
 
+  // Document.characterSet / Document.charset / Document.inputEncoding.
+  //
+  // Real-world scripts often use these to decide on encoding-sensitive behaviour. FastRender always
+  // decodes HTML/script resources as UTF-8 unless explicitly overridden by `charset` attributes or
+  // response headers, so default to UTF-8 here.
+  let encoding_s = scope.alloc_string("UTF-8")?;
+  scope.push_root(Value::String(encoding_s))?;
+  for prop in ["characterSet", "charset", "inputEncoding"] {
+    let key = alloc_key(&mut scope, prop)?;
+    scope.define_property(
+      document_obj,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(encoding_s),
+          writable: false,
+        },
+      },
+    )?;
+  }
+
   // Document state shims.
   //
   // These are frequently read by real-world scripts (e.g. to decide whether to run animations).
