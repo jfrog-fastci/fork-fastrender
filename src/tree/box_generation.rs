@@ -3646,35 +3646,73 @@ fn serialize_svg_subtree(
             // To keep rasterization consistent with the HTML box size, synthesize missing root
             // `width`/`height` attributes from computed CSS lengths when we can resolve them to
             // absolute pixels without needing layout (i.e. avoid percentages/container-query units).
+            //
+            // Note that for `box-sizing: border-box` the CSS width/height correspond to the border
+            // box, whereas the SVG viewport is established by the content box. Account for that by
+            // subtracting padding + border widths when possible so that the serialized SVG matches
+            // the size it will be painted into.
             if tag_name.eq_ignore_ascii_case("svg") {
-              let resolve_css_dimension_px =
-                |len: Length, style: &ComputedStyle| -> Option<String> {
-                  if !len.value.is_finite() {
-                    return None;
-                  }
-                  if let Some(calc) = len.calc {
-                    if calc.has_percentage()
-                      || calc.has_viewport_relative()
-                      || calc.has_container_query_relative()
-                    {
-                      return None;
-                    }
-                  } else if len.unit.is_percentage()
-                    || len.unit.is_viewport_relative()
-                    || len.unit.is_container_query_relative()
-                    || !(len.unit.is_absolute() || len.unit.is_font_relative())
+              let resolve_css_length_px = |len: Length, style: &ComputedStyle| -> Option<f32> {
+                if !len.value.is_finite() {
+                  return None;
+                }
+                if let Some(calc) = len.calc {
+                  if calc.has_percentage()
+                    || calc.has_viewport_relative()
+                    || calc.has_container_query_relative()
                   {
                     return None;
                   }
+                } else if len.unit.is_percentage()
+                  || len.unit.is_viewport_relative()
+                  || len.unit.is_container_query_relative()
+                  || !(len.unit.is_absolute() || len.unit.is_font_relative())
+                {
+                  return None;
+                }
 
-                  let px = len.resolve_with_context(
-                    None,
-                    0.0,
-                    0.0,
-                    style.font_size,
-                    style.root_font_size,
-                  )?;
-                  (px.is_finite() && px > 0.0).then_some(px.to_string())
+                let px = len.resolve_with_context(
+                  None,
+                  0.0,
+                  0.0,
+                  style.font_size,
+                  style.root_font_size,
+                )?;
+                px.is_finite().then_some(px)
+              };
+
+              let resolve_css_dimension_px =
+                |len: Length, style: &ComputedStyle, is_width: bool| -> Option<String> {
+                  let mut px = resolve_css_length_px(len, style)?;
+                  if style.box_sizing == crate::style::types::BoxSizing::BorderBox {
+                    let edge = |len: Length| resolve_css_length_px(len, style);
+                    let edges = if is_width {
+                      match (
+                        edge(style.padding_left),
+                        edge(style.padding_right),
+                        edge(style.border_left_width),
+                        edge(style.border_right_width),
+                      ) {
+                        (Some(p0), Some(p1), Some(b0), Some(b1)) => Some(p0 + p1 + b0 + b1),
+                        _ => None,
+                      }
+                    } else {
+                      match (
+                        edge(style.padding_top),
+                        edge(style.padding_bottom),
+                        edge(style.border_top_width),
+                        edge(style.border_bottom_width),
+                      ) {
+                        (Some(p0), Some(p1), Some(b0), Some(b1)) => Some(p0 + p1 + b0 + b1),
+                        _ => None,
+                      }
+                    };
+                    if let Some(edges) = edges {
+                      px = (px - edges).max(0.0);
+                    }
+                  }
+
+                  (px > 0.0).then_some(px.to_string())
                 };
 
               if !attrs
@@ -3684,7 +3722,7 @@ fn serialize_svg_subtree(
                 if let Some(width) = styled
                   .styles
                   .width
-                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles))
+                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles, true))
                 {
                   attrs.push(("width".to_string(), width));
                 }
@@ -3696,7 +3734,7 @@ fn serialize_svg_subtree(
                 if let Some(height) = styled
                   .styles
                   .height
-                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles))
+                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles, false))
                 {
                   attrs.push(("height".to_string(), height));
                 }
