@@ -253,6 +253,44 @@ fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
   ids
 }
 
+/// Collect raw SVG element fragments indexed by `id` from a full SVG document.
+///
+/// This is used to support external `clip-path: url(<svg-url>#id)` references by loading the
+/// external SVG document and extracting the referenced `<clipPath>` (plus any other `id`-defined
+/// elements it depends on).
+///
+/// The returned fragments are slices of the original markup (via `roxmltree::Node::range`) to
+/// avoid lossy re-serialization. Invalid markup yields an empty map.
+pub(crate) fn collect_svg_id_defs_from_svg_document(svg: &str) -> HashMap<String, String> {
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) | Err(_) => return HashMap::new(),
+  };
+
+  let mut defs = HashMap::new();
+  for node in doc
+    .descendants()
+    .filter(|node| node.is_element() && node.tag_name().namespace() == Some(SVG_NAMESPACE))
+  {
+    let mut id: Option<&str> = None;
+    for attr in node.attributes() {
+      if attr.name().eq_ignore_ascii_case("id") && !attr.value().is_empty() {
+        id = Some(attr.value());
+        break;
+      }
+    }
+    let Some(id) = id else { continue };
+    if defs.contains_key(id) {
+      continue;
+    }
+    if let Some(fragment) = svg.get(node.range()) {
+      defs.insert(id.to_string(), fragment.to_string());
+    }
+  }
+
+  defs
+}
+
 fn svg_ids_to_inline(defs: &HashMap<String, String>, root_id: &str) -> Option<Vec<String>> {
   if !defs.contains_key(root_id) {
     return None;
@@ -480,8 +518,8 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
 #[cfg(test)]
 mod tests {
   use super::{
-    collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_clip_path_id,
-    inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
+    collect_svg_fragment_ids, collect_svg_fragment_references, collect_svg_id_defs_from_svg_document,
+    inline_svg_for_clip_path_id, inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
     inline_svg_for_mask_id_with_view_box,
   };
   use std::collections::HashMap;
@@ -516,6 +554,12 @@ mod tests {
     }));
     assert!(inlined.is_ok());
     assert!(inlined.unwrap().is_some());
+
+    let collected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      collect_svg_id_defs_from_svg_document(invalid)
+    }));
+    assert!(collected.is_ok());
+    assert!(collected.unwrap().is_empty());
   }
 
   #[test]

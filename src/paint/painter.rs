@@ -798,7 +798,15 @@ struct StackingClip {
 #[derive(Debug, Clone)]
 enum StackingClipPath {
   Shape(ResolvedClipPath),
-  Svg {
+  SvgFragment {
+    /// Fragment id (without the leading `#`).
+    id: String,
+    /// Reference box rectangle in the stacking-context coordinate space.
+    reference_rect: Rect,
+  },
+  SvgExternal {
+    /// URL of the external SVG document (without the fragment).
+    doc_url: String,
     /// Fragment id (without the leading `#`).
     id: String,
     /// Reference box rectangle in the stacking-context coordinate space.
@@ -2548,20 +2556,30 @@ impl Painter {
       Some(style) => match &style.clip_path {
         crate::style::types::ClipPath::Url(src, reference_override) => {
           let trimmed = trim_ascii_whitespace_html_css(src);
+          let reference = reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
+          let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
+            style,
+            abs_bounds,
+            (self.css_width, self.css_height),
+            &self.font_ctx,
+            reference,
+          );
+
           if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
-            let reference =
-              reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
-            let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
-              style,
-              abs_bounds,
-              (self.css_width, self.css_height),
-              &self.font_ctx,
-              reference,
-            );
-            Some(StackingClipPath::Svg {
+            Some(StackingClipPath::SvgFragment {
               id: id.to_string(),
               reference_rect,
             })
+          } else if let Some((doc_url, id)) = trimmed.rsplit_once('#') {
+            if doc_url.is_empty() || id.is_empty() {
+              None
+            } else {
+              Some(StackingClipPath::SvgExternal {
+                doc_url: doc_url.to_string(),
+                id: id.to_string(),
+                reference_rect,
+              })
+            }
           } else {
             None
           }
@@ -3512,7 +3530,7 @@ impl Painter {
                 }
               }
             }
-            StackingClipPath::Svg { id, reference_rect } => {
+            StackingClipPath::SvgFragment { id, reference_rect } => {
               (|| -> RenderResult<()> {
                 let canvas_w = base_painter.pixmap.width();
                 let canvas_h = base_painter.pixmap.height();
@@ -3548,11 +3566,12 @@ impl Painter {
                   return Ok(());
                 }
 
-                let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
-                  mask_bounds_css.width()
-                } else {
-                  1.0
-                };
+                let view_w =
+                  if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
+                    mask_bounds_css.width()
+                  } else {
+                    1.0
+                  };
                 let view_h =
                   if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
                     mask_bounds_css.height()
@@ -3579,6 +3598,116 @@ impl Painter {
                 };
 
                 let cache_key = format!("svg-clip-path-fragment:{id}");
+                let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
+                  &svg,
+                  canvas_w,
+                  canvas_h,
+                  &cache_key,
+                  self.scale,
+                ) {
+                  Ok(pixmap) => pixmap,
+                  Err(crate::Error::Render(RenderError::Timeout { stage, elapsed })) => {
+                    return Err(RenderError::Timeout { stage, elapsed });
+                  }
+                  Err(_) => return Ok(()),
+                };
+
+                let mask =
+                  Mask::from_pixmap(clip_pixmap.as_ref().as_ref(), tiny_skia::MaskType::Alpha);
+                let dirty = Some(ClipMaskDirtyRect {
+                  x0: 0,
+                  y0: 0,
+                  x1: canvas_w,
+                  y1: canvas_h,
+                });
+                apply_mask_with_dirty_bounds_rgba(&mut base_painter.pixmap, &mask, dirty)?;
+                Ok(())
+              })()?;
+            }
+            StackingClipPath::SvgExternal {
+              doc_url,
+              id,
+              reference_rect,
+            } => {
+              (|| -> RenderResult<()> {
+                let canvas_w = base_painter.pixmap.width();
+                let canvas_h = base_painter.pixmap.height();
+                if canvas_w == 0 || canvas_h == 0 {
+                  return Ok(());
+                }
+
+                let reference_width = reference_rect.width();
+                let reference_height = reference_rect.height();
+                if reference_width <= 0.0
+                  || reference_height <= 0.0
+                  || !reference_width.is_finite()
+                  || !reference_height.is_finite()
+                {
+                  // A degenerate reference box clips away the entire stacking context.
+                  check_active(RenderStage::Paint)?;
+                  base_painter.pixmap.data_mut().fill(0);
+                  return Ok(());
+                }
+
+                let resolved_doc_url = base_painter.image_cache.resolve_url(doc_url);
+                let cached = match base_painter
+                  .image_cache
+                  .load_with_crossorigin(&resolved_doc_url, CrossOriginAttribute::None)
+                {
+                  Ok(img) => img,
+                  Err(_) => return Ok(()),
+                };
+                if !cached.is_vector {
+                  return Ok(());
+                }
+                let Some(svg_markup) = cached.svg_content.as_deref() else {
+                  return Ok(());
+                };
+                let defs =
+                  crate::paint::svg_mask_image::collect_svg_id_defs_from_svg_document(svg_markup);
+
+                // Rasterize the SVG clip-path over the full stacking context bounds (not just the
+                // reference box) so `clipPathUnits="userSpaceOnUse"` clip paths can expose pixels
+                // outside the border box.
+                let mask_bounds_css = bounds;
+                let viewbox_x = mask_bounds_css.x() - reference_rect.x();
+                let viewbox_y = mask_bounds_css.y() - reference_rect.y();
+                if !viewbox_x.is_finite() || !viewbox_y.is_finite() {
+                  return Ok(());
+                }
+
+                let view_w =
+                  if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
+                    mask_bounds_css.width()
+                  } else {
+                    1.0
+                  };
+                let view_h =
+                  if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
+                    mask_bounds_css.height()
+                  } else {
+                    1.0
+                  };
+
+                let Some(svg) =
+                  crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
+                    &defs,
+                    id,
+                    reference_width,
+                    reference_height,
+                    viewbox_x,
+                    viewbox_y,
+                    view_w,
+                    view_h,
+                    canvas_w,
+                    canvas_h,
+                  )
+                else {
+                  // Missing defs: treat as `clip-path: none`.
+                  return Ok(());
+                };
+
+                let cache_key = format!("svg-clip-path-external:{id}");
                 let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
                   &svg,
                   canvas_w,
@@ -13425,7 +13554,7 @@ fn stacking_context_bounds(
           .intersection(path.bounds())
           .unwrap_or_else(|| path.bounds());
       }
-      StackingClipPath::Svg { .. } => {
+      StackingClipPath::SvgFragment { .. } | StackingClipPath::SvgExternal { .. } => {
         // Unlike basic shapes, SVG `clip-path: url(#id)` can legitimately expose pixels outside the
         // element's reference box (e.g. `clipPathUnits="userSpaceOnUse"` with negative
         // coordinates). We don't currently compute tight bounds for SVG clip paths, so avoid

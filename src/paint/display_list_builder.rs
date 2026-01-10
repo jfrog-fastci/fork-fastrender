@@ -4161,9 +4161,81 @@ impl DisplayListBuilder {
       // external fetch.
       return None;
     }
-    // External clip-path URLs require fetching and parsing external SVG documents, which is not
-    // supported by the paint pipeline yet.
-    None
+
+    // External URLs of the form `url(<document-url>#<id>)` refer to `<clipPath>` defs inside the
+    // referenced SVG document. Fetch the document (via ImageCache), extract all `id`-mapped SVG
+    // fragments, inline the requested id, then rasterize it into an alpha mask.
+    let (doc_url, id) = trimmed.rsplit_once('#')?;
+    if doc_url.is_empty() || id.is_empty() {
+      return None;
+    }
+
+    let image_cache = self.image_cache.as_ref()?;
+    let resolved_doc_url = image_cache.resolve_url(doc_url);
+    let cached =
+      image_cache.load_with_crossorigin(&resolved_doc_url, CrossOriginAttribute::None).ok()?;
+    if !cached.is_vector {
+      return None;
+    }
+    let svg_markup = cached.svg_content.as_deref()?;
+    let defs = crate::paint::svg_mask_image::collect_svg_id_defs_from_svg_document(svg_markup);
+
+    let reference_width = reference_rect.width();
+    let reference_height = reference_rect.height();
+    if !reference_width.is_finite()
+      || !reference_height.is_finite()
+      || reference_width <= 0.0
+      || reference_height <= 0.0
+    {
+      return None;
+    }
+
+    let viewbox_x = mask_bounds_css.x() - reference_rect.x();
+    let viewbox_y = mask_bounds_css.y() - reference_rect.y();
+    if !viewbox_x.is_finite() || !viewbox_y.is_finite() {
+      return None;
+    }
+
+    let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
+      mask_bounds_css.width()
+    } else {
+      1.0
+    };
+    let view_h = if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
+      mask_bounds_css.height()
+    } else {
+      1.0
+    };
+
+    let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+      self.device_pixel_ratio
+    } else {
+      1.0
+    };
+    let width = (view_w * dpr).ceil().max(1.0) as u32;
+    let height = (view_h * dpr).ceil().max(1.0) as u32;
+
+    let svg = crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
+      &defs,
+      id,
+      reference_width,
+      reference_height,
+      viewbox_x,
+      viewbox_y,
+      view_w,
+      view_h,
+      width,
+      height,
+    )?;
+
+    self.decode_image(
+      &svg,
+      Some(style),
+      true,
+      CrossOriginAttribute::None,
+      None,
+      false,
+    )
   }
 
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
