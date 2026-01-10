@@ -115,10 +115,26 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
       }
       return Some(format_number_fallback(n));
     }
-    // Converting arbitrary BigInts to decimal strings can allocate unbounded host memory. Keep this
-    // bounded and return a stable marker instead.
-    Value::BigInt(_) => return Some("[bigint]".to_string()),
-    Value::Symbol(_) => return Some("[symbol]".to_string()),
+    // BigInts are currently bounded (inline u128) in `vm-js`; format them directly so `throw 1n`
+    // surfaces a useful value.
+    Value::BigInt(b) => return Some(b.to_decimal_string()),
+    Value::Symbol(sym) => {
+      let desc_s = heap.get_symbol_description(sym).ok().flatten();
+      if let Some(desc_s) = desc_s {
+        return Some(match heap.get_string(desc_s) {
+          Ok(js) => {
+            if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
+              let desc = js.to_utf8_lossy();
+              format!("Symbol({desc})")
+            } else {
+              "Symbol([exception string exceeded limit])".to_string()
+            }
+          }
+          Err(_) => "[symbol]".to_string(),
+        });
+      }
+      return Some("Symbol()".to_string());
+    }
     Value::String(s) => {
       return Some(match heap.get_string(s) {
         Ok(js) => {
@@ -565,6 +581,40 @@ mod tests {
     assert!(
       msg.ends_with("\n..."),
       "expected syntax error output to include truncation marker, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_bigint_is_formatted_and_includes_stack_trace() {
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
+    let err = realm.exec_script("throw 1n").expect_err("expected throw");
+    let msg = vm_error_to_string(realm.heap_mut(), err);
+    assert!(
+      msg.starts_with('1'),
+      "expected bigint thrown value to be formatted, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at <inline>:"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_symbol_is_formatted_and_includes_stack_trace() {
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
+    let err = realm
+      .exec_script("throw Symbol('x')")
+      .expect_err("expected throw");
+    let msg = vm_error_to_string(realm.heap_mut(), err);
+    assert!(
+      msg.starts_with("Symbol(x)"),
+      "expected symbol thrown value to include description, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at <inline>:"),
+      "expected stack trace to be included, got {msg:?}"
     );
   }
 }
