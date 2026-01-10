@@ -30,6 +30,9 @@ pub(crate) fn apply_alignment_fallback(
 
   // 2. If free space is negative the "safe" alignment variants all fallback to Start alignment
   if free_space <= 0.0 && is_safe {
+    // "Safe" fallback resolves to the logical start edge of the alignment container (CSS Align
+    // §4.1). In writing modes where logical start maps to the physical right/bottom edges, that
+    // corresponds to the physical maximum coordinate.
     alignment_mode = if start_end_axis_positive {
       AlignContent::Start
     } else {
@@ -121,6 +124,7 @@ pub(crate) fn compute_alignment_offset(
 
 #[cfg(test)]
 mod tests {
+  use super::apply_alignment_fallback;
   use super::compute_alignment_offset;
   use crate::style::AlignContent;
 
@@ -229,10 +233,46 @@ mod tests {
   #[test]
   fn apply_alignment_fallback_non_finite_free_space_matches_zero_free_space() {
     for (free_space, label) in [(f32::NAN, "NaN"), (f32::INFINITY, "INFINITY")] {
-      let fallback =
-        super::apply_alignment_fallback(free_space, 1, AlignContent::SpaceBetween, true, true);
-      let expected = super::apply_alignment_fallback(0.0, 1, AlignContent::SpaceBetween, true, true);
-      assert_eq!(fallback, expected, "{label}");
+      for start_end_axis_positive in [true, false] {
+        let fallback = apply_alignment_fallback(
+          free_space,
+          1,
+          AlignContent::SpaceBetween,
+          true,
+          start_end_axis_positive,
+        );
+        let expected = apply_alignment_fallback(
+          0.0,
+          1,
+          AlignContent::SpaceBetween,
+          true,
+          start_end_axis_positive,
+        );
+        assert_eq!(
+          fallback, expected,
+          "{label} start_end_axis_positive={start_end_axis_positive}"
+        );
+      }
     }
+  }
+
+  #[test]
+  fn safe_overflow_fallback_respects_axis_start_edge() {
+    // When distributed alignment values fall back to a safe alignment in overflow, they should
+    // pack toward the logical start edge of the axis. In writing modes where logical start maps
+    // to the physical maximum coordinate (e.g. RTL or vertical-rl), this corresponds to the
+    // physical `End` edge.
+    let free_space = -5.0;
+    let num_items = 2;
+    let is_safe = false;
+    let mode = AlignContent::SpaceBetween;
+
+    let fallback_start_min =
+      apply_alignment_fallback(free_space, num_items, mode, is_safe, true);
+    assert_eq!(fallback_start_min, AlignContent::Start);
+
+    let fallback_start_max =
+      apply_alignment_fallback(free_space, num_items, mode, is_safe, false);
+    assert_eq!(fallback_start_max, AlignContent::End);
   }
 }
