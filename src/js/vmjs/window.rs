@@ -548,8 +548,11 @@ impl WindowRealmHost for WindowHostState {
 mod tests {
   use super::*;
 
+  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::Engine as _;
   use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
+  use sha2::{Digest, Sha256};
   use std::collections::HashMap;
   use std::io::{Read, Write};
   use std::net::TcpListener;
@@ -607,6 +610,33 @@ mod tests {
       .get_string(s)
       .expect("heap should contain string")
       .to_utf8_lossy()
+  }
+
+  #[derive(Default)]
+  struct MapResourceFetcher {
+    entries: Mutex<HashMap<String, FetchedResource>>,
+  }
+
+  impl MapResourceFetcher {
+    fn insert(&self, url: &str, resource: FetchedResource) {
+      self
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(url.to_string(), resource);
+    }
+  }
+
+  impl ResourceFetcher for MapResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("no entry for url={url}")))
+    }
   }
 
   #[test]
@@ -1836,6 +1866,92 @@ mod tests {
       "wC:win:1:true:true,dC:doc:1:true:true,hC:html:1:true:true,bC:body:1:true:true,tC:div:2:true:true,tB:div:2:true:true,bB:body:3:true:true,hB:html:3:true:true,dB:doc:3:true:true,wB:win:3:true:true"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_script_sri_mismatch_blocks_execution() -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let script_source = "this.__ran = true;";
+    let script_url = "https://example.invalid/app.js";
+
+    let mut resource = FetchedResource::new(
+      script_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    resource.status = Some(200);
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(script_url, resource);
+
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    let wrong_digest = BASE64_STANDARD.encode(Sha256::digest(b"other"));
+    let integrity = format!("sha256-{wrong_digest}");
+    host.exec_script(&format!(
+      "(() => {{\n\
+        this.__ran = false;\n\
+        const s = document.createElement('script');\n\
+        s.src = '{script_url}';\n\
+        s.setAttribute('integrity', '{integrity}');\n\
+        document.head.appendChild(s);\n\
+      }})()"
+    ))?;
+
+    let err = host
+      .run_until_idle(RunLimits::unbounded())
+      .expect_err("expected SRI mismatch to block dynamic script execution");
+    let Error::Other(msg) = err else {
+      panic!("expected Error::Other, got {err:?}");
+    };
+    assert!(
+      msg.contains("SRI blocked script"),
+      "expected SRI error message, got {msg:?}"
+    );
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_script_sri_match_executes() -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let script_source = "this.__ran = true;";
+    let script_url = "https://example.invalid/app.js";
+
+    let mut resource = FetchedResource::new(
+      script_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    resource.status = Some(200);
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(script_url, resource);
+
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    let digest = BASE64_STANDARD.encode(Sha256::digest(script_source.as_bytes()));
+    let integrity = format!("sha256-{digest}");
+    host.exec_script(&format!(
+      "(() => {{\n\
+        this.__ran = false;\n\
+        const s = document.createElement('script');\n\
+        s.src = '{script_url}';\n\
+        s.setAttribute('integrity', '{integrity}');\n\
+        document.head.appendChild(s);\n\
+      }})()"
+    ))?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(true)));
     Ok(())
   }
 

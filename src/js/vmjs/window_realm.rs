@@ -8254,6 +8254,9 @@ fn queue_dynamic_script_task_external(
   url: String,
   destination: FetchDestination,
   nomodule_attr: bool,
+  crossorigin: Option<CorsMode>,
+  integrity_attr_present: bool,
+  integrity: Option<String>,
 ) -> Result<(), VmError> {
   let Some(event_loop) = runtime::current_event_loop_mut::<WindowHostState>() else {
     return Ok(());
@@ -8265,17 +8268,70 @@ fn queue_dynamic_script_task_external(
         return Ok(());
       }
 
-      let req = FetchRequest::new(&url, destination).with_referrer_url(&host.document_url);
-      let res = host.fetcher().fetch_with_request(req)?;
+      let doc_origin = crate::resource::origin_from_url(&host.document_url);
+      let target_origin = crate::resource::origin_from_url(&url);
+
+      // Subresource Integrity (SRI) enforcement mirrors BrowserTabHost: when `integrity` is present
+      // we must reject invalid metadata and verify the fetched bytes.
+      if integrity_attr_present {
+        if integrity.is_none() {
+          return Err(crate::error::Error::Other(format!(
+            "SRI blocked script {url}: integrity attribute exceeded max length of {} bytes",
+            crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES
+          )));
+        }
+
+        // HTML requires a CORS-enabled fetch for cross-origin resources when SRI is used. Mirror the
+        // BrowserTabHost behavior by requiring an explicit `crossorigin` attribute when the script
+        // URL is cross-origin.
+        if crossorigin.is_none() {
+          if let (Some(doc_origin), Some(target_origin)) =
+            (doc_origin.as_ref(), target_origin.as_ref())
+          {
+            if !doc_origin.same_origin(target_origin) {
+              return Err(crate::error::Error::Other(format!(
+                "SRI blocked script {url}: cross-origin integrity requires a CORS-enabled fetch (missing crossorigin attribute)"
+              )));
+            }
+          }
+        }
+      }
+
+      let options = host.js_execution_options();
+      let context = format!("source=external url={url}");
+
+      let mut req = FetchRequest::new(&url, destination).with_referrer_url(&host.document_url);
+      if let Some(origin) = doc_origin.as_ref() {
+        req = req.with_client_origin(origin);
+      }
+      if let Some(cors_mode) = crossorigin {
+        req = req.with_credentials_mode(cors_mode.credentials_mode());
+      }
+
+      let max_fetch = options.max_script_bytes.saturating_add(1);
+      let res = host.fetcher().fetch_partial_with_request(req, max_fetch)?;
+      options.check_script_source_bytes(res.bytes.len(), &context)?;
+
+      crate::resource::ensure_http_success(&res, &url)?;
       ensure_script_mime_sane(&res, &url)?;
+      if let Some(cors_mode) = crossorigin {
+        if crate::resource::cors_enforcement_enabled() {
+          crate::resource::ensure_cors_allows_origin(doc_origin.as_ref(), &res, &url, cors_mode)?;
+        }
+      }
+      if integrity_attr_present {
+        let integrity = integrity.as_deref().expect("integrity should be present");
+        crate::js::sri::verify_integrity(&res.bytes, integrity).map_err(|message| {
+          crate::error::Error::Other(format!("SRI blocked script {url}: {message}"))
+        })?;
+      }
+
       let source_text = crate::js::script_encoding::decode_classic_script_bytes(
         &res.bytes,
         res.content_type.as_deref(),
         encoding_rs::UTF_8,
       );
-      host
-        .js_execution_options()
-        .check_script_source(&source_text, "source=external")?;
+      host.js_execution_options().check_script_source(&source_text, &context)?;
 
       let new_current_script = {
         let dom = host.dom();
@@ -8349,7 +8405,15 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
       } else {
         FetchDestination::Script
       };
-      return queue_dynamic_script_task_external(script, url, destination, spec.nomodule_attr);
+      return queue_dynamic_script_task_external(
+        script,
+        url,
+        destination,
+        spec.nomodule_attr,
+        spec.crossorigin,
+        spec.integrity_attr_present,
+        spec.integrity,
+      );
     }
     return Ok(());
   }
