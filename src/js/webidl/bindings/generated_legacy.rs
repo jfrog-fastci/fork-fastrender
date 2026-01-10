@@ -11,6 +11,7 @@ pub mod window {
   use super::{BindingValue, WebHostBindings};
 
   use crate::js::webidl::conversions;
+
   use crate::js::webidl::DataPropertyAttributes;
 
   fn binding_value_to_js<Host, R>(
@@ -35,7 +36,12 @@ pub mod window {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
@@ -43,7 +49,12 @@ pub mod window {
         let obj = rt.create_object()?;
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
@@ -443,24 +454,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -485,6 +478,24 @@ pub mod window {
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt.js_undefined())
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -931,23 +942,26 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    // WebIDL overloads:
-    // - `undefined alert();`
-    // - `undefined alert(DOMString message);`
-    //
-    // Extra arguments are ignored per the WebIDL operation invocation algorithm, so dispatch based
-    // on whether at least one argument was provided.
-    let overload = if args.is_empty() { 0 } else { 1 };
-    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-    if overload == 1 {
-      let v0 = args[0];
-      converted_args.push({
-        let s = rt.to_string(v0)?;
-        BindingValue::String(rt.js_string_to_rust_string(s)?)
-      });
+    let argcount = std::cmp::min(args.len(), 1);
+    match argcount {
+      0 => {
+        {
+          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+          let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
+          binding_value_to_js::<Host, R>(rt, result)
+        }
+      },
+      1 => {
+        {
+          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+          let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+          converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+          let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
+          binding_value_to_js::<Host, R>(rt, result)
+        }
+      },
+      _ => Err(rt.throw_type_error(&format!("No matching overload for Window.alert with {} arguments.\nCandidates:\n  - Window.alert()\n  - Window.alert(DOMString)", args.len()))),
     }
-    let result = host.call_operation(rt, None, "Window", "alert", overload, converted_args)?;
-    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -1233,11 +1247,7 @@ pub mod window {
     rt.define_constant(ctor_node, "NOTATION_NODE", rt.js_number(12.0))?;
     rt.define_constant(proto_node, "NOTATION_NODE", rt.js_number(12.0))?;
     rt.define_constant(ctor_node, "PROCESSING_INSTRUCTION_NODE", rt.js_number(7.0))?;
-    rt.define_constant(
-      proto_node,
-      "PROCESSING_INSTRUCTION_NODE",
-      rt.js_number(7.0),
-    )?;
+    rt.define_constant(proto_node, "PROCESSING_INSTRUCTION_NODE", rt.js_number(7.0))?;
     rt.define_constant(ctor_node, "TEXT_NODE", rt.js_number(3.0))?;
     rt.define_constant(proto_node, "TEXT_NODE", rt.js_number(3.0))?;
     let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
@@ -1305,6 +1315,8 @@ pub mod window {
       ctor_u_r_l_search_params,
       proto_u_r_l_search_params,
     )?;
+    let func = rt.create_function("alert", 0, window_alert::<Host, R>)?;
+    rt.define_method(global, "alert", func)?;
     let func = rt.create_function("clearInterval", 0, window_clear_interval::<Host, R>)?;
     rt.define_method(global, "clearInterval", func)?;
     let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
@@ -1324,6 +1336,7 @@ pub mod worker {
   use std::collections::BTreeMap;
 
   use super::{BindingValue, WebHostBindings};
+
   use crate::js::webidl::DataPropertyAttributes;
 
   fn binding_value_to_js<Host, R>(
@@ -1348,7 +1361,12 @@ pub mod worker {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
@@ -1356,7 +1374,12 @@ pub mod worker {
         let obj = rt.create_object()?;
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
@@ -1756,24 +1779,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1798,6 +1803,24 @@ pub mod worker {
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt.js_undefined())
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
