@@ -8331,6 +8331,12 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
 
   dom.node_mut(script).script_already_started = true;
 
+  // `integrity` attribute clamping: if present but too large, the metadata is invalid and the script
+  // must not execute.
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    return Ok(());
+  }
+
   // Only classic scripts are executed by this vm-js DOM integration helper for now.
   if spec.script_type != ScriptType::Classic {
     return Ok(());

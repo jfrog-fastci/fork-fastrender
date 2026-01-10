@@ -5969,6 +5969,7 @@ html, body { margin: 0; padding: 0; }
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
+        // Navigation tests don't distinguish script types; treat module scripts as classic.
         self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
 
