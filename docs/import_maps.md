@@ -34,7 +34,8 @@ What exists today:
 * **Implemented:** parsing + normalization (`parse_import_map_string`) and the normalized data
   structures (`ImportMap`, `ModuleSpecifierMap`, `ScopesMap`, `ModuleIntegrityMap`).
 * **Implemented:** import map parse results (`create_import_map_parse_result`).
-* **Implemented:** the core matching helper (`resolve_imports_match`).
+* **Implemented:** the core matching helper (`resolve_imports_match`) for "resolve an imports match"
+  (prefix/exact matching only; not full module specifier resolution).
 * **Not implemented yet:** registration (`register an import map`), merging (`merge existing and new
   import maps`), and full module specifier resolution (`resolve a module specifier`).
 
@@ -282,6 +283,23 @@ assert!(result.error_to_rethrow.is_none());
 assert!(result.import_map.is_some());
 ```
 
+Example (parse failure captured as `error_to_rethrow`):
+
+```rust
+use fastrender::js::import_maps::create_import_map_parse_result;
+use url::Url;
+
+let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+let result = create_import_map_parse_result(r#"{ "imports": [] }"#, &base_url);
+
+assert!(result.import_map.is_none());
+assert!(result.error_to_rethrow.is_some());
+assert!(
+    result.warnings.is_empty(),
+    "warnings are only produced when parsing/normalization succeeds"
+);
+```
+
 ### Supporting helper: `resolve_imports_match` (implemented)
 
 Rust API:
@@ -319,7 +337,9 @@ let as_url = Url::parse("https://example.com/app.js").ok();
 let normalized_specifier = "pkg/util.js";
 let resolved = resolve_imports_match(normalized_specifier, as_url.as_ref(), &map.imports);
 
-assert!(resolved.is_some());
+assert!(
+    matches!(resolved, Some(Some(url)) if url.as_str() == "https://example.com/static/pkg/util.js")
+);
 ```
 
 ### 3) `merge` (spec concept; not implemented yet)
