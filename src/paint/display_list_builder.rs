@@ -6450,7 +6450,8 @@ impl DisplayListBuilder {
           //
           // Only attempt to decode the selected candidate (the first entry in `sources`).
           let mut deferred_async = false;
-          let decoded = sources.first().and_then(|source| {
+          let candidate = sources.first().copied();
+          let decoded = candidate.and_then(|source| {
             if loading == ImageLoadingAttribute::Lazy {
               if let Some(visible) = culling_rect {
                 if !slot_rect.intersects(visible) {
@@ -6490,12 +6491,24 @@ impl DisplayListBuilder {
             )
           });
           if let Some(image) = decoded {
-            let (content_rect, clip_radii) =
-              self.replaced_content_rect_and_radii(rect, style_for_image);
-            let (dest_x, dest_y, dest_w, dest_h) = {
-              let (fit, position, font_size, root_font_size) =
-                if let Some(style) = fragment.style.as_deref() {
-                  (
+             let (content_rect, clip_radii) =
+               self.replaced_content_rect_and_radii(rect, style_for_image);
+             let candidate = match candidate {
+               Some(c) => c,
+               None => {
+                 self.emit_replaced_placeholder(replaced_type, fragment, rect);
+                 if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
+                   let _ = self.emit_alt_text(alt, fragment, rect);
+                 }
+                 break 'paint;
+               }
+             };
+
+             let mut image = image;
+             let (dest_x, dest_y, dest_w, dest_h) = {
+               let (fit, position, font_size, root_font_size) =
+                 if let Some(style) = fragment.style.as_deref() {
+                   (
                     style.object_fit,
                     style.object_position,
                     style.font_size,
@@ -6517,21 +6530,188 @@ impl DisplayListBuilder {
                 root_font_size,
                 self.viewport,
               )
-              .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
-            };
+               .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
+             };
 
-            let dest_rect = Rect::from_xywh(
-              content_rect.x() + dest_x,
-              content_rect.y() + dest_y,
-              dest_w,
-              dest_h,
-            );
-            let clip_contents = Self::replaced_content_clip_item(
-              style_for_image,
-              content_rect,
-              dest_rect,
-              clip_radii,
-            );
+             let dest_rect = Rect::from_xywh(
+               content_rect.x() + dest_x,
+               content_rect.y() + dest_y,
+               dest_w,
+               dest_h,
+             );
+
+             // SVG `<img>` needs to be rasterized at the used size so root `preserveAspectRatio`
+             // letterboxing is applied in the correct viewport.
+             if let Some(image_cache) = self.image_cache.as_ref() {
+               let trimmed = trim_ascii_whitespace_start(candidate.url);
+               let inline_svg = trimmed.starts_with('<');
+
+               let maybe_cached = if inline_svg {
+                 let mut hasher = DefaultHasher::new();
+                 trimmed.hash(&mut hasher);
+                 let cache_key = format!("inline-svg:{:016x}:{}", hasher.finish(), trimmed.len());
+                 image_cache
+                   .render_svg(trimmed)
+                   .ok()
+                   .map(|img| (cache_key, "inline-svg".to_string(), img))
+               } else {
+                 let resolved_src = image_cache.resolve_url(candidate.url);
+                 image_cache
+                   .load_with_crossorigin_and_referrer_policy(
+                     &resolved_src,
+                     crossorigin,
+                     referrer_policy,
+                   )
+                   .ok()
+                   .map(|img| (resolved_src.clone(), resolved_src, img))
+               };
+
+               if let Some((cache_base_url, render_url, cached)) = maybe_cached {
+                 if cached.is_vector {
+                   if let Some(svg_markup) = cached.svg_content.as_deref() {
+                     let image_resolution = style_for_image
+                       .map(|s| s.image_resolution)
+                       .unwrap_or_default();
+                     let orientation = style_for_image
+                       .map(|s| s.image_orientation.resolve(cached.orientation, false))
+                       .unwrap_or_else(|| {
+                         ImageOrientation::default().resolve(cached.orientation, false)
+                       });
+                     let used_resolution =
+                       image_resolution.used_resolution(None, cached.resolution, self.device_pixel_ratio);
+
+                     let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+                       self.device_pixel_ratio
+                     } else {
+                       1.0
+                     };
+
+                     if dest_w.is_finite() && dest_h.is_finite() && dest_w > 0.0 && dest_h > 0.0 {
+                       let render_w = (dest_w * base_dpr).ceil().max(1.0) as u32;
+                       let render_h = (dest_h * base_dpr).ceil().max(1.0) as u32;
+
+                       let cache_key = ImageKey::new(
+                         format!("{cache_base_url}:{render_w}x{render_h}"),
+                         crossorigin,
+                         referrer_policy,
+                         orientation,
+                         false,
+                         used_resolution,
+                         self.device_pixel_ratio,
+                       );
+
+                       if let Some(existing) = {
+                         let mut decoded_cache = self
+                           .decoded_image_cache
+                           .lock()
+                           .unwrap_or_else(|e| e.into_inner());
+                         decoded_cache.get(&cache_key)
+                       } {
+                         image = existing;
+                       } else {
+                         fn contains_foreign_object_tag(svg: &str) -> bool {
+                           const NEEDLE: &[u8] = b"foreignobject";
+                           let bytes = svg.as_bytes();
+                           bytes
+                             .windows(NEEDLE.len())
+                             .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+                         }
+
+                         let (render_w_unoriented, render_h_unoriented) = if orientation.quarter_turns % 2 == 1 {
+                           (render_h, render_w)
+                         } else {
+                           (render_w, render_h)
+                         };
+
+                         let svg_to_render: Cow<'_, str> = if contains_foreign_object_tag(svg_markup) {
+                           let (rendered_w_css, rendered_h_css) = if orientation.quarter_turns % 2 == 1 {
+                             (dest_h, dest_w)
+                           } else {
+                             (dest_w, dest_h)
+                           };
+                           let intrinsic_w_css = cached.width() as f32;
+                           let intrinsic_h_css = cached.height() as f32;
+                           let foreign_object_dpr =
+                             crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+                               svg_markup,
+                               base_dpr,
+                               rendered_w_css,
+                               rendered_h_css,
+                               intrinsic_w_css,
+                               intrinsic_h_css,
+                             );
+                           crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+                             svg_markup,
+                             "",
+                             &self.font_ctx,
+                             image_cache,
+                             foreign_object_dpr,
+                             self.max_iframe_depth,
+                           )
+                           .map(Cow::Owned)
+                           .unwrap_or_else(|| Cow::Borrowed(svg_markup))
+                         } else {
+                           Cow::Borrowed(svg_markup)
+                         };
+
+                         if let Ok(pixmap) = image_cache.render_svg_pixmap_at_size(
+                           svg_to_render.as_ref(),
+                           render_w_unoriented,
+                           render_h_unoriented,
+                           &render_url,
+                           base_dpr,
+                         ) {
+                           let image_data = if orientation.quarter_turns % 4 == 0 && !orientation.flip_x {
+                             let mut data = ImageData::from_pixmap(pixmap.as_ref(), dest_w, dest_h);
+                             data.has_intrinsic_ratio = image.has_intrinsic_ratio;
+                             Arc::new(data)
+                           } else {
+                             let mut rgba = image::RgbaImage::from_raw(
+                               render_w_unoriented,
+                               render_h_unoriented,
+                               pixmap.data().to_vec(),
+                             )
+                             .unwrap_or_else(|| image::RgbaImage::new(1, 1));
+                             match orientation.quarter_turns % 4 {
+                               0 => {}
+                               1 => rgba = image::imageops::rotate90(&rgba),
+                               2 => rgba = image::imageops::rotate180(&rgba),
+                               3 => rgba = image::imageops::rotate270(&rgba),
+                               _ => {}
+                             }
+                             if orientation.flip_x {
+                               rgba = image::imageops::flip_horizontal(&rgba);
+                             }
+                             let (w, h) = rgba.dimensions();
+                             let mut data =
+                               ImageData::new_premultiplied(w, h, dest_w, dest_h, rgba.into_raw());
+                             data.has_intrinsic_ratio = image.has_intrinsic_ratio;
+                             Arc::new(data)
+                           };
+
+                           let mut decoded_cache = self
+                             .decoded_image_cache
+                             .lock()
+                             .unwrap_or_else(|e| e.into_inner());
+                           if let Some(existing) = decoded_cache.get(&cache_key) {
+                             image = existing;
+                           } else {
+                             decoded_cache.insert(cache_key, image_data.clone());
+                             image = image_data;
+                           }
+                         }
+                       }
+                     }
+                   }
+                 }
+               }
+             }
+             let clip_contents = Self::replaced_content_clip_item(
+               style_for_image,
+               content_rect,
+               dest_rect,
+               clip_radii,
+             );
             if let Some(clip) = clip_contents.as_ref() {
               self.list.push(DisplayItem::PushClip(clip.clone()));
             }

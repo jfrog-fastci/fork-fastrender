@@ -53,6 +53,7 @@ mod filter_premultiplication;
 mod filter_transform_order_projective;
 mod filter_url_svg_display_list;
 mod svg_replaced_box_sizing;
+mod svg_img_preserve_aspect_ratio;
 mod drop_shadow_negative_spread_parallel_seam;
 mod fit_canvas_to_content;
 mod form_control_listbox_geometry_regression;
