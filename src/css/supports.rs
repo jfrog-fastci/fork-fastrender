@@ -85,7 +85,11 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
 
   let canonical_property = if is_known_style_property(normalized_property) {
     normalized_property
-  } else if normalized_property.starts_with("-webkit-") {
+  } else if normalized_property.starts_with("-webkit-")
+    || normalized_property.starts_with("-moz-")
+    || normalized_property.starts_with("-ms-")
+    || normalized_property.starts_with("-o-")
+  {
     match vendor_prefixed_property_alias(normalized_property) {
       Some(alias) => alias,
       None => return false,

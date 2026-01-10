@@ -113,8 +113,12 @@ argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
   if [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "layout" ]]; then
     argv[$((i + 1))]="layout_tests"
+  elif [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "style" ]]; then
+    argv[$((i + 1))]="style_tests"
   elif [[ "${argv[$i]}" == "--test=layout" ]]; then
     argv[$i]="--test=layout_tests"
+  elif [[ "${argv[$i]}" == "--test=style" ]]; then
+    argv[$i]="--test=style_tests"
   fi
 done
 set -- "${argv[@]}"

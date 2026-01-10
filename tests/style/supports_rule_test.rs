@@ -103,6 +103,15 @@ fn supports_background_clip_text() {
 fn supports_vendor_prefixed_properties_match_when_unprefixed_supported() {
   let css = r"@supports (-webkit-transform: rotate(10deg)) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
+
+  let css = r"@supports (-moz-transform: rotate(10deg)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+
+  let css = r"@supports (-o-transform: rotate(10deg)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+
+  let css = r"@supports (-ms-transform: rotate(10deg)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
 }
 
 #[test]
