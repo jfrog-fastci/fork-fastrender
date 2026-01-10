@@ -2,11 +2,14 @@ use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
 use crate::execution_context::ExecutionContext;
+use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
 use crate::exec::RuntimeEnv;
 use crate::function::{CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode};
 use crate::GcObject;
 use crate::Heap;
+use crate::import_meta::create_import_meta_object;
+use crate::import_meta::VmImportMetaHostHooks;
 use crate::interrupt::InterruptHandle;
 use crate::interrupt::InterruptToken;
 use crate::jobs::VmJobContext;
@@ -224,6 +227,7 @@ pub struct Vm {
   host_hooks_override: Option<*mut (dyn VmHostHooks + 'static)>,
   ecma_functions: Vec<EcmaFunctionCode>,
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
+  import_meta_cache: HashMap<ModuleId, RootId>,
   // Per-realm intrinsic graph used by built-in native function implementations.
   //
   // For now `vm-js` assumes a single active realm per `Vm`. When multiple realms are supported,
@@ -251,6 +255,7 @@ impl std::fmt::Debug for Vm {
     ds.field("host_hooks_override", &self.host_hooks_override.is_some());
     ds.field("ecma_functions", &self.ecma_functions.len());
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
+    ds.field("import_meta_cache", &self.import_meta_cache.len());
     ds.field("intrinsics", &self.intrinsics);
     #[cfg(test)]
     {
@@ -427,6 +432,7 @@ impl Vm {
       host_hooks_override: None,
       ecma_functions: Vec::new(),
       ecma_function_cache: HashMap::new(),
+      import_meta_cache: HashMap::new(),
       intrinsics: None,
       #[cfg(test)]
       native_calls_len_override: None,
@@ -939,14 +945,33 @@ impl Vm {
         .trim_end();
     }
 
-    let opts = ParseOptions {
+    let script_opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
+    };
+    let module_opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
     };
 
     let mut wrapped: String = String::new();
     let top = match kind {
-      EcmaFunctionKind::Decl => self.parse_top_level_with_budget(snippet, opts)?,
+      // Most function snippets originate from classic scripts, which must be parsed in
+      // `SourceType::Script` mode to preserve sloppy-mode semantics and grammar.
+      //
+      // However, module-defined functions can include module-only syntax within their snippet span:
+      // - `export` / `export default` prefixes on declarations
+      // - `import.meta` inside function bodies
+      //
+      // In that case, parsing as a script will fail with a SyntaxError; retry parsing as a module.
+      EcmaFunctionKind::Decl => match self.parse_top_level_with_budget(snippet, script_opts) {
+        Ok(top) => top,
+        Err(err @ VmError::Syntax(_)) => match self.parse_top_level_with_budget(snippet, module_opts) {
+          Ok(top) => top,
+          Err(_) => return Err(err),
+        },
+        Err(err) => return Err(err),
+      },
       EcmaFunctionKind::ObjectMember => {
         let capacity = snippet
           .len()
@@ -956,7 +981,14 @@ impl Vm {
         wrapped.push_str("({");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
-        self.parse_top_level_with_budget(&wrapped, opts)?
+        match self.parse_top_level_with_budget(&wrapped, script_opts) {
+          Ok(top) => top,
+          Err(err @ VmError::Syntax(_)) => match self.parse_top_level_with_budget(&wrapped, module_opts) {
+            Ok(top) => top,
+            Err(_) => return Err(err),
+          },
+          Err(err) => return Err(err),
+        }
       }
       EcmaFunctionKind::Expr => {
         let mut attempt: usize = 0;
@@ -971,13 +1003,29 @@ impl Vm {
           wrapped.push_str(snippet);
           wrapped.push(')');
 
-          match self.parse_top_level_with_budget(&wrapped, opts) {
+          let parsed = match self.parse_top_level_with_budget(&wrapped, script_opts) {
+            Ok(top) => Ok(top),
+            Err(script_err) => {
+              // Propagate non-syntax errors (VM termination, OOM, etc).
+              if !matches!(script_err, VmError::Syntax(_)) {
+                return Err(script_err);
+              }
+
+              match self.parse_top_level_with_budget(&wrapped, module_opts) {
+                Ok(top) => Ok(top),
+                Err(module_err) => {
+                  if !matches!(module_err, VmError::Syntax(_)) {
+                    return Err(module_err);
+                  }
+                  Err(script_err)
+                }
+              }
+            }
+          };
+
+          match parsed {
             Ok(top) => break top,
             Err(err) => {
-              // Propagate non-syntax errors (VM termination, OOM, etc).
-              if !matches!(err, VmError::Syntax(_)) {
-                return Err(err);
-              }
               // Retry by stripping a likely delimiter suffix if present.
               //
               // This should be rare: it indicates our saved snippet span included a trailing token
@@ -1222,6 +1270,59 @@ impl Vm {
       .iter()
       .rev()
       .find_map(|ctx| ctx.script_or_module)
+  }
+
+  pub(crate) fn get_or_create_import_meta_object(
+    &mut self,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    module: ModuleId,
+  ) -> Result<GcObject, VmError> {
+    if let Some(root) = self.import_meta_cache.get(&module).copied() {
+      let Some(Value::Object(obj)) = scope.heap().get_root(root) else {
+        return Err(VmError::InvalidHandle);
+      };
+      return Ok(obj);
+    }
+
+    // Bridge `VmHostHooks` into the `VmImportMetaHostHooks` interface used by
+    // `create_import_meta_object`.
+    struct Adapter<'a>(&'a mut dyn VmHostHooks);
+
+    impl VmImportMetaHostHooks for Adapter<'_> {
+      fn host_get_import_meta_properties(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        module: ModuleId,
+      ) -> Result<Vec<crate::ImportMetaProperty>, VmError> {
+        self.0.host_get_import_meta_properties(vm, scope, module)
+      }
+
+      fn host_finalize_import_meta(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        import_meta: GcObject,
+        module: ModuleId,
+      ) -> Result<(), VmError> {
+        self.0.host_finalize_import_meta(vm, scope, import_meta, module)
+      }
+    }
+
+    let mut adapter = Adapter(hooks);
+    let import_meta = create_import_meta_object(self, scope, &mut adapter, module)?;
+
+    // Keep the object alive across GC by storing it as a persistent root.
+    scope.push_root(Value::Object(import_meta))?;
+    let root = scope.heap_mut().add_root(Value::Object(import_meta))?;
+
+    if self.import_meta_cache.try_reserve(1).is_err() {
+      scope.heap_mut().remove_root(root);
+      return Err(VmError::OutOfMemory);
+    }
+    self.import_meta_cache.insert(module, root);
+    Ok(import_meta)
   }
 
   /// Returns the realm of the currently-running execution context, if any.

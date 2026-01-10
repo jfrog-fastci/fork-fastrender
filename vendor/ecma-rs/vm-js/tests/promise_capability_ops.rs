@@ -112,7 +112,8 @@ fn promise_capability_resolve_runs_then_only_at_microtask_checkpoint() -> Result
 
   let mut ctx = TestCtx { vm: &mut vm, heap: &mut heap };
   let errors = host.perform_microtask_checkpoint(&mut ctx);
-  assert!(errors.is_empty());
+  assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
+  assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
 
   assert!(THEN_CALLED.with(|c| c.get()));
 
@@ -160,7 +161,8 @@ fn promise_resolve_helper_returns_promise_and_then_is_async() -> Result<(), VmEr
 
   let mut ctx = TestCtx { vm: &mut vm, heap: &mut heap };
   let errors = host.perform_microtask_checkpoint(&mut ctx);
-  assert!(errors.is_empty());
+  assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
+  assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
 
   assert!(THEN_CALLED.with(|c| c.get()));
 

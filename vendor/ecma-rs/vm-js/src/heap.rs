@@ -1,4 +1,4 @@
-use crate::env::{DeclarativeEnvRecord, EnvBinding, EnvRecord, ObjectEnvRecord};
+use crate::env::{DeclarativeEnvRecord, EnvBinding, EnvBindingValue, EnvRecord, ObjectEnvRecord};
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, JsFunction, NativeConstructId,
   NativeFunctionId, ThisMode,
@@ -2190,7 +2190,13 @@ impl Heap {
       return Err(VmError::Unimplemented("binding already initialized"));
     }
 
-    binding.value = value;
+    if let EnvBindingValue::Direct(slot) = &mut binding.value {
+      *slot = value;
+    } else {
+      return Err(VmError::InvariantViolation(
+        "cannot initialize an indirect env binding",
+      ));
+    }
     binding.initialized = true;
     Ok(())
   }
@@ -2216,7 +2222,32 @@ impl Heap {
       // can translate into a realm-aware error object.
       return Err(VmError::Throw(Value::Null));
     }
-    Ok(binding.value)
+    binding.value.get(self)
+  }
+
+  pub(crate) fn env_get_binding_value_by_gc_string(
+    &self,
+    env: GcEnv,
+    name: GcString,
+  ) -> Result<Value, VmError> {
+    let rec = self.get_declarative_env(env)?;
+    let needle_units = self.get_string(name)?.as_code_units();
+    let mut found: Option<&crate::env::EnvBinding> = None;
+    for binding in rec.bindings.iter() {
+      let Some(binding_name) = binding.name else {
+        continue;
+      };
+      if self.get_string(binding_name)?.as_code_units() == needle_units {
+        found = Some(binding);
+        break;
+      }
+    }
+    let binding = found.ok_or(VmError::Unimplemented("unbound identifier"))?;
+    if !binding.initialized {
+      // TDZ sentinel; see `env_get_binding_value`.
+      return Err(VmError::Throw(Value::Null));
+    }
+    binding.value.get(self)
   }
 
   pub(crate) fn env_set_mutable_binding(
@@ -2257,7 +2288,13 @@ impl Heap {
       return Err(VmError::Throw(Value::Undefined));
     }
 
-    binding.value = value;
+    if let EnvBindingValue::Direct(slot) = &mut binding.value {
+      *slot = value;
+    } else {
+      return Err(VmError::InvariantViolation(
+        "cannot assign through an indirect env binding",
+      ));
+    }
     Ok(())
   }
 
@@ -2270,7 +2307,9 @@ impl Heap {
     env: GcEnv,
     symbol: SymbolId,
   ) -> Result<Value, VmError> {
-    self.get_declarative_env(env)?.get_symbol_binding_value(symbol)
+    self
+      .get_declarative_env(env)?
+      .get_symbol_binding_value(self, symbol)
   }
 
   pub fn env_initialize_symbol_binding(
@@ -3606,7 +3645,7 @@ impl<'a> Scope<'a> {
     self.alloc_native_function_with_slots_and_env(call, construct, name, length, slots, None)
   }
 
-  fn alloc_native_function_with_slots_and_env(
+  pub(crate) fn alloc_native_function_with_slots_and_env(
     &mut self,
     call: NativeFunctionId,
     construct: Option<NativeConstructId>,
@@ -3692,25 +3731,56 @@ impl<'a> Scope<'a> {
       }
     }
 
-    // Collect all `Value`-typed roots so we can push them in one operation (GC-safe).
-    let max_roots = bindings.len().saturating_mul(2);
-    let mut roots: Vec<Value> = Vec::new();
-    roots
-      .try_reserve_exact(max_roots)
+    // Collect all `Value` roots (binding names + direct values) and env roots (outer + indirect
+    // target environments) so we can push them in GC-safe batches.
+    let max_value_roots = bindings.len().saturating_mul(2);
+    let mut value_roots: Vec<Value> = Vec::new();
+    value_roots
+      .try_reserve_exact(max_value_roots)
       .map_err(|_| VmError::OutOfMemory)?;
-    for binding in bindings {
-      if let Some(name) = binding.name {
-        roots.push(Value::String(name));
-      }
-      roots.push(binding.value);
+
+    let mut env_roots: Vec<GcEnv> = Vec::new();
+    if let Some(outer) = outer {
+      env_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      env_roots.push(outer);
     }
 
-    // If `outer` is present, treat it as an extra env root while growing the value root stack.
-    if let Some(outer) = outer {
-      scope.push_roots_with_extra_roots(&roots, &[], &[outer])?;
-      scope.push_env_root(outer)?;
-    } else {
-      scope.push_roots(&roots)?;
+    for binding in bindings {
+      if let Some(name) = binding.name {
+        value_roots.push(Value::String(name));
+      }
+      match binding.value {
+        EnvBindingValue::Direct(value) => value_roots.push(value),
+        EnvBindingValue::Indirect { env, name } => {
+          value_roots.push(Value::String(name));
+          if !scope.heap().is_valid_env(env) {
+            return Err(VmError::InvalidHandle);
+          }
+          env_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          env_roots.push(env);
+        }
+      }
+    }
+
+    scope.push_roots_with_extra_roots(&value_roots, &[], &env_roots)?;
+
+    if !env_roots.is_empty() {
+      // Reserve `env_root_stack` capacity in one go so pushing individual env roots cannot allocate
+      // and trigger GC while some roots are still only held in local variables.
+      let new_len = scope
+        .heap
+        .env_root_stack
+        .len()
+        .checked_add(env_roots.len())
+        .ok_or(VmError::OutOfMemory)?;
+      let growth_bytes = vec_capacity_growth_bytes::<GcEnv>(scope.heap.env_root_stack.capacity(), new_len);
+      if growth_bytes != 0 {
+        scope.heap.ensure_can_allocate_with_extra_roots(|_| growth_bytes, &value_roots, &[], &env_roots, &[])?;
+        reserve_vec_to_len::<GcEnv>(&mut scope.heap.env_root_stack, new_len)?;
+      }
+      for env in &env_roots {
+        scope.heap.env_root_stack.push(*env);
+      }
     }
 
     let new_bytes = EnvRecord::heap_size_bytes_for_binding_count(bindings.len());
@@ -3819,7 +3889,7 @@ impl<'a> Scope<'a> {
       EnvBinding {
         symbol: SymbolId::from_raw(name.id().0),
         name: Some(name),
-        value: Value::Undefined,
+        value: EnvBindingValue::Direct(Value::Undefined),
         mutable: true,
         initialized: false,
         strict: false,
@@ -3847,10 +3917,51 @@ impl<'a> Scope<'a> {
       EnvBinding {
         symbol: SymbolId::from_raw(name.id().0),
         name: Some(name),
-        value: Value::Undefined,
+        value: EnvBindingValue::Direct(Value::Undefined),
         mutable: false,
         initialized: false,
         strict: false,
+      },
+    )
+  }
+
+  pub(crate) fn env_create_import_binding(
+    &mut self,
+    env: GcEnv,
+    name: &str,
+    target_env: GcEnv,
+    target_name: &str,
+  ) -> Result<(), VmError> {
+    if self.heap().env_has_binding(env, name)? {
+      return Err(VmError::Unimplemented("duplicate binding"));
+    }
+
+    let mut scope = self.reborrow();
+    if !scope.heap().is_valid_env(env) || !scope.heap().is_valid_env(target_env) {
+      return Err(VmError::InvalidHandle);
+    }
+    // Root inputs across allocations/GC while creating the strings and growing the binding table.
+    scope.push_env_root(env)?;
+    scope.push_env_root(target_env)?;
+
+    let local_name = scope.alloc_string(name)?;
+    scope.push_root(Value::String(local_name))?;
+    let target_name = scope.alloc_string(target_name)?;
+    scope.push_root(Value::String(target_name))?;
+
+    scope.heap.env_add_binding(
+      env,
+      EnvBinding {
+        symbol: SymbolId::from_raw(local_name.id().0),
+        name: Some(local_name),
+        value: EnvBindingValue::Indirect {
+          env: target_env,
+          name: target_name,
+        },
+        mutable: false,
+        // Import bindings are initialized immediately; they forward reads to the exporting module.
+        initialized: true,
+        strict: true,
       },
     )
   }

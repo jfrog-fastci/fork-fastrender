@@ -1,6 +1,6 @@
 use vm_js::{
-  Heap, HeapLimits, ModuleGraph, PropertyKey, PropertyKind, Realm, SourceTextModuleRecord, Value,
-  Vm, VmError, VmOptions,
+  Heap, HeapLimits, ModuleGraph, PropertyKey, PropertyKind, Realm, SourceTextModuleRecord, Value, Vm,
+  VmError, VmOptions,
 };
 
 #[test]
@@ -18,9 +18,12 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
   )?;
   let module = graph.add_module(record);
 
+  // Module namespaces are backed by module environments; link before requesting the namespace.
+  graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
+
   let mut scope = heap.scope();
-  let ns1 = graph.get_module_namespace(module, &mut scope, &realm)?;
-  let ns2 = graph.get_module_namespace(module, &mut scope, &realm)?;
+  let ns1 = graph.get_module_namespace(module, &mut vm, &mut scope)?;
+  let ns2 = graph.get_module_namespace(module, &mut vm, &mut scope)?;
   assert_eq!(ns1, ns2, "namespace object should be cached");
 
   let key = PropertyKey::Symbol(realm.well_known_symbols().to_string_tag);

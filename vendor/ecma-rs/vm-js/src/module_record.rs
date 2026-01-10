@@ -3,9 +3,8 @@ use crate::module_graph::ModuleGraph;
 use crate::ImportAttribute;
 use crate::LoadedModuleRequest;
 use crate::ModuleRequest;
-use crate::RootId;
-use crate::Vm;
-use crate::VmError;
+use crate::SourceText;
+use crate::{EnvRootId, RootId, Vm, VmError};
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMember, ObjMemberType,
@@ -14,6 +13,7 @@ use parse_js::ast::expr::Expr;
 use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
 use parse_js::ast::import_export::ExportNames;
+use parse_js::ast::import_export::ImportNames;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stmt::ForInOfLhs;
@@ -23,6 +23,7 @@ use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Module linking/loading status.
 ///
@@ -33,6 +34,11 @@ pub enum ModuleStatus {
   #[default]
   New,
   Unlinked,
+  Linking,
+  Linked,
+  Evaluating,
+  Evaluated,
+  Errored,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +52,13 @@ pub enum ImportName {
   Name(String),
   /// Corresponds to ECMA-262 `ImportName = all`, used by `export * as ns from "m"`.
   All,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportEntry {
+  pub module_request: ModuleRequest,
+  pub import_name: ImportName,
+  pub local_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,7 +102,12 @@ pub(crate) struct ModuleNamespaceCache {
 /// Source Text Module Record (ECMA-262).
 #[derive(Clone, Debug, Default)]
 pub struct SourceTextModuleRecord {
+  /// Source text and metadata for this module (URL, name, etc).
+  pub source: Option<Arc<SourceText>>,
+  /// Parsed `parse-js` AST for this module.
+  pub ast: Option<Arc<Node<TopLevel>>>,
   pub requested_modules: Vec<ModuleRequest>,
+  pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
   /// `[[HasTLA]]` – whether this module contains top-level `await`.
   pub has_tla: bool,
@@ -104,6 +122,12 @@ pub struct SourceTextModuleRecord {
   ///
   /// Note: the namespace object is rooted in the heap via a persistent [`RootId`] so it survives GC.
   pub(crate) namespace: Option<ModuleNamespaceCache>,
+
+  /// `[[Environment]]` – module environment record (rooted in the heap).
+  pub(crate) environment: Option<EnvRootId>,
+
+  /// `[[ImportMeta]]` – cached `import.meta` object (rooted in the heap).
+  pub(crate) import_meta: Option<RootId>,
 }
 
 impl SourceTextModuleRecord {
@@ -119,27 +143,37 @@ impl SourceTextModuleRecord {
   /// This corresponds to the spec's `ParseModule` abstract operation, but only models the export
   /// entry lists and `[[RequestedModules]]`.
   pub fn parse(source: &str) -> Result<Self, VmError> {
+    Self::parse_source(Arc::new(SourceText::new("<inline>", source)))
+  }
+
+  /// Parse a module and capture its [`SourceText`] + parsed AST for later evaluation.
+  pub fn parse_source(source: Arc<SourceText>) -> Result<Self, VmError> {
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
     };
-    let top = parse_with_options(source, opts)
+    let top = parse_with_options(&source.text, opts)
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
-
     let mut cancel = || Ok(());
-    module_record_from_top_level(&top, &mut cancel)
+    let mut record = module_record_from_top_level(&top, &mut cancel)?;
+    record.source = Some(source);
+    record.ast = Some(Arc::new(top));
+    Ok(record)
   }
 
   /// Parses a source text module using VM budget/interrupt state.
   pub fn parse_with_vm(vm: &mut Vm, source: &str) -> Result<Self, VmError> {
+    let source = Arc::new(SourceText::new("<inline>", source));
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
     };
-    let top = vm.parse_top_level_with_budget(source, opts)?;
-
+    let top = vm.parse_top_level_with_budget(&source.text, opts)?;
     let mut cancel = || vm.tick();
-    module_record_from_top_level(&top, &mut cancel)
+    let mut record = module_record_from_top_level(&top, &mut cancel)?;
+    record.source = Some(source);
+    record.ast = Some(Arc::new(top));
+    Ok(record)
   }
 
   /// Implements ECMA-262 `GetExportedNames([exportStarSet])`.
@@ -384,7 +418,114 @@ fn module_record_from_top_level(
           import_stmt.stx.attributes.as_ref(),
           &mut ctx,
         )?;
-        push_requested_module(&mut record.requested_modules, req, &mut ctx)?;
+        // `[[RequestedModules]]`
+        push_requested_module(
+          &mut record.requested_modules,
+          clone_module_request(&req, &mut ctx)?,
+          &mut ctx,
+        )?;
+
+        // `[[ImportEntries]]`
+        //
+        // Note: `import "m"` (side-effect only) produces no import entries.
+        let mut import_entry_count: usize = 0;
+        if import_stmt.stx.default.is_some() {
+          import_entry_count = import_entry_count.saturating_add(1);
+        }
+        if let Some(names) = import_stmt.stx.names.as_ref() {
+          match names {
+            ImportNames::All(_) => {
+              import_entry_count = import_entry_count.saturating_add(1);
+            }
+            ImportNames::Specific(list) => {
+              for name in list {
+                ctx.budget_tick()?;
+                if name.stx.type_only {
+                  continue;
+                }
+                import_entry_count = import_entry_count.saturating_add(1);
+              }
+            }
+          }
+        }
+
+        if import_entry_count != 0 {
+          record
+            .import_entries
+            .try_reserve(import_entry_count)
+            .map_err(|_| VmError::OutOfMemory)?;
+
+          // Reuse the parsed module request for one entry to avoid an extra clone.
+          let mut req_for_entries = Some(req);
+          let mut remaining = import_entry_count;
+
+          let mut next_req = |ctx: &mut ModuleRecordParseCtx<'_>,
+                              remaining: &mut usize,
+                              req_for_entries: &mut Option<ModuleRequest>|
+           -> Result<ModuleRequest, VmError> {
+            debug_assert!(*remaining > 0);
+            let is_last = *remaining == 1;
+            *remaining = remaining.saturating_sub(1);
+            if is_last {
+              Ok(req_for_entries
+                .take()
+                .ok_or(VmError::InvariantViolation("missing module request for import entry"))?)
+            } else {
+              clone_module_request(
+                req_for_entries
+                  .as_ref()
+                  .ok_or(VmError::InvariantViolation("missing module request for import entry"))?,
+                ctx,
+              )
+            }
+          };
+
+          if let Some(default) = &import_stmt.stx.default {
+            ctx.budget_tick()?;
+            let Pat::Id(id) = &*default.stx.pat.stx else {
+              return Err(VmError::Unimplemented("default import pattern"));
+            };
+            record.import_entries.push(ImportEntry {
+              module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
+              import_name: ImportName::Name(try_string_from_str("default")?),
+              local_name: try_string_from_str(&id.stx.name)?,
+            });
+          }
+
+          if let Some(names) = import_stmt.stx.names.as_ref() {
+            match names {
+              ImportNames::All(pat_decl) => {
+                ctx.budget_tick()?;
+                let Pat::Id(id) = &*pat_decl.stx.pat.stx else {
+                  return Err(VmError::Unimplemented("namespace import pattern"));
+                };
+                record.import_entries.push(ImportEntry {
+                  module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
+                  import_name: ImportName::All,
+                  local_name: try_string_from_str(&id.stx.name)?,
+                });
+              }
+              ImportNames::Specific(list) => {
+                for name in list {
+                  ctx.budget_tick()?;
+                  if name.stx.type_only {
+                    continue;
+                  }
+                  let Pat::Id(id) = &*name.stx.alias.stx.pat.stx else {
+                    return Err(VmError::Unimplemented("import binding pattern"));
+                  };
+                  record.import_entries.push(ImportEntry {
+                    module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
+                    import_name: ImportName::Name(try_string_from_str(name.stx.importable.as_str())?),
+                    local_name: try_string_from_str(&id.stx.name)?,
+                  });
+                }
+              }
+            }
+          }
+
+          debug_assert_eq!(remaining, 0, "import entry count mismatch");
+        }
       }
 
       Stmt::ExportDefaultExpr(_) => {

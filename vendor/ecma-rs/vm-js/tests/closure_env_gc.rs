@@ -1,5 +1,5 @@
 use semantic_js::js::SymbolId;
-use vm_js::{EnvBinding, Heap, HeapLimits, NativeFunctionId, Value, VmError};
+use vm_js::{EnvBinding, EnvBindingValue, Heap, HeapLimits, NativeFunctionId, Value, VmError};
 
 #[test]
 fn native_function_closure_env_keeps_env_and_bindings_alive_across_gc() -> Result<(), VmError> {
@@ -25,7 +25,7 @@ fn native_function_closure_env_keeps_env_and_bindings_alive_across_gc() -> Resul
       &[EnvBinding {
         symbol: SymbolId::from_raw(1),
         name: None,
-        value: Value::String(captured),
+        value: EnvBindingValue::Direct(Value::String(captured)),
         initialized: true,
         mutable: true,
         strict: true,
@@ -80,4 +80,3 @@ fn outer_env_kept_alive_via_closure_chain() -> Result<(), VmError> {
 
   Ok(())
 }
-

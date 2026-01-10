@@ -1,5 +1,5 @@
 use semantic_js::js::SymbolId;
-use vm_js::{EnvBinding, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{EnvBinding, EnvBindingValue, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -69,7 +69,7 @@ fn tdz_binding_errors_until_initialized() -> Result<(), VmError> {
       &[EnvBinding {
         symbol: sym,
         name: None,
-        value: Value::Undefined,
+        value: EnvBindingValue::Direct(Value::Undefined),
         initialized: false,
         mutable: true,
         strict: true,
@@ -108,7 +108,7 @@ fn immutable_binding_rejects_assignment() -> Result<(), VmError> {
       &[EnvBinding {
         symbol: sym,
         name: None,
-        value: Value::Undefined,
+        value: EnvBindingValue::Direct(Value::Undefined),
         initialized: false,
         mutable: false,
         strict: true,

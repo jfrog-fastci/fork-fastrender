@@ -1,5 +1,5 @@
 use semantic_js::js::SymbolId;
-use vm_js::{EnvBinding, Heap, HeapLimits, Value, VmError};
+use vm_js::{EnvBinding, EnvBindingValue, Heap, HeapLimits, Value, VmError};
 
 #[test]
 fn env_record_used_bytes_only_counts_binding_table_payload() -> Result<(), VmError> {
@@ -26,7 +26,7 @@ fn env_record_used_bytes_only_counts_binding_table_payload() -> Result<(), VmErr
     EnvBinding {
       symbol: SymbolId::from_raw(1),
       name: None,
-      value: Value::Number(1.0),
+      value: EnvBindingValue::Direct(Value::Number(1.0)),
       mutable: true,
       initialized: true,
       strict: true,
@@ -34,7 +34,7 @@ fn env_record_used_bytes_only_counts_binding_table_payload() -> Result<(), VmErr
     EnvBinding {
       symbol: SymbolId::from_raw(2),
       name: None,
-      value: Value::Number(2.0),
+      value: EnvBindingValue::Direct(Value::Number(2.0)),
       mutable: true,
       initialized: true,
       strict: true,
@@ -42,7 +42,7 @@ fn env_record_used_bytes_only_counts_binding_table_payload() -> Result<(), VmErr
     EnvBinding {
       symbol: SymbolId::from_raw(3),
       name: None,
-      value: Value::Number(3.0),
+      value: EnvBindingValue::Direct(Value::Number(3.0)),
       mutable: true,
       initialized: true,
       strict: true,

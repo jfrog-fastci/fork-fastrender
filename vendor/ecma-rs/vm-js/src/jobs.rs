@@ -26,7 +26,9 @@
 //! queue is **host-owned**; this crate only provides the job representation.
 
 use crate::heap::{Trace, Tracer};
-use crate::{GcObject, ModuleGraph, PropertyKey, RootId, Scope, Value, Vm, VmError};
+use crate::{
+  GcObject, ImportMetaProperty, ModuleGraph, ModuleId, PropertyKey, RootId, Scope, Value, Vm, VmError,
+};
 use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest};
 use std::any::Any;
 use std::fmt;
@@ -735,6 +737,25 @@ pub trait VmHostHooks {
         self.0.host_get_supported_import_attributes()
       }
 
+      fn host_get_import_meta_properties(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        module: ModuleId,
+      ) -> Result<Vec<ImportMetaProperty>, VmError> {
+        self.0.host_get_import_meta_properties(vm, scope, module)
+      }
+
+      fn host_finalize_import_meta(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        import_meta: GcObject,
+        module: ModuleId,
+      ) -> Result<(), VmError> {
+        self.0.host_finalize_import_meta(vm, scope, import_meta, module)
+      }
+
       fn host_load_imported_module(
         &mut self,
         vm: &mut Vm,
@@ -788,6 +809,34 @@ pub trait VmHostHooks {
   /// The default implementation returns an empty list (no attributes supported).
   fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
     &[]
+  }
+
+  /// Returns the list of initial properties to define on the `import.meta` object for `module`.
+  ///
+  /// Spec reference: `HostGetImportMetaProperties`:
+  /// <https://tc39.es/ecma262/#sec-hostgetimportmetaproperties>.
+  fn host_get_import_meta_properties(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _module: ModuleId,
+  ) -> Result<Vec<ImportMetaProperty>, VmError> {
+    Ok(Vec::new())
+  }
+
+  /// Gives the host a chance to finalize the `import.meta` object after initial properties have
+  /// been defined.
+  ///
+  /// Spec reference: `HostFinalizeImportMeta`:
+  /// <https://tc39.es/ecma262/#sec-hostfinalizeimportmeta>.
+  fn host_finalize_import_meta(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _import_meta: GcObject,
+    _module: ModuleId,
+  ) -> Result<(), VmError> {
+    Ok(())
   }
 
   /// Load an imported module (host hook).

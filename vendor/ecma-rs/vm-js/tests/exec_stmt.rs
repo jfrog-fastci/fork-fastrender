@@ -200,7 +200,7 @@ fn try_catch_converts_not_callable_into_type_error_object() {
 fn try_catch_converts_builtin_type_error_into_type_error_object() {
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#"try { Object.setPrototypeOf(1, null); } catch(e) { e.name }"#)
+    .exec_script(r#"try { Object.setPrototypeOf({}, 1); } catch(e) { e.name }"#)
     .unwrap();
   assert_value_is_utf8(&rt, value, "TypeError");
 }

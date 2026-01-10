@@ -3,9 +3,9 @@ use crate::error_object::new_error;
 use crate::iterator;
 use crate::ops::{abstract_equality, to_number};
 use crate::{
-  EnvRootId, GcEnv, GcObject, GcString, Heap, JsBigInt, PropertyDescriptor, PropertyDescriptorPatch,
-  PropertyKey, PropertyKind, Realm, RootId, Scope, SourceText, StackFrame, Value, Vm, VmError,
-  NativeCall, VmHost, VmHostHooks, VmJobContext,
+  EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleId, PropertyDescriptor,
+  PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule,
+  SourceText, StackFrame, Value, Vm, VmError, NativeCall, VmHost, VmHostHooks, VmJobContext,
 };
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -1697,7 +1697,6 @@ impl<'a> Evaluator<'a> {
   }
 
   fn collect_var_names(&mut self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
-    self.tick()?;
     match stmt {
       Stmt::VarDecl(var) => {
         if var.stx.mode != VarDeclMode::Var {
@@ -1785,13 +1784,6 @@ impl<'a> Evaluator<'a> {
           for s in &branch.stx.body {
             self.collect_var_names(&s.stx, out)?;
           }
-        }
-      }
-      // Function declarations are hoisted like `var` declarations, but we must not traverse into
-      // the function body.
-      Stmt::FunctionDecl(decl) => {
-        if let Some(name) = &decl.stx.name {
-          out.insert(name.stx.name.clone());
         }
       }
 
@@ -1920,6 +1912,23 @@ impl<'a> Evaluator<'a> {
       Stmt::VarDecl(var_decl) => self.eval_var_decl(scope, &var_decl.stx),
       Stmt::Block(block) => self.eval_block_stmt(scope, &block.stx),
       Stmt::If(stmt) => self.eval_if(scope, &stmt.stx),
+      // Import/export declarations are processed during module linking; their runtime evaluation is
+      // defined to produce an empty completion.
+      Stmt::Import(_) => Ok(Completion::empty()),
+      Stmt::ExportList(_) => Ok(Completion::empty()),
+      Stmt::ExportDefaultExpr(stmt) => {
+        let value = self.eval_expr(scope, &stmt.stx.expression)?;
+        let binding_name = "*default*";
+        if !scope.heap().env_has_binding(self.env.lexical_env, binding_name)? {
+          return Err(VmError::InvariantViolation(
+            "export default expression missing *default* binding",
+          ));
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(self.env.lexical_env, binding_name, value)?;
+        Ok(Completion::empty())
+      }
       Stmt::Throw(stmt) => self.eval_throw(scope, stmt),
       Stmt::Try(stmt) => self.eval_try(scope, &stmt.stx),
       Stmt::Return(stmt) => self.eval_return(scope, &stmt.stx),
@@ -3071,6 +3080,7 @@ impl<'a> Evaluator<'a> {
       Expr::This(_) => Ok(self.this),
       Expr::NewTarget(_) => Ok(self.new_target),
       Expr::Id(node) => self.eval_id(scope, &node.stx),
+      Expr::ImportMeta(_) => self.eval_import_meta(scope),
       Expr::Call(node) => self.eval_call(scope, &node.stx),
       Expr::Func(node) => self.eval_func_expr(scope, node),
       Expr::ArrowFunc(node) => self.eval_arrow_func_expr(scope, node),
@@ -4106,6 +4116,14 @@ impl<'a> Evaluator<'a> {
       }
     }
 
+    Ok(Value::Object(obj))
+  }
+
+  fn eval_import_meta(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    let Some(ScriptOrModule::Module(module)) = self.vm.get_active_script_or_module() else {
+      return Err(VmError::Unimplemented("import.meta outside of modules"));
+    };
+    let obj = self.vm.get_or_create_import_meta_object(scope, self.hooks, module)?;
     Ok(Value::Object(obj))
   }
 
@@ -5298,6 +5316,107 @@ pub(crate) fn run_ecma_function(
       }
     }
   }
+}
+
+pub(crate) fn instantiate_module_decls(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  module_env: GcEnv,
+  source: Arc<SourceText>,
+  stmts: &[Node<Stmt>],
+) -> Result<(), VmError> {
+  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+  env.set_source_info(source, 0, 0);
+
+  // Module instantiation does not execute code, but reuses the evaluator's hoisting/instantiation
+  // logic to create bindings and pre-create function objects.
+  let mut dummy_host = ();
+  let mut dummy_hooks = crate::MicrotaskQueue::new();
+  let mut evaluator = Evaluator {
+    vm,
+    host: &mut dummy_host,
+    hooks: &mut dummy_hooks,
+    env: &mut env,
+    // Modules are always strict mode.
+    strict: true,
+    this: Value::Undefined,
+    new_target: Value::Undefined,
+  };
+
+  evaluator.instantiate_stmt_list(scope, stmts)?;
+  env.teardown(scope.heap_mut());
+  Ok(())
+}
+
+pub(crate) fn run_module(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  source: Arc<SourceText>,
+  stmts: &[Node<Stmt>],
+) -> Result<(), VmError> {
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+
+  vm.push_execution_context(exec_ctx);
+
+  let result = (|| -> Result<(), VmError> {
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(source.clone(), 0, 0);
+
+    let result = (|| -> Result<(), VmError> {
+      let (line, col) = source.line_col(0);
+      let frame = StackFrame {
+        function: None,
+        source: source.name.clone(),
+        line,
+        col,
+      };
+      let mut vm_frame = vm.enter_frame(frame)?;
+
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut env,
+        strict: true,
+        // Per ECMA-262, module top-level `this` is `undefined`.
+        this: Value::Undefined,
+        new_target: Value::Undefined,
+      };
+
+      let completion = evaluator.eval_stmt_list(scope, stmts)?;
+
+      match completion {
+        Completion::Normal(_) => Ok(()),
+        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+          value: thrown.value,
+          stack: thrown.stack,
+        }),
+        Completion::Return(_) => Err(VmError::Unimplemented("return from module")),
+        Completion::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
+        Completion::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+      }
+    })();
+
+    env.teardown(scope.heap_mut());
+    result
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(popped.is_some(), "module execution popped no execution context");
+  result
 }
 
 pub(crate) fn eval_expr(

@@ -1,5 +1,5 @@
 use semantic_js::js::SymbolId;
-use vm_js::{EnvBinding, Heap, HeapLimits, Value, VmError};
+use vm_js::{EnvBinding, EnvBindingValue, Heap, HeapLimits, Value, VmError};
 
 #[test]
 fn env_record_is_collectible_when_unrooted() -> Result<(), VmError> {
@@ -96,7 +96,7 @@ fn env_record_traces_binding_values() -> Result<(), VmError> {
       &[EnvBinding {
         symbol: sym,
         name: None,
-        value: Value::String(s),
+        value: EnvBindingValue::Direct(Value::String(s)),
         initialized: true,
         mutable: true,
         strict: true,
@@ -148,7 +148,7 @@ fn alloc_env_record_roots_all_inputs_even_if_root_stack_growth_triggers_gc() -> 
         EnvBinding {
           symbol: SymbolId::from_raw(1),
           name: None,
-          value: Value::String(a),
+          value: EnvBindingValue::Direct(Value::String(a)),
           initialized: true,
           mutable: true,
           strict: true,
@@ -156,7 +156,7 @@ fn alloc_env_record_roots_all_inputs_even_if_root_stack_growth_triggers_gc() -> 
         EnvBinding {
           symbol: SymbolId::from_raw(2),
           name: None,
-          value: Value::String(b),
+          value: EnvBindingValue::Direct(Value::String(b)),
           initialized: true,
           mutable: true,
           strict: true,

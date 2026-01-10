@@ -58,7 +58,7 @@ impl DeclarativeEnvRecord {
     self.symbol_binding_index(symbol).is_some()
   }
 
-  pub(crate) fn get_symbol_binding_value(&self, symbol: SymbolId) -> Result<Value, VmError> {
+  pub(crate) fn get_symbol_binding_value(&self, heap: &Heap, symbol: SymbolId) -> Result<Value, VmError> {
     let idx = self
       .symbol_binding_index(symbol)
       .ok_or(VmError::Unimplemented("unbound identifier"))?;
@@ -76,7 +76,7 @@ impl DeclarativeEnvRecord {
       // and rely on higher-level execution code to convert it.
       return Err(VmError::Throw(Value::Null));
     }
-    Ok(binding.value)
+    binding.value.get(heap)
   }
 
   pub(crate) fn initialize_symbol_binding(
@@ -96,7 +96,13 @@ impl DeclarativeEnvRecord {
     if binding.initialized {
       return Err(VmError::Unimplemented("binding already initialized"));
     }
-    binding.value = value;
+    if let EnvBindingValue::Direct(slot) = &mut binding.value {
+      *slot = value;
+    } else {
+      return Err(VmError::InvariantViolation(
+        "cannot initialize an indirect env binding",
+      ));
+    }
     binding.initialized = true;
     Ok(())
   }
@@ -123,7 +129,13 @@ impl DeclarativeEnvRecord {
       // Assignment to const sentinel; higher-level execution code maps this to a `TypeError`.
       return Err(VmError::Throw(Value::Undefined));
     }
-    binding.value = value;
+    if let EnvBindingValue::Direct(slot) = &mut binding.value {
+      *slot = value;
+    } else {
+      return Err(VmError::InvariantViolation(
+        "cannot assign through an indirect env binding",
+      ));
+    }
     Ok(())
   }
 }
@@ -207,10 +219,29 @@ impl Trace for EnvRecord {
 pub struct EnvBinding {
   pub symbol: SymbolId,
   pub name: Option<GcString>,
-  pub value: Value,
+  pub value: EnvBindingValue,
   pub mutable: bool,
   pub initialized: bool,
   pub strict: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EnvBindingValue {
+  Direct(Value),
+  /// An *indirect* binding that forwards reads to another environment record.
+  ///
+  /// This is used to model ECMA-262 module import bindings, which are live views of the exporting
+  /// module's binding cell.
+  Indirect { env: GcEnv, name: GcString },
+}
+
+impl EnvBindingValue {
+  pub(crate) fn get(self, heap: &Heap) -> Result<Value, VmError> {
+    match self {
+      EnvBindingValue::Direct(value) => Ok(value),
+      EnvBindingValue::Indirect { env, name } => heap.env_get_binding_value_by_gc_string(env, name),
+    }
+  }
 }
 
 impl Trace for EnvBinding {
@@ -218,7 +249,13 @@ impl Trace for EnvBinding {
     if let Some(name) = self.name {
       tracer.trace_value(Value::String(name));
     }
-    tracer.trace_value(self.value);
+    match self.value {
+      EnvBindingValue::Direct(value) => tracer.trace_value(value),
+      EnvBindingValue::Indirect { env, name } => {
+        tracer.trace_env(env);
+        tracer.trace_value(Value::String(name));
+      }
+    }
   }
 }
 
