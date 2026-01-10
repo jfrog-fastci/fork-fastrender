@@ -675,6 +675,14 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  /// Construct a [`RunState`] for stepping this event loop with the given limits.
+  ///
+  /// This is a convenience for embeddings that do not have direct access to the event loop's
+  /// internal clock instance (used for wall-time budgeting).
+  pub fn new_run_state(&self, limits: RunLimits) -> RunState {
+    RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage)
+  }
+
   pub fn run_until_idle(
     &mut self,
     host: &mut Host,
