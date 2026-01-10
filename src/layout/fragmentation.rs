@@ -4183,10 +4183,7 @@ fn collect_forced_boundaries_with_axes_internal(
       }
       let skip_parallel_flow_descendants = (suppress_parallel_flow_descendants
         && idx < in_flow_grid_item_count
-        && grid_items
-          .and_then(|grid_items| grid_items.items.get(idx))
-          .map(|placement| grid_item_spans_single_track(placement, axis))
-          .unwrap_or(false))
+        && child_style.position.is_in_flow())
         || (suppress_parallel_flow_descendants
           && node_is_row_flex_container
           && child_style.position.is_in_flow());
@@ -5180,12 +5177,19 @@ mod tests {
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
     let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, default_axes());
 
     assert!(
       boundaries
         .iter()
         .all(|b| (*b - 30.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
       "forced breaks inside spanning grid items must not become global forced boundaries: {boundaries:?}"
+    );
+    assert!(
+      forced
+        .iter()
+        .all(|b| (b.position - 30.0).abs() > BREAK_EPSILON || b.position <= BREAK_EPSILON),
+      "forced breaks inside spanning grid items must not be reported as forced boundaries: {forced:?}"
     );
     let first_break = boundaries
       .iter()
