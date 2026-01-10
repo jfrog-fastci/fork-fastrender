@@ -3816,10 +3816,18 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::clock::VirtualClock;
+  use crate::js::event_loop::{EventLoop, RunLimits};
+  use crate::js::JsExecutionOptions;
   use crate::js::window_realm::WindowRealm;
+  use crate::js::window_realm::WindowRealmConfig;
+  use crate::resource::FetchedResource;
   use std::collections::VecDeque;
+  use std::sync::Arc;
+  use std::time::Duration;
   use vm_js::{ExecutionContext, HeapLimits, RootId, VmOptions};
   use vm_js::{Job, RealmId, VmHostHooks};
+  use vm_js::PromiseState;
 
   struct DummyHost;
 
@@ -6009,6 +6017,125 @@ mod tests {
     drop(scope);
     drop(bindings);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  struct EventLoopHost {
+    host_ctx: (),
+    window: WindowRealm,
+  }
+
+  impl EventLoopHost {
+    fn new_with_js_execution_options(js_execution_options: JsExecutionOptions) -> Self {
+      let window = WindowRealm::new_with_js_execution_options(
+        WindowRealmConfig::new("https://example.invalid/"),
+        js_execution_options,
+      )
+      .unwrap();
+      Self { host_ctx: (), window }
+    }
+  }
+
+  impl WindowRealmHost for EventLoopHost {
+    fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+      let EventLoopHost { host_ctx, window } = self;
+      (host_ctx, window)
+    }
+  }
+
+  struct StaticOkFetcher;
+
+  impl ResourceFetcher for StaticOkFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Ok(FetchedResource::new(
+        format!("ok:{url}").into_bytes(),
+        Some("text/plain".to_string()),
+      ))
+    }
+  }
+
+  #[test]
+  fn fetch_completion_microtask_respects_max_instruction_count() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+
+    let mut opts = JsExecutionOptions::default();
+    opts.max_instruction_count = Some(0);
+    // Keep wall-time generous so we deterministically hit OutOfFuel first.
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+
+    let mut host = EventLoopHost::new_with_js_execution_options(opts);
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    // Create the fetch promise under an explicit unlimited VM budget so we can enqueue work even
+    // when the realm's JsExecutionOptions fuel limit is 0 (the test case).
+    let promise_root: RootId = with_event_loop(&mut event_loop, || {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let prev_budget = vm.swap_budget_state(vm_js::Budget::unlimited(100));
+      vm.tick().expect("tick under unlimited budget");
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+
+      let fetch_key = alloc_key(&mut scope, "fetch").expect("alloc fetch key");
+      let fetch = vm
+        .get(&mut scope, global, fetch_key)
+        .expect("globalThis.fetch should be defined");
+
+      let url_s = scope
+        .alloc_string("https://example.invalid/ok")
+        .expect("alloc url string");
+      scope
+        .push_root(Value::String(url_s))
+        .expect("push root url string");
+
+      let promise = vm
+        .call_without_host(&mut scope, fetch, Value::Undefined, &[Value::String(url_s)])
+        .expect("fetch() should return a promise");
+
+      let root = scope
+        .heap_mut()
+        .add_root(promise)
+        .expect("root fetch promise");
+
+      vm.restore_budget_state(prev_budget);
+      root
+    });
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected fetch completion microtask to terminate due to fuel=0");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("out of fuel"),
+      "expected OutOfFuel termination, got: {msg}"
+    );
+
+    let promise_state = {
+      let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let promise_value = heap.get_root(promise_root).unwrap_or(Value::Undefined);
+      let Value::Object(promise_obj) = promise_value else {
+        panic!("expected fetch promise object");
+      };
+      heap.promise_state(promise_obj).expect("promise_state")
+    };
+    assert_eq!(
+      promise_state,
+      PromiseState::Pending,
+      "fetch promise should remain pending when completion microtask is out-of-fuel"
+    );
+
+    host.window.heap_mut().remove_root(promise_root);
     Ok(())
   }
 }
