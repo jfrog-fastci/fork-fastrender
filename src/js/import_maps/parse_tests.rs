@@ -409,3 +409,29 @@ fn parses_wordpress_importmap_from_techcrunch_fixture() {
   // prevent successful parsing.
   let _ = warnings;
 }
+
+#[test]
+fn parses_wordpress_importmap_from_msnbc_fixture() {
+  let html = read_fixture("tests/pages/fixtures/msnbc.com/index.html");
+  let importmap_json = extract_first_importmap_script_text(&html);
+  // The fixture's canonical origin is `https://www.ms.now/` (WordPress), so use that as the base.
+  let base = Url::parse("https://www.ms.now/").unwrap();
+
+  let (map, warnings) = parse_import_map_string(&importmap_json, &base).unwrap();
+
+  let addr = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "@wordpress/interactivity")
+    .and_then(|(_, v)| v.as_ref())
+    .expect("expected @wordpress/interactivity to resolve to a URL");
+  assert!(
+    addr
+      .as_str()
+      .starts_with("https://www.ms.now/wp-includes/js/dist/script-modules/interactivity/"),
+    "unexpected interactivity URL: {addr}"
+  );
+
+  let _ = warnings;
+}
