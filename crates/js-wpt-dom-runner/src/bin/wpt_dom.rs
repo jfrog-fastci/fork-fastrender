@@ -32,10 +32,10 @@ impl SuitePreset {
       // Curated suite selection depends on which backends are available:
       // - QuickJS-only builds do not expose DOM/EventTarget shims yet, so they run only the
       //   `event_loop/**` coverage.
-      // - vm-js builds run the full curated corpus (`dom/**` + `domparsing/**` + `event_loop/**` + `events/**`).
+      // - vm-js builds run the full curated corpus (`dom/**` + `domparsing/**` + `event_loop/**` + `events/**` + `url/**`).
       SuitePreset::Curated => {
         if cfg!(feature = "vmjs") {
-          Some("dom/**,domparsing/**,event*/**")
+          Some("dom/**,domparsing/**,event*/**,url/**")
         } else {
           Some("event_loop/**")
         }
