@@ -1430,6 +1430,33 @@ mod tests {
   }
 
   #[test]
+  fn unhandledrejection_listener_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "globalThis.__host_ok = false;\n\
+         addEventListener('unhandledrejection', function () { globalThis.__host_ok = recordHost(); });\n\
+         Promise.reject('x');\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn handled_after_notification_dispatches_rejectionhandled_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

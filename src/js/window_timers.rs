@@ -522,7 +522,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
   // `event_loop.queue_task` is fallible (queue limits); ensure the root is removed on failure.
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-    let window_realm = host.window_realm();
+    let (host_ctx, window_realm) = host.vm_host_and_window_realm();
     window_realm.reset_interrupt();
     let global_obj = window_realm.global_object();
     let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -571,7 +571,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
-        let _ = vm.call_with_host(
+        let _ = vm.call_with_host_and_hooks(
+          host_ctx,
           &mut scope,
           &mut hooks,
           dispatch,

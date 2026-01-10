@@ -415,7 +415,7 @@ fn abort_signal_static_abort_native(
 fn abort_signal_static_timeout_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -468,7 +468,8 @@ fn abort_signal_static_timeout_native(
   scope.push_root(Value::Object(callback))?;
 
   // Call setTimeout(callback, ms).
-  let _ = vm.call_with_host(
+  let _ = vm.call_with_host_and_hooks(
+    host,
     scope,
     host_hooks,
     set_timeout,
@@ -592,7 +593,8 @@ fn abort_signal_static_any_native(
     if scope.heap().is_callable(add).unwrap_or(false) {
       let type_s = scope.alloc_string("abort")?;
       scope.push_root(Value::String(type_s))?;
-      let _ = vm.call_with_host(
+      let _ = vm.call_with_host_and_hooks(
+        host,
         scope,
         host_hooks,
         add,
