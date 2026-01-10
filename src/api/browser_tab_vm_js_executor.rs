@@ -157,7 +157,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.pending_navigation.take()
   }
 
-  fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: &Event) -> Result<()> {
+  fn dispatch_lifecycle_event(
+    &mut self,
+    target: EventTargetId,
+    event: &Event,
+    document: &mut BrowserDocumentDom2,
+  ) -> Result<()> {
     let Some(realm) = self.realm.as_mut() else {
       return Ok(());
     };
@@ -180,8 +185,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     );
 
     realm.reset_interrupt();
-    let mut host_ctx = ();
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host_ctx);
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
     let result = realm.exec_script_with_hooks(&mut hooks, &source);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);

@@ -97,7 +97,12 @@ pub trait BrowserTabJsExecutor {
   ///
   /// Hosts invoke this hook from their [`DocumentLifecycleHost`] implementation so that JS event
   /// listeners registered via the executor's DOM bindings can observe lifecycle events.
-  fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: &Event) -> Result<()> {
+  fn dispatch_lifecycle_event(
+    &mut self,
+    target: EventTargetId,
+    event: &Event,
+    _document: &mut BrowserDocumentDom2,
+  ) -> Result<()> {
     let _ = (target, event);
     Ok(())
   }
@@ -1659,7 +1664,10 @@ impl DocumentLifecycleHost for BrowserTabHost {
   ) -> Result<()> {
     let target = target.normalize();
     let result = match target {
-      EventTargetId::Document | EventTargetId::Window => self.executor.dispatch_lifecycle_event(target, &event),
+      EventTargetId::Document | EventTargetId::Window => {
+        let (executor, document) = (&mut self.executor, &mut self.document);
+        executor.dispatch_lifecycle_event(target, &event, document.as_mut())
+      }
       // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
       // `load`/`error` events queued by the script scheduler).
       EventTargetId::Node(_) | EventTargetId::Opaque(_) => self.dispatch_dom_event(target, event),
