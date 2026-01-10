@@ -1372,9 +1372,14 @@ mod tests {
     )?;
 
     let err = host.execute_script_text("").unwrap_err();
+    let msg = err.to_string();
     assert!(
-      err.to_string().contains("out of fuel"),
-      "expected out-of-fuel error, got: {err}"
+      msg.contains("out of fuel"),
+      "expected out-of-fuel error, got: {msg}"
+    );
+    assert!(
+      !msg.contains("JS parse error"),
+      "expected termination error (not a parse error), got: {msg}"
     );
     Ok(())
   }
