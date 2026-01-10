@@ -8,6 +8,7 @@
 use crate::resource::normalize_page_name;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
+use url::Url;
 
 /// Cached HTML directory used by `fetch_pages` and consumers.
 pub const CACHE_HTML_DIR: &str = "fetches/html";
@@ -189,6 +190,31 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn canonicalize_pageset_url(value: &str) -> Option<String> {
+  let trimmed = trim_ascii_whitespace(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  let parsed = Url::parse(trimmed).ok()?;
+  if !matches!(parsed.scheme(), "http" | "https") {
+    return None;
+  }
+  let scheme = parsed.scheme().to_ascii_lowercase();
+  let host = parsed.host_str()?.to_ascii_lowercase();
+  let mut out = format!("{scheme}://{host}");
+  if let Some(port) = parsed.port() {
+    if parsed.port_or_known_default() != Some(port) {
+      out.push_str(&format!(":{port}"));
+    }
+  }
+  out.push_str(parsed.path());
+  if let Some(query) = parsed.query() {
+    out.push('?');
+    out.push_str(query);
+  }
+  Some(out)
+}
+
 /// Canonical pageset stem for filtering and reporting.
 pub fn pageset_stem(url_or_stem: &str) -> Option<String> {
   let trimmed = strip_collision_suffix(trim_ascii_whitespace(url_or_stem));
@@ -288,6 +314,7 @@ pub fn pageset_entries() -> Vec<PagesetEntry> {
 pub struct PagesetFilter {
   stems: HashSet<String>,
   cache_stems: HashSet<String>,
+  urls: HashSet<String>,
 }
 
 impl PagesetFilter {
@@ -308,6 +335,11 @@ impl PagesetFilter {
       return;
     }
 
+    if let Some(url) = canonicalize_pageset_url(trimmed) {
+      self.urls.insert(url);
+      return;
+    }
+
     if let Some((base, suffix)) = parse_collision_suffix(trimmed) {
       if let Some(stem) = pageset_stem(base) {
         self
@@ -323,6 +355,11 @@ impl PagesetFilter {
   }
 
   pub fn matches_entry(&self, entry: &PagesetEntry) -> bool {
+    if let Some(url) = canonicalize_pageset_url(&entry.url) {
+      if self.urls.contains(&url) {
+        return true;
+      }
+    }
     self.matches_cache_stem(&entry.cache_stem, Some(&entry.stem))
   }
 
@@ -345,12 +382,17 @@ impl PagesetFilter {
   pub fn unmatched(&self, selected: &[PagesetEntry]) -> Vec<String> {
     let mut remaining_cache = self.cache_stems.clone();
     let mut remaining_stems = self.stems.clone();
+    let mut remaining_urls = self.urls.clone();
     for entry in selected {
       remaining_cache.remove(&entry.cache_stem);
       remaining_stems.remove(&entry.stem);
+      if let Some(url) = canonicalize_pageset_url(&entry.url) {
+        remaining_urls.remove(&url);
+      }
     }
     let mut missing: Vec<String> = remaining_cache.into_iter().collect();
     missing.extend(remaining_stems.into_iter());
+    missing.extend(remaining_urls.into_iter());
     missing.sort();
     missing
   }
