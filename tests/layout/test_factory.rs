@@ -664,7 +664,7 @@ fn block_intrinsic_width_respects_max_width() {
 }
 
 #[test]
-fn block_intrinsic_width_ignores_floats() {
+fn block_intrinsic_width_includes_floats() {
   let factory = FormattingContextFactory::new();
 
   let mut float_style = ComputedStyle::default();
@@ -689,14 +689,12 @@ fn block_intrinsic_width_ignores_floats() {
     .expect("max-content width");
 
   assert!(
-    min <= 0.01,
-    "floats are out-of-flow and should not raise min-content width; got {}",
-    min
+    (min - 200.0).abs() < 0.5,
+    "floats contribute to intrinsic widths (needed for shrink-to-fit float UIs); got min {min}"
   );
   assert!(
-    max <= 0.01,
-    "floats are out-of-flow and should not raise max-content width; got {}",
-    max
+    (max - 200.0).abs() < 0.5,
+    "floats contribute to intrinsic widths (needed for shrink-to-fit float UIs); got max {max}"
   );
 }
 

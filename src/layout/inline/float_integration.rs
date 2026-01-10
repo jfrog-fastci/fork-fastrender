@@ -317,6 +317,84 @@ impl<'a> InlineFloatIntegration<'a> {
     LineSpace::new(y, left_edge, width)
   }
 
+  /// Like [`Self::find_line_space`], but queries floats within a containing block span in the float
+  /// context coordinate system.
+  ///
+  /// This is required when the float context is shared with an ancestor BFC and the current
+  /// containing block is horizontally offset (e.g. RTL blocks with fixed widths). In that case,
+  /// floats are stored at absolute X coordinates in the shared float context and simple
+  /// `[0, containing_width)` queries will miss them.
+  pub fn find_line_space_in_containing_block(
+    &self,
+    start_y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+    options: LineSpaceOptions,
+  ) -> LineSpace {
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = if containing_block_width.is_finite() && containing_block_width > 0.0 {
+      containing_block_width
+    } else {
+      0.0
+    };
+
+    if !self.has_floats() {
+      return LineSpace::new(start_y, containing_left, containing_width);
+    }
+
+    let min_width = if options.allow_zero_width || options.min_width > 0.0 {
+      options.min_width
+    } else {
+      f32::EPSILON
+    };
+    let y = if options.line_height > 0.0 {
+      self.float_ctx.find_fit_in_containing_block(
+        min_width,
+        options.line_height,
+        start_y,
+        containing_left,
+        containing_width,
+      )
+    } else {
+      let mut y = start_y;
+      loop {
+        let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
+          y,
+          containing_left,
+          containing_width,
+        );
+        if width >= min_width {
+          return LineSpace::new(y, left_edge, width);
+        }
+
+        let next_y = self.float_ctx.next_float_boundary_after(y);
+        if next_y <= y {
+          return LineSpace::new(y, left_edge, width);
+        }
+        y = next_y;
+      }
+    };
+
+    let (left_edge, width) = if options.line_height > 0.0 {
+      self.float_ctx.available_width_in_range_in_containing_block(
+        y,
+        y + options.line_height,
+        containing_left,
+        containing_width,
+      )
+    } else {
+      self
+        .float_ctx
+        .available_width_at_y_in_containing_block(y, containing_left, containing_width)
+    };
+
+    LineSpace::new(y, left_edge, width)
+  }
+
   /// Computes the position to place a line, handling clearance
   ///
   /// This method accounts for both float interference and clearance
@@ -457,6 +535,77 @@ impl<'a> InlineFloatIntegrationMut<'a> {
         .available_width_in_range(y, y + options.line_height)
     } else {
       self.float_ctx.available_width_at_y(y)
+    };
+
+    LineSpace::new(y, left_edge, width)
+  }
+
+  pub fn find_line_space_in_containing_block(
+    &self,
+    start_y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+    options: LineSpaceOptions,
+  ) -> LineSpace {
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = if containing_block_width.is_finite() && containing_block_width > 0.0 {
+      containing_block_width
+    } else {
+      0.0
+    };
+
+    if !self.has_floats() {
+      return LineSpace::new(start_y, containing_left, containing_width);
+    }
+
+    let min_width = if options.allow_zero_width || options.min_width > 0.0 {
+      options.min_width
+    } else {
+      f32::EPSILON
+    };
+    let y = if options.line_height > 0.0 {
+      self.float_ctx.find_fit_in_containing_block(
+        min_width,
+        options.line_height,
+        start_y,
+        containing_left,
+        containing_width,
+      )
+    } else {
+      let mut y = start_y;
+      loop {
+        let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
+          y,
+          containing_left,
+          containing_width,
+        );
+        if width >= min_width {
+          return LineSpace::new(y, left_edge, width);
+        }
+
+        let next_y = self.float_ctx.next_float_boundary_after(y);
+        if next_y <= y {
+          return LineSpace::new(y, left_edge, width);
+        }
+        y = next_y;
+      }
+    };
+
+    let (left_edge, width) = if options.line_height > 0.0 {
+      self.float_ctx.available_width_in_range_in_containing_block(
+        y,
+        y + options.line_height,
+        containing_left,
+        containing_width,
+      )
+    } else {
+      self
+        .float_ctx
+        .available_width_at_y_in_containing_block(y, containing_left, containing_width)
     };
 
     LineSpace::new(y, left_edge, width)

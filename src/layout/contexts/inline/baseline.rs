@@ -249,14 +249,21 @@ impl LineBaselineAccumulator {
     alignment: VerticalAlign,
     parent_metrics: Option<&BaselineMetrics>,
   ) -> f32 {
+    // The returned shift is a **Y offset from the line baseline**, where positive values move the
+    // item *down* (CSS coordinate system: y grows downward). This matches how inline layout later
+    // positions fragments:
+    //
+    //   item_top_y = line_baseline_y + shift - item.baseline_offset
+    //
+    // For authored `vertical-align: <length>`, CSS defines positive lengths as "raise" (move up),
+    // so `compute_baseline_shift` negates those values to convert them to our y-down offset.
     let baseline_shift = self.compute_baseline_shift(alignment, metrics, parent_metrics);
 
     // Compute this item's contribution to ascent/descent
-    // `baseline_shift` is stored on the positioned item and later used as:
-    // `item_top = line_baseline + baseline_shift - item.baseline_offset`.
-    //
-    // Therefore, positive shift moves the item's baseline *down* relative to the line baseline,
-    // reducing the amount of the box that sits above the baseline and increasing what sits below.
+    // With `item_top = baseline + shift - baseline_offset`:
+    // - Ascent (distance above baseline) = baseline - item_top = baseline_offset - shift
+    // - Descent (distance below baseline) = item_bottom - baseline
+    //   = (item_top + height) - baseline = (height - baseline_offset) + shift
     let item_ascent = metrics.baseline_offset - baseline_shift;
     let item_descent = (metrics.height - metrics.baseline_offset) + baseline_shift;
 
@@ -339,11 +346,12 @@ impl LineBaselineAccumulator {
         }
       }
 
-      // Positive lengths/percentages raise the box (so the baseline moves up relative to the line).
+      // `vertical-align: <length>`: positive is "raise" (move up), so negate to convert to
+      // our y-down offset.
       VerticalAlign::Length(len) => -len,
 
       VerticalAlign::Percentage(pct) => {
-        // Percentage of line-height (positive = up)
+        // Percentage of line-height; positive is "raise" (move up).
         -(metrics.line_height * (pct / 100.0))
       }
 
@@ -678,6 +686,35 @@ mod tests {
   }
 
   #[test]
+  fn middle_aligned_replaced_does_not_inflate_line_baseline() {
+    // Regression: the line baseline accumulator must use the y-down baseline offset when
+    // computing ascent/descent for vertical-align values like `middle`. Otherwise a middle-aligned
+    // replaced element can incorrectly dominate the line's ascent and push content outside the
+    // line box (as seen on gentoo.org's header logo when using bundled fonts).
+    let parent = BaselineMetrics {
+      baseline_offset: 10.0,
+      height: 14.0,
+      ascent: 10.0,
+      descent: 4.0,
+      line_gap: 0.0,
+      line_height: 14.0,
+      x_height: Some(6.0),
+    };
+    let replaced = BaselineMetrics::for_replaced(30.0);
+    let mut acc = LineBaselineAccumulator::new(&parent);
+    let shift = acc.add_baseline_relative(&replaced, VerticalAlign::Middle, Some(&parent));
+
+    // shift = baseline_offset - height/2 + x-height/2 = 30 - 15 + 3 = 18
+    assert!((shift - 18.0).abs() < 1e-3);
+
+    // With the above shift, the replaced element's top aligns with the top of the line box.
+    assert!((acc.baseline_position() - 12.0).abs() < 1e-3);
+    assert!((acc.line_height() - 30.0).abs() < 1e-3);
+    let top = acc.baseline_position() + shift - replaced.baseline_offset;
+    assert!(top.abs() < 1e-3, "expected item top to be 0, got {top}");
+  }
+
+  #[test]
   fn test_line_accumulator_baseline_alignment() {
     let strut = BaselineMetrics::new(12.0, 16.0, 12.0, 4.0);
     let mut acc = LineBaselineAccumulator::new(&strut);
@@ -752,7 +789,7 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Super, Some(&parent));
 
-    // Super should raise the baseline (negative shift).
+    // Super should raise the box, i.e. produce a negative y-down offset.
     assert!(shift < 0.0);
   }
 
@@ -765,7 +802,7 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Sub, Some(&parent));
 
-    // Sub should lower the baseline (positive shift).
+    // Sub should lower the box, i.e. produce a positive y-down offset.
     assert!(shift > 0.0);
   }
 
@@ -777,6 +814,7 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Length(5.0), None);
 
+    // Positive lengths "raise" in CSS, so the y-down offset is negative.
     assert_eq!(shift, -5.0);
   }
 

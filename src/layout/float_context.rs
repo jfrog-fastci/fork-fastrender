@@ -752,18 +752,29 @@ impl FloatContext {
     self.prune_heaps(state);
   }
 
-  fn rect_edges(&self, state: &mut FloatSweepState) -> (f32, f32) {
+  fn rect_edges_in_containing_block(
+    &self,
+    state: &mut FloatSweepState,
+    containing_left: f32,
+    containing_right: f32,
+  ) -> (f32, f32) {
     let left_edge = state
       .active_left
       .peek()
       .map(|(edge, _)| edge.0)
-      .unwrap_or(0.0);
+      .unwrap_or(containing_left)
+      .max(containing_left);
     let right_edge = state
       .active_right
       .peek()
       .map(|(Reverse(edge), _)| edge.0)
-      .unwrap_or(self.containing_block_width);
+      .unwrap_or(containing_right)
+      .min(containing_right);
     (left_edge, right_edge)
+  }
+
+  fn rect_edges(&self, state: &mut FloatSweepState) -> (f32, f32) {
+    self.rect_edges_in_containing_block(state, 0.0, self.containing_block_width)
   }
 
   fn edges_at_with_state(&self, state: &mut FloatSweepState, y: f32) -> (f32, f32) {
@@ -789,13 +800,46 @@ impl FloatContext {
     (left_edge, right_edge)
   }
 
+  fn edges_at_in_containing_block_with_state(
+    &self,
+    state: &mut FloatSweepState,
+    y: f32,
+    containing_left: f32,
+    containing_right: f32,
+  ) -> (f32, f32) {
+    let (mut left_edge, mut right_edge) =
+      self.rect_edges_in_containing_block(state, containing_left, containing_right);
+    if !state.active_shape_left.is_empty() {
+      for id in state.active_shape_left.iter().copied() {
+        if let Some(shape) = self.float_info(id).shape.as_ref() {
+          if let Some((_min_x, max_x)) = shape.span_at(y) {
+            left_edge = left_edge.max(max_x);
+          }
+        }
+      }
+    }
+    if !state.active_shape_right.is_empty() {
+      for id in state.active_shape_right.iter().copied() {
+        if let Some(shape) = self.float_info(id).shape.as_ref() {
+          if let Some((min_x, _max_x)) = shape.span_at(y) {
+            right_edge = right_edge.min(min_x);
+          }
+        }
+      }
+    }
+    (left_edge.max(containing_left), right_edge.min(containing_right))
+  }
+
   fn edges_in_range_with_state(
     &self,
     state: &mut FloatSweepState,
     start: f32,
     end: f32,
+    containing_left: f32,
+    containing_right: f32,
   ) -> (f32, f32) {
-    let (mut left_edge, mut right_edge) = self.rect_edges(state);
+    let (mut left_edge, mut right_edge) =
+      self.rect_edges_in_containing_block(state, containing_left, containing_right);
     if !state.active_shape_left.is_empty() {
       for id in state.active_shape_left.iter().copied() {
         if let Some(shape) = self.float_info(id).shape.as_ref() {
@@ -822,7 +866,20 @@ impl FloatContext {
     state: &mut FloatSweepState,
     start: f32,
     end: f32,
+    containing_left: f32,
+    containing_right: f32,
   ) -> (f32, f32, f32) {
+    let containing_left = if containing_left.is_finite() {
+      containing_left
+    } else {
+      0.0
+    };
+    let containing_right = if containing_right.is_finite() {
+      containing_right.max(containing_left)
+    } else {
+      self.containing_block_width.max(containing_left)
+    };
+
     debug_assert!(
       start >= state.current_y || state.current_y == f32::NEG_INFINITY,
       "float sweep queries must advance monotonically"
@@ -840,7 +897,8 @@ impl FloatContext {
     if state.active_shape_left.is_empty() && state.active_shape_right.is_empty() {
       let next_start = self.next_float_start_y(state);
       if next_start >= end {
-        let (left_edge, right_edge) = self.rect_edges(state);
+        let (left_edge, right_edge) =
+          self.rect_edges_in_containing_block(state, containing_left, containing_right);
         let next_boundary = self.next_float_boundary_after_internal(&*state, start);
         return (left_edge, right_edge, next_boundary);
       }
@@ -854,9 +912,9 @@ impl FloatContext {
 
     let mut counter = 0usize;
     let mut scan_start = start;
-    let mut best_left = 0.0f32;
-    let mut best_right = self.containing_block_width;
-    let mut best_width = best_right - best_left;
+    let mut best_left = containing_left;
+    let mut best_right = containing_right;
+    let mut best_width = (best_right - best_left).max(0.0);
     // `next_boundary` is used by callers to decide how far to advance when the current
     // y-position does not fit. It is important that this boundary reflects when float-driven
     // constraints can actually change, not merely the end of the query range (which can cause
@@ -879,7 +937,7 @@ impl FloatContext {
       let next = self.next_float_boundary_after_internal(&scan_state, scan_start);
       let boundary = next.min(end);
       let (left_edge, right_edge) =
-        self.edges_in_range_with_state(&mut scan_state, scan_start, boundary);
+        self.edges_in_range_with_state(&mut scan_state, scan_start, boundary, containing_left, containing_right);
       let width = (right_edge - left_edge).max(0.0);
       if width < best_width - f32::EPSILON
         || (width - best_width).abs() < f32::EPSILON && left_edge > best_left
@@ -902,7 +960,7 @@ impl FloatContext {
 
   fn edges_in_range_min_width(&self, start: f32, end: f32) -> (f32, f32, f32) {
     let mut state = self.ensure_sweep_state(start);
-    self.edges_in_range_min_width_with_state(&mut state, start, end)
+    self.edges_in_range_min_width_with_state(&mut state, start, end, 0.0, self.containing_block_width)
   }
 
   fn next_event_y(&self, state: &FloatSweepState) -> f32 {
@@ -1188,6 +1246,37 @@ impl FloatContext {
     (left_edge, available_width)
   }
 
+  /// Compute available width at a given Y position within a specific containing block span.
+  ///
+  /// This is required when the float context is shared with an ancestor BFC and the current
+  /// containing block is horizontally offset (e.g. RTL blocks, centered containers). In that case
+  /// floats are stored in the ancestor float context coordinate system and can have X coordinates
+  /// outside `[0, containing_block_width)`.
+  ///
+  /// `containing_block_left` and `containing_block_width` are expressed in the float context
+  /// coordinate system.
+  pub fn available_width_at_y_in_containing_block(
+    &self,
+    y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> (f32, f32) {
+    profile_count_width_query();
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = clamp_positive_finite(containing_block_width);
+    let containing_right = containing_left + containing_width;
+    let mut state = self.ensure_sweep_state(y);
+    self.advance_sweep_to(y, &mut state);
+    let (left_edge, right_edge) =
+      self.edges_at_in_containing_block_with_state(&mut state, y, containing_left, containing_right);
+    let available_width = (right_edge - left_edge).max(0.0);
+    (left_edge, available_width)
+  }
+
   /// Compute available width over a vertical range
   ///
   /// Returns the minimum available width (and corresponding left edge)
@@ -1210,6 +1299,29 @@ impl FloatContext {
     (left_edge, (right_edge - left_edge).max(0.0))
   }
 
+  /// Compute available width over a vertical range within a specific containing block span.
+  pub fn available_width_in_range_in_containing_block(
+    &self,
+    y_start: f32,
+    y_end: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> (f32, f32) {
+    profile_count_range_query();
+    let end = if y_end > y_start { y_end } else { y_start };
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = clamp_positive_finite(containing_block_width);
+    let containing_right = containing_left + containing_width;
+    let mut state = self.ensure_sweep_state(y_start);
+    let (left_edge, right_edge, _) =
+      self.edges_in_range_min_width_with_state(&mut state, y_start, end, containing_left, containing_right);
+    (left_edge, (right_edge - left_edge).max(0.0))
+  }
+
   /// Returns the next Y coordinate after `y` where float-induced available width might change for
   /// line boxes starting at `y`.
   ///
@@ -1222,6 +1334,61 @@ impl FloatContext {
     self.advance_sweep_to(y, &mut state);
     let next = self.next_float_boundary_after_internal(&*state, y);
     if next.is_finite() && next > y { next } else { y }
+  }
+
+  /// Find the first Y position where a box of given dimensions would fit within a specific
+  /// containing block span.
+  pub fn find_fit_in_containing_block(
+    &self,
+    width: f32,
+    height: f32,
+    min_y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> f32 {
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = clamp_positive_finite(containing_block_width);
+    let containing_right = containing_left + containing_width;
+
+    let mut y = min_y;
+    let target_width = clamp_positive_finite(width);
+    let target_height = clamp_positive_finite(height);
+    let mut state = self.ensure_sweep_state(y);
+    let mut deadline_counter = 0usize;
+
+    loop {
+      if let Err(RenderError::Timeout { elapsed, .. }) =
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
+      {
+        self.record_timeout(elapsed);
+        break;
+      }
+
+      let range_end = y + target_height;
+      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
+        &mut state,
+        y,
+        range_end,
+        containing_left,
+        containing_right,
+      );
+      let available_width = (right_edge - left_edge).max(0.0);
+
+      if available_width >= target_width {
+        return y;
+      }
+
+      if !next_boundary.is_finite() || next_boundary <= y {
+        break;
+      }
+      y = next_boundary;
+    }
+
+    y
   }
 
   /// Compute the clearance needed for an element with the given clear value
@@ -1351,13 +1518,74 @@ impl FloatContext {
   ) -> (f32, f32) {
     // Enforce the source-order "float ceiling" tracked in `current_y` so floats encountered later
     // in the tree cannot rise above earlier floats even if the caller passes a smaller `min_y`.
-    let mut y = min_y.max(self.current_y);
+    let min_y = min_y.max(self.current_y);
+    self.compute_float_position_in_containing_block(
+      side,
+      width,
+      height,
+      min_y,
+      0.0,
+      self.containing_block_width,
+    )
+  }
+
+  /// Compute float position within a specific containing block span.
+  ///
+  /// This is primarily used when laying out floats that participate in an *external* float
+  /// context. In that case the float context's origin is owned by an ancestor BFC, but the float's
+  /// containing block can be horizontally offset (e.g. centered containers, negative margins).
+  ///
+  /// `containing_block_left` and `containing_block_width` are expressed in the float context's
+  /// coordinate space.
+  pub fn compute_float_position_in_containing_block(
+    &self,
+    side: FloatSide,
+    width: f32,
+    height: f32,
+    min_y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> (f32, f32) {
+    // Apply the source-order float ceiling (see `compute_float_position`).
+    let min_y = min_y.max(self.current_y);
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = clamp_positive_finite(containing_block_width);
+    let containing_right = containing_left + containing_width;
+
+    self.compute_float_position_in_span(side, width, height, min_y, containing_left, containing_right)
+  }
+
+  fn compute_float_position_in_span(
+    &self,
+    side: FloatSide,
+    width: f32,
+    height: f32,
+    min_y: f32,
+    containing_left: f32,
+    containing_right: f32,
+  ) -> (f32, f32) {
+    let containing_left = if containing_left.is_finite() {
+      containing_left
+    } else {
+      0.0
+    };
+    let containing_right = if containing_right.is_finite() {
+      containing_right.max(containing_left)
+    } else {
+      self.containing_block_width.max(containing_left)
+    };
+
+    let mut y = min_y;
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
     let mut state = self.ensure_sweep_state(y);
     let mut deadline_counter = 0usize;
-    let mut last_left = 0.0f32;
-    let mut last_width = self.containing_block_width;
+    let mut last_left = containing_left;
+    let mut last_width = (containing_right - containing_left).max(0.0);
 
     loop {
       if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -1368,17 +1596,29 @@ impl FloatContext {
       }
 
       let range_end = y + target_height;
-      let (left_edge, right_edge, next_boundary) =
-        self.edges_in_range_min_width_with_state(&mut state, y, range_end);
+      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
+        &mut state,
+        y,
+        range_end,
+        containing_left,
+        containing_right,
+      );
       let available_width = (right_edge - left_edge).max(0.0);
 
       last_left = left_edge;
       last_width = available_width;
 
-      if target_width <= available_width {
+      // Allow a small epsilon when deciding whether a float "fits" next to existing floats.
+      //
+      // Like line layout, float geometry is often the result of multiple floating-point operations
+      // (intrinsic sizing, padding subtraction, etc). Treating a float as non-fitting due to tiny
+      // rounding error can cause it to drop to the next float line unexpectedly, which diverges
+      // from browser behavior on tight-but-valid layouts (e.g. float-based nav bars).
+      const FLOAT_FIT_EPSILON: f32 = 0.01;
+      if target_width <= available_width + FLOAT_FIT_EPSILON {
         let x = match side {
           FloatSide::Left => left_edge,
-          FloatSide::Right => left_edge + available_width - target_width,
+          FloatSide::Right => left_edge + (available_width - target_width).max(0.0),
         };
         return (x, y);
       }
@@ -1464,7 +1704,7 @@ impl FloatContext {
 
       let range_end = y + target_height;
       let (left_edge, right_edge, next_boundary) =
-        self.edges_in_range_min_width_with_state(&mut state, y, range_end);
+        self.edges_in_range_min_width_with_state(&mut state, y, range_end, 0.0, self.containing_block_width);
       let available_width = (right_edge - left_edge).max(0.0);
 
       if available_width >= target_width {

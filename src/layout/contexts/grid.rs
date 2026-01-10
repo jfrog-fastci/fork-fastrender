@@ -4231,18 +4231,28 @@ impl GridFormattingContext {
             let fc_type = child
               .formatting_context()
               .unwrap_or(FormattingContextType::Block);
-            let child_factory =
-              factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
-            let fc: std::sync::Arc<dyn FormattingContext> =
-              if matches!(fc_type, FormattingContextType::Block) {
-                std::sync::Arc::new(
-                  BlockFormattingContext::for_independent_context_root_with_factory(
-                    child_factory.clone(),
-                  ),
-                )
-              } else {
-                child_factory.get(fc_type)
-              };
+            let origin = Point::new(bounds.x(), bounds.y());
+            let origin = if origin.x.is_finite() && origin.y.is_finite() {
+              origin
+            } else {
+              Point::ZERO
+            };
+            let parent_scroll = factory.viewport_scroll();
+            let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+              parent_scroll
+            } else {
+              Point::ZERO
+            };
+            let child_scroll = Point::new(parent_scroll.x - origin.x, parent_scroll.y - origin.y);
+            let child_factory = factory.translated_for_child(origin);
+            let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block)
+            {
+              Arc::new(BlockFormattingContext::for_independent_context_root_with_factory(
+                child_factory.clone(),
+              ))
+            } else {
+              child_factory.get(fc_type)
+            };
 
             let available_height = continuation_available.unwrap_or(bounds.height());
             let child_constraints = LayoutConstraints::new(
@@ -4268,60 +4278,66 @@ impl GridFormattingContext {
               .map(|available| available + 0.01 >= bounds.height())
               .unwrap_or(true);
 
-            let mut laid_out = if supports_used_border_box {
-              let child_constraints = child_constraints.with_used_border_box_size(
-                Some(bounds.width()),
-                force_height.then_some(bounds.height()),
-              );
-              if continuation_available.is_some() {
-                crate::layout::style_override::with_style_override(
-                  child.id,
-                  child.style.clone(),
-                  || fc.layout(child, &child_constraints),
-                )?
-              } else {
-                fc.layout(child, &child_constraints)?
-              }
-            } else if matches!(
-              fc_type,
-              FormattingContextType::Flex | FormattingContextType::Grid
-            ) {
-              let mut layout_style = (*child.style).clone();
-              layout_style.width = Some(Length::px(bounds.width()));
-              if force_height {
-                layout_style.height = Some(Length::px(bounds.height()));
-              }
-              layout_style.width_keyword = None;
-              if force_height {
-                layout_style.height_keyword = None;
-              }
-              crate::layout::style_override::with_style_override(
-                child.id,
-                Arc::new(layout_style),
-                || fc.layout(child, &child_constraints),
-              )?
-            } else {
-              let mut layout_style = (*child.style).clone();
-              layout_style.width = Some(Length::px(bounds.width()));
-              if force_height {
-                layout_style.height = Some(Length::px(bounds.height()));
-              }
-              layout_style.width_keyword = None;
-              if force_height {
-                layout_style.height_keyword = None;
-              }
-              let layout_style = Arc::new(layout_style);
-              if child.id != 0 {
-                crate::layout::style_override::with_style_override(child.id, layout_style, || {
-                  fc.layout(child, &child_constraints)
-                })?
-              } else {
-                let mut layout_child = (*child).clone();
-                layout_child.style = layout_style;
-                fc.layout(&layout_child, &child_constraints)?
-              }
-            };
-
+            let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
+              child_scroll,
+              || {
+                if supports_used_border_box {
+                  let child_constraints = child_constraints.with_used_border_box_size(
+                    Some(bounds.width()),
+                    force_height.then_some(bounds.height()),
+                  );
+                  if continuation_available.is_some() {
+                    crate::layout::style_override::with_style_override(
+                      child.id,
+                      child.style.clone(),
+                      || fc.layout(child, &child_constraints),
+                    )
+                  } else {
+                    fc.layout(child, &child_constraints)
+                  }
+                } else if matches!(
+                  fc_type,
+                  FormattingContextType::Flex | FormattingContextType::Grid
+                ) {
+                  let mut layout_style = (*child.style).clone();
+                  layout_style.width = Some(Length::px(bounds.width()));
+                  if force_height {
+                    layout_style.height = Some(Length::px(bounds.height()));
+                  }
+                  layout_style.width_keyword = None;
+                  if force_height {
+                    layout_style.height_keyword = None;
+                  }
+                  crate::layout::style_override::with_style_override(
+                    child.id,
+                    Arc::new(layout_style),
+                    || fc.layout(child, &child_constraints),
+                  )
+                } else {
+                  let mut layout_style = (*child.style).clone();
+                  layout_style.width = Some(Length::px(bounds.width()));
+                  if force_height {
+                    layout_style.height = Some(Length::px(bounds.height()));
+                  }
+                  layout_style.width_keyword = None;
+                  if force_height {
+                    layout_style.height_keyword = None;
+                  }
+                  let layout_style = Arc::new(layout_style);
+                  if child.id != 0 {
+                    crate::layout::style_override::with_style_override(
+                      child.id,
+                      layout_style,
+                      || fc.layout(child, &child_constraints),
+                    )
+                  } else {
+                    let mut layout_child = (*child).clone();
+                    layout_child.style = layout_style;
+                    fc.layout(&layout_child, &child_constraints)
+                  }
+                }
+              },
+            )?;
             let mut translate_deadline_counter = 0usize;
             translate_fragment_tree(
               &mut laid_out,
@@ -4801,17 +4817,28 @@ impl GridFormattingContext {
         }
       }
 
-      let child_factory = self
-        .factory
-        .translated_for_child(Point::new(bounds.x(), bounds.y()));
-      let fc: std::sync::Arc<dyn FormattingContext> =
-        if matches!(fc_type, FormattingContextType::Block) {
-          std::sync::Arc::new(
-            BlockFormattingContext::for_independent_context_root_with_factory(child_factory.clone()),
-          )
-        } else {
-          child_factory.get(fc_type)
-        };
+      let origin = Point::new(bounds.x(), bounds.y());
+      let origin = if origin.x.is_finite() && origin.y.is_finite() {
+        origin
+      } else {
+        Point::ZERO
+      };
+      let parent_scroll = self.factory.viewport_scroll();
+      let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+        parent_scroll
+      } else {
+        Point::ZERO
+      };
+      let child_scroll = Point::new(parent_scroll.x - origin.x, parent_scroll.y - origin.y);
+
+      let child_factory = self.factory.translated_for_child(origin);
+      let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
+        Arc::new(BlockFormattingContext::for_independent_context_root_with_factory(
+          child_factory.clone(),
+        ))
+      } else {
+        child_factory.get(fc_type)
+      };
 
       let available_height = continuation_available.unwrap_or(bounds.height());
       let child_constraints = LayoutConstraints::new(
@@ -4834,63 +4861,68 @@ impl GridFormattingContext {
           | FormattingContextType::Table
       );
 
-      let mut laid_out = if supports_used_border_box {
-        let child_constraints = child_constraints.with_used_border_box_size(
-          Some(bounds.width()),
-          force_height.then_some(bounds.height()),
-        );
-        if continuation_available.is_some() {
-          // Grid intrinsic sizing keywords are resolved against the initial fragmentainer size when
-          // building the Taffy tree. When the grid container continues after a break, re-layout
-          // the item using its original style so keywords like `fill-available` can be resolved
-          // against the reduced available block size.
-          crate::layout::style_override::with_style_override(
-            box_node.id,
-            box_node.style.clone(),
-            || fc.layout(box_node, &child_constraints),
-          )?
-        } else {
-          fc.layout(box_node, &child_constraints)?
-        }
-      } else if matches!(
-        fc_type,
-        FormattingContextType::Flex | FormattingContextType::Grid
-      ) {
-        let mut layout_style = (*box_node.style).clone();
-        layout_style.width = Some(Length::px(bounds.width()));
-        if force_height {
-          layout_style.height = Some(Length::px(bounds.height()));
-        }
-        layout_style.width_keyword = None;
-        if force_height {
-          layout_style.height_keyword = None;
-        }
-        crate::layout::style_override::with_style_override(
-          box_node.id,
-          Arc::new(layout_style),
-          || fc.layout(box_node, &child_constraints),
-        )?
-      } else {
-        let mut layout_style = (*box_node.style).clone();
-        layout_style.width = Some(Length::px(bounds.width()));
-        if force_height {
-          layout_style.height = Some(Length::px(bounds.height()));
-        }
-        layout_style.width_keyword = None;
-        if force_height {
-          layout_style.height_keyword = None;
-        }
-        let layout_style = Arc::new(layout_style);
-        if box_node.id != 0 {
-          crate::layout::style_override::with_style_override(box_node.id, layout_style, || {
-            fc.layout(box_node, &child_constraints)
-          })?
-        } else {
-          let mut layout_child = (*box_node).clone();
-          layout_child.style = layout_style;
-          fc.layout(&layout_child, &child_constraints)?
-        }
-      };
+      let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
+        child_scroll,
+        || {
+          if supports_used_border_box {
+            let child_constraints = child_constraints.with_used_border_box_size(
+              Some(bounds.width()),
+              force_height.then_some(bounds.height()),
+            );
+            if continuation_available.is_some() {
+              // Grid intrinsic sizing keywords are resolved against the initial fragmentainer size when
+              // building the Taffy tree. When the grid container continues after a break, re-layout
+              // the item using its original style so keywords like `fill-available` can be resolved
+              // against the reduced available block size.
+              crate::layout::style_override::with_style_override(
+                box_node.id,
+                box_node.style.clone(),
+                || fc.layout(box_node, &child_constraints),
+              )
+            } else {
+              fc.layout(box_node, &child_constraints)
+            }
+          } else if matches!(
+            fc_type,
+            FormattingContextType::Flex | FormattingContextType::Grid
+          ) {
+            let mut layout_style = (*box_node.style).clone();
+            layout_style.width = Some(Length::px(bounds.width()));
+            if force_height {
+              layout_style.height = Some(Length::px(bounds.height()));
+            }
+            layout_style.width_keyword = None;
+            if force_height {
+              layout_style.height_keyword = None;
+            }
+            crate::layout::style_override::with_style_override(
+              box_node.id,
+              Arc::new(layout_style),
+              || fc.layout(box_node, &child_constraints),
+            )
+          } else {
+            let mut layout_style = (*box_node.style).clone();
+            layout_style.width = Some(Length::px(bounds.width()));
+            if force_height {
+              layout_style.height = Some(Length::px(bounds.height()));
+            }
+            layout_style.width_keyword = None;
+            if force_height {
+              layout_style.height_keyword = None;
+            }
+            let layout_style = Arc::new(layout_style);
+            if box_node.id != 0 {
+              crate::layout::style_override::with_style_override(box_node.id, layout_style, || {
+                fc.layout(box_node, &child_constraints)
+              })
+            } else {
+              let mut layout_child = (*box_node).clone();
+              layout_child.style = layout_style;
+              fc.layout(&layout_child, &child_constraints)
+            }
+          }
+        },
+      )?;
       translate_fragment_tree(
         &mut laid_out,
         Point::new(bounds.x(), bounds.y()),

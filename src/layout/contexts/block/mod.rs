@@ -142,25 +142,30 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn is_ignorable_whitespace(node: &BoxNode) -> bool {
-  // CSS 2.1 §8.3.1: An element can be considered "empty" for margin-collapsing purposes when there
-  // is no in-flow content that would generate line boxes. In HTML, inter-element whitespace becomes
-  // text nodes that collapse away, but our box tree may wrap that text in anonymous inline boxes.
-  // Treat anonymous inline wrappers as ignorable when their subtree is entirely ignorable
-  // whitespace so empty blocks like `<p> </p>` collapse through correctly.
+  // CSS 2.1 §8.3.1 / §9.4.2: A block can be considered "empty" for margin-collapsing purposes when
+  // there is no in-flow content that generates line boxes. In HTML, inter-element whitespace
+  // becomes text nodes that collapse away, but our box tree may wrap that text in anonymous inline
+  // boxes. Treat anonymous inline wrappers containing only collapsible whitespace as ignorable so
+  // empty blocks like `<p> </p>` collapse through correctly and whitespace-only runs don't advance
+  // the block cursor (which would otherwise misplace subsequent floats).
+  if matches!(
+    node.style.white_space,
+    crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
+  ) {
+    return false;
+  }
+
   match &node.box_type {
-    BoxType::Text(text_box) => {
-      trim_ascii_whitespace(&text_box.text).is_empty()
-        && !matches!(
-          node.style.white_space,
-          crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
-        )
+    BoxType::Text(text_box) => trim_ascii_whitespace(&text_box.text).is_empty(),
+    BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
+      !node.children.is_empty() && node.children.iter().all(is_ignorable_whitespace)
     }
-    BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => node
-      .children
-      .iter()
-      .all(is_ignorable_whitespace),
     _ => false,
   }
+}
+
+fn is_collapsible_whitespace_run(node: &BoxNode) -> bool {
+  is_ignorable_whitespace(node)
 }
 
 #[derive(Clone)]
@@ -267,7 +272,6 @@ pub struct BlockFormattingContext {
   intrinsic_inline_fc: Arc<InlineFormattingContext>,
   font_context: FontContext,
   viewport_size: crate::geometry::Size,
-  viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
   nearest_fixed_cb: ContainingBlock,
   /// When true, treat the root box as a flex item for width resolution (auto margins resolve to
@@ -331,7 +335,6 @@ impl BlockFormattingContext {
 
   pub fn with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
-    let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
     let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
@@ -342,7 +345,6 @@ impl BlockFormattingContext {
       intrinsic_inline_fc,
       font_context,
       viewport_size,
-      viewport_scroll,
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: false,
@@ -368,7 +370,6 @@ impl BlockFormattingContext {
 
   pub fn for_flex_item_with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
-    let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
     let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
@@ -379,7 +380,6 @@ impl BlockFormattingContext {
       intrinsic_inline_fc,
       font_context,
       viewport_size,
-      viewport_scroll,
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: true,
@@ -569,6 +569,7 @@ impl BlockFormattingContext {
     nearest_positioned_cb: &ContainingBlock,
     nearest_fixed_cb: &ContainingBlock,
     external_float_ctx: Option<&mut FloatContext>,
+    external_float_base_x: f32,
     external_float_base_y: f32,
     paint_viewport: Rect,
   ) -> Result<FragmentNode, LayoutError> {
@@ -1364,7 +1365,14 @@ impl BlockFormattingContext {
     let float_avoidance_offset = if establishes_bfc(style) {
       external_float_ctx
         .as_deref()
-        .map(|ctx| ctx.available_width_at_y(external_float_base_y + box_y).0)
+        .map(|ctx| {
+          let (left_edge, _) = ctx.available_width_at_y_in_containing_block(
+            external_float_base_y + box_y,
+            external_float_base_x,
+            containing_width,
+          );
+          (left_edge - external_float_base_x).max(0.0)
+        })
         .unwrap_or(0.0)
     } else {
       0.0
@@ -1520,6 +1528,20 @@ impl BlockFormattingContext {
           let factory = self
             .child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb)
             .translated_for_child(child_border_origin);
+          // Layout skipping (`content-visibility:auto`) is viewport-relative, so translate the
+          // viewport scroll offset into the child’s local coordinate space before invoking layout.
+          // Note: `viewport_scroll()` consults the thread-local override stack, so compute the
+          // translated scroll explicitly rather than reading it back from `factory`.
+          let parent_scroll = self.factory.viewport_scroll();
+          let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+            parent_scroll
+          } else {
+            Point::ZERO
+          };
+          let child_scroll = Point::new(
+            parent_scroll.x - child_border_origin.x,
+            parent_scroll.y - child_border_origin.y,
+          );
           let fc = factory.get(fc_type);
 
           let used_border_box_inline = computed_width.border_box_width();
@@ -1569,7 +1591,10 @@ impl BlockFormattingContext {
           .with_inline_percentage_base(Some(containing_width))
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
 
-          let mut fragment = fc.layout(child, &fc_constraints)?;
+          let mut fragment = FormattingContextFactory::with_viewport_scroll_override(
+            child_scroll,
+            || fc.layout(child, &fc_constraints),
+          )?;
           // Non-block formatting contexts (grid/flex/table) return fragments in physical
           // coordinates. The block formatting context keeps fragments in logical coordinates
           // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
@@ -1630,6 +1655,7 @@ impl BlockFormattingContext {
           &descendant_nearest_fixed_cb,
           child_viewport,
           external_float_ctx,
+          external_float_base_x + child_content_origin.x,
           external_float_base_y + child_content_origin.y,
         )?;
         (frags, height, positioned, None)
@@ -2408,6 +2434,7 @@ impl BlockFormattingContext {
           nearest_positioned_cb,
           nearest_fixed_cb,
           external_float_ctx,
+          external_float_base_x,
           external_float_base_y,
           paint_viewport,
         )
@@ -2457,6 +2484,7 @@ impl BlockFormattingContext {
               nearest_positioned_cb,
               nearest_fixed_cb,
               scratch_float.as_mut(),
+              external_float_base_x,
               external_float_base_y,
               paint_viewport,
             )
@@ -2475,6 +2503,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             nearest_fixed_cb,
             scratch_float.as_mut(),
+            external_float_base_x,
             external_float_base_y,
             paint_viewport,
           )
@@ -2490,6 +2519,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             nearest_fixed_cb,
             scratch_float.as_mut(),
+            external_float_base_x,
             external_float_base_y,
             paint_viewport,
           )
@@ -2555,6 +2585,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             nearest_fixed_cb,
             external_float_ctx,
+            external_float_base_x,
             external_float_base_y,
             paint_viewport,
           )
@@ -2573,6 +2604,7 @@ impl BlockFormattingContext {
           nearest_positioned_cb,
           nearest_fixed_cb,
           external_float_ctx,
+          external_float_base_x,
           external_float_base_y,
           paint_viewport,
         )
@@ -2588,6 +2620,7 @@ impl BlockFormattingContext {
           nearest_positioned_cb,
           nearest_fixed_cb,
           external_float_ctx,
+          external_float_base_x,
           external_float_base_y,
           paint_viewport,
         )
@@ -2834,6 +2867,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             nearest_fixed_cb,
             None,
+            0.0,
             0.0,
             paint_viewport,
           )?;
@@ -3599,6 +3633,7 @@ impl BlockFormattingContext {
       paint_viewport,
       None,
       0.0,
+      0.0,
     )
   }
 
@@ -3611,6 +3646,7 @@ impl BlockFormattingContext {
     nearest_fixed_cb: &ContainingBlock,
     paint_viewport: Rect,
     mut external_float_ctx: Option<&mut FloatContext>,
+    external_float_base_x: f32,
     external_float_base_y: f32,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
     let mut deadline_counter = 0usize;
@@ -3812,6 +3848,11 @@ impl BlockFormattingContext {
     let owns_float_ctx =
       !has_external_float_ctx || establishes_bfc(&parent.style) || parent_is_independent_context_root;
     let mut local_float_ctx = FloatContext::new(containing_width);
+    let float_base_x = if owns_float_ctx {
+      0.0
+    } else {
+      external_float_base_x
+    };
     let float_base_y = if owns_float_ctx {
       0.0
     } else {
@@ -4041,6 +4082,7 @@ impl BlockFormattingContext {
           nearest_positioned_cb,
           nearest_fixed_cb,
           Some(&mut *float_ctx_ref),
+          float_base_x,
           float_base_y,
           paint_viewport,
         )?;
@@ -4103,22 +4145,36 @@ impl BlockFormattingContext {
                                deadline_counter: &mut usize,
                                positioned_children: &mut Vec<PositionedCandidate>|
      -> Result<(), LayoutError> {
-      if buffer.is_empty() {
+       if buffer.is_empty() {
+         return Ok(());
+       }
+
+      // Collapsible whitespace that is the *only* in-flow content should not generate an empty
+      // line box (CSS 2.1 §9.4.2: line boxes are created only when there are inline-level boxes).
+      // Leaving these nodes in the inline buffer would create 0px-wide inline fragments with a
+      // non-zero strut height, which advances the cursor and pushes subsequent floats down.
+      if buffer.iter().all(is_collapsible_whitespace_run) {
+        buffer.clear();
         return Ok(());
       }
 
       // A run of inline-level siblings can contain only out-of-flow positioned boxes (e.g.
       // `<div><span style="position:absolute"></span></div>`). These must not generate line boxes
       // or consume pending collapsible margins, but still need a float-aware static position.
-      if buffer.iter().all(is_out_of_flow) {
-        let pending_margin = margin_ctx.pending_collapsible_margin().resolve();
-        let static_y = *current_y + pending_margin;
-        let (left_offset, _) = float_ctx_ref.available_width_at_y(float_base_y + static_y);
-        for child in buffer.drain(..) {
-          let static_position = Some(Point::new(left_offset, static_y));
-          let source = match child.style.position {
-            Position::Fixed => {
-              if establishes_fixed_cb {
+       if buffer.iter().all(is_out_of_flow) {
+         let pending_margin = margin_ctx.pending_collapsible_margin().resolve();
+         let static_y = *current_y + pending_margin;
+        let (left_edge, _) = float_ctx_ref.available_width_at_y_in_containing_block(
+          float_base_y + static_y,
+          float_base_x,
+          containing_width,
+        );
+        let left_offset = (left_edge - float_base_x).max(0.0);
+         for child in buffer.drain(..) {
+           let static_position = Some(Point::new(left_offset, static_y));
+           let source = match child.style.position {
+             Position::Fixed => {
+               if establishes_fixed_cb {
                 ContainingBlockSource::ParentPadding
               } else {
                 ContainingBlockSource::Explicit(*nearest_fixed_cb)
@@ -4179,6 +4235,7 @@ impl BlockFormattingContext {
              nearest_positioned_cb,
              nearest_fixed_cb,
              Some(&mut *float_ctx_ref),
+             float_base_x,
              float_base_y,
              paint_viewport,
            )?;
@@ -4260,6 +4317,7 @@ impl BlockFormattingContext {
         &inline_container,
         &inline_constraints,
         Some(&mut *float_ctx_ref),
+        float_base_x,
         float_base_y + inline_y,
       ) {
         Ok(fragment) => fragment,
@@ -4862,9 +4920,11 @@ impl BlockFormattingContext {
         let intrinsic_max =
           rebase_intrinsic_border_box_size(preferred_content, edges_base0, horizontal_edges);
 
-        let (_, float_available_width) =
-          float_ctx.available_width_at_y(float_base_y + float_cursor_y);
-        let available = (float_available_width - margin_left - margin_right).max(0.0);
+        // CSS 2.1 §10.3.5: the shrink-to-fit "available width" for a float is based on the width
+        // of the containing block, *not* on the remaining space at the tentative y-position after
+        // accounting for other floats. If the float doesn't fit next to prior floats it should
+        // move down, rather than shrinking and wrapping its own contents.
+        let available = (containing_width - margin_left - margin_right).max(0.0);
 
         let specified_width = child
           .style
@@ -5034,11 +5094,13 @@ impl BlockFormattingContext {
             }
           };
 
-        let (fx, fy) = float_ctx.compute_float_position(
+        let (fx, fy) = float_ctx.compute_float_position_in_containing_block(
           side,
           margin_left + box_width + margin_right,
           float_height,
           float_base_y + float_cursor_y,
+          float_base_x,
+          containing_width,
         );
         // CSS 2.1 §9.5.1: a float's outer top may not be higher than the outer top of any float
         // generated by an element earlier in the source. If this float is pushed down to fit
@@ -5047,7 +5109,7 @@ impl BlockFormattingContext {
         float_cursor_y = (fy - float_base_y).max(float_cursor_y);
 
         fragment.bounds = Rect::from_xywh(
-          fx + margin_left,
+          fx + margin_left - float_base_x,
           fy - float_base_y + margin_top,
           box_width,
           fragment.bounds.height(),
@@ -6658,7 +6720,7 @@ impl FormattingContext for BlockFormattingContext {
       box_node,
       FormattingContextType::Block,
       constraints,
-      self.viewport_scroll,
+      self.factory.viewport_scroll(),
       self.viewport_size,
     ) {
       return Ok(cached);
@@ -7658,7 +7720,7 @@ impl FormattingContext for BlockFormattingContext {
     // The viewport rectangle is expressed in the formatting context's coordinate space. When this
     // block formatting context is nested inside another formatting context, the caller translates
     // the factory's `viewport_scroll` so it already accounts for the nested origin.
-    let scroll = self.viewport_scroll;
+    let scroll = self.factory.viewport_scroll();
     if scroll.x.is_finite() && scroll.y.is_finite() {
       let (scroll_inline, scroll_block) = if inline_is_horizontal {
         (scroll.x, scroll.y)
@@ -8595,7 +8657,7 @@ impl FormattingContext for BlockFormattingContext {
       FormattingContextType::Block,
       constraints,
       &converted,
-      self.viewport_scroll,
+      self.factory.viewport_scroll(),
       self.viewport_size,
     );
 
@@ -8820,16 +8882,6 @@ impl FormattingContext for BlockFormattingContext {
     let mut float_line_width = 0.0f32;
     let mut float_line_has_left = false;
     let mut float_line_has_right = false;
-    // Floats are out-of-flow, so they do not contribute to intrinsic inline sizes for normal block
-    // containers. They *do* contribute when the container itself is shrink-to-fit (e.g.
-    // `display:inline-block` or a floating box), because shrink-to-fit width must account for float
-    // line packing.
-    let floats_contribute_to_intrinsic_width = style.float.is_floating()
-      || style.shrink_to_fit_inline_size
-      || matches!(
-        &box_node.box_type,
-        BoxType::Inline(inline) if inline.formatting_context.is_some()
-      );
     let mut inline_run: Vec<&BoxNode> = Vec::new();
     let flush_inline_run = |run: &mut Vec<&BoxNode>,
                             widest_min: &mut f32,
@@ -8868,14 +8920,6 @@ impl FormattingContext for BlockFormattingContext {
       }
 
       if child.style.float.is_floating() {
-        if !floats_contribute_to_intrinsic_width {
-          continue;
-        }
-        // Floats still affect the shrink-to-fit width of block containers (including inline-block)
-        // because they take up inline-axis space and can force subsequent content onto new lines.
-        //
-        // Bootstrap-style button groups are a common example: they use `float:left` for each button
-        // and rely on the parent's shrink-to-fit width to encompass all floated children.
         flush_inline_run(
           &mut inline_run,
           &mut inline_min_width,
@@ -8927,7 +8971,6 @@ impl FormattingContext for BlockFormattingContext {
         }
         continue;
       }
-
       let treated_as_block = match child.box_type {
         BoxType::Replaced(_) if child.style.display.is_inline_level() => false,
         _ => child.is_block_level(),
@@ -8940,7 +8983,6 @@ impl FormattingContext for BlockFormattingContext {
           &mut inline_max_width,
         )?;
 
-        // Block-level in-flow children contribute their own intrinsic widths.
         let fc_type = child
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
@@ -8980,7 +9022,6 @@ impl FormattingContext for BlockFormattingContext {
       &mut inline_min_width,
       &mut inline_max_width,
     )?;
-
     let min_content_width = inline_min_width.max(block_min_width).max(float_min_width);
     float_max_width = float_max_width.max(float_line_width);
     let max_content_width = block_max_width
@@ -13297,6 +13338,7 @@ mod tests {
         &nearest_cb,
         None,
         0.0,
+        0.0,
         paint_viewport,
       )
       .expect("layout_block_child");
@@ -13692,6 +13734,7 @@ mod tests {
         &nearest_cb,
         paint_viewport,
         Some(&mut float_ctx),
+        0.0,
         0.0,
       )
       .expect("layout children");

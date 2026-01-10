@@ -311,20 +311,42 @@ impl BreakOpportunity {
 /// // Note: The break is at position 12 (end of string), not at NBSP
 /// ```
 pub fn find_break_opportunities(text: &str) -> Vec<BreakOpportunity> {
-  let mut opportunities: Vec<BreakOpportunity> = linebreaks(text)
-    .map(|(byte_offset, opportunity)| {
-      let break_type = match opportunity {
-        UnicodeBreakOpportunity::Mandatory => BreakType::Mandatory,
-        UnicodeBreakOpportunity::Allowed => BreakType::Allowed,
-      };
-      BreakOpportunity::with_hyphen_and_kind(
-        byte_offset,
-        break_type,
-        false,
-        BreakOpportunityKind::Normal,
-      )
-    })
-    .collect();
+  let mut opportunities: Vec<BreakOpportunity> = Vec::new();
+  let text_len = text.len();
+  let ends_with_newline = text.chars().last().is_some_and(is_newline);
+
+  for (byte_offset, opportunity) in linebreaks(text) {
+    // The Unicode line break iterator can emit a break at offset 0 for empty strings and/or as a
+    // sentinel. CSS line layout never treats the start of a run as a break opportunity.
+    if byte_offset == 0 {
+      continue;
+    }
+
+    let break_type = match opportunity {
+      UnicodeBreakOpportunity::Mandatory => BreakType::Mandatory,
+      UnicodeBreakOpportunity::Allowed => BreakType::Allowed,
+    };
+
+    // UAX#14 always reports a mandatory break at end-of-text. That sentinel is needed for the
+    // algorithm's own line-breaking loop but must not behave like a forced line break in CSS
+    // layout/intrinsic sizing; only explicit newline/paragraph separators are forced.
+    //
+    // Keep a mandatory break at the end only when the final character itself is a newline-like
+    // codepoint.
+    let break_type = if byte_offset == text_len && break_type == BreakType::Mandatory && !ends_with_newline
+    {
+      BreakType::Allowed
+    } else {
+      break_type
+    };
+
+    opportunities.push(BreakOpportunity::with_hyphen_and_kind(
+      byte_offset,
+      break_type,
+      false,
+      BreakOpportunityKind::Normal,
+    ));
+  }
 
   // UAX#14 requires dictionary-based segmentation for some scripts whose line-break behavior is
   // classified as "Complex Context" (e.g. Thai/Lao/Khmer/Myanmar). Many line-break implementations
@@ -1367,6 +1389,28 @@ mod tests {
 
     // Should match find_break_opportunities
     assert_eq!(breaks, find_break_opportunities(text));
+  }
+
+  #[test]
+  fn test_end_of_text_break_is_allowed() {
+    let text = "Hello";
+    let breaks = find_break_opportunities(text);
+    let end = breaks
+      .iter()
+      .find(|b| b.byte_offset == text.len())
+      .expect("expected end-of-text break");
+    assert_eq!(end.break_type, BreakType::Allowed);
+  }
+
+  #[test]
+  fn test_end_of_text_newline_is_mandatory() {
+    let text = "Hello\n";
+    let breaks = find_break_opportunities(text);
+    let end = breaks
+      .iter()
+      .find(|b| b.byte_offset == text.len())
+      .expect("expected end-of-text break");
+    assert_eq!(end.break_type, BreakType::Mandatory);
   }
 
   // =========================================================================

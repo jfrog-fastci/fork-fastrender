@@ -43,6 +43,7 @@ use crate::tree::box_tree::BoxNode;
 use selectors::context::QuirksMode;
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -53,8 +54,34 @@ thread_local! {
   // They are thread-local so tests can run in parallel without racing on global state. Layout tests
   // frequently run in parallel (default `cargo test` behavior), and using a process-wide counter
   // makes "reset + assert" patterns flaky.
-  static FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = Cell::new(0);
-  static FACTORY_DETACHED_CALLS: Cell<usize> = Cell::new(0);
+  static FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = const { Cell::new(0) };
+  static FACTORY_DETACHED_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+thread_local! {
+  /// Per-thread viewport scroll overrides used during nested layout.
+  ///
+  /// Layout algorithms (block/flex/grid) need to translate the viewport scroll offset into a
+  /// descendant formatting context's coordinate space when deciding whether
+  /// `content-visibility:auto` should skip layout/paint. Historically this was done by cloning the
+  /// `FormattingContextFactory` with a new `viewport_scroll` and resetting cached formatting
+  /// contexts, which forced per-node `detached()` churn in hot paths (flex/grid item layout).
+  ///
+  /// Instead, formatting contexts consult this thread-local stack via
+  /// `FormattingContextFactory::viewport_scroll()`. Callers can scope an override with
+  /// `FormattingContextFactory::with_viewport_scroll_override`, avoiding repeated context
+  /// construction while still producing correct viewport-relative culling.
+  static VIEWPORT_SCROLL_OVERRIDE_STACK: RefCell<Vec<Point>> = RefCell::new(Vec::new());
+}
+
+struct ViewportScrollOverrideGuard;
+
+impl Drop for ViewportScrollOverrideGuard {
+  fn drop(&mut self) {
+    VIEWPORT_SCROLL_OVERRIDE_STACK.with(|stack| {
+      stack.borrow_mut().pop();
+    });
+  }
 }
 
 #[derive(Default)]
@@ -510,7 +537,27 @@ impl FormattingContextFactory {
 
   /// Returns the scroll offset applied to the viewport when evaluating viewport-dependent layout.
   pub fn viewport_scroll(&self) -> Point {
-    self.viewport_scroll
+    VIEWPORT_SCROLL_OVERRIDE_STACK.with(|stack| {
+      stack
+        .borrow()
+        .last()
+        .copied()
+        .unwrap_or(self.viewport_scroll)
+    })
+  }
+
+  /// Invokes a closure with an overridden viewport scroll offset.
+  ///
+  /// This is used by parent formatting contexts when laying out descendants: it allows the
+  /// descendant layout algorithms to treat the viewport as if it were translated into the child's
+  /// local coordinate system, without needing to rebuild formatting contexts or churn detached
+  /// factories.
+  pub(crate) fn with_viewport_scroll_override<R>(scroll: Point, f: impl FnOnce() -> R) -> R {
+    VIEWPORT_SCROLL_OVERRIDE_STACK.with(|stack| {
+      stack.borrow_mut().push(scroll);
+    });
+    let _guard = ViewportScrollOverrideGuard;
+    f()
   }
 
   /// Returns the nearest positioned containing block threaded into newly constructed contexts.

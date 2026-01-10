@@ -2849,6 +2849,8 @@ pub struct LineBuilder<'a> {
   current_y: f32,
   /// Absolute y offset of this inline formatting context within the containing block
   float_base_y: f32,
+  /// Absolute x offset of this inline formatting context within the containing block
+  float_base_x: f32,
 
   /// Current line being built
   current_line: Line,
@@ -3004,20 +3006,28 @@ impl<'a> LineBuilder<'a> {
     };
 
     if let Some(integration) = self.float_integration.as_ref() {
-      let space = integration.find_line_space(
-        self.float_base_y + self.current_y,
+      let query_y = self.float_base_y + self.current_y;
+      let space = integration.find_line_space_in_containing_block(
+        query_y,
+        self.float_base_x,
+        base_width,
         LineSpaceOptions::default()
           .line_height(self.strut_metrics.line_height)
           .allow_zero_width(false),
       );
-      // Clamp the float-derived line range to the container width. This matters when we're
-      // querying an external float context (e.g., inherited from an ancestor BFC) whose
-      // containing block is wider than the inline container we're laying out.
-      let left_edge = space.left_edge.max(0.0);
-      let right_edge = space.right_edge.min(base_width);
-      let width = (right_edge - left_edge).max(0.0);
-      let space =
-        crate::layout::inline::float_integration::LineSpace::new(space.y, left_edge, width);
+      let space = self.clamp_float_space_to_line_width(base_width, space);
+      if log_line_width_enabled() {
+        eprintln!(
+          "[line-space] query_y={:.2} base_width={:.2} float_base=({:.2},{:.2}) space=({:.2},{:.2}) width={:.2}",
+          query_y,
+          base_width,
+          self.float_base_x,
+          self.float_base_y,
+          space.left_edge,
+          space.right_edge,
+          space.width
+        );
+      }
       self.current_line_space = Some(space);
       self.current_line.available_width = space.width;
       self.current_line.box_width = space.width;
@@ -3037,11 +3047,14 @@ impl<'a> LineBuilder<'a> {
     base_width: f32,
     space: crate::layout::inline::float_integration::LineSpace,
   ) -> crate::layout::inline::float_integration::LineSpace {
-    // Clamp the float-derived line range to the container width. This matters when we're querying
-    // an external float context (e.g., inherited from an ancestor BFC) whose containing block is
-    // wider than the inline container we're laying out.
-    let left_edge = space.left_edge.max(0.0);
-    let right_edge = space.right_edge.min(base_width);
+    // Convert the float-derived line range (which is in float context coordinates) into the local
+    // coordinate space of this inline container, then clamp to the container width.
+    //
+    // This matters when we're querying an external float context (e.g., inherited from an ancestor
+    // BFC) where the inline container is horizontally offset and/or narrower than the float
+    // context's containing block.
+    let left_edge = (space.left_edge - self.float_base_x).max(0.0);
+    let right_edge = (space.right_edge - self.float_base_x).min(base_width);
     let width = (right_edge - left_edge).max(0.0);
     crate::layout::inline::float_integration::LineSpace::new(space.y, left_edge, width)
   }
@@ -3062,8 +3075,10 @@ impl<'a> LineBuilder<'a> {
     let before_y = self.current_y;
     let before_width = self.current_line.available_width;
 
-    let space = integration.find_line_space(
+    let space = integration.find_line_space_in_containing_block(
       self.float_base_y + self.current_y,
+      self.float_base_x,
+      base_width,
       LineSpaceOptions::default()
         .min_width(min_width.max(0.0))
         .line_height(self.strut_metrics.line_height)
@@ -3096,6 +3111,7 @@ impl<'a> LineBuilder<'a> {
     root_unicode_bidi: UnicodeBidi,
     root_direction: Direction,
     float_integration: Option<InlineFloatIntegration<'a>>,
+    float_base_x: f32,
     float_base_y: f32,
     line_clamp: Option<usize>,
   ) -> Self {
@@ -3120,6 +3136,7 @@ impl<'a> LineBuilder<'a> {
       current_line_space: None,
       current_y: 0.0,
       float_base_y,
+      float_base_x,
       current_line: Line {
         resolved_direction: initial_direction,
         ..Line::new()
@@ -5137,6 +5154,7 @@ mod tests {
       Direction::Ltr,
       None,
       0.0,
+      0.0,
       None,
     )
   }
@@ -5158,6 +5176,7 @@ mod tests {
       UnicodeBidi::Normal,
       Direction::Ltr,
       None,
+      0.0,
       0.0,
       None,
     )
@@ -5273,6 +5292,7 @@ mod tests {
       UnicodeBidi::Normal,
       Direction::Ltr,
       None,
+      0.0,
       0.0,
       None,
     )
@@ -5800,6 +5820,7 @@ mod tests {
       UnicodeBidi::Normal,
       Direction::Ltr,
       None,
+      0.0,
       0.0,
       None,
     );

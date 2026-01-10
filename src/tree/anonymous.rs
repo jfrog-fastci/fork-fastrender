@@ -661,6 +661,11 @@ impl AnonymousBoxCreator {
         continue;
       }
 
+      // Anonymous inline boxes must inherit only inheritable properties (CSS 2.1 §9.2.2.1).
+      //
+      // Cloning the full parent style (including padding/border/position/etc) effectively duplicates
+      // those non-inherited properties on the anonymous wrapper, which can dramatically distort
+      // inline layout (e.g. button text nodes causing repeated padding and unexpected wrapping).
       let style = inline_style.get_or_insert_with(|| {
         // CSS 2.1 §9.2.2.1 anonymous inline boxes: they inherit inheritable properties from the
         // parent element, but otherwise use initial values.
@@ -1004,18 +1009,26 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.font_kerning = parent.font_kerning;
   style.line_height = parent.line_height.clone();
   style.direction = parent.direction;
+  style.unicode_bidi = parent.unicode_bidi;
   style.text_align = parent.text_align;
   style.text_align_last = parent.text_align_last;
   style.text_justify = parent.text_justify;
+  style.text_rendering = parent.text_rendering;
   style.text_indent = parent.text_indent;
+  style.text_wrap = parent.text_wrap;
+  style.text_decoration_skip_box = parent.text_decoration_skip_box;
+  style.text_decoration_skip_spaces = parent.text_decoration_skip_spaces;
   style.text_decoration_skip_ink = parent.text_decoration_skip_ink;
+  style.text_shadow = parent.text_shadow.clone();
   style.text_underline_offset = parent.text_underline_offset;
   style.text_underline_position = parent.text_underline_position;
   style.text_emphasis_style = parent.text_emphasis_style.clone();
   style.text_emphasis_color = parent.text_emphasis_color;
   style.text_emphasis_position = parent.text_emphasis_position;
+  style.text_emphasis_skip = parent.text_emphasis_skip;
   style.text_transform = parent.text_transform;
   style.text_combine_upright = parent.text_combine_upright;
+  style.text_orientation = parent.text_orientation;
   style.writing_mode = parent.writing_mode;
   style.letter_spacing = parent.letter_spacing;
   style.word_spacing = parent.word_spacing;
@@ -1062,6 +1075,56 @@ mod tests {
 
   fn fixup_tree(node: BoxNode) -> BoxNode {
     super::AnonymousBoxCreator::fixup_tree(node).expect("anonymous fixup")
+  }
+
+  #[test]
+  fn anonymous_inline_wrappers_inside_inline_containers_do_not_duplicate_box_model() {
+    // `fixup_inline_children` wraps bare text nodes in anonymous inline boxes so they participate in
+    // the inline formatting context as an element box. Those anonymous boxes must not copy
+    // non-inherited properties like padding/border/position from the parent inline container; doing
+    // so effectively duplicates the parent's box model for every text node, which can drastically
+    // distort layout (e.g. inline-block buttons with whitespace children).
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::InlineBlock;
+    parent_style.position = Position::Relative;
+    parent_style.padding_left = Length::px(10.0);
+    parent_style.padding_right = Length::px(10.0);
+    parent_style.padding_top = Length::px(5.0);
+    parent_style.padding_bottom = Length::px(5.0);
+    parent_style.border_left_width = Length::px(1.0);
+    parent_style.border_right_width = Length::px(1.0);
+    parent_style.border_top_width = Length::px(1.0);
+    parent_style.border_bottom_width = Length::px(1.0);
+
+    let text = BoxNode::new_text(default_style(), "hello".to_string());
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+
+    let fixed = fixup_tree(inline_block);
+    assert_eq!(fixed.children.len(), 1);
+    let wrapper = &fixed.children[0];
+    assert!(
+      matches!(
+        wrapper.box_type,
+        BoxType::Anonymous(AnonymousBox {
+          anonymous_type: AnonymousType::Inline
+        })
+      ),
+      "expected text to be wrapped in an anonymous inline box"
+    );
+    assert_eq!(wrapper.style.display, Display::Inline);
+    assert_eq!(wrapper.style.position, Position::Static);
+    assert_eq!(wrapper.style.padding_left, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_right, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_top, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_bottom, Length::px(0.0));
+    assert_eq!(wrapper.style.border_left_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_right_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_top_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_bottom_width, Length::px(0.0));
   }
 
   #[test]

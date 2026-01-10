@@ -28,7 +28,7 @@ fn inline_float_honors_min_width() {
   let mut float_ctx = fastrender::layout::float_context::FloatContext::new(50.0);
   let ifc = InlineFormattingContext::new();
   let fragment = ifc
-    .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0)
+    .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0, 0.0)
     .expect("layout with inline float");
 
   // First child should be the float fragment clamped to min-width (80px).

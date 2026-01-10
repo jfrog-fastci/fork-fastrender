@@ -156,8 +156,8 @@ thread_local! {
   // They are thread-local so tests can run in parallel without racing on global state. Layout tests
   // frequently run in parallel (default `cargo test` behavior), and using a process-wide counter
   // makes "reset + assert" patterns flaky.
-  static INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = Cell::new(0);
-  static INLINE_FC_WITH_FACTORY_CALLS: Cell<usize> = Cell::new(0);
+  static INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = const { Cell::new(0) };
+  static INLINE_FC_WITH_FACTORY_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Inline Formatting Context implementation
@@ -5312,6 +5312,7 @@ impl InlineFormattingContext {
     root_direction: Direction,
     root_unicode_bidi: UnicodeBidi,
     float_ctx: Option<&'a FloatContext>,
+    float_base_x: f32,
     float_base_y: f32,
     line_clamp: Option<usize>,
   ) -> Result<line_builder::LineBuildResult, LayoutError> {
@@ -5356,6 +5357,7 @@ impl InlineFormattingContext {
       root_unicode_bidi,
       root_direction,
       float_integration,
+      float_base_x,
       float_base_y,
       line_clamp,
     );
@@ -9641,16 +9643,17 @@ impl FormattingContext for InlineFormattingContext {
     constraints: &LayoutConstraints,
   ) -> Result<FragmentNode, LayoutError> {
     if crate::layout::auto_scrollbars::should_bypass(box_node) {
-    if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
-      return Err(LayoutError::Timeout { elapsed });
-    }
-    let mut fragment = self.layout_with_floats(box_node, constraints, None, 0.0)?;
-    let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    let style: &ComputedStyle = style_override
-      .as_deref()
-      .unwrap_or_else(|| box_node.style.as_ref());
-    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
-    return Ok(fragment);
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      let mut fragment = self.layout_with_floats(box_node, constraints, None, 0.0, 0.0)?;
+      let style_override = crate::layout::style_override::style_override_for(box_node.id);
+      let style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| box_node.style.as_ref());
+      fragment.scrollbar_reservation =
+        crate::layout::utils::scrollbar_reservation_for_style(style);
+      return Ok(fragment);
     }
 
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
@@ -9773,6 +9776,7 @@ impl InlineFormattingContext {
     root_direction: Direction,
     root_unicode_bidi: UnicodeBidi,
     float_ctx: Option<&FloatContext>,
+    float_base_x: f32,
     float_base_y: f32,
     line_clamp: Option<usize>,
   ) -> Result<line_builder::LineBuildResult, LayoutError> {
@@ -9808,6 +9812,7 @@ impl InlineFormattingContext {
         root_direction,
         root_unicode_bidi,
         float_ctx,
+        float_base_x,
         float_base_y,
         line_clamp,
       );
@@ -9830,6 +9835,7 @@ impl InlineFormattingContext {
           root_direction,
           root_unicode_bidi,
           float_ctx,
+          float_base_x,
           float_base_y,
           line_clamp,
         );
@@ -9853,6 +9859,7 @@ impl InlineFormattingContext {
       root_direction,
       root_unicode_bidi,
       float_ctx,
+      float_base_x,
       float_base_y,
       line_clamp,
     )?;
@@ -9879,6 +9886,7 @@ impl InlineFormattingContext {
         root_direction,
         root_unicode_bidi,
         float_ctx,
+        float_base_x,
         float_base_y,
         line_clamp,
       );
@@ -9898,6 +9906,7 @@ impl InlineFormattingContext {
       root_direction,
       root_unicode_bidi,
       float_ctx,
+      float_base_x,
       float_base_y,
       line_clamp,
     )?;
@@ -10139,6 +10148,7 @@ impl InlineFormattingContext {
     root_direction: Direction,
     root_unicode_bidi: UnicodeBidi,
     float_ctx: Option<&FloatContext>,
+    float_base_x: f32,
     float_base_y: f32,
     line_clamp: Option<usize>,
   ) -> Result<line_builder::LineBuildResult, LayoutError> {
@@ -10192,6 +10202,7 @@ impl InlineFormattingContext {
             root_direction,
             root_unicode_bidi,
             float_ctx,
+            float_base_x,
             float_base_y,
             line_clamp,
           )?;
@@ -10258,6 +10269,7 @@ impl InlineFormattingContext {
         root_direction,
         root_unicode_bidi,
         float_ctx,
+        float_base_x,
         float_base_y,
         line_clamp,
       )?;
@@ -10285,6 +10297,7 @@ impl InlineFormattingContext {
     floating: &crate::layout::contexts::inline::line_builder::FloatingItem,
     containing_width: f32,
     containing_block_size: Size,
+    float_base_x: f32,
     float_base_y: f32,
     min_y: f32,
     float_ctx: &mut FloatContext,
@@ -10620,17 +10633,23 @@ impl InlineFormattingContext {
 
     let cleared_y = float_ctx.compute_clearance(
       min_y,
-      crate::layout::float_context::resolve_clear_side(float_node.style.clear, writing_mode, direction),
+      crate::layout::float_context::resolve_clear_side(
+        float_node.style.clear,
+        writing_mode,
+        direction,
+      ),
     );
-    let (fx, fy) = float_ctx.compute_float_position(
+    let (fx, fy) = float_ctx.compute_float_position_in_containing_block(
       side,
       margin_left + box_width + margin_right,
       float_height,
       cleared_y,
+      float_base_x,
+      containing_width,
     );
 
     fragment.bounds = Rect::from_xywh(
-      fx + margin_left,
+      fx + margin_left - float_base_x,
       fy + margin_top - float_base_y,
       box_width,
       fragment.bounds.height(),
@@ -11120,6 +11139,7 @@ impl InlineFormattingContext {
     box_node: &BoxNode,
     constraints: &LayoutConstraints,
     mut float_ctx: Option<&mut FloatContext>,
+    float_base_x: f32,
     float_base_y: f32,
   ) -> Result<FragmentNode, LayoutError> {
     let _profile = layout_timer(LayoutKind::Inline);
@@ -11540,15 +11560,15 @@ impl InlineFormattingContext {
         } else {
           subsequent_line_width
         };
-        let (line_abs_y, line_left_edge) = if let Some(ctx) = ctx_ref {
-          let integration = InlineFloatIntegration::new(ctx);
-          let space = integration.find_line_space(
+         let (line_abs_y, line_left_edge) = if let Some(ctx) = ctx_ref {
+           let integration = InlineFloatIntegration::new(ctx);
+          let space = integration.find_line_space_in_containing_block(
             float_base_y + *line_offset,
+            float_base_x,
+            base_width,
             LineSpaceOptions::default().line_height(strut_metrics.line_height),
           );
-          let left_edge = space.left_edge.max(0.0);
-          let right_edge = space.right_edge.min(base_width);
-          let _width = (right_edge - left_edge).max(0.0);
+          let left_edge = (space.left_edge - float_base_x).max(0.0).min(base_width);
           (space.y, left_edge)
         } else {
           (float_base_y + *line_offset, 0.0)
@@ -11637,6 +11657,7 @@ impl InlineFormattingContext {
         paragraph_direction,
         paragraph_unicode_bidi,
         ctx_ref,
+        float_base_x,
         float_base_y + *line_offset,
         remaining_clamp,
       )?;
@@ -11703,6 +11724,7 @@ impl InlineFormattingContext {
                 &floating,
                 available_inline,
                 Size::new(available_inline, available_block),
+                float_base_x,
                 float_base_y,
                 float_min_y,
                 &mut candidate_ctx,
@@ -14364,6 +14386,7 @@ mod tests {
         node.style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .expect("lines")
@@ -15006,6 +15029,7 @@ mod tests {
         containing_size,
         0.0,
         0.0,
+        0.0,
         &mut float_ctx,
         WritingMode::HorizontalTb,
         Direction::Ltr,
@@ -15099,6 +15123,7 @@ mod tests {
         containing_size,
         0.0,
         0.0,
+        0.0,
         &mut float_ctx,
         WritingMode::HorizontalTb,
         Direction::Ltr,
@@ -15180,6 +15205,7 @@ mod tests {
         &floating,
         containing_width,
         containing_size,
+        0.0,
         0.0,
         0.0,
         &mut float_ctx,
@@ -15281,6 +15307,7 @@ mod tests {
         &floating,
         containing_width,
         containing_size,
+        0.0,
         0.0,
         0.0,
         &mut float_ctx,
@@ -18012,6 +18039,7 @@ mod tests {
         root.style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -18244,6 +18272,7 @@ mod tests {
         root.style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -18314,6 +18343,7 @@ mod tests {
         root.style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -18370,6 +18400,7 @@ mod tests {
         root.style.direction,
         root.style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -19384,7 +19415,7 @@ mod tests {
       .create_inline_items_for_text(&node, text, false)
       .expect("inline items");
     let strut = ifc.compute_strut_metrics(style.as_ref());
-    let lines = ifc
+      let lines = ifc
       .layout_segment_lines(
         items,
         true,
@@ -19399,6 +19430,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -19469,6 +19501,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -19546,6 +19579,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -19629,6 +19663,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -20499,6 +20534,7 @@ mod tests {
         crate::style::types::Direction::Ltr,
         crate::style::types::UnicodeBidi::Plaintext,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22135,6 +22171,7 @@ mod tests {
         node.style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22190,6 +22227,7 @@ mod tests {
         node.style.direction,
         node.style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22253,6 +22291,7 @@ mod tests {
         container.style.unicode_bidi,
         Some(&float_ctx),
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22297,6 +22336,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22333,6 +22373,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22355,6 +22396,7 @@ mod tests {
         auto_style.direction,
         auto_style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22402,6 +22444,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22447,6 +22490,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22473,6 +22517,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22498,6 +22543,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22535,6 +22581,7 @@ mod tests {
         manual.direction,
         manual.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22580,6 +22627,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22602,6 +22650,7 @@ mod tests {
         auto_style.direction,
         auto_style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22645,6 +22694,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22664,6 +22714,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22692,6 +22743,7 @@ mod tests {
         auto_style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -22711,6 +22763,7 @@ mod tests {
         auto_style.direction,
         auto_style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )
@@ -22740,7 +22793,7 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(120.0);
     let fragment = ifc
-      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0)
+      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0, 0.0)
       .expect("layout with inline float");
 
     // We expect a float fragment and at least one line fragment following it that starts after the float.
@@ -22797,7 +22850,7 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(120.0);
     let fragment = ifc
-      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0)
+      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0, 0.0)
       .expect("layout with replaced inline float");
 
     let mut float_found = false;
@@ -22829,7 +22882,7 @@ mod tests {
     let constraints =
       LayoutConstraints::definite_width(120.0).with_used_border_box_size(Some(120.0), Some(200.0));
     let fragment = ifc
-      .layout_with_floats(&root, &constraints, None, 0.0)
+      .layout_with_floats(&root, &constraints, None, 0.0, 0.0)
       .expect("layout with used border box override");
 
     assert!(
@@ -22858,7 +22911,7 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(120.0);
     let fragment = ifc
-      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0)
+      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0, 0.0)
       .expect("layout with inline float");
 
     let mut float_y = None;
@@ -22907,7 +22960,7 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(30.0);
     let fragment = ifc
-      .layout_with_floats(&root, &constraints, None, 0.0)
+      .layout_with_floats(&root, &constraints, None, 0.0, 0.0)
       .expect("layout with floats");
 
     let line_count = fragment
@@ -25069,6 +25122,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )

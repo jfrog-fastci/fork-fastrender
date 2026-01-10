@@ -1527,8 +1527,15 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
         chars.next();
       }
 
-      if matches!(chars.peek().copied(), Some(c) if is_ascii_whitespace_html_css(c)) {
-        chars.next();
+      if chars
+        .peek()
+        .copied()
+        .is_some_and(is_ascii_whitespace_html_css)
+      {
+        let consumed = chars.next().unwrap();
+        if consumed == '\r' && matches!(chars.peek().copied(), Some('\n')) {
+          chars.next();
+        }
       }
 
       let decoded = match value {
@@ -2413,7 +2420,8 @@ mod tests {
 
   #[test]
   fn test_parse_escaped_string() {
-    let content = parse_content("\"Hello\\nWorld\"").unwrap();
+    // CSS string escapes are hexadecimal; `\A` is U+000A (line feed).
+    let content = parse_content("\"Hello\\AWorld\"").unwrap();
     assert_eq!(
       content,
       ContentValue::Items(vec![ContentItem::String("Hello\nWorld".to_string())])
@@ -2438,6 +2446,15 @@ mod tests {
     assert_eq!(
       content,
       ContentValue::Items(vec![ContentItem::String("&B".to_string())])
+    );
+  }
+
+  #[test]
+  fn test_parse_hex_escape() {
+    let content = parse_content("\"\\f004\"").unwrap();
+    assert_eq!(
+      content,
+      ContentValue::Items(vec![ContentItem::String("\u{F004}".to_string())])
     );
   }
 

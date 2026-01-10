@@ -139,10 +139,10 @@ struct Cli {
   /// Patch fixture HTML before rendering to align with the Chrome baseline harness.
   ///
   /// This injects the same tags used by `xtask chrome-baseline-fixtures`:
-  /// - force `color-scheme: light` + white background on `html, body` (for determinism),
+  /// - force `color-scheme: light` + white background on `html, body` (unless `--allow-dark-mode`),
   /// - inject a strict Content-Security-Policy (offline invariant),
   /// - hide scrollbars (match Chrome `--hide-scrollbars`),
-  /// - disable CSS animations/transitions.
+  /// - disable CSS animations/transitions (unless `--allow-animations`).
   ///
   /// It also matches the Chrome baseline harness' `--hide-scrollbars` behavior (no reserved
   /// scrollbar gutters).
@@ -151,6 +151,18 @@ struct Cli {
   /// diffs). Most other uses of `render_fixtures` should render the raw fixture HTML.
   #[arg(long)]
   patch_html_for_chrome_baseline: bool,
+
+  /// Allow CSS animations/transitions in fixture renders.
+  ///
+  /// Has no effect unless `--patch-html-for-chrome-baseline` is enabled.
+  #[arg(long)]
+  allow_animations: bool,
+
+  /// Allow dark-mode / prefers-color-scheme defaults (do not force a white background).
+  ///
+  /// Has no effect unless `--patch-html-for-chrome-baseline` is enabled.
+  #[arg(long)]
+  allow_dark_mode: bool,
 
   /// Force a light color scheme + white page background.
   ///
@@ -178,6 +190,8 @@ struct RenderShared {
   patch_html_for_chrome_baseline: bool,
   out_dir: PathBuf,
   force_light_mode: bool,
+  allow_animations: bool,
+  allow_dark_mode: bool,
 }
 
 #[derive(Clone)]
@@ -510,6 +524,8 @@ fn run(cli: Cli) -> io::Result<()> {
     patch_html_for_chrome_baseline: cli.patch_html_for_chrome_baseline,
     out_dir: cli.out_dir.clone(),
     force_light_mode: cli.force_light_mode,
+    allow_animations: cli.allow_animations,
+    allow_dark_mode: cli.allow_dark_mode,
   };
 
   println!(
@@ -522,13 +538,15 @@ fn run(cli: Cli) -> io::Result<()> {
     println!("Shard: {idx}/{total}");
   }
   println!(
-    "Viewport: {}x{} dpr={} media={:?} fit_canvas_to_content={} timeout={}s",
+    "Viewport: {}x{} dpr={} media={:?} fit_canvas_to_content={} timeout={}s animations={} dark_mode={}",
     cli.viewport.0,
     cli.viewport.1,
     cli.dpr,
     cli.media.as_media_type(),
     cli.fit_canvas_to_content,
-    cli.timeout
+    cli.timeout,
+    if cli.allow_animations { "on" } else { "off" },
+    if cli.allow_dark_mode { "on" } else { "off" }
   );
   if cli.repeat > 1 {
     println!(
@@ -1437,6 +1455,13 @@ fn render_fixture(
     if let Some(hash) = fixture_dir_sha256.as_deref() {
       let _ = writeln!(log, "Fixture dir SHA-256: {hash}");
     }
+
+    let _ = writeln!(
+      log,
+      "Determinism patch: animations={} dark_mode={}",
+      if shared.allow_animations { "on" } else { "off" },
+      if shared.allow_dark_mode { "on" } else { "off" }
+    );
   }
 
   if shared.patch_html_for_chrome_baseline {
@@ -1450,8 +1475,8 @@ fn render_fixture(
       &html_bytes,
       Some(&base_url),
       true,  // disable JS
-      true,  // disable animations
-      false, // force light mode
+      !shared.allow_animations,
+      shared.allow_dark_mode,
     );
   }
 

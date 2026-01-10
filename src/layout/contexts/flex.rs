@@ -1630,23 +1630,39 @@ impl FormattingContext for FlexFormattingContext {
                           }
                         }
 
-                        // Taffy sometimes propagates a "known" height for nested flex containers even
-                        // when their physical `height` is `auto`. Treat that as a soft hint rather
-                        // than a hard used border-box size so the child formatting context can
-                        // determine its block-size from content (especially for multi-line `flex-wrap`
-                        // containers).
+                        // Taffy sometimes propagates a "known" cross size for nested flex containers
+                        // even when the child’s physical cross-size is `auto`. Treat that as a soft
+                        // hint rather than a hard used border-box size so the child formatting
+                        // context can determine its cross-size from content (especially for
+                        // multi-line `flex-wrap` containers).
                         //
-                        // Do not drop the known height when the flex item is being stretched in the
+                        // Do not drop the known size when the flex item is being stretched in the
                         // cross axis; in that case the parent's alignment algorithm has already
                         // resolved a definite used cross size.
                         if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
-                          && physical_height_is_auto(box_node.style.as_ref())
                           && !matches!(
                             taffy_style.align_self,
                             Some(taffy::style::AlignItems::Stretch)
                           )
                         {
-                          known_dimensions.height = None;
+                          if container_main_axis_is_horizontal {
+                            // Cross axis is height.
+                            if physical_height_is_auto(box_node.style.as_ref()) {
+                              known_dimensions.height = None;
+                            }
+                          } else {
+                            // Cross axis is width.
+                            if physical_width_is_auto(box_node.style.as_ref()) {
+                              known_dimensions.width = None;
+                              // A definite available width would cause nested flex containers with
+                              // `width:auto` to behave like block-level flex containers and fill the
+                              // available space, diverging from the flex item shrink-to-fit behavior
+                              // needed for `align-items/align-self: center` in column flex layouts.
+                              if matches!(avail.width, AvailableSpace::Definite(_)) {
+                                avail.width = AvailableSpace::MaxContent;
+                              }
+                            }
+                          }
                         }
                     }
                     // Fast path: when both dimensions are already known (typically from definite
@@ -9284,6 +9300,8 @@ impl FlexFormattingContext {
         } else {
           factory.get(work.fc_type)
         };
+        let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
+        let child_scroll = Point::new(parent_scroll.x - work.origin.x, parent_scroll.y - work.origin.y);
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
           && matches!(
@@ -9321,7 +9339,9 @@ impl FlexFormattingContext {
         let selector_for_profile = node_timer
           .as_ref()
           .and_then(|_| work.child_box.debug_info.as_ref().map(|d| d.to_selector()));
-        let child_fragment = layout_with_override(&work.constraints)?;
+        let child_fragment = FormattingContextFactory::with_viewport_scroll_override(child_scroll, || {
+          layout_with_override(&work.constraints)
+        })?;
         flex_profile::record_node_layout(
           work.child_box.id,
           selector_for_profile.as_deref(),

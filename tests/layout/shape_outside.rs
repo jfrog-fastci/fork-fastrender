@@ -77,7 +77,7 @@ fn layout_lines_with_float(
   let ifc = InlineFormattingContext::new();
   let constraints = LayoutConstraints::definite_width(container_width);
   let fragment = ifc
-    .layout_with_floats(&root, &constraints, Some(float_ctx), 0.0)
+    .layout_with_floats(&root, &constraints, Some(float_ctx), 0.0, 0.0)
     .expect("layout with floats");
   collect_lines(&fragment)
 }

@@ -677,7 +677,7 @@ fn render_fixtures_resolves_relative_stylesheets_from_base_url() {
   fs::create_dir_all(fixture_dir.join("support")).expect("create support dir");
   fs::write(
     fixture_dir.join("support/style.css"),
-    "html, body { margin: 0; width: 100%; height: 100%; background: rgb(255, 0, 0); }",
+    "html, body { margin: 0; width: 100%; height: 100%; background: rgb(255, 0, 0) !important; }",
   )
   .expect("write style.css");
 
