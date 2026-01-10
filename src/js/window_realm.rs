@@ -550,6 +550,34 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+fn illegal_dom_constructor_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(throw_type_error(vm, scope, hooks, "Illegal constructor"))
+}
+
+fn illegal_dom_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  illegal_dom_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
 fn storage_slots_from_callee(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -986,6 +1014,7 @@ const NODE_NEXT_SIBLING_GET_KEY: &str = "__fastrender_node_next_sibling_get";
 const NODE_REMOVE_KEY: &str = "__fastrender_node_remove";
 const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
 const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
+const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
@@ -3048,6 +3077,135 @@ fn get_or_create_node_wrapper(
   Ok(Value::Object(wrapper))
 }
 
+fn node_wrapper_document_obj(
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  node_id: NodeId,
+) -> Result<GcObject, VmError> {
+  if node_id.index() == 0 {
+    // `window.document` is the canonical wrapper for the dom2 document node.
+    return Ok(wrapper_obj);
+  }
+
+  let key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn sync_child_nodes_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  dom_source_id: u64,
+  document_obj: GcObject,
+  node_id: NodeId,
+  array: GcObject,
+) -> Result<(), VmError> {
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError(
+      "Node.childNodes requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let mut children: Vec<NodeId> = Vec::new();
+  children
+    .try_reserve(dom.node(node_id).children.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &child in dom.node(node_id).children.iter() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    if dom.node(child).parent != Some(node_id) {
+      continue;
+    }
+    children.push(child);
+  }
+
+  // Root objects while allocating property keys.
+  scope.push_root(Value::Object(document_obj))?;
+  scope.push_root(Value::Object(array))?;
+
+  let length_key = alloc_key(scope, "length")?;
+  let old_len = match scope.heap().object_get_own_data_property_value(array, &length_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  // Overwrite / populate indices.
+  let mut idx_buf = [0u8; 20];
+  for (idx, child_id) in children.iter().copied().enumerate() {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, child_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+
+  // Delete leftover indices when the list shrinks.
+  for idx in children.len()..old_len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    scope.heap_mut().delete_property_or_throw(array, key)?;
+  }
+
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(children.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(())
+}
+
+fn sync_cached_child_nodes_for_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  dom_source_id: u64,
+  document_obj: GcObject,
+  wrapper_obj: GcObject,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let key = alloc_key(scope, NODE_CHILD_NODES_KEY)?;
+  let Some(Value::Object(array)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &key)?
+  else {
+    return Ok(());
+  };
+  sync_child_nodes_array(vm, scope, dom_source_id, document_obj, node_id, array)
+}
+
+fn sync_cached_child_nodes_for_node_id(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  dom_source_id: u64,
+  document_obj: GcObject,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let wrapper_obj = if node_id.index() == 0 {
+    Some(document_obj)
+  } else {
+    dom_platform_mut(vm).and_then(|platform| platform.get_existing_wrapper(scope.heap(), node_id))
+  };
+  let Some(wrapper_obj) = wrapper_obj else {
+    return Ok(());
+  };
+  sync_cached_child_nodes_for_wrapper(vm, scope, dom_source_id, document_obj, wrapper_obj, node_id)
+}
+
 fn document_document_element_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3256,6 +3414,49 @@ fn document_get_element_by_id_native(
     return Ok(Value::Null);
   };
   get_or_create_node_wrapper(vm, scope, document_obj, node_id)
+}
+
+fn document_fragment_get_element_by_id_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, fragment_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let fragment_id =
+      platform.require_document_fragment_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), fragment_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let query_value = scope.heap_mut().to_string(query_value)?;
+  let query = scope
+    .heap()
+    .get_string(query_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(found) = dom.get_element_by_id_from(fragment_id, &query) else {
+    return Ok(Value::Null);
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, fragment_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, found)
 }
 
 fn document_query_selector_native(
@@ -5481,7 +5682,7 @@ fn document_create_event_native(
 }
 
 fn node_append_child_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5564,24 +5765,49 @@ fn node_append_child_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let (parent_node_id, child_node_id, old_parent, child_is_fragment) = {
+    let dom = unsafe { dom_ptr.as_mut() };
 
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
-    .map_err(|_| VmError::TypeError("Node.appendChild must be called on a node object"))?;
-  let child_node_id = dom
-    .node_id_from_index(child_index)
-    .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+    let parent_node_id = dom
+      .node_id_from_index(parent_index)
+      .map_err(|_| VmError::TypeError("Node.appendChild must be called on a node object"))?;
+    let child_node_id = dom
+      .node_id_from_index(child_index)
+      .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
 
-  if let Err(err) = dom.append_child(parent_node_id, child_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let old_parent = dom.parent_node(child_node_id);
+    let child_is_fragment = matches!(&dom.node(child_node_id).kind, NodeKind::DocumentFragment);
+
+    if let Err(err) = dom.append_child(parent_node_id, child_node_id) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    (parent_node_id, child_node_id, old_parent, child_is_fragment)
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
+  sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
+  if let Some(old_parent) = old_parent {
+    if old_parent != parent_node_id {
+      sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, old_parent)?;
+    }
+  }
+  if child_is_fragment {
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      source_id,
+      document_obj,
+      child_obj,
+      child_node_id,
+    )?;
   }
 
   Ok(child_value)
 }
 
 fn node_insert_before_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5704,32 +5930,57 @@ fn node_insert_before_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment) = {
+    let dom = unsafe { dom_ptr.as_mut() };
 
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
-    .map_err(|_| VmError::TypeError("Node.insertBefore must be called on a node object"))?;
-  let new_child_node_id = dom
-    .node_id_from_index(new_child_index)
-    .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
-  let reference_node_id = match reference_index {
-    Some(reference_index) => Some(
-      dom
-        .node_id_from_index(reference_index)
-        .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?,
-    ),
-    None => None,
+    let parent_node_id = dom
+      .node_id_from_index(parent_index)
+      .map_err(|_| VmError::TypeError("Node.insertBefore must be called on a node object"))?;
+    let new_child_node_id = dom
+      .node_id_from_index(new_child_index)
+      .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+    let reference_node_id = match reference_index {
+      Some(reference_index) => Some(
+        dom
+          .node_id_from_index(reference_index)
+          .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?,
+      ),
+      None => None,
+    };
+
+    let old_parent = dom.parent_node(new_child_node_id);
+    let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+
+    if let Err(err) = dom.insert_before(parent_node_id, new_child_node_id, reference_node_id) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment)
   };
 
-  if let Err(err) = dom.insert_before(parent_node_id, new_child_node_id, reference_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
+  sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
+  if let Some(old_parent) = old_parent {
+    if old_parent != parent_node_id {
+      sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, old_parent)?;
+    }
+  }
+  if new_child_is_fragment {
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      source_id,
+      document_obj,
+      new_child_obj,
+      new_child_node_id,
+    )?;
   }
 
   Ok(new_child_value)
 }
 
 fn node_remove_child_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5812,24 +6063,31 @@ fn node_remove_child_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let parent_node_id = {
+    let dom = unsafe { dom_ptr.as_mut() };
 
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
-    .map_err(|_| VmError::TypeError("Node.removeChild must be called on a node object"))?;
-  let child_node_id = dom
-    .node_id_from_index(child_index)
-    .map_err(|_| VmError::TypeError("Node.removeChild requires a node argument"))?;
+    let parent_node_id = dom
+      .node_id_from_index(parent_index)
+      .map_err(|_| VmError::TypeError("Node.removeChild must be called on a node object"))?;
+    let child_node_id = dom
+      .node_id_from_index(child_index)
+      .map_err(|_| VmError::TypeError("Node.removeChild requires a node argument"))?;
 
-  if let Err(err) = dom.remove_child(parent_node_id, child_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+    if let Err(err) = dom.remove_child(parent_node_id, child_node_id) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    parent_node_id
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
+  sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
 
   Ok(child_value)
 }
 
 fn node_replace_child_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5948,20 +6206,45 @@ fn node_replace_child_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment) = {
+    let dom = unsafe { dom_ptr.as_mut() };
 
-  let parent_node_id = dom
-    .node_id_from_index(parent_index)
-    .map_err(|_| VmError::TypeError("Node.replaceChild must be called on a node object"))?;
-  let new_child_node_id = dom
-    .node_id_from_index(new_child_index)
-    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
-  let old_child_node_id = dom
-    .node_id_from_index(old_child_index)
-    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+    let parent_node_id = dom
+      .node_id_from_index(parent_index)
+      .map_err(|_| VmError::TypeError("Node.replaceChild must be called on a node object"))?;
+    let new_child_node_id = dom
+      .node_id_from_index(new_child_index)
+      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+    let old_child_node_id = dom
+      .node_id_from_index(old_child_index)
+      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
 
-  if let Err(err) = dom.replace_child(parent_node_id, new_child_node_id, old_child_node_id) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let old_parent = dom.parent_node(new_child_node_id);
+    let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+
+    if let Err(err) = dom.replace_child(parent_node_id, new_child_node_id, old_child_node_id) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment)
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
+  sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
+  if let Some(old_parent) = old_parent {
+    if old_parent != parent_node_id {
+      sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, old_parent)?;
+    }
+  }
+  if new_child_is_fragment {
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      source_id,
+      document_obj,
+      new_child_obj,
+      new_child_node_id,
+    )?;
   }
 
   Ok(old_child_value)
@@ -6148,8 +6431,334 @@ fn node_next_sibling_get_native(
   node_traversal_getter(vm, scope, this, |dom, node| dom.next_sibling(node))
 }
 
+fn node_node_type_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let node_type = match &dom.node(node_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+    NodeKind::Text { .. } => 3,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::Document { .. } => 9,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
+  };
+
+  Ok(Value::Number(node_type as f64))
+}
+
+fn node_node_name_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let name = match &dom.node(node_id).kind {
+    NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
+    NodeKind::Slot { .. } => "SLOT".to_string(),
+    NodeKind::Text { .. } => "#text".to_string(),
+    NodeKind::ProcessingInstruction { target, .. } => target.to_string(),
+    NodeKind::Comment { .. } => "#comment".to_string(),
+    NodeKind::Document { .. } => "#document".to_string(),
+    NodeKind::Doctype { name, .. } => name.to_string(),
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+  };
+
+  Ok(Value::String(scope.alloc_string(&name)?))
+}
+
+fn node_owner_document_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  if node_id.index() == 0 {
+    return Ok(Value::Null);
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  Ok(Value::Object(document_obj))
+}
+
+fn node_is_connected_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::Bool(dom.is_connected_for_scripting(node_id)))
+}
+
+fn node_parent_element_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let Some(parent_id) = dom.parent_node(node_id) else {
+    return Ok(Value::Null);
+  };
+  if !matches!(
+    dom.node(parent_id).kind,
+    NodeKind::Element { .. } | NodeKind::Slot { .. }
+  ) {
+    return Ok(Value::Null);
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, parent_id)
+}
+
+fn node_last_child_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let Some(child_id) = dom.last_child(node_id) else {
+    return Ok(Value::Null);
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, child_id)
+}
+
+fn node_has_child_nodes_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  Ok(Value::Bool(dom.first_child(node_id).is_some()))
+}
+
+fn node_contains_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(other_value, Value::Null | Value::Undefined) {
+    return Ok(Value::Bool(false));
+  }
+
+  let other_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), other_value)?;
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  Ok(Value::Bool(dom.ancestors(other_id).any(|ancestor| ancestor == node_id)))
+}
+
+fn node_child_nodes_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+
+  let child_nodes_key = alloc_key(scope, NODE_CHILD_NODES_KEY)?;
+  let array = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      let array = scope.alloc_array(0)?;
+      scope.push_root(Value::Object(array))?;
+      if let Some(intrinsics) = vm.intrinsics() {
+        scope
+          .heap_mut()
+          .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+      }
+      scope.define_property(
+        wrapper_obj,
+        child_nodes_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(array),
+            writable: false,
+          },
+        },
+      )?;
+      array
+    }
+  };
+
+  sync_child_nodes_array(vm, scope, dom_source_id, document_obj, node_id, array)?;
+  Ok(Value::Object(array))
+}
+
 fn node_remove_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -6202,6 +6811,10 @@ fn node_remove_native(
   if let Err(err) = dom.remove_child(parent, node_id) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+
+  // Keep cached `childNodes` live NodeLists updated.
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, parent)?;
 
   Ok(Value::Undefined)
 }
@@ -6476,6 +7089,113 @@ fn node_text_content_set_native(
   }
 
   Ok(Value::Undefined)
+}
+
+fn text_data_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(text_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, text_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let text_id = platform.require_text_id(scope.heap(), Value::Object(text_obj))?;
+    (platform.dom_source_id(), text_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let data = dom
+    .text_data(text_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::String(scope.alloc_string(data)?))
+}
+
+fn text_data_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(text_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, text_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let text_id = platform.require_text_id(scope.heap(), Value::Object(text_obj))?;
+    (platform.dom_source_id(), text_id)
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  if let Err(err) = dom.set_text_data(text_id, &new_value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_tag_name_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let (dom_source_id, node_id) = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let node_id = platform.require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+    (platform.dom_source_id(), node_id)
+  };
+
+  let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let tag = match &dom.node(node_id).kind {
+    NodeKind::Element { tag_name, .. } => tag_name.as_str(),
+    NodeKind::Slot { .. } => "slot",
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  Ok(Value::String(scope.alloc_string(&tag.to_ascii_uppercase())?))
 }
 
 fn element_class_name_get_native(
@@ -9381,6 +10101,429 @@ fn init_window_globals(
     data_desc(Value::Object(event_target_ctor_func)),
   )?;
 
+  // --- Core DOM constructors + prototypes (Node/Element/Document/DocumentFragment/Text) ----------
+  //
+  // These are needed for `instanceof` checks in the curated WPT DOM tests.
+  if let Some(platform) = dom_platform.as_ref() {
+    let illegal_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+    let illegal_ctor_construct_id =
+      vm.register_native_construct(illegal_dom_constructor_construct_native)?;
+
+    let node_proto = platform.prototype_for(DomInterface::Node);
+    let element_proto = platform.prototype_for(DomInterface::Element);
+    let document_proto = platform.prototype_for(DomInterface::Document);
+    let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
+    let text_proto = platform.prototype_for(DomInterface::Text);
+
+    let make_illegal_ctor = |scope: &mut Scope<'_>, name: &str| -> Result<GcObject, VmError> {
+      let name = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name))?;
+      let func = scope.alloc_native_function(
+        illegal_ctor_call_id,
+        Some(illegal_ctor_construct_id),
+        name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      Ok(func)
+    };
+
+    // Node constructor + constants.
+    let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
+    scope.push_root(Value::Object(node_ctor))?;
+    scope.define_property(node_ctor, prototype_key, data_desc(Value::Object(node_proto)))?;
+    scope.define_property(
+      node_proto,
+      constructor_key,
+      data_desc(Value::Object(node_ctor)),
+    )?;
+    let node_key = alloc_key(&mut scope, "Node")?;
+    scope.define_property(global, node_key, data_desc(Value::Object(node_ctor)))?;
+
+    for (name, value) in [
+      ("ELEMENT_NODE", 1.0),
+      ("TEXT_NODE", 3.0),
+      ("DOCUMENT_NODE", 9.0),
+      ("DOCUMENT_FRAGMENT_NODE", 11.0),
+    ] {
+      let key = alloc_key(&mut scope, name)?;
+      scope.define_property(
+        node_ctor,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Number(value),
+            writable: false,
+          },
+        },
+      )?;
+    }
+
+    let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
+    scope.push_root(Value::Object(element_ctor))?;
+    scope.define_property(
+      element_ctor,
+      prototype_key,
+      data_desc(Value::Object(element_proto)),
+    )?;
+    scope.define_property(
+      element_proto,
+      constructor_key,
+      data_desc(Value::Object(element_ctor)),
+    )?;
+    let element_key = alloc_key(&mut scope, "Element")?;
+    scope.define_property(
+      global,
+      element_key,
+      data_desc(Value::Object(element_ctor)),
+    )?;
+
+    let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
+    scope.push_root(Value::Object(document_ctor))?;
+    scope.define_property(
+      document_ctor,
+      prototype_key,
+      data_desc(Value::Object(document_proto)),
+    )?;
+    scope.define_property(
+      document_proto,
+      constructor_key,
+      data_desc(Value::Object(document_ctor)),
+    )?;
+    let document_key = alloc_key(&mut scope, "Document")?;
+    scope.define_property(
+      global,
+      document_key,
+      data_desc(Value::Object(document_ctor)),
+    )?;
+
+    let document_fragment_ctor = make_illegal_ctor(&mut scope, "DocumentFragment")?;
+    scope.push_root(Value::Object(document_fragment_ctor))?;
+    scope.define_property(
+      document_fragment_ctor,
+      prototype_key,
+      data_desc(Value::Object(document_fragment_proto)),
+    )?;
+    scope.define_property(
+      document_fragment_proto,
+      constructor_key,
+      data_desc(Value::Object(document_fragment_ctor)),
+    )?;
+    let document_fragment_key = alloc_key(&mut scope, "DocumentFragment")?;
+    scope.define_property(
+      global,
+      document_fragment_key,
+      data_desc(Value::Object(document_fragment_ctor)),
+    )?;
+
+    let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
+    scope.push_root(Value::Object(text_ctor))?;
+    scope.define_property(text_ctor, prototype_key, data_desc(Value::Object(text_proto)))?;
+    scope.define_property(
+      text_proto,
+      constructor_key,
+      data_desc(Value::Object(text_ctor)),
+    )?;
+    let text_key = alloc_key(&mut scope, "Text")?;
+    scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;
+
+    // Node prototype accessors and methods used by WPT DOM tests.
+    let node_type_get_call_id = vm.register_native_call(node_node_type_get_native)?;
+    let node_type_get_name = scope.alloc_string("get nodeType")?;
+    scope.push_root(Value::String(node_type_get_name))?;
+    let node_type_get_func =
+      scope.alloc_native_function(node_type_get_call_id, None, node_type_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      node_type_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_type_get_func))?;
+    let node_type_key = alloc_key(&mut scope, "nodeType")?;
+    scope.define_property(
+      node_proto,
+      node_type_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(node_type_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let node_name_get_call_id = vm.register_native_call(node_node_name_get_native)?;
+    let node_name_get_name = scope.alloc_string("get nodeName")?;
+    scope.push_root(Value::String(node_name_get_name))?;
+    let node_name_get_func =
+      scope.alloc_native_function(node_name_get_call_id, None, node_name_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      node_name_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_name_get_func))?;
+    let node_name_key = alloc_key(&mut scope, "nodeName")?;
+    scope.define_property(
+      node_proto,
+      node_name_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(node_name_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let owner_document_get_call_id = vm.register_native_call(node_owner_document_get_native)?;
+    let owner_document_get_name = scope.alloc_string("get ownerDocument")?;
+    scope.push_root(Value::String(owner_document_get_name))?;
+    let owner_document_get_func =
+      scope.alloc_native_function(owner_document_get_call_id, None, owner_document_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      owner_document_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(owner_document_get_func))?;
+    let owner_document_key = alloc_key(&mut scope, "ownerDocument")?;
+    scope.define_property(
+      node_proto,
+      owner_document_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(owner_document_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let is_connected_get_call_id = vm.register_native_call(node_is_connected_get_native)?;
+    let is_connected_get_name = scope.alloc_string("get isConnected")?;
+    scope.push_root(Value::String(is_connected_get_name))?;
+    let is_connected_get_func =
+      scope.alloc_native_function(is_connected_get_call_id, None, is_connected_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      is_connected_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(is_connected_get_func))?;
+    let is_connected_key = alloc_key(&mut scope, "isConnected")?;
+    scope.define_property(
+      node_proto,
+      is_connected_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(is_connected_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let child_nodes_get_call_id = vm.register_native_call(node_child_nodes_get_native)?;
+    let child_nodes_get_name = scope.alloc_string("get childNodes")?;
+    scope.push_root(Value::String(child_nodes_get_name))?;
+    let child_nodes_get_func =
+      scope.alloc_native_function(child_nodes_get_call_id, None, child_nodes_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      child_nodes_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(child_nodes_get_func))?;
+    let child_nodes_key = alloc_key(&mut scope, "childNodes")?;
+    scope.define_property(
+      node_proto,
+      child_nodes_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(child_nodes_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let parent_element_get_call_id = vm.register_native_call(node_parent_element_get_native)?;
+    let parent_element_get_name = scope.alloc_string("get parentElement")?;
+    scope.push_root(Value::String(parent_element_get_name))?;
+    let parent_element_get_func = scope.alloc_native_function(
+      parent_element_get_call_id,
+      None,
+      parent_element_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      parent_element_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_element_get_func))?;
+    let parent_element_key = alloc_key(&mut scope, "parentElement")?;
+    scope.define_property(
+      node_proto,
+      parent_element_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(parent_element_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let last_child_get_call_id = vm.register_native_call(node_last_child_get_native)?;
+    let last_child_get_name = scope.alloc_string("get lastChild")?;
+    scope.push_root(Value::String(last_child_get_name))?;
+    let last_child_get_func =
+      scope.alloc_native_function(last_child_get_call_id, None, last_child_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      last_child_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(last_child_get_func))?;
+    let last_child_key = alloc_key(&mut scope, "lastChild")?;
+    scope.define_property(
+      node_proto,
+      last_child_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(last_child_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let contains_call_id = vm.register_native_call(node_contains_native)?;
+    let contains_name = scope.alloc_string("contains")?;
+    scope.push_root(Value::String(contains_name))?;
+    let contains_func = scope.alloc_native_function(contains_call_id, None, contains_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      contains_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(contains_func))?;
+    let contains_key = alloc_key(&mut scope, "contains")?;
+    scope.define_property(node_proto, contains_key, data_desc(Value::Object(contains_func)))?;
+
+    let has_child_nodes_call_id = vm.register_native_call(node_has_child_nodes_native)?;
+    let has_child_nodes_name = scope.alloc_string("hasChildNodes")?;
+    scope.push_root(Value::String(has_child_nodes_name))?;
+    let has_child_nodes_func = scope.alloc_native_function(
+      has_child_nodes_call_id,
+      None,
+      has_child_nodes_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      has_child_nodes_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(has_child_nodes_func))?;
+    let has_child_nodes_key = alloc_key(&mut scope, "hasChildNodes")?;
+    scope.define_property(
+      node_proto,
+      has_child_nodes_key,
+      data_desc(Value::Object(has_child_nodes_func)),
+    )?;
+
+    // Element.tagName
+    let tag_name_get_call_id = vm.register_native_call(element_tag_name_get_native)?;
+    let tag_name_get_name = scope.alloc_string("get tagName")?;
+    scope.push_root(Value::String(tag_name_get_name))?;
+    let tag_name_get_func =
+      scope.alloc_native_function(tag_name_get_call_id, None, tag_name_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      tag_name_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tag_name_get_func))?;
+    let tag_name_key = alloc_key(&mut scope, "tagName")?;
+    scope.define_property(
+      element_proto,
+      tag_name_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(tag_name_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // DocumentFragment.getElementById
+    let frag_get_element_by_id_call_id =
+      vm.register_native_call(document_fragment_get_element_by_id_native)?;
+    let frag_get_element_by_id_name = scope.alloc_string("getElementById")?;
+    scope.push_root(Value::String(frag_get_element_by_id_name))?;
+    let frag_get_element_by_id_func = scope.alloc_native_function(
+      frag_get_element_by_id_call_id,
+      None,
+      frag_get_element_by_id_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      frag_get_element_by_id_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(frag_get_element_by_id_func))?;
+    let frag_get_element_by_id_key = alloc_key(&mut scope, "getElementById")?;
+    scope.define_property(
+      document_fragment_proto,
+      frag_get_element_by_id_key,
+      data_desc(Value::Object(frag_get_element_by_id_func)),
+    )?;
+
+    // Text.data
+    let text_data_get_call_id = vm.register_native_call(text_data_get_native)?;
+    let text_data_get_name = scope.alloc_string("get data")?;
+    scope.push_root(Value::String(text_data_get_name))?;
+    let text_data_get_func =
+      scope.alloc_native_function(text_data_get_call_id, None, text_data_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      text_data_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(text_data_get_func))?;
+
+    let text_data_set_call_id = vm.register_native_call(text_data_set_native)?;
+    let text_data_set_name = scope.alloc_string("set data")?;
+    scope.push_root(Value::String(text_data_set_name))?;
+    let text_data_set_func =
+      scope.alloc_native_function(text_data_set_call_id, None, text_data_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      text_data_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(text_data_set_func))?;
+
+    let text_data_key = alloc_key(&mut scope, "data")?;
+    scope.define_property(
+      text_proto,
+      text_data_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(text_data_get_func),
+          set: Value::Object(text_data_set_func),
+        },
+      },
+    )?;
+  }
+
   // Store shared function objects on document so wrappers can reuse them.
   let add_event_listener_internal_key = alloc_key(&mut scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
   scope.define_property(
@@ -11804,7 +12947,9 @@ mod tests {
         const a = document.getElementById('a');\n\
         const b = document.getElementById('b');\n\
         return a.parentNode === root\n\
+          && a.parentElement === root\n\
           && root.firstChild === a\n\
+          && root.lastChild === b\n\
           && a.previousSibling === null\n\
           && a.nextSibling === b\n\
           && b.previousSibling === a\n\
@@ -11844,6 +12989,165 @@ mod tests {
     let root = dom.get_element_by_id("root").expect("missing #root");
     assert_eq!(dom.inner_html(root).unwrap(), r#"<span id="b"></span>"#);
 
+    Ok(())
+  }
+
+  #[test]
+  fn node_child_nodes_is_live_and_cached_across_mutations() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        function clear_children(node) {\n\
+          while (node.childNodes.length !== 0) {\n\
+            node.removeChild(node.childNodes[0]);\n\
+          }\n\
+        }\n\
+        const body = document.body;\n\
+        clear_children(body);\n\
+\n\
+        const parent = document.createElement('div');\n\
+        body.appendChild(parent);\n\
+\n\
+        const fragment = document.createDocumentFragment();\n\
+        const a = document.createElement('span');\n\
+        a.id = 'a';\n\
+        const b = document.createElement('span');\n\
+        b.id = 'b';\n\
+        fragment.appendChild(a);\n\
+        fragment.appendChild(b);\n\
+\n\
+        const parent_nodes = parent.childNodes;\n\
+        const frag_nodes = fragment.childNodes;\n\
+        if (!(parent_nodes.length === 0\n\
+              && frag_nodes.length === 2\n\
+              && frag_nodes[0] === a\n\
+              && frag_nodes[1] === b)) return false;\n\
+\n\
+        const returned = parent.appendChild(fragment);\n\
+        if (returned !== fragment) return false;\n\
+\n\
+        // Cached arrays should update in place.\n\
+        if (!(parent_nodes.length === 2\n\
+              && parent_nodes[0] === a\n\
+              && parent_nodes[1] === b)) return false;\n\
+        if (frag_nodes.length !== 0) return false;\n\
+        if (fragment.parentNode !== null) return false;\n\
+        if (a.parentNode !== parent || b.parentNode !== parent) return false;\n\
+        if (parent.childNodes !== parent_nodes) return false;\n\
+        if (fragment.childNodes !== frag_nodes) return false;\n\
+\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn get_element_by_id_skips_inert_template_and_fragments_are_searchable() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        function clear_children(node) {\n\
+          while (node.childNodes.length !== 0) {\n\
+            node.removeChild(node.childNodes[0]);\n\
+          }\n\
+        }\n\
+        clear_children(document.body);\n\
+\n\
+        if (document.getElementById('missing') !== null) return false;\n\
+\n\
+        const tmpl = document.createElement('template');\n\
+        tmpl.id = 'tmpl';\n\
+        document.body.appendChild(tmpl);\n\
+        const inside = document.createElement('div');\n\
+        inside.id = 'inside';\n\
+        tmpl.appendChild(inside);\n\
+        if (document.getElementById('tmpl') !== tmpl) return false;\n\
+        if (document.getElementById('inside') !== null) return false;\n\
+\n\
+        const frag = document.createDocumentFragment();\n\
+        const f1 = document.createElement('div');\n\
+        f1.id = 'f1';\n\
+        frag.appendChild(f1);\n\
+        const f2 = document.createElement('div');\n\
+        f2.id = 'f2';\n\
+        frag.appendChild(f2);\n\
+        if (frag.getElementById('missing') !== null) return false;\n\
+        if (frag.getElementById('f1') !== f1) return false;\n\
+        if (frag.getElementById('f2') !== f2) return false;\n\
+        if (document.getElementById('f1') !== null) return false;\n\
+\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn text_node_basics_instanceof_owner_document_and_is_connected() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const text = document.createTextNode('hi');\n\
+        if (!(text instanceof Text)) return false;\n\
+        if (!(text instanceof Node)) return false;\n\
+        if (text.nodeType !== Node.TEXT_NODE) return false;\n\
+        if (text.nodeName !== '#text') return false;\n\
+        if (text.data !== 'hi') return false;\n\
+        text.data = 'a&b<>';\n\
+        if (text.data !== 'a&b<>') return false;\n\
+        text.textContent = 'x';\n\
+        if (text.data !== 'x') return false;\n\
+\n\
+        const el = document.createElement('div');\n\
+        if (el.isConnected) return false;\n\
+        if (el.ownerDocument !== document) return false;\n\
+        document.body.appendChild(el);\n\
+        if (!el.isConnected) return false;\n\
+        if (text.isConnected) return false;\n\
+        el.appendChild(text);\n\
+        if (!text.isConnected) return false;\n\
+        if (text.ownerDocument !== document) return false;\n\
+\n\
+        const frag = document.createDocumentFragment();\n\
+        if (frag.isConnected) return false;\n\
+        if (frag.ownerDocument !== document) return false;\n\
+        if (document.ownerDocument !== null) return false;\n\
+        if (!document.isConnected) return false;\n\
+\n\
+        if (!(document instanceof Document)) return false;\n\
+        if (!(el instanceof Element)) return false;\n\
+        if (!(frag instanceof DocumentFragment)) return false;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
