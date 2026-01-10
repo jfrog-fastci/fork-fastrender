@@ -5007,6 +5007,139 @@ pub fn string_prototype_trim(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.toLowerCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_lower_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let units = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()
+  };
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let u = units[i];
+    let (ch, consumed) = if (0xD800..=0xDBFF).contains(&u)
+      && i + 1 < units.len()
+      && (0xDC00..=0xDFFF).contains(&units[i + 1])
+    {
+      let high = (u as u32) - 0xD800;
+      let low = (units[i + 1] as u32) - 0xDC00;
+      let cp = 0x10000 + ((high << 10) | low);
+      (char::from_u32(cp).ok_or(VmError::InvariantViolation("invalid surrogate pair"))?, 2usize)
+    } else if (0xD800..=0xDFFF).contains(&u) {
+      // Unpaired surrogate: case conversion leaves it unchanged.
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push(u);
+      i += 1;
+      continue;
+    } else {
+      (
+        char::from_u32(u as u32).ok_or(VmError::InvariantViolation("invalid utf-16 code unit"))?,
+        1usize,
+      )
+    };
+
+    for mapped in ch.to_lowercase() {
+      let mut buf = [0u16; 2];
+      let encoded = mapped.encode_utf16(&mut buf);
+      out
+        .try_reserve(encoded.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.extend_from_slice(encoded);
+    }
+    i += consumed;
+  }
+
+  let out = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out))
+}
+
+/// `String.prototype.toUpperCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_upper_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let units = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()
+  };
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let u = units[i];
+    let (ch, consumed) = if (0xD800..=0xDBFF).contains(&u)
+      && i + 1 < units.len()
+      && (0xDC00..=0xDFFF).contains(&units[i + 1])
+    {
+      let high = (u as u32) - 0xD800;
+      let low = (units[i + 1] as u32) - 0xDC00;
+      let cp = 0x10000 + ((high << 10) | low);
+      (char::from_u32(cp).ok_or(VmError::InvariantViolation("invalid surrogate pair"))?, 2usize)
+    } else if (0xD800..=0xDFFF).contains(&u) {
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push(u);
+      i += 1;
+      continue;
+    } else {
+      (
+        char::from_u32(u as u32).ok_or(VmError::InvariantViolation("invalid utf-16 code unit"))?,
+        1usize,
+      )
+    };
+
+    for mapped in ch.to_uppercase() {
+      let mut buf = [0u16; 2];
+      let encoded = mapped.encode_utf16(&mut buf);
+      out
+        .try_reserve(encoded.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.extend_from_slice(encoded);
+    }
+    i += consumed;
+  }
+
+  let out = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out))
+}
+
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:

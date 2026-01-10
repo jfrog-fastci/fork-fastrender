@@ -469,3 +469,14 @@ fn string_prototype_trim_works_and_is_generic() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn string_prototype_to_lower_upper_case_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""AbC".toLowerCase() === "abc" && "abc".toUpperCase() === "ABC" && "\u00df".toUpperCase() === "SS" && String.prototype.toLowerCase.call(123) === "123" && String.prototype.toUpperCase.call(123) === "123""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
