@@ -8,7 +8,6 @@ use super::{
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
   trim_ascii_whitespace,
 };
-use super::trim_ascii_whitespace;
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
@@ -208,7 +207,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     .ok()
     .flatten()
     .map(|value| {
-      let value = super::trim_ascii_whitespace(value);
+      let value = trim_ascii_whitespace(value);
       if value.eq_ignore_ascii_case("use-credentials") {
         crate::resource::CorsMode::UseCredentials
       } else {
