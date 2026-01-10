@@ -5,7 +5,7 @@ use fastrender::js::{
   WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::{
-  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result,
+  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, DiagnosticsLevel, Error, RenderOptions, Result,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1004,7 +1004,66 @@ fn browser_tab_lifecycle_events_invoke_js_listeners_and_microtasks() -> Result<(
     Some("listener:rs:interactive|microtask:rs:interactive|listener:dom|microtask:dom|listener:rs:complete|listener:load|microtask:rs:complete|microtask:load|"),
     "expected lifecycle event + microtask ordering to match HTML semantics"
   );
+  Ok(())
+}
 
+#[test]
+fn browser_tab_executes_vm_js_scripts_that_mutate_dom_and_pixels() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          html { background: rgb(255, 0, 0); }
+          html.x { background: rgb(0, 255, 0); }
+        </style>
+      </head>
+      <body>
+        <script>throw new Error("boom");</script>
+        <script>
+          if (!document.currentScript) {
+            throw new Error("missing currentScript");
+          }
+          Promise.resolve().then(() => {
+            document.documentElement.className = "x";
+          });
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let mut tab = BrowserTab::from_html(html, options, VmJsBrowserTabExecutor::default())?;
+
+  // Drive the event loop + rendering until stable so Promise jobs are processed and styles are
+  // re-applied before we sample pixels.
+  let _ = tab.run_until_stable(10)?;
+
+  let dom = tab.dom();
+  let html_id = dom.document_element().expect("documentElement");
+  assert_eq!(
+    dom.class_name(html_id).map_err(|e| Error::Other(e.to_string()))?,
+    Some("x")
+  );
+
+  let pixmap = tab.render_frame()?;
+  assert_eq!(rgba_at(&pixmap, 32, 32), [0, 255, 0, 255]);
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics
+      .js_exceptions
+      .iter()
+      .any(|exception| exception.message.contains("boom")),
+    "expected thrown exception to be captured; got {:?}",
+    diagnostics.js_exceptions
+  );
   Ok(())
 }
 
