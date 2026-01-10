@@ -3,108 +3,155 @@
 // Curated EventTarget propagation checks using an explicit parent chain:
 // `new EventTarget(parent)`.
 
-test(() => {
-  var order_step = 0;
+// --- capture/target/bubble ordering ---
+var eventtarget_order_window_order_step = 0;
 
-  function order_root_capture(_e) {
-    assert_equals(order_step, 0, "root capture ran out of order");
-    order_step = 1;
-  }
+function eventtarget_order_window_order_root_capture(_e) {
+  assert_equals(eventtarget_order_window_order_step, 0, "root capture ran out of order");
+  eventtarget_order_window_order_step = 1;
+}
 
-  function order_parent_capture(_e) {
-    assert_equals(order_step, 1, "parent capture ran out of order");
-    order_step = 2;
-  }
+function eventtarget_order_window_order_parent_capture(_e) {
+  assert_equals(eventtarget_order_window_order_step, 1, "parent capture ran out of order");
+  eventtarget_order_window_order_step = 2;
+}
 
-  function order_target_capture(_e) {
-    assert_equals(order_step, 2, "target capture ran out of order");
-    order_step = 3;
-  }
+function eventtarget_order_window_order_target_capture(_e) {
+  assert_equals(eventtarget_order_window_order_step, 2, "target capture ran out of order");
+  eventtarget_order_window_order_step = 3;
+}
 
-  function order_target_bubble(_e) {
-    assert_equals(order_step, 3, "target bubble ran out of order");
-    order_step = 4;
-  }
+function eventtarget_order_window_order_target_bubble(_e) {
+  assert_equals(eventtarget_order_window_order_step, 3, "target bubble ran out of order");
+  eventtarget_order_window_order_step = 4;
+}
 
-  function order_parent_bubble(_e) {
-    assert_equals(order_step, 4, "parent bubble ran out of order");
-    order_step = 5;
-  }
+function eventtarget_order_window_order_parent_bubble(_e) {
+  assert_equals(eventtarget_order_window_order_step, 4, "parent bubble ran out of order");
+  eventtarget_order_window_order_step = 5;
+}
 
-  function order_root_bubble(_e) {
-    assert_equals(order_step, 5, "root bubble ran out of order");
-    order_step = 6;
-  }
+function eventtarget_order_window_order_root_bubble(_e) {
+  assert_equals(eventtarget_order_window_order_step, 5, "root bubble ran out of order");
+  eventtarget_order_window_order_step = 6;
+}
 
-  var root = new EventTarget();
-  var parent = new EventTarget(root);
-  var target = new EventTarget(parent);
+function eventtarget_order_window_capture_target_bubble_order_test() {
+  eventtarget_order_window_order_step = 0;
 
-  root.addEventListener("order", order_root_capture, { capture: true });
-  parent.addEventListener("order", order_parent_capture, { capture: true });
-  target.addEventListener("order", order_target_capture, { capture: true });
-  target.addEventListener("order", order_target_bubble);
-  parent.addEventListener("order", order_parent_bubble);
-  root.addEventListener("order", order_root_bubble);
+  var order_root = new EventTarget();
+  var order_parent = new EventTarget(order_root);
+  var order_target = new EventTarget(order_parent);
 
-  target.dispatchEvent(new Event("order", { bubbles: true }));
-  assert_equals(order_step, 6, "expected capture/target/bubble listeners to all run");
-}, "capture/target/bubble ordering through an explicit EventTarget parent chain");
+  order_root.addEventListener("order", eventtarget_order_window_order_root_capture, {
+    capture: true,
+  });
+  order_parent.addEventListener("order", eventtarget_order_window_order_parent_capture, {
+    capture: true,
+  });
+  order_target.addEventListener("order", eventtarget_order_window_order_target_capture, {
+    capture: true,
+  });
+  order_target.addEventListener("order", eventtarget_order_window_order_target_bubble);
+  order_parent.addEventListener("order", eventtarget_order_window_order_parent_bubble);
+  order_root.addEventListener("order", eventtarget_order_window_order_root_bubble);
 
-test(() => {
-  var parent_ran = false;
-  var root_ran = false;
+  order_target.dispatchEvent(new Event("order", { bubbles: true }));
 
-  function stop_parent_listener(e) {
-    parent_ran = true;
-    e.stopPropagation();
-  }
+  assert_equals(
+    eventtarget_order_window_order_step,
+    6,
+    "expected capture/target/bubble listeners to all run"
+  );
+}
 
-  function stop_root_listener(_e) {
-    root_ran = true;
-  }
+test(
+  eventtarget_order_window_capture_target_bubble_order_test,
+  "EventTarget propagation runs capture, then at-target, then bubble"
+);
 
-  var root = new EventTarget();
-  var parent = new EventTarget(root);
-  var target = new EventTarget(parent);
+// --- stopPropagation ---
+var eventtarget_order_window_stop_parent_ran = false;
+var eventtarget_order_window_stop_root_ran = false;
 
-  parent.addEventListener("stop-propagation", stop_parent_listener);
-  root.addEventListener("stop-propagation", stop_root_listener);
-  target.dispatchEvent(new Event("stop-propagation", { bubbles: true }));
+function eventtarget_order_window_stop_parent_listener(e) {
+  eventtarget_order_window_stop_parent_ran = true;
+  e.stopPropagation();
+}
 
-  assert_true(parent_ran, "parent listener did not run");
-  assert_false(root_ran, "stopPropagation should prevent dispatch to root");
-}, "stopPropagation stops propagation to ancestors");
+function eventtarget_order_window_stop_root_listener(_e) {
+  eventtarget_order_window_stop_root_ran = true;
+}
 
-test(() => {
-  var first_ran = false;
-  var second_ran = false;
-  var parent_ran = false;
+function eventtarget_order_window_stop_propagation_test() {
+  eventtarget_order_window_stop_parent_ran = false;
+  eventtarget_order_window_stop_root_ran = false;
 
-  function immediate_first_listener(e) {
-    first_ran = true;
-    e.stopImmediatePropagation();
-  }
+  var stop_root = new EventTarget();
+  var stop_parent = new EventTarget(stop_root);
+  var stop_target = new EventTarget(stop_parent);
 
-  function immediate_second_listener(_e) {
-    second_ran = true;
-  }
+  stop_parent.addEventListener("stop-propagation", eventtarget_order_window_stop_parent_listener);
+  stop_root.addEventListener("stop-propagation", eventtarget_order_window_stop_root_listener);
+  stop_target.dispatchEvent(new Event("stop-propagation", { bubbles: true }));
 
-  function immediate_parent_listener(_e) {
-    parent_ran = true;
-  }
+  assert_true(eventtarget_order_window_stop_parent_ran, "parent listener did not run");
+  assert_false(
+    eventtarget_order_window_stop_root_ran,
+    "stopPropagation should prevent dispatch to root"
+  );
+}
 
-  var root = new EventTarget();
-  var parent = new EventTarget(root);
-  var target = new EventTarget(parent);
+test(
+  eventtarget_order_window_stop_propagation_test,
+  "stopPropagation stops dispatch to further ancestors"
+);
 
-  target.addEventListener("stop-immediate", immediate_first_listener);
-  target.addEventListener("stop-immediate", immediate_second_listener);
-  parent.addEventListener("stop-immediate", immediate_parent_listener);
+// --- stopImmediatePropagation ---
+var eventtarget_order_window_immediate_first_ran = false;
+var eventtarget_order_window_immediate_second_ran = false;
+var eventtarget_order_window_immediate_parent_ran = false;
 
-  target.dispatchEvent(new Event("stop-immediate", { bubbles: true }));
+function eventtarget_order_window_immediate_first_listener(e) {
+  eventtarget_order_window_immediate_first_ran = true;
+  e.stopImmediatePropagation();
+}
 
-  assert_true(first_ran, "first listener did not run");
-  assert_false(second_ran, "stopImmediatePropagation should stop other listeners on the same target");
-  assert_false(parent_ran, "stopImmediatePropagation should stop propagation to parents");
-}, "stopImmediatePropagation stops remaining listeners on the current target and stops propagation");
+function eventtarget_order_window_immediate_second_listener(_e) {
+  eventtarget_order_window_immediate_second_ran = true;
+}
+
+function eventtarget_order_window_immediate_parent_listener(_e) {
+  eventtarget_order_window_immediate_parent_ran = true;
+}
+
+function eventtarget_order_window_stop_immediate_propagation_test() {
+  eventtarget_order_window_immediate_first_ran = false;
+  eventtarget_order_window_immediate_second_ran = false;
+  eventtarget_order_window_immediate_parent_ran = false;
+
+  var immediate_root = new EventTarget();
+  var immediate_parent = new EventTarget(immediate_root);
+  var immediate_target = new EventTarget(immediate_parent);
+
+  immediate_target.addEventListener("stop-immediate", eventtarget_order_window_immediate_first_listener);
+  immediate_target.addEventListener("stop-immediate", eventtarget_order_window_immediate_second_listener);
+  immediate_parent.addEventListener("stop-immediate", eventtarget_order_window_immediate_parent_listener);
+
+  immediate_target.dispatchEvent(new Event("stop-immediate", { bubbles: true }));
+
+  assert_true(eventtarget_order_window_immediate_first_ran, "first listener did not run");
+  assert_false(
+    eventtarget_order_window_immediate_second_ran,
+    "stopImmediatePropagation should stop other listeners on the same target"
+  );
+  assert_false(
+    eventtarget_order_window_immediate_parent_ran,
+    "stopImmediatePropagation should stop propagation to parents"
+  );
+}
+
+test(
+  eventtarget_order_window_stop_immediate_propagation_test,
+  "stopImmediatePropagation stops other listeners and stops propagation to ancestors"
+);
