@@ -86,10 +86,24 @@ fn scroll_to_reveal_rect(
     if viewport.height.is_finite() { viewport.height.max(0.0) } else { 0.0 },
   );
 
-  // Focus-driven auto-scroll currently only adjusts the vertical (block) axis. This matches typical
-  // browser UX for Tab traversal (scroll down to follow focus) and avoids surprising horizontal page
-  // jumps for common patterns like visually-hidden form controls (e.g. `left:-9999px`).
-  let next_x = current_scroll.x;
+  // Focus-driven auto-scroll adjusts both axes, but we clamp horizontal scrolling to non-negative
+  // offsets. The renderer's scroll bounds can become negative when content is positioned off-screen
+  // to the left (e.g. `left:-9999px` hacks for visually-hidden form controls). Browsers generally
+  // do not scroll to negative `scrollLeft` values, and doing so would cause extremely surprising
+  // page jumps during focus traversal.
+  let horizontal_bounds = ScrollBounds {
+    min_x: bounds.min_x.max(0.0),
+    max_x: bounds.max_x.max(0.0),
+    ..bounds
+  };
+
+  let next_x = adjust_scroll_axis_nearest(
+    current_scroll.x,
+    target.min_x(),
+    target.max_x(),
+    viewport.width,
+    padding,
+  );
   let next_y = adjust_scroll_axis_nearest(
     current_scroll.y,
     target.min_y(),
@@ -97,7 +111,7 @@ fn scroll_to_reveal_rect(
     viewport.height,
     padding,
   );
-  bounds.clamp(Point::new(next_x, next_y))
+  horizontal_bounds.clamp(Point::new(next_x, next_y))
 }
 
 fn collect_box_ids_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> FxHashSet<usize> {

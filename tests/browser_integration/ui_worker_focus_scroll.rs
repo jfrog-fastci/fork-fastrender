@@ -249,6 +249,141 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 }
 
 #[test]
+fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
+  let _lock = super::stage_listener_test_lock();
+
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #scroller {
+            width: 200px;
+            height: 100px;
+            overflow-x: scroll;
+            overflow-y: hidden;
+            border: 0;
+            background: rgb(0,0,0);
+          }
+          #content {
+            position: relative;
+            width: 1200px;
+            height: 100px;
+          }
+          #target {
+            position: absolute;
+            left: 800px;
+            top: 10px;
+            width: 120px;
+            height: 30px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgb(255,0,0);
+          }
+        </style>
+      </head>
+      <body>
+        <div id="scroller">
+          <div id="content">
+            <input id="target" value="hello" />
+          </div>
+        </div>
+      </body>
+    </html>
+  "#;
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+
+  let handle = spawn_ui_worker("fastr-ui-worker-focus-scroll-horizontal").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+  assert!(
+    frame.scroll_state.elements.is_empty(),
+    "expected initial element scroll offsets to be empty"
+  );
+
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+
+  // The focused input is at x=800 within a 200px wide horizontal scrollport; tabbing to it should
+  // scroll the element scroller along the inline axis so it becomes visible.
+  let frame = {
+    let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+      let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::from_secs(0));
+      assert!(remaining > Duration::ZERO, "timed out waiting for focused scroll frame");
+      let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
+      match msg {
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+          if frame
+            .scroll_state
+            .elements
+            .values()
+            .any(|offset| offset.x > 0.0)
+          {
+            break frame;
+          }
+        }
+        _ => {}
+      }
+    }
+  };
+
+  assert_eq!(
+    frame.scroll_state.viewport.x, 0.0,
+    "expected focus scroll to adjust the nested scroller, not the viewport"
+  );
+  assert_eq!(
+    frame.scroll_state.viewport.y, 0.0,
+    "expected focus scroll to adjust the nested scroller, not the viewport"
+  );
+  assert_eq!(
+    frame.scroll_state.elements.len(),
+    1,
+    "expected exactly one element scroller to be updated"
+  );
+
+  let scroll_x = frame
+    .scroll_state
+    .elements
+    .values()
+    .next()
+    .copied()
+    .expect("element scroll offset")
+    .x;
+  assert!(scroll_x.is_finite() && scroll_x > 0.0, "expected element scroll x > 0, got {scroll_x}");
+
+  let viewport_left = scroll_x;
+  let viewport_right = scroll_x + 200.0;
+  let input_left = 800.0;
+  let input_right = 800.0 + 120.0;
+  assert!(
+    viewport_left <= input_left && viewport_right >= input_right,
+    "expected focused input [{input_left}, {input_right}] to be visible in nested scrollport [{viewport_left}, {viewport_right}]",
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn click_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   let _lock = super::stage_listener_test_lock();
 
