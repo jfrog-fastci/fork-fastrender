@@ -235,6 +235,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
       });
 
       {
+        let heap = window_realm.heap_mut();
         let mut scope = heap.scope();
         // Always clear the registry entry after the callback runs, even if it throws.
         let _ = clear_registry_entry(&mut scope, registry, id);

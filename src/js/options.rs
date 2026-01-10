@@ -15,9 +15,10 @@ use super::{QueueLimits, RunLimits};
 /// - VM limits (instruction count, heap budget, stack depth) enforced by the JS engine.
 ///
 /// This struct is the single configuration surface for all of the above *JS-specific* limits. Some
-/// fields are currently host-enforced and others are enforced by the active JS backend (currently
-/// `vm-js`). When FastRender is built against a different JS engine, VM-specific fields may be
-/// treated as best-effort/no-ops until that backend exposes equivalent budgeting hooks.
+/// fields are host-enforced (event loop queue/run limits) while others are enforced by the active
+/// JS engine backend (today: `vm-js`). When FastRender is built against a different JS engine,
+/// VM-specific fields may be treated as best-effort/no-ops until that backend exposes equivalent
+/// budgeting hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsExecutionOptions {
   /// Bounds for how much work can be *queued* in the host event loop.
@@ -52,7 +53,8 @@ pub struct JsExecutionOptions {
   /// navigation.
   pub max_document_write_calls: usize,
 
-  /// VM budget: maximum number of VM instructions that may be executed before the VM is interrupted.
+  /// VM budget: maximum number of VM "ticks" (fuel units) that may be executed before the VM
+  /// terminates execution.
   ///
   /// For the `vm-js` backend, this is mapped to [`vm_js::Budget::fuel`].
   pub max_instruction_count: Option<u64>,

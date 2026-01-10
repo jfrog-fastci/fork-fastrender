@@ -22,9 +22,8 @@ fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &m
   fn drain<Host: WindowRealmHost>(host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     with_event_loop(event_loop, || {
       let realm = host.window_realm();
-      realm.reset_interrupt();
-      let (vm, heap) = realm.vm_and_heap_mut();
-      vm.perform_microtask_checkpoint(heap)
+      realm
+        .perform_microtask_checkpoint()
         .map_err(|err| Error::Other(err.to_string()))?;
       Ok(())
     })

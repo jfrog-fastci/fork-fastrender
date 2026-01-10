@@ -3085,7 +3085,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 reject,
                 Value::Undefined,
                 &[reason],
-              )?;
+                )?;
               Ok(())
             });
 

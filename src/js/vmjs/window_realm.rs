@@ -289,6 +289,11 @@ impl WindowRealm {
     if let Some(max_stack_depth) = js_execution_options.max_stack_depth {
       config.vm_options.max_stack_depth = max_stack_depth;
     }
+    // Also propagate per-run budgets into VM construction-time defaults. We still reset the budget
+    // before each JS "turn" so the deadline is relative to the current turn and incorporates the
+    // root render deadline.
+    config.vm_options.default_fuel = js_execution_options.max_instruction_count;
+    config.vm_options.default_deadline = js_execution_options.event_loop_run_limits.max_wall_time;
     let enforced_heap_max_bytes = config.heap_limits.max_bytes;
     let enforced_stack_depth = config.vm_options.max_stack_depth;
 
@@ -303,6 +308,7 @@ impl WindowRealm {
 
   pub fn reset_interrupt(&self) {
     self.interrupt_flag.store(false, Ordering::Relaxed);
+    self.runtime.vm.reset_interrupt();
   }
 
   pub(crate) fn vm_budget_now(&self) -> vm_js::Budget {
@@ -465,6 +471,10 @@ impl WindowRealm {
     })();
     self.runtime.vm.restore_budget_state(prev_budget);
     result
+  }
+
+  pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
+    self.with_vm_budget(|rt| rt.vm.perform_microtask_checkpoint(&mut rt.heap))
   }
 }
 

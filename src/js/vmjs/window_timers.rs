@@ -826,6 +826,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
       });
 
       {
+        let heap = window_realm.heap_mut();
         let mut scope = heap.scope();
         // Always clear the registry entry for one-shot timeouts, even if the callback throws.
         let _ = clear_registry_entry(&mut scope, registry, id);
@@ -971,6 +972,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         // On error, cancel the interval and drop JS references to avoid repeated errors/leaks.
         event_loop.clear_interval(id);
         {
+          let heap = window_realm.heap_mut();
           let mut scope = heap.scope();
           let _ = clear_registry_entry(&mut scope, registry, id);
         }
@@ -1094,7 +1096,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
           .map(|_| ())
       });
 
-      heap.remove_root(root);
+      window_realm.heap_mut().remove_root(root);
 
       result
     })
