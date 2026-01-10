@@ -709,6 +709,74 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_script_async_get",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32| {
+        let result = dom.borrow().with_dom(|dom| {
+          let node_id = dom.node_id_from_index(node as usize)?;
+          let is_script = matches!(
+            &dom.node(node_id).kind,
+            NodeKind::Element {
+              tag_name,
+              namespace,
+              ..
+            } if (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
+              && tag_name.eq_ignore_ascii_case("script")
+          );
+          if is_script {
+            let force_async = dom.node(node_id).script_force_async;
+            let has_attr = dom.has_attribute(node_id, "async")?;
+            Ok(force_async || has_attr)
+          } else {
+            dom.has_attribute(node_id, "async")
+          }
+        });
+        match result {
+          Ok(v) => Ok(v),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_script_async_set",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, value: bool| {
+        let mut host = dom.borrow_mut();
+        let result = host.mutate_dom(|dom| {
+          let node_id = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          let is_script = matches!(
+            &dom.node(node_id).kind,
+            NodeKind::Element {
+              tag_name,
+              namespace,
+              ..
+            } if (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
+              && tag_name.eq_ignore_ascii_case("script")
+          );
+          if is_script {
+            dom.node_mut(node_id).script_force_async = false;
+          }
+          match dom.set_bool_attribute(node_id, "async", value) {
+            Ok(changed) => (Ok(()), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(_) => Ok(()),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_dataset_get",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -1618,7 +1686,20 @@ const DOM_BINDINGS_SHIM: &str = r##"
   defineReflectedString("crossOrigin", "crossorigin");
   defineReflectedString("height", "height");
   defineReflectedString("width", "width");
-  defineReflectedBool("async", "async");
+  try {
+    Object.defineProperty(Element.prototype, "async", {
+      get: function () {
+        return !!g.__fastrender_dom_script_async_get(this.__node_id);
+      },
+      set: function (value) {
+        g.__fastrender_dom_script_async_set(this.__node_id, !!value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
   defineReflectedBool("defer", "defer");
 
   // --- classList -------------------------------------------------------------
@@ -2513,18 +2594,18 @@ const DOM_BINDINGS_SHIM: &str = r##"
         &ctx,
         r#"(() => {
           try {
-            document.cloneNode();
-            return "no throw";
+            const cloned = document.cloneNode();
+            return String(cloned.nodeType) + "|" + String(cloned.nodeName) + "|" + String(cloned !== document);
           } catch (e) {
             return String(e.name) + "|" + String(e instanceof DOMException);
           }
         })()"#,
        );
-        assert_eq!(out, "NotSupportedError|true");
+        assert_eq!(out, "9|#document|true");
 
-        let out = eval_str(
-          &ctx,
-          r#"(() => {
+         let out = eval_str(
+           &ctx,
+           r#"(() => {
             try {
               document.querySelector("[");
              return "no throw";
@@ -2868,6 +2949,66 @@ const DOM_BINDINGS_SHIM: &str = r##"
       "expected script.textContent to create a single text child"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn script_async_defaults_true_and_setter_clears_force_async() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            function assert(cond) { if (!cond) throw new Error("assert"); }
+            var s = document.createElement("script");
+            assert(s.async === true);
+            assert(s.getAttribute("async") === null);
+            s.async = false;
+            assert(s.getAttribute("async") === null);
+            assert(s.async === false);
+            s.setAttribute("async", "");
+            s.removeAttribute("async");
+            assert(s.async === false);
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_script_async_is_false() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(concat!(
+      "<!doctype html>",
+      "<html><head><script id=s></script></head><body></body></html>",
+    ))?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var s = document.getElementById("s");
+            if (!s) throw new Error("missing");
+            return s.async === false;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
     Ok(())
   }
 

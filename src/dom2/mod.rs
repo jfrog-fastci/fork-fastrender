@@ -110,6 +110,7 @@ pub struct Node {
   /// inert template contents by keeping template descendants in `children` while skipping them for
   /// selector matching and other traversals.
   pub inert_subtree: bool,
+  pub script_force_async: bool,
   pub script_already_started: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
@@ -649,6 +650,7 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
+      script_force_async: false,
       script_already_started: false,
       mathml_annotation_xml_integration_point: false,
     });

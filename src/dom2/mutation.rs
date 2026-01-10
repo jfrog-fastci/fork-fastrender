@@ -470,7 +470,11 @@ impl Document {
       }
     };
 
-    self.push_node(kind, None, inert_subtree)
+    let id = self.push_node(kind, None, inert_subtree);
+    if is_html_ns && tag_name.eq_ignore_ascii_case("script") {
+      self.nodes[id.index()].script_force_async = true;
+    }
+    id
   }
 
   pub fn create_text(&mut self, data: &str) -> NodeId {
