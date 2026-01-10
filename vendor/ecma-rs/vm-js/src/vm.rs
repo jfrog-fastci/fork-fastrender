@@ -1182,6 +1182,20 @@ impl Vm {
 
   /// Calls `callee` with the provided `this` value and arguments, using a custom host hook
   /// implementation.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// This method does **not** accept an embedder [`VmHost`] and will always pass a dummy `VmHost`
+  /// value (`()`) to native call handlers.
+  ///
+  /// It exists primarily for engine internals and tests that need to run JS while supplying a
+  /// custom [`VmHostHooks`] implementation (for example, to route `HostEnqueuePromiseJob` into a
+  /// host-owned microtask queue), but do not have any embedder host state available.
+  ///
+  /// Embeddings that need native handlers to observe real host context (DOM/event loop/etc) should
+  /// use:
+  /// - [`Vm::call_with_host_and_hooks`] (explicit host context + hooks), or
+  /// - [`Vm::call`] (explicit host context; uses the VM-owned microtask queue).
   pub fn call_with_host(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1415,6 +1429,20 @@ impl Vm {
 
   /// Constructs `callee` with the provided arguments and `new_target`, using a custom host hook
   /// implementation.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// This method does **not** accept an embedder [`VmHost`] and will always pass a dummy `VmHost`
+  /// value (`()`) to native construct handlers.
+  ///
+  /// It exists primarily for engine internals and tests that need to run JS while supplying a
+  /// custom [`VmHostHooks`] implementation (for example, to route `HostEnqueuePromiseJob` into a
+  /// host-owned microtask queue), but do not have any embedder host state available.
+  ///
+  /// Embeddings that need native handlers to observe real host context (DOM/event loop/etc) should
+  /// use:
+  /// - [`Vm::construct_with_host_and_hooks`] (explicit host context + hooks), or
+  /// - [`Vm::construct`] (explicit host context; uses the VM-owned microtask queue).
   pub fn construct_with_host(
     &mut self,
     scope: &mut Scope<'_>,
