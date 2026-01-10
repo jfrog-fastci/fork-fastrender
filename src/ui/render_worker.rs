@@ -2310,6 +2310,12 @@ impl BrowserRuntime {
             .and_then(|node| node.get_attribute_ref("id"))
             .map(|id| id.to_string())
         });
+        let focused = tab.interaction.focused_node_id();
+        let focused_element_id = focused.and_then(|focused_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, focused_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -2321,14 +2327,35 @@ impl BrowserRuntime {
           ),
           _ => None,
         };
-        (dom_changed, (dom_changed, action, focus_scroll, submitter, submitter_element_id))
+        (
+          dom_changed,
+          (
+            dom_changed,
+            action,
+            focus_scroll,
+            submitter,
+            submitter_element_id,
+            focused,
+            focused_element_id,
+          ),
+        )
       });
-      let (changed, action, focus_scroll, form_submitter, form_submitter_element_id) = match result {
+      let (
+        changed,
+        action,
+        focus_scroll,
+        form_submitter,
+        form_submitter_element_id,
+        focused,
+        focused_element_id,
+      ) = match result {
         Ok(result) => result,
         Err(_) => {
           let mut action = InteractionAction::None;
           let mut submitter: Option<usize> = None;
           let mut submitter_element_id: Option<String> = None;
+          let mut focused: Option<usize> = None;
+          let mut focused_element_id: Option<String> = None;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
@@ -2341,9 +2368,23 @@ impl BrowserRuntime {
                 .and_then(|node| node.get_attribute_ref("id"))
                 .map(|id| id.to_string())
             });
+            focused = tab.interaction.focused_node_id();
+            focused_element_id = focused.and_then(|focused_id| {
+              crate::dom::find_node_mut_by_preorder_id(dom, focused_id)
+                .and_then(|node| node.get_attribute_ref("id"))
+                .map(|id| id.to_string())
+            });
             dom_changed
           });
-          (changed, action, None, submitter, submitter_element_id)
+          (
+            changed,
+            action,
+            None,
+            submitter,
+            submitter_element_id,
+            focused,
+            focused_element_id,
+          )
         }
       };
 
@@ -2359,19 +2400,71 @@ impl BrowserRuntime {
       }
 
       let mut default_allowed = true;
-      if let Some(submitter_id) = form_submitter {
+
+      // Keyboard activation should dispatch a cancelable `"click"` event on the activated element
+      // before performing its default action (navigation, open-in-new-tab, submit, ...).
+      //
+      // Note: implicit form submission (Enter in a text input) uses a default submitter but does
+      // not fire a click event on that submit button, so only dispatch click when the activated
+      // element *is* the submitter.
+      let mut click_target_id: Option<usize> = None;
+      let mut click_target_element_id: Option<&str> = None;
+      if matches!(
+        action,
+        InteractionAction::Navigate { .. }
+          | InteractionAction::OpenInNewTab { .. }
+          | InteractionAction::NavigateRequest { .. }
+      ) {
+        if let Some(submitter_id) = form_submitter {
+          if focused == Some(submitter_id) {
+            click_target_id = Some(submitter_id);
+            click_target_element_id = form_submitter_element_id.as_deref();
+          }
+        } else if let Some(focused_id) = focused {
+          click_target_id = Some(focused_id);
+          click_target_element_id = focused_element_id.as_deref();
+        }
+      }
+
+      if let Some(target_id) = click_target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
-          let submitter_node =
-            js_dom_node_for_preorder_id(js_tab, submitter_id, form_submitter_element_id.as_deref());
-          if let Some(submitter_node) = submitter_node {
-            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node) {
-              match js_tab.dispatch_submit_event(form_node) {
-                Ok(allowed) => default_allowed = allowed,
-                Err(err) => {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                    tab_id,
-                    line: format!("js submit event dispatch failed: {err}"),
-                  });
+          let target = js_dom_node_for_preorder_id(js_tab, target_id, click_target_element_id);
+          if let Some(node_id) = target {
+            match js_tab.dispatch_click_event(node_id) {
+              Ok(allowed) => default_allowed = allowed,
+              Err(err) => {
+                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js click event dispatch failed: {err}"),
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // If activation triggers a form submission attempt, dispatch a cancelable `"submit"` event
+      // on the form owner and honor `preventDefault()` before committing the navigation.
+      if default_allowed {
+        if let Some(submitter_id) = form_submitter {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let submitter_node = js_dom_node_for_preorder_id(
+              js_tab,
+              submitter_id,
+              form_submitter_element_id.as_deref(),
+            );
+            if let Some(submitter_node) = submitter_node {
+              if let Some(form_node) =
+                js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
+              {
+                match js_tab.dispatch_submit_event(form_node) {
+                  Ok(allowed) => default_allowed = allowed,
+                  Err(err) => {
+                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      tab_id,
+                      line: format!("js submit event dispatch failed: {err}"),
+                    });
+                  }
                 }
               }
             }
@@ -2390,8 +2483,10 @@ impl BrowserRuntime {
           }
         }
         InteractionAction::OpenInNewTab { href } => {
-          let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
-          if changed {
+          if default_allowed {
+            let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          }
+          if changed || scroll_changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
           }
