@@ -605,14 +605,12 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
         let child_abs_end = child_abs_start + child_block_size;
 
         let mut positions: Vec<f32> = match context {
-          FragmentationContext::Page => collect_forced_boundaries_for_pagination_with_axes(
-            child,
-            child_abs_start,
-            axes,
-          )
-          .into_iter()
-          .map(|b| b.position)
-          .collect(),
+          FragmentationContext::Page => {
+            collect_forced_boundaries_for_pagination_with_axes(child, child_abs_start, axes)
+              .into_iter()
+              .map(|b| b.position)
+              .collect()
+          }
           FragmentationContext::Column => {
             let child_writing_mode = child
               .style
@@ -642,7 +640,8 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
         };
         positions
           .retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
-        if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+        if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
+        {
           apply_parallel_flow_shifts_to_descendants(child, child_abs_start, 0.0, axis, &shifts);
         }
       }
@@ -662,7 +661,15 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
     }
   }
 
-  walk(root, 0.0, &axis, axes, fragmentainer_size, context, default_style);
+  walk(
+    root,
+    0.0,
+    &axis,
+    axes,
+    fragmentainer_size,
+    context,
+    default_style,
+  );
 }
 
 pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
@@ -1244,10 +1251,7 @@ impl FragmentationAnalyzer {
   where
     I: IntoIterator<Item = f32>,
   {
-    let added: Vec<f32> = positions
-      .into_iter()
-      .filter(|p| p.is_finite())
-      .collect();
+    let added: Vec<f32> = positions.into_iter().filter(|p| p.is_finite()).collect();
     if added.is_empty() {
       return;
     }
@@ -1622,7 +1626,8 @@ impl FragmentationAnalyzer {
         .footer_block_size
         .min((fragmentainer - header_overhead - BREAK_EPSILON).max(0.0));
       if footer_overhead > BREAK_EPSILON {
-        let max_with_footer = (fragmentainer - header_overhead - footer_overhead).max(BREAK_EPSILON);
+        let max_with_footer =
+          (fragmentainer - header_overhead - footer_overhead).max(BREAK_EPSILON);
         let limit_with_footer = (start + max_with_footer).min(total_extent);
 
         // If reserving footer space leaves no room to show any of the table, push the entire table
@@ -1684,9 +1689,14 @@ impl FragmentationAnalyzer {
     let window_end = window_end.min(ops.len());
     let window = *opportunity_cursor..window_end;
 
-    if let Some(pos) =
-      self.forced_in_window(start, limit, total_extent, window.clone(), fragmentainer, atomic)
-    {
+    if let Some(pos) = self.forced_in_window(
+      start,
+      limit,
+      total_extent,
+      window.clone(),
+      fragmentainer,
+      atomic,
+    ) {
       self.advance_line_starts(pos);
       return pos;
     }
@@ -1767,13 +1777,10 @@ impl FragmentationAnalyzer {
       // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
       // next legal break is just after the limit). Only do this when the caller did not request a
       // hard fragmentainer size.
-      if let Some(next) = self.opportunities[window_end..]
-        .iter()
-        .find(|o| {
-          o.pos > limit + BREAK_EPSILON
-            && !pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic)
-        })
-      {
+      if let Some(next) = self.opportunities[window_end..].iter().find(|o| {
+        o.pos > limit + BREAK_EPSILON
+          && !pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic)
+      }) {
         let clamped = next.pos.min(total_extent);
         self.advance_line_starts(clamped);
         return clamped;
@@ -1966,7 +1973,12 @@ fn fragment_tree_impl(
     options.fragmentainer_size,
     context,
   );
-  apply_flex_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size, context);
+  apply_flex_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
 
   let mut analyzer =
     FragmentationAnalyzer::new(&root, context, axes, true, Some(options.fragmentainer_size));
@@ -2057,23 +2069,76 @@ fn clip_grid_item_parallel_for_page(
   axes: FragmentAxes,
   fragmentainer_size: f32,
   page_index: usize,
+  offset_in_fragment: f32,
 ) -> Result<Option<FragmentNode>, LayoutError> {
   if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
     return Ok(None);
   }
 
-  // Treat the grid item subtree as its own flow starting at the origin.
-  let mut local = item.clone();
-  let origin = local.bounds.origin;
+  let mut offset = offset_in_fragment;
+  if !offset.is_finite() || offset < 0.0 {
+    offset = 0.0;
+  } else if offset > fragmentainer_size {
+    offset = fragmentainer_size;
+  }
+  if offset <= BREAK_EPSILON || (fragmentainer_size - offset) <= BREAK_EPSILON {
+    offset = 0.0;
+  }
+
+  // Treat the grid item subtree as its own flow starting at the origin. When the grid item begins
+  // partway through the current fragmentainer, wrap it in a synthetic root that offsets the item by
+  // `offset` along the fragmentation axis. This mirrors the page's coordinate system so the item's
+  // first fragment only gets `fragmentainer_size - offset` space while subsequent fragments use the
+  // full fragmentainer size.
+  let mut local_item = item.clone();
+  let origin = local_item.bounds.origin;
   if origin.x != 0.0 || origin.y != 0.0 {
-    local.bounds = Rect::from_xywh(0.0, 0.0, local.bounds.width(), local.bounds.height());
-    if let Some(logical) = local.logical_override {
-      local.logical_override = Some(logical.translate(Point::new(-origin.x, -origin.y)));
+    local_item.bounds = Rect::from_xywh(
+      0.0,
+      0.0,
+      local_item.bounds.width(),
+      local_item.bounds.height(),
+    );
+    if let Some(logical) = local_item.logical_override {
+      local_item.logical_override = Some(logical.translate(Point::new(-origin.x, -origin.y)));
     }
   }
 
+  let (flow_root, offset_item_child) = if offset > 0.0 {
+    let item_block_size = axis.block_size(&local_item.bounds);
+    let wrapper_block_size = item_block_size + offset;
+    let wrapper_inline_size = axis.inline_size(&local_item.bounds);
+    let wrapper_bounds = if axis.block_is_horizontal {
+      Rect::from_xywh(0.0, 0.0, wrapper_block_size, wrapper_inline_size)
+    } else {
+      Rect::from_xywh(0.0, 0.0, wrapper_inline_size, wrapper_block_size)
+    };
+
+    // Position the item inside the wrapper at the desired flow offset without shifting its
+    // descendants (bounds are relative to the item root, so moving the root is sufficient).
+    let target_block_start =
+      axis.flow_box_start_to_physical(offset, item_block_size, wrapper_block_size);
+    let current_block_start = axis.block_start(&local_item.bounds);
+    let delta = target_block_start - current_block_start;
+    if delta.abs() > BREAK_EPSILON {
+      let delta_point = if axis.block_is_horizontal {
+        Point::new(delta, 0.0)
+      } else {
+        Point::new(0.0, delta)
+      };
+      translate_fragment_in_parent_space(&mut local_item, delta_point);
+    }
+
+    (
+      FragmentNode::new_block(wrapper_bounds, vec![local_item]),
+      true,
+    )
+  } else {
+    (local_item, false)
+  };
+
   let mut analyzer = FragmentationAnalyzer::new(
-    &local,
+    &flow_root,
     FragmentationContext::Page,
     axes,
     true,
@@ -2092,21 +2157,50 @@ fn clip_grid_item_parallel_for_page(
     return Ok(None);
   }
 
-  clip_node(
-    &local,
+  let Some(clipped_root) = clip_node(
+    &flow_root,
     axis,
     start,
     end,
     0.0,
     start,
     end,
-    axis.block_size(&local.bounds),
+    axis.block_size(&flow_root.bounds),
     page_index,
     fragment_count,
     FragmentationContext::Page,
     fragmentainer_size,
     axes,
-  )
+  )?
+  else {
+    return Ok(None);
+  };
+
+  if !offset_item_child {
+    return Ok(Some(clipped_root));
+  }
+
+  let mut iter = clipped_root.children.into_iter();
+  let Some(mut item_fragment) = iter.next() else {
+    return Ok(None);
+  };
+
+  // The synthetic wrapper introduces a leading offset before the grid item. For the first fragment,
+  // `clip_node` returns the item positioned at that offset. Shift it back so the returned fragment
+  // behaves like a normal clipped subtree rooted at the item origin.
+  if page_index == 0 {
+    let item_block_start = axis.block_start(&item_fragment.bounds);
+    if item_block_start.abs() > BREAK_EPSILON {
+      let delta_point = if axis.block_is_horizontal {
+        Point::new(-item_block_start, 0.0)
+      } else {
+        Point::new(0.0, -item_block_start)
+      };
+      translate_fragment_in_parent_space(&mut item_fragment, delta_point);
+    }
+  }
+
+  Ok(Some(item_fragment))
 }
 
 pub(crate) fn clip_node(
@@ -2353,18 +2447,65 @@ pub(crate) fn clip_node(
         continue;
       }
 
+      let item_starts_in_fragment = child_abs_start + BREAK_EPSILON >= fragment_start
+        && child_abs_start < fragment_end - BREAK_EPSILON;
+      let mut offset_in_fragment = 0.0f32;
+      if fragmentainer_size.is_finite() && fragmentainer_size > 0.0 {
+        offset_in_fragment = if item_starts_in_fragment {
+          // The item begins partway through this fragmentainer slice. Measure the offset from the
+          // fragmentainer start edge in flow coordinates so the item's first fragment only gets the
+          // remaining `fragmentainer_size - offset` space.
+          let delta = (child_abs_start - fragment_start).max(0.0);
+          if axis.block_positive {
+            delta
+          } else {
+            // For reversed block progression, compute the offset using the same physical→flow
+            // mapping as `FragmentAxis::flow_offset` so the value matches the flow coordinate system.
+            let child_block_size = axis.block_size(&child.bounds);
+            let phys = axis.flow_box_start_to_physical(delta, child_block_size, fragmentainer_size);
+            axis.flow_offset(phys, child_block_size, fragmentainer_size)
+          }
+        } else {
+          // When the item start is on an earlier page, recover its start-page offset by treating
+          // the current fragment start as another fragmentainer boundary.
+          (child_abs_start - fragment_start).rem_euclid(fragmentainer_size)
+        };
+
+        if offset_in_fragment <= BREAK_EPSILON
+          || (fragmentainer_size - offset_in_fragment) <= BREAK_EPSILON
+        {
+          offset_in_fragment = 0.0;
+        }
+      }
+
       let local_index = if fragment_start > child_abs_start + BREAK_EPSILON
         && fragmentainer_size.is_finite()
         && fragmentainer_size > 0.0
       {
-        (((fragment_start - child_abs_start) / fragmentainer_size).floor() as i32).max(0) as usize
+        let delta = fragment_start - child_abs_start;
+        if offset_in_fragment <= BREAK_EPSILON {
+          (((delta / fragmentainer_size).floor() as i32).max(0) as usize)
+        } else {
+          let first = (fragmentainer_size - offset_in_fragment).max(0.0);
+          if delta + BREAK_EPSILON < first {
+            0
+          } else {
+            let remaining = (delta - first).max(0.0);
+            1 + (((remaining / fragmentainer_size).floor() as i32).max(0) as usize)
+          }
+        }
       } else {
         0
       };
 
-      if let Some(mut item_fragment) =
-        clip_grid_item_parallel_for_page(child, axis, axes, fragmentainer_size, local_index)?
-      {
+      if let Some(mut item_fragment) = clip_grid_item_parallel_for_page(
+        child,
+        axis,
+        axes,
+        fragmentainer_size,
+        local_index,
+        offset_in_fragment,
+      )? {
         // Position the clipped fragment in the current fragmentainer slice. This mirrors the
         // coordinate mapping performed by the normal `clip_node` recursion, but without slicing the
         // grid item's internal flow.
@@ -2436,8 +2577,8 @@ pub(crate) fn clip_node(
   // Only apply trimming when the float was effectively "inflated" beyond its border box by
   // descendant overflow. This avoids shrinking fixed-size floats (or floats with padding/borders)
   // that legitimately occupy space even when their children do not.
-  let float_inflated_by_overflow =
-    node_bbox_flow_end > node_flow_end + BREAK_EPSILON || node_bbox_flow_start + BREAK_EPSILON < node_flow_start;
+  let float_inflated_by_overflow = node_bbox_flow_end > node_flow_end + BREAK_EPSILON
+    || node_bbox_flow_start + BREAK_EPSILON < node_flow_start;
   if style.float.is_floating() && !node.children.is_empty() && float_inflated_by_overflow {
     // Use the children that survived clipping to find the actual block-axis extent of this float
     // fragment. `cloned.bounds` is based on the intersection of the float's (potentially expanded)
@@ -2472,7 +2613,8 @@ pub(crate) fn clip_node(
       let slice_offset = cloned.slice_info.slice_offset;
       let slice_end_offset = slice_offset + max_flow_end;
       let epsilon = 0.01;
-      cloned.slice_info.is_last = slice_end_offset >= cloned.slice_info.original_block_size - epsilon;
+      cloned.slice_info.is_last =
+        slice_end_offset >= cloned.slice_info.original_block_size - epsilon;
     }
   }
 
@@ -2651,7 +2793,11 @@ fn innermost_footer_table_at<'a>(
         && pos > info.start + BREAK_EPSILON
         && pos < info.end - BREAK_EPSILON
     })
-    .max_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal))
+    .max_by(|a, b| {
+      a.start
+        .partial_cmp(&b.start)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 fn collapsed_line_positions(
@@ -2800,10 +2946,7 @@ fn inject_table_headers_and_footers(
         let (c_start, c_end) = axis.flow_range(0.0, original_block_size, &candidate.bounds);
         if c_start + 0.01 >= start && c_end <= end + 0.01 {
           let mut clone = candidate.clone();
-          translate_fragment_in_parent_space(
-            &mut clone,
-            region_translation,
-          );
+          translate_fragment_in_parent_space(&mut clone, region_translation);
           translate_fragment_in_parent_space(&mut clone, rebase_translation);
           propagate_fragment_metadata(&mut clone, fragment_index, fragment_count);
           clones.push(clone);
@@ -3049,7 +3192,11 @@ pub(crate) fn normalize_fragment_margins(
     // Compute the delta needed to position the first in-flow block at its desired `margin-top`,
     // then translate all in-flow block children by the same amount.
     let mut min_start: Option<f32> = None;
-    for child in fragment.children.iter().filter(|c| c.block_metadata.is_some()) {
+    for child in fragment
+      .children
+      .iter()
+      .filter(|c| c.block_metadata.is_some())
+    {
       let start = axis.flow_offset(
         axis.block_start(&child.bounds),
         axis.block_size(&child.bounds),
@@ -3063,7 +3210,11 @@ pub(crate) fn normalize_fragment_margins(
 
     if let Some(min_start) = min_start {
       let mut delta: Option<f32> = None;
-      for child in fragment.children.iter().filter(|c| c.block_metadata.is_some()) {
+      for child in fragment
+        .children
+        .iter()
+        .filter(|c| c.block_metadata.is_some())
+      {
         let start = axis.flow_offset(
           axis.block_start(&child.bounds),
           axis.block_size(&child.bounds),
@@ -3084,7 +3235,11 @@ pub(crate) fn normalize_fragment_margins(
 
       if let Some(delta) = delta {
         if delta.abs() > EPSILON {
-          for child in fragment.children_mut().iter_mut().filter(|c| c.block_metadata.is_some()) {
+          for child in fragment
+            .children_mut()
+            .iter_mut()
+            .filter(|c| c.block_metadata.is_some())
+          {
             translate_fragment_in_parent_space(child, axis.block_translation(delta));
           }
         }
@@ -3240,7 +3395,8 @@ fn collect_break_opportunities(
             }
           }
 
-          let mut after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+          let mut after_strength =
+            combine_breaks(child_style.break_after, BreakBetween::Auto, context);
           if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
             after_strength = BreakStrength::Auto;
           }
@@ -4060,7 +4216,11 @@ fn atomic_containing_for_fragmentainer(
   atomic_containing(pos, atomic)
 }
 
-fn pos_is_inside_atomic_for_fragmentainer(pos: f32, fragmentainer: f32, atomic: &[AtomicRange]) -> bool {
+fn pos_is_inside_atomic_for_fragmentainer(
+  pos: f32,
+  fragmentainer: f32,
+  atomic: &[AtomicRange],
+) -> bool {
   atomic_containing_for_fragmentainer(pos, fragmentainer, atomic).is_some()
 }
 
@@ -4787,7 +4947,8 @@ mod tests {
     let style = Arc::new(style);
 
     fn block(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
-      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      let mut node =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
       node.style = Some(style.clone());
       node
     }
@@ -4823,7 +4984,8 @@ mod tests {
     let style = Arc::new(style);
 
     fn child(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
-      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      let mut node =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
       node.style = Some(style.clone());
       node.block_metadata = Some(BlockFragmentMetadata {
         margin_top: 16.0,
@@ -4887,6 +5049,93 @@ mod tests {
     assert!(
       (first_break - 15.0).abs() < BREAK_EPSILON,
       "expected break before the grid row band, got {first_break} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn parallel_grid_items_clip_first_fragment_to_remaining_fragmentainer_space() {
+    let fragmentainer_size = 100.0;
+
+    let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 50.0), vec![]);
+
+    // Create a tall single-track grid item so it must fragment across pages.
+    let item_child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 200.0), vec![]);
+    let mut item =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 200.0), vec![item_child]);
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 50.0, 100.0, 50.0),
+      vec![item],
+      Arc::new(grid_style),
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 50.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 250.0), vec![leading, grid]);
+
+    let fragments = fragment_tree(&root, &FragmentationOptions::new(fragmentainer_size)).unwrap();
+    assert!(
+      fragments.len() >= 2,
+      "expected pagination to create multiple pages, got {fragments:?}"
+    );
+
+    let first = &fragments[0];
+    let grid_first = first
+      .children
+      .iter()
+      .find(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|s| matches!(s.display, Display::Grid))
+      })
+      .expect("expected grid container to appear on the first page");
+    let item_first = grid_first
+      .children
+      .first()
+      .expect("expected grid item fragment on the first page");
+    let item_max_y = grid_first.bounds.y() + item_first.bounds.max_y();
+    assert!(
+      item_max_y <= fragmentainer_size + BREAK_EPSILON,
+      "expected the grid item fragment to be clipped to the page height (<= {fragmentainer_size}), got item_max_y={item_max_y} (grid={:?}, item={:?})",
+      grid_first.bounds,
+      item_first.bounds
+    );
+
+    let second = &fragments[1];
+    let grid_second = second
+      .children
+      .iter()
+      .find(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|s| matches!(s.display, Display::Grid))
+      })
+      .expect("expected grid container to appear on the second page");
+    let item_second = grid_second
+      .children
+      .first()
+      .expect("expected grid item continuation on the second page");
+    assert!(
+      item_second.slice_info.slice_offset > BREAK_EPSILON,
+      "expected grid item continuation to have non-zero slice offset, got {:?}",
+      item_second.slice_info
     );
   }
 
@@ -4979,7 +5228,8 @@ mod tests {
     // In block-negative modes, the flow start edge is the *physical end* (right edge for the X block
     // axis). When we shrink a clipped float fragment based on the children that actually painted in
     // that fragmentainer, we need to shift the physical block-start so the end edge remains fixed.
-    let axes = FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr);
+    let axes =
+      FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr);
     let axis = axis_from_fragment_axes(axes);
 
     let mut float_style = ComputedStyle::default();
