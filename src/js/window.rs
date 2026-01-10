@@ -688,6 +688,162 @@ mod tests {
   }
 
   #[test]
+  fn fetch_redirect_modes_surface_response_metadata() -> Result<()> {
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+      // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+      return Ok(());
+    };
+    listener
+      .set_nonblocking(true)
+      .expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+    let url = format!("http://{addr}/");
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      let mut paths: Vec<String> = Vec::new();
+
+      for i in 0..4 {
+        let mut stream = accept_with_deadline(&listener, deadline)
+          .unwrap_or_else(|_| panic!("accept request {i}"));
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .expect("set_read_timeout");
+        let req = read_http_request(&mut stream).unwrap_or_else(|_| panic!("read request {i}"));
+        let req_s = String::from_utf8_lossy(&req);
+        let first_line = req_s.lines().next().unwrap_or("");
+        let path = first_line
+          .split_whitespace()
+          .nth(1)
+          .unwrap_or("")
+          .to_string();
+        paths.push(path.clone());
+
+        match path.as_str() {
+          "/redir" => {
+            let body = b"redir";
+            let headers = format!(
+              "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).expect("write headers");
+            stream.write_all(body).expect("write body");
+          }
+          "/final" => {
+            let body = b"final";
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).expect("write headers");
+            stream.write_all(body).expect("write body");
+          }
+          _ => {
+            let body = b"not found";
+            let headers = format!(
+              "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).expect("write headers");
+            stream.write_all(body).expect("write body");
+          }
+        }
+      }
+
+      assert_eq!(
+        paths,
+        vec![
+          "/redir".to_string(),
+          "/redir".to_string(),
+          "/final".to_string(),
+          "/redir".to_string()
+        ],
+        "unexpected redirect request sequence"
+      );
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let mut host = WindowHost::new_with_fetcher(dom, url, fetcher)?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      fetch("/redir", { redirect: "manual" })
+        .then(function (r) {
+          g.__manual_type = r.type;
+          g.__manual_status = r.status;
+          g.__manual_url = r.url;
+          g.__manual_redirected = r.redirected;
+          return fetch("/redir");
+        })
+        .then(function (r) {
+          g.__follow_type = r.type;
+          g.__follow_status = r.status;
+          g.__follow_url = r.url;
+          g.__follow_redirected = r.redirected;
+          return fetch("/redir", { redirect: "error" });
+        })
+        .then(function (_r) {
+          g.__redirect_error = "did_not_throw";
+        })
+        .catch(function (e) {
+          g.__redirect_error = String(e && (e.stack || e.message) || e);
+        });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 20,
+      max_microtasks: 200,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__manual_type").as_deref(),
+      Some("opaqueredirect")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__manual_status"),
+      Value::Number(n) if n == 0.0
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__manual_url").as_deref(),
+      Some("")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__manual_redirected"),
+      Value::Bool(false)
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__follow_type").as_deref(),
+      Some("basic")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__follow_status"),
+      Value::Number(n) if n == 200.0
+    ));
+    let follow_url = get_global_prop_utf8(&mut host, "__follow_url").unwrap_or_default();
+    assert!(
+      follow_url.ends_with("/final"),
+      "expected follow response URL to end with /final, got {follow_url:?}"
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__follow_redirected"),
+      Value::Bool(true)
+    ));
+
+    let redirect_error = get_global_prop_utf8(&mut host, "__redirect_error").unwrap_or_default();
+    assert!(
+      redirect_error.to_ascii_lowercase().contains("redirect"),
+      "expected redirect=\"error\" fetch to reject, got {redirect_error:?}"
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
   fn window_realm_supports_event_constructors_and_create_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

@@ -19,9 +19,10 @@ use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
-  RequestCredentials, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
+  RequestCredentials, RequestMode, RequestRedirect, ResponseType, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
 };
 use crate::resource::{origin_from_url, DocumentOrigin, FetchDestination, ReferrerPolicy, ResourceFetcher};
+use http::Method;
 use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,6 +54,15 @@ const PROMISE_CAP_REJECT_KEY: &str = "__fastrender_promise_cap_reject";
 const HEADERS_KIND_OWNED: u8 = 0;
 const HEADERS_KIND_REQUEST: u8 = 1;
 const HEADERS_KIND_RESPONSE: u8 = 2;
+
+// Hidden per-instance properties for `Headers` iterators.
+const HEADERS_ITER_ID_KEY: &str = "__fastrender_headers_iter_id";
+const HEADERS_ITER_KIND_KEY: &str = "__fastrender_headers_iter_kind";
+const HEADERS_ITER_DONE_KEY: &str = "__fastrender_headers_iter_done";
+
+const HEADERS_ITER_KIND_ENTRIES: u8 = 0;
+const HEADERS_ITER_KIND_KEYS: u8 = 1;
+const HEADERS_ITER_KIND_VALUES: u8 = 2;
 
 #[derive(Clone)]
 pub struct WindowFetchEnv {
@@ -88,6 +98,12 @@ struct EnvState {
   owned_headers: HashMap<u64, CoreHeaders>,
   requests: HashMap<u64, CoreRequest>,
   responses: HashMap<u64, CoreResponse>,
+  headers_iterators: HashMap<u64, HeadersIteratorState>,
+}
+
+struct HeadersIteratorState {
+  pairs: Vec<(String, String)>,
+  index: usize,
 }
 
 impl EnvState {
@@ -99,6 +115,7 @@ impl EnvState {
       owned_headers: HashMap::new(),
       requests: HashMap::new(),
       responses: HashMap::new(),
+      headers_iterators: HashMap::new(),
     }
   }
 
@@ -199,6 +216,13 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<PropertyKey, VmError> {
+  let s = scope.alloc_string(description)?;
+  scope.push_root(Value::String(s))?;
+  let sym = scope.heap_mut().symbol_for(s)?;
+  Ok(PropertyKey::from_symbol(sym))
+}
+
 fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
   let key = alloc_key(scope, name)?;
   Ok(
@@ -230,6 +254,10 @@ const FETCH_HEADER_NAME_TOO_LONG_ERROR: &str = "fetch header name exceeds maximu
 const FETCH_HEADER_VALUE_TOO_LONG_ERROR: &str = "fetch header value exceeds maximum length";
 const FETCH_BODY_TOO_LONG_ERROR: &str = "fetch body string exceeds maximum length";
 const FETCH_CREDENTIALS_TOO_LONG_ERROR: &str = "Request.credentials exceeds maximum length";
+const FETCH_MODE_TOO_LONG_ERROR: &str = "Request.mode exceeds maximum length";
+const FETCH_REDIRECT_TOO_LONG_ERROR: &str = "Request.redirect exceeds maximum length";
+const FETCH_REFERRER_TOO_LONG_ERROR: &str = "Request.referrer exceeds maximum length";
+const FETCH_REFERRER_POLICY_TOO_LONG_ERROR: &str = "Request.referrerPolicy exceeds maximum length";
 const FETCH_STATUS_TEXT_TOO_LONG_ERROR: &str = "Response statusText exceeds maximum length";
 
 fn js_string_to_rust_string_limited(
@@ -313,6 +341,83 @@ fn is_reason_phrase_byte_string(s: &str) -> bool {
     let b = ch as u32;
     matches!(b, 0x09 | 0x20..=0x7E | 0x80..=0xFF)
   })
+}
+
+fn request_mode_to_string(mode: RequestMode) -> &'static str {
+  match mode {
+    RequestMode::Navigate => "navigate",
+    RequestMode::SameOrigin => "same-origin",
+    RequestMode::NoCors => "no-cors",
+    RequestMode::Cors => "cors",
+  }
+}
+
+fn request_credentials_to_string(credentials: RequestCredentials) -> &'static str {
+  match credentials {
+    RequestCredentials::Omit => "omit",
+    RequestCredentials::SameOrigin => "same-origin",
+    RequestCredentials::Include => "include",
+  }
+}
+
+fn request_redirect_to_string(redirect: RequestRedirect) -> &'static str {
+  match redirect {
+    RequestRedirect::Follow => "follow",
+    RequestRedirect::Error => "error",
+    RequestRedirect::Manual => "manual",
+  }
+}
+
+fn response_type_to_string(r#type: ResponseType) -> &'static str {
+  match r#type {
+    ResponseType::Basic => "basic",
+    ResponseType::Cors => "cors",
+    ResponseType::Default => "default",
+    ResponseType::Error => "error",
+    ResponseType::Opaque => "opaque",
+    ResponseType::OpaqueRedirect => "opaqueredirect",
+  }
+}
+
+fn normalize_and_validate_method(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_hooks: &mut dyn VmHostHooks,
+  method: &str,
+) -> Result<String, VmError> {
+  if Method::from_bytes(method.as_bytes()).is_err() {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host_hooks,
+      "Request.method is not a valid HTTP method token",
+    ));
+  }
+
+  if method.eq_ignore_ascii_case("CONNECT")
+    || method.eq_ignore_ascii_case("TRACE")
+    || method.eq_ignore_ascii_case("TRACK")
+  {
+    return Err(throw_type_error(vm, scope, host_hooks, "Request.method is forbidden"));
+  }
+
+  let normalized = if method.eq_ignore_ascii_case("DELETE") {
+    "DELETE"
+  } else if method.eq_ignore_ascii_case("GET") {
+    "GET"
+  } else if method.eq_ignore_ascii_case("HEAD") {
+    "HEAD"
+  } else if method.eq_ignore_ascii_case("OPTIONS") {
+    "OPTIONS"
+  } else if method.eq_ignore_ascii_case("POST") {
+    "POST"
+  } else if method.eq_ignore_ascii_case("PUT") {
+    "PUT"
+  } else {
+    method
+  };
+
+  Ok(normalized.to_string())
 }
 
 fn create_error(
@@ -1234,6 +1339,254 @@ fn headers_for_each_native(
   Ok(Value::Undefined)
 }
 
+fn headers_iter_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "fetch binding missing Headers iterator prototype native slot",
+    )),
+  }
+}
+
+fn headers_entries_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
+  let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
+  let pairs = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.sort_and_combine())
+  })?;
+  let iter_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.headers_iterators.insert(
+      id,
+      HeadersIteratorState {
+        pairs,
+        index: 0,
+      },
+    );
+    Ok(id)
+  })?;
+
+  let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+  scope.push_root(Value::Object(obj))?;
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, HEADERS_ITER_ID_KEY, Value::Number(iter_id as f64), false)?;
+  set_data_prop(
+    scope,
+    obj,
+    HEADERS_ITER_KIND_KEY,
+    Value::Number(HEADERS_ITER_KIND_ENTRIES as f64),
+    false,
+  )?;
+  set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+  Ok(Value::Object(obj))
+}
+
+fn headers_keys_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
+  let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
+  let pairs = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.sort_and_combine())
+  })?;
+  let iter_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.headers_iterators.insert(
+      id,
+      HeadersIteratorState {
+        pairs,
+        index: 0,
+      },
+    );
+    Ok(id)
+  })?;
+
+  let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+  scope.push_root(Value::Object(obj))?;
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, HEADERS_ITER_ID_KEY, Value::Number(iter_id as f64), false)?;
+  set_data_prop(
+    scope,
+    obj,
+    HEADERS_ITER_KIND_KEY,
+    Value::Number(HEADERS_ITER_KIND_KEYS as f64),
+    false,
+  )?;
+  set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+  Ok(Value::Object(obj))
+}
+
+fn headers_values_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, kind, owner) = headers_info_from_this(scope, this)?;
+  let iter_proto = headers_iter_proto_from_callee(scope, callee)?;
+  let pairs = with_env_state(env_id, |state| {
+    let headers = get_headers_ref(state, kind, owner)?;
+    Ok(headers.sort_and_combine())
+  })?;
+  let iter_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.headers_iterators.insert(
+      id,
+      HeadersIteratorState {
+        pairs,
+        index: 0,
+      },
+    );
+    Ok(id)
+  })?;
+
+  let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+  scope.push_root(Value::Object(obj))?;
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, HEADERS_ITER_ID_KEY, Value::Number(iter_id as f64), false)?;
+  set_data_prop(
+    scope,
+    obj,
+    HEADERS_ITER_KIND_KEY,
+    Value::Number(HEADERS_ITER_KIND_VALUES as f64),
+    false,
+  )?;
+  set_data_prop(scope, obj, HEADERS_ITER_DONE_KEY, Value::Bool(false), true)?;
+  Ok(Value::Object(obj))
+}
+
+fn headers_iterator_next_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Headers iterator: illegal invocation"));
+  };
+
+  let done_val = get_data_prop(scope, iter_obj, HEADERS_ITER_DONE_KEY)?;
+  let done = matches!(done_val, Value::Bool(true));
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let result_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(result_obj))?;
+
+  if done {
+    set_data_prop(scope, result_obj, "value", Value::Undefined, true)?;
+    set_data_prop(scope, result_obj, "done", Value::Bool(true), true)?;
+    return Ok(Value::Object(result_obj));
+  }
+
+  let env_val = get_data_prop(scope, iter_obj, ENV_ID_KEY)?;
+  let iter_val = get_data_prop(scope, iter_obj, HEADERS_ITER_ID_KEY)?;
+  let kind_val = get_data_prop(scope, iter_obj, HEADERS_ITER_KIND_KEY)?;
+  if !matches!(env_val, Value::Number(_))
+    || !matches!(iter_val, Value::Number(_))
+    || !matches!(kind_val, Value::Number(_))
+  {
+    return Err(VmError::TypeError("Headers iterator: illegal invocation"));
+  }
+  let env_id = number_to_u64(env_val).map_err(|_| VmError::TypeError("Headers iterator: illegal invocation"))?;
+  let iter_id = number_to_u64(iter_val).map_err(|_| VmError::TypeError("Headers iterator: illegal invocation"))?;
+  let kind_u64 = number_to_u64(kind_val).map_err(|_| VmError::TypeError("Headers iterator: illegal invocation"))?;
+  let kind: u8 = kind_u64
+    .try_into()
+    .map_err(|_| VmError::TypeError("Headers iterator: illegal invocation"))?;
+
+  let next_pair: Option<(String, String)> = with_env_state_mut(env_id, |state| {
+    let iter = state
+      .headers_iterators
+      .get_mut(&iter_id)
+      .ok_or(VmError::TypeError("Headers iterator: invalid backing iterator"))?;
+    if iter.index >= iter.pairs.len() {
+      state.headers_iterators.remove(&iter_id);
+      Ok(None)
+    } else {
+      let pair = iter
+        .pairs
+        .get(iter.index)
+        .cloned()
+        .ok_or(VmError::InvariantViolation("Headers iterator index out of bounds"))?;
+      iter.index = iter.index.saturating_add(1);
+      Ok(Some(pair))
+    }
+  })?;
+
+  if let Some((name, value)) = next_pair {
+    let out_value = match kind {
+      HEADERS_ITER_KIND_ENTRIES => {
+        let arr = scope.alloc_array(2)?;
+        scope
+          .heap_mut()
+          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+        let name_s = scope.alloc_string(&name)?;
+        let value_s = scope.alloc_string(&value)?;
+        set_data_prop(scope, arr, "0", Value::String(name_s), true)?;
+        set_data_prop(scope, arr, "1", Value::String(value_s), true)?;
+        Value::Object(arr)
+      }
+      HEADERS_ITER_KIND_KEYS => {
+        let name_s = scope.alloc_string(&name)?;
+        Value::String(name_s)
+      }
+      HEADERS_ITER_KIND_VALUES => {
+        let value_s = scope.alloc_string(&value)?;
+        Value::String(value_s)
+      }
+      _ => return Err(VmError::TypeError("Headers iterator: illegal invocation")),
+    };
+    set_data_prop(scope, result_obj, "value", out_value, true)?;
+    set_data_prop(scope, result_obj, "done", Value::Bool(false), true)?;
+  } else {
+    // Mark this iterator instance as done so subsequent `next()` calls don't throw if the
+    // underlying env state has been cleaned up.
+    set_data_prop(scope, iter_obj, HEADERS_ITER_DONE_KEY, Value::Bool(true), true)?;
+
+    set_data_prop(scope, result_obj, "value", Value::Undefined, true)?;
+    set_data_prop(scope, result_obj, "done", Value::Bool(true), true)?;
+  }
+
+  Ok(Value::Object(result_obj))
+}
+
+fn headers_iterator_iterator_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
+}
+
 fn headers_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1294,6 +1647,198 @@ fn headers_ctor_construct(
   Ok(Value::Object(obj))
 }
 
+fn apply_request_init(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+  limits: &WebFetchLimits,
+  request: &mut CoreRequest,
+  init: Value,
+) -> Result<(), VmError> {
+  if matches!(init, Value::Undefined | Value::Null) {
+    return Ok(());
+  }
+
+  let Value::Object(init_obj) = init else {
+    return Err(VmError::TypeError("Request init must be an object"));
+  };
+
+  // `mode` must be applied before headers so the correct guard is enforced when filling.
+  let mode_key = alloc_key(scope, "mode")?;
+  let mode_val = vm.get(scope, init_obj, mode_key)?;
+  let mut mode_changed = false;
+  if !matches!(mode_val, Value::Undefined | Value::Null) {
+    let mode_s = to_rust_string_limited(scope.heap_mut(), mode_val, 64, FETCH_MODE_TOO_LONG_ERROR)?;
+    let mode = match mode_s.as_str() {
+      "navigate" => RequestMode::Navigate,
+      "same-origin" => RequestMode::SameOrigin,
+      "no-cors" => RequestMode::NoCors,
+      "cors" => RequestMode::Cors,
+      _ => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host_hooks,
+          "Request.mode must be \"navigate\", \"same-origin\", \"no-cors\", or \"cors\"",
+        ));
+      }
+    };
+    if request.mode != mode {
+      request.set_mode(mode);
+      mode_changed = true;
+    }
+  }
+
+  // `headers` replaces the existing header list.
+  let headers_key = alloc_key(scope, "headers")?;
+  let headers_val = vm.get(scope, init_obj, headers_key)?;
+  if !matches!(headers_val, Value::Undefined | Value::Null) {
+    let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
+    fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
+    request.headers = headers;
+  } else if mode_changed {
+    // If mode changed (e.g. "cors" -> "no-cors"), re-apply the header list so any now-forbidden
+    // headers are removed deterministically.
+    let existing = request.headers.raw_pairs();
+    let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
+    headers
+      .fill_from_pairs(existing)
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+    request.headers = headers;
+  }
+
+  let method_key = alloc_key(scope, "method")?;
+  let method_val = vm.get(scope, init_obj, method_key)?;
+  if !matches!(method_val, Value::Undefined | Value::Null) {
+    let raw = to_rust_string_limited(
+      scope.heap_mut(),
+      method_val,
+      limits.max_url_bytes,
+      FETCH_METHOD_TOO_LONG_ERROR,
+    )?;
+    request.method = normalize_and_validate_method(vm, scope, host_hooks, &raw)?;
+  } else {
+    // Even when not overridden, normalize/validate so `new Request(req)` preserves browser casing.
+    request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+  }
+
+  let redirect_key = alloc_key(scope, "redirect")?;
+  let redirect_val = vm.get(scope, init_obj, redirect_key)?;
+  if !matches!(redirect_val, Value::Undefined | Value::Null) {
+    let redirect_s = to_rust_string_limited(scope.heap_mut(), redirect_val, 64, FETCH_REDIRECT_TOO_LONG_ERROR)?;
+    request.redirect = match redirect_s.as_str() {
+      "follow" => RequestRedirect::Follow,
+      "error" => RequestRedirect::Error,
+      "manual" => RequestRedirect::Manual,
+      _ => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host_hooks,
+          "Request.redirect must be \"follow\", \"error\", or \"manual\"",
+        ));
+      }
+    };
+  }
+
+  let referrer_key = alloc_key(scope, "referrer")?;
+  let referrer_val = vm.get(scope, init_obj, referrer_key)?;
+  if !matches!(referrer_val, Value::Undefined | Value::Null) {
+    request.referrer = to_rust_string_limited(
+      scope.heap_mut(),
+      referrer_val,
+      limits.max_url_bytes,
+      FETCH_REFERRER_TOO_LONG_ERROR,
+    )?;
+  }
+
+  let referrer_policy_key = alloc_key(scope, "referrerPolicy")?;
+  let referrer_policy_val = vm.get(scope, init_obj, referrer_policy_key)?;
+  if !matches!(referrer_policy_val, Value::Undefined | Value::Null) {
+    let policy_s =
+      to_rust_string_limited(scope.heap_mut(), referrer_policy_val, 64, FETCH_REFERRER_POLICY_TOO_LONG_ERROR)?;
+    request.referrer_policy = ReferrerPolicy::parse(&policy_s).ok_or_else(|| {
+      throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.referrerPolicy must be a valid referrer policy token",
+      )
+    })?;
+  }
+
+  let credentials_key = alloc_key(scope, "credentials")?;
+  let credentials_val = vm.get(scope, init_obj, credentials_key)?;
+  if !matches!(credentials_val, Value::Undefined | Value::Null) {
+    let credentials = to_rust_string_limited(
+      scope.heap_mut(),
+      credentials_val,
+      64,
+      FETCH_CREDENTIALS_TOO_LONG_ERROR,
+    )?;
+    request.credentials = match credentials.as_str() {
+      "omit" => RequestCredentials::Omit,
+      "same-origin" => RequestCredentials::SameOrigin,
+      "include" => RequestCredentials::Include,
+      _ => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host_hooks,
+          "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
+        ));
+      }
+    };
+  }
+
+  let body_key = alloc_key(scope, "body")?;
+  let body_val = vm.get(scope, init_obj, body_key)?;
+  if !matches!(body_val, Value::Undefined | Value::Null) {
+    let bytes = to_rust_string_limited(
+      scope.heap_mut(),
+      body_val,
+      request.headers.limits().max_request_body_bytes,
+      FETCH_BODY_TOO_LONG_ERROR,
+    )?
+    .into_bytes();
+    let body = Body::new_with_limits(bytes, request.headers.limits())
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+    request.body = Some(body);
+  }
+
+  // Fetch invariants.
+  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
+    if request.body.is_some() {
+      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+    }
+  }
+
+  if request.mode == RequestMode::NoCors {
+    if request.redirect != RequestRedirect::Follow {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.redirect must be \"follow\" for mode \"no-cors\"",
+      ));
+    }
+    if !(request.method.eq_ignore_ascii_case("GET")
+      || request.method.eq_ignore_ascii_case("HEAD")
+      || request.method.eq_ignore_ascii_case("POST"))
+    {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
+      ));
+    }
+  }
+
+  Ok(())
+}
+
 fn request_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1352,69 +1897,47 @@ fn request_ctor_construct(
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
+  apply_request_init(vm, scope, host_hooks, env_id, &limits, &mut request, init)?;
+
+  // Enforce invariants even when `init` is omitted (e.g. `new Request(existingRequest)`).
+  request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
+    if request.body.is_some() {
+      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+    }
+  }
+  if request.mode == RequestMode::NoCors {
+    if request.redirect != RequestRedirect::Follow {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.redirect must be \"follow\" for mode \"no-cors\"",
+      ));
+    }
+    if !(request.method.eq_ignore_ascii_case("GET")
+      || request.method.eq_ignore_ascii_case("HEAD")
+      || request.method.eq_ignore_ascii_case("POST"))
+    {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
+      ));
+    }
+  }
+
+  // Resolve the associated AbortSignal, if any.
+  //
+  // `new Request(input, init)` matches the `fetch(input, init)` behavior: an explicit `init.signal`
+  // overrides `input.signal` when `input` is a `Request`.
   if !matches!(init, Value::Undefined | Value::Null) {
+    // `apply_request_init` already validated `init` is an object when present; keep a defensive
+    // check here to preserve VM invariants.
     let Value::Object(init_obj) = init else {
-      return Err(VmError::TypeError("Request init must be an object"));
+      return Err(VmError::InvariantViolation("Request init must be an object"));
     };
-    let method_key = alloc_key(scope, "method")?;
-    let method_val = vm.get(scope, init_obj, method_key)?;
-    if !matches!(method_val, Value::Undefined | Value::Null) {
-      request.method = to_rust_string_limited(
-        scope.heap_mut(),
-        method_val,
-        limits.max_url_bytes,
-        FETCH_METHOD_TOO_LONG_ERROR,
-      )?;
-    }
-    let headers_key = alloc_key(scope, "headers")?;
-    let headers_val = vm.get(scope, init_obj, headers_key)?;
-    if !matches!(headers_val, Value::Undefined | Value::Null) {
-      // `RequestInit.headers` replaces the existing header list.
-      let mut headers =
-        CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
-      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
-      request.headers = headers;
-    }
-
-    let credentials_key = alloc_key(scope, "credentials")?;
-    let credentials_val = vm.get(scope, init_obj, credentials_key)?;
-    if !matches!(credentials_val, Value::Undefined | Value::Null) {
-      let credentials = to_rust_string_limited(
-        scope.heap_mut(),
-        credentials_val,
-        64,
-        FETCH_CREDENTIALS_TOO_LONG_ERROR,
-      )?;
-      request.credentials = match credentials.as_str() {
-        "omit" => RequestCredentials::Omit,
-        "same-origin" => RequestCredentials::SameOrigin,
-        "include" => RequestCredentials::Include,
-        _ => {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host_hooks,
-            "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
-          ));
-        }
-      };
-    }
-
-    let body_key = alloc_key(scope, "body")?;
-    let body_val = vm.get(scope, init_obj, body_key)?;
-    if !matches!(body_val, Value::Undefined | Value::Null) {
-      let bytes = to_rust_string_limited(
-        scope.heap_mut(),
-        body_val,
-        request.headers.limits().max_request_body_bytes,
-        FETCH_BODY_TOO_LONG_ERROR,
-      )?
-      .into_bytes();
-      let body = Body::new_with_limits(bytes, request.headers.limits())
-        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
-      request.body = Some(body);
-    }
-
     let signal_key = alloc_key(scope, "signal")?;
     let signal_val = vm.get(scope, init_obj, signal_key)?;
     if !matches!(signal_val, Value::Undefined) {
@@ -1443,12 +1966,6 @@ fn request_ctor_construct(
     }
   }
 
-  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
-    if request.body.is_some() {
-      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
-    }
-  }
-
   let request_id = with_env_state_mut(env_id, |state| {
     let id = state.alloc_id();
     state.requests.insert(id, request);
@@ -1467,31 +1984,7 @@ fn request_ctor_construct(
       _ => return Err(VmError::InvariantViolation("Request.prototype missing")),
     }
   };
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-
-  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
-  set_data_prop(scope, obj, REQUEST_ID_KEY, Value::Number(request_id as f64), false)?;
-
-  // `method`/`url` as data props (read-only for now).
-  let (method, url) = with_env_state(env_id, |state| {
-    let req = state
-      .requests
-      .get(&request_id)
-      .ok_or(VmError::InvariantViolation("Request state missing"))?;
-    Ok((req.method.clone(), req.url.clone()))
-  })?;
-  let method_s = scope.alloc_string(&method)?;
-  let url_s = scope.alloc_string(&url)?;
-  set_data_prop(scope, obj, "method", Value::String(method_s), false)?;
-  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
-
-  // `headers` is a live wrapper backed by the request state.
-  let headers_obj =
-    make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, request_id)?;
-  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
-
+  let obj = make_request_wrapper(scope, env_id, headers_proto, proto, request_id)?;
   set_data_prop(
     scope,
     obj,
@@ -1499,7 +1992,6 @@ fn request_ctor_construct(
     signal.unwrap_or(Value::Null),
     /* writable */ false,
   )?;
-
   Ok(Value::Object(obj))
 }
 
@@ -1517,7 +2009,10 @@ fn request_clone_native(
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(original_obj))?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let signal = get_data_prop(scope, original_obj, "signal")?;
+  let signal = match get_data_prop(scope, original_obj, "signal")? {
+    Value::Undefined => Value::Null,
+    other => other,
+  };
 
   let cloned = with_env_state(env_id, |state| {
     let req = state
@@ -1542,30 +2037,160 @@ fn request_clone_native(
     .ok_or(VmError::InvariantViolation(
     "Request.prototype missing on instance",
   ))?;
-  let obj = scope.alloc_object_with_prototype(Some(proto))?;
-  scope.push_root(Value::Object(obj))?;
+  let obj = make_request_wrapper(scope, env_id, headers_proto, proto, new_request_id)?;
+  set_data_prop(scope, obj, "signal", signal, /* writable */ false)?;
+  Ok(Value::Object(obj))
+}
 
-  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
-  set_data_prop(scope, obj, REQUEST_ID_KEY, Value::Number(new_request_id as f64), false)?;
+fn request_text_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
 
-  let (method, url) = with_env_state(env_id, |state| {
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+
+  let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
     let req = state
       .requests
-      .get(&new_request_id)
-      .ok_or(VmError::InvariantViolation("Request state missing"))?;
-    Ok((req.method.clone(), req.url.clone()))
+      .get_mut(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    let result = match req.body.as_mut() {
+      Some(body) => body.text_utf8(),
+      None => Ok(String::new()),
+    };
+    Ok(result)
   })?;
-  let method_s = scope.alloc_string(&method)?;
-  let url_s = scope.alloc_string(&url)?;
-  set_data_prop(scope, obj, "method", Value::String(method_s), false)?;
-  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
 
-  let headers_obj =
-    make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, new_request_id)?;
-  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
-  set_data_prop(scope, obj, "signal", signal, /* writable */ false)?;
+  match result {
+    Ok(text) => {
+      let s = scope.alloc_string(&text)?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+    }
+    Err(err) => {
+      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+    }
+  }
 
-  Ok(Value::Object(obj))
+  Ok(cap.promise)
+}
+
+fn request_array_buffer_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Note: `vm-js` does not yet expose a real `ArrayBuffer`/typed array implementation. As an MVP,
+  // `Request.arrayBuffer()` resolves to a binary string where each UTF-16 code unit is one byte
+  // (`0..=255`).
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+
+  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
+    let req = state
+      .requests
+      .get_mut(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    let result = match req.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    Ok(result)
+  })?;
+
+  match result {
+    Ok(bytes) => {
+      let mut units: Vec<u16> = Vec::new();
+      units.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
+      units.extend(bytes.into_iter().map(u16::from));
+      let s = scope.alloc_string_from_u16_vec(units)?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+    }
+    Err(err) => {
+      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
+fn request_json_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+
+  let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
+    with_env_state_mut(env_id, |state| {
+      let req = state
+        .requests
+        .get_mut(&request_id)
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      let parsed = req.body.as_mut().map(|body| body.json());
+      Ok(parsed)
+    })?;
+
+  match parsed {
+    Some(Ok(value)) => {
+      let js_value = json_to_js(vm, scope, &value)?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[js_value])?;
+    }
+    Some(Err(err)) => match err {
+      WebFetchError::BodyInvalidJson(e) => {
+        let err_value = create_syntax_error(vm, scope, host_hooks, &e.to_string())?;
+        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      }
+      other => {
+        let err_value = create_type_error(vm, scope, host_hooks, &other.to_string())?;
+        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      }
+    },
+    None => {
+      let err_value = create_type_error(vm, scope, host_hooks, "Request body is null")?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
+fn request_body_used_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
+  let used = with_env_state(env_id, |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.as_ref().map_or(false, |b| b.body_used()))
+  })?;
+  Ok(Value::Bool(used))
 }
 
 fn response_ctor_call(
@@ -1603,27 +2228,7 @@ fn response_error_native(
     Ok(id)
   })?;
 
-  let resp_obj = scope.alloc_object_with_prototype(Some(response_proto))?;
-  scope.push_root(Value::Object(resp_obj))?;
-
-  set_data_prop(scope, resp_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
-  set_data_prop(
-    scope,
-    resp_obj,
-    RESPONSE_ID_KEY,
-    Value::Number(response_id as f64),
-    false,
-  )?;
-  set_data_prop(scope, resp_obj, "status", Value::Number(0.0), false)?;
-  set_data_prop(scope, resp_obj, "ok", Value::Bool(false), false)?;
-  let url_s = scope.alloc_string("")?;
-  let st_s = scope.alloc_string("")?;
-  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
-  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
-
-  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
-  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
-
+  let resp_obj = make_response_wrapper(scope, env_id, headers_proto, response_proto, response_id)?;
   Ok(Value::Object(resp_obj))
 }
 
@@ -1691,27 +2296,7 @@ fn response_redirect_native(
     Ok(id)
   })?;
 
-  let resp_obj = scope.alloc_object_with_prototype(Some(response_proto))?;
-  scope.push_root(Value::Object(resp_obj))?;
-
-  set_data_prop(scope, resp_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
-  set_data_prop(
-    scope,
-    resp_obj,
-    RESPONSE_ID_KEY,
-    Value::Number(response_id as f64),
-    false,
-  )?;
-  set_data_prop(scope, resp_obj, "status", Value::Number(status as f64), false)?;
-  set_data_prop(scope, resp_obj, "ok", Value::Bool(false), false)?;
-  let url_s = scope.alloc_string("")?;
-  let st_s = scope.alloc_string("")?;
-  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
-  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
-
-  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
-  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
-
+  let resp_obj = make_response_wrapper(scope, env_id, headers_proto, response_proto, response_id)?;
   Ok(Value::Object(resp_obj))
 }
 
@@ -1919,47 +2504,7 @@ fn response_clone_native(
   let proto = scope.heap().object_prototype(obj)?.ok_or(VmError::InvariantViolation(
     "Response.prototype missing on instance",
   ))?;
-  let resp_obj = scope.alloc_object_with_prototype(Some(proto))?;
-  scope.push_root(Value::Object(resp_obj))?;
-
-  set_data_prop(
-    scope,
-    resp_obj,
-    ENV_ID_KEY,
-    Value::Number(env_id as f64),
-    false,
-  )?;
-  set_data_prop(
-    scope,
-    resp_obj,
-    RESPONSE_ID_KEY,
-    Value::Number(new_response_id as f64),
-    false,
-  )?;
-
-  let (status, ok, url, status_text) = with_env_state(env_id, |state| {
-    let r = state
-      .responses
-      .get(&new_response_id)
-      .ok_or(VmError::InvariantViolation("Response state missing"))?;
-    Ok((r.status, (200..300).contains(&r.status), r.url.clone(), r.status_text.clone()))
-  })?;
-  set_data_prop(scope, resp_obj, "status", Value::Number(status as f64), false)?;
-  set_data_prop(scope, resp_obj, "ok", Value::Bool(ok), false)?;
-  let url_s = scope.alloc_string(&url)?;
-  let st_s = scope.alloc_string(&status_text)?;
-  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
-  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
-
-  let headers_obj = make_headers_wrapper(
-    scope,
-    env_id,
-    headers_proto,
-    HEADERS_KIND_RESPONSE,
-    new_response_id,
-  )?;
-  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
-
+  let resp_obj = make_response_wrapper(scope, env_id, headers_proto, proto, new_response_id)?;
   Ok(Value::Object(resp_obj))
 }
 
@@ -1995,6 +2540,102 @@ fn make_headers_wrapper(
   set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
   set_data_prop(scope, obj, HEADERS_KIND_KEY, Value::Number(kind as f64), false)?;
   set_data_prop(scope, obj, HEADERS_OWNER_KEY, Value::Number(owner as f64), false)?;
+  Ok(obj)
+}
+
+fn make_request_wrapper(
+  scope: &mut Scope<'_>,
+  env_id: u64,
+  headers_proto: GcObject,
+  request_proto: GcObject,
+  request_id: u64,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object_with_prototype(Some(request_proto))?;
+  scope.push_root(Value::Object(obj))?;
+
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, REQUEST_ID_KEY, Value::Number(request_id as f64), false)?;
+
+  let (method, url, mode, credentials, redirect, referrer, referrer_policy) = with_env_state(env_id, |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::InvariantViolation("Request state missing"))?;
+    Ok((
+      req.method.clone(),
+      req.url.clone(),
+      req.mode,
+      req.credentials,
+      req.redirect,
+      req.referrer.clone(),
+      req.referrer_policy,
+    ))
+  })?;
+
+  let method_s = scope.alloc_string(&method)?;
+  let url_s = scope.alloc_string(&url)?;
+  set_data_prop(scope, obj, "method", Value::String(method_s), false)?;
+  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
+
+  let mode_s = scope.alloc_string(request_mode_to_string(mode))?;
+  set_data_prop(scope, obj, "mode", Value::String(mode_s), false)?;
+  let credentials_s = scope.alloc_string(request_credentials_to_string(credentials))?;
+  set_data_prop(scope, obj, "credentials", Value::String(credentials_s), false)?;
+  let redirect_s = scope.alloc_string(request_redirect_to_string(redirect))?;
+  set_data_prop(scope, obj, "redirect", Value::String(redirect_s), false)?;
+
+  let referrer_s = scope.alloc_string(&referrer)?;
+  set_data_prop(scope, obj, "referrer", Value::String(referrer_s), false)?;
+  let referrer_policy_s = scope.alloc_string(referrer_policy.as_str())?;
+  set_data_prop(scope, obj, "referrerPolicy", Value::String(referrer_policy_s), false)?;
+
+  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, request_id)?;
+  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
+
+  Ok(obj)
+}
+
+fn make_response_wrapper(
+  scope: &mut Scope<'_>,
+  env_id: u64,
+  headers_proto: GcObject,
+  response_proto: GcObject,
+  response_id: u64,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object_with_prototype(Some(response_proto))?;
+  scope.push_root(Value::Object(obj))?;
+
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, RESPONSE_ID_KEY, Value::Number(response_id as f64), false)?;
+
+  let (status, url, status_text, r#type, redirected) = with_env_state(env_id, |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::InvariantViolation("Response state missing"))?;
+    Ok((
+      res.status,
+      res.url.clone(),
+      res.status_text.clone(),
+      res.r#type,
+      res.redirected,
+    ))
+  })?;
+
+  let ok = (200..300).contains(&status);
+  set_data_prop(scope, obj, "status", Value::Number(status as f64), false)?;
+  set_data_prop(scope, obj, "ok", Value::Bool(ok), false)?;
+  let url_s = scope.alloc_string(&url)?;
+  let st_s = scope.alloc_string(&status_text)?;
+  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
+  set_data_prop(scope, obj, "statusText", Value::String(st_s), false)?;
+  let type_s = scope.alloc_string(response_type_to_string(r#type))?;
+  set_data_prop(scope, obj, "type", Value::String(type_s), false)?;
+  set_data_prop(scope, obj, "redirected", Value::Bool(redirected), false)?;
+
+  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
+  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
+
   Ok(obj)
 }
 
@@ -2110,33 +2751,7 @@ fn response_ctor_construct(
       _ => return Err(VmError::InvariantViolation("Response.prototype missing")),
     }
   };
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-
-  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
-  set_data_prop(scope, obj, RESPONSE_ID_KEY, Value::Number(response_id as f64), false)?;
-
-  // Data properties.
-  let (status, ok, url, status_text) = with_env_state(env_id, |state| {
-    let r = state
-      .responses
-      .get(&response_id)
-      .ok_or(VmError::InvariantViolation("Response state missing"))?;
-    Ok((r.status, (200..300).contains(&r.status), r.url.clone(), r.status_text.clone()))
-  })?;
-  set_data_prop(scope, obj, "status", Value::Number(status as f64), false)?;
-  set_data_prop(scope, obj, "ok", Value::Bool(ok), false)?;
-  let url_s = scope.alloc_string(&url)?;
-  let st_s = scope.alloc_string(&status_text)?;
-  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
-  set_data_prop(scope, obj, "statusText", Value::String(st_s), false)?;
-
-  // Headers wrapper.
-  let headers_obj =
-    make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
-  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
-
+  let obj = make_response_wrapper(scope, env_id, headers_proto, proto, response_id)?;
   Ok(Value::Object(obj))
 }
 
@@ -2181,80 +2796,53 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
     let url = resolve_url(&url, base_url.as_deref())
       .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
-    let mut request = CoreRequest::new_with_limits("GET", url, &limits);
-    request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
-    request
+    CoreRequest::new_with_limits("GET", url, &limits)
   };
+
+  apply_request_init(vm, scope, host_hooks, env_id, &limits, &mut request, init)?;
+
+  // Enforce invariants even when `init` is omitted (e.g. `fetch(existingRequest)`).
+  request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
+    if request.body.is_some() {
+      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+    }
+  }
+  if request.mode == RequestMode::NoCors {
+    if request.redirect != RequestRedirect::Follow {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.redirect must be \"follow\" for mode \"no-cors\"",
+      ));
+    }
+    if !(request.method.eq_ignore_ascii_case("GET")
+      || request.method.eq_ignore_ascii_case("HEAD")
+      || request.method.eq_ignore_ascii_case("POST"))
+    {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
+      ));
+    }
+  }
 
   // Resolve the associated AbortSignal, if any.
   //
-  // `fetch(input, init)` matches the `new Request(input, init)` behavior: an explicit
-  // `init.signal` overrides `input.signal` when `input` is a `Request`.
+  // `fetch(input, init)` matches the `new Request(input, init)` behavior: an explicit `init.signal`
+  // overrides `input.signal` when `input` is a `Request`.
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
   if !matches!(init, Value::Undefined | Value::Null) {
+    // `apply_request_init` already validated `init` is an object when present; keep a defensive
+    // check here to preserve VM invariants.
     let Value::Object(init_obj) = init else {
-      return Err(VmError::TypeError("Request init must be an object"));
+      return Err(VmError::InvariantViolation("Request init must be an object"));
     };
-    let method_key = alloc_key(scope, "method")?;
-    let method_val = vm.get(scope, init_obj, method_key)?;
-    if !matches!(method_val, Value::Undefined | Value::Null) {
-      request.method = to_rust_string_limited(
-        scope.heap_mut(),
-        method_val,
-        limits.max_url_bytes,
-        FETCH_METHOD_TOO_LONG_ERROR,
-      )?;
-    }
-    let headers_key = alloc_key(scope, "headers")?;
-    let headers_val = vm.get(scope, init_obj, headers_key)?;
-    if !matches!(headers_val, Value::Undefined | Value::Null) {
-      // `RequestInit.headers` replaces the existing header list (Fetch `new Request(input, init)`).
-      let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
-      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
-      request.headers = headers;
-    }
-
-    let credentials_key = alloc_key(scope, "credentials")?;
-    let credentials_val = vm.get(scope, init_obj, credentials_key)?;
-    if !matches!(credentials_val, Value::Undefined | Value::Null) {
-      let credentials = to_rust_string_limited(
-        scope.heap_mut(),
-        credentials_val,
-        64,
-        FETCH_CREDENTIALS_TOO_LONG_ERROR,
-      )?;
-      request.credentials = match credentials.as_str() {
-        "omit" => RequestCredentials::Omit,
-        "same-origin" => RequestCredentials::SameOrigin,
-        "include" => RequestCredentials::Include,
-        _ => {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host_hooks,
-            "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
-          ));
-        }
-      };
-    }
-
-    let body_key = alloc_key(scope, "body")?;
-    let body_val = vm.get(scope, init_obj, body_key)?;
-    if !matches!(body_val, Value::Undefined | Value::Null) {
-      let bytes = to_rust_string_limited(
-        scope.heap_mut(),
-        body_val,
-        request.headers.limits().max_request_body_bytes,
-        FETCH_BODY_TOO_LONG_ERROR,
-      )?
-      .into_bytes();
-      let body = Body::new_with_limits(bytes, request.headers.limits())
-        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
-      request.body = Some(body);
-    }
-
     let signal_key = alloc_key(scope, "signal")?;
     let signal_val = vm.get(scope, init_obj, signal_key)?;
     if !matches!(signal_val, Value::Undefined) {
@@ -2496,10 +3084,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Ok(mut response) => {
         // JS `Response.headers` for fetch() results is immutable in browsers.
         response.headers.set_guard(HeadersGuard::Immutable);
-        let status = response.status;
-        let ok = (200..300).contains(&status);
-        let url = response.url.clone();
-        let status_text = response.status_text.clone();
 
         let response_id = match with_env_state_mut(env_id, |state| {
           let id = state.alloc_id();
@@ -2581,56 +3165,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               let resolve = heap.get_root(resolve_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
 
-              let resp_obj = scope.alloc_object_with_prototype(Some(response_proto))?;
-              scope.push_root(Value::Object(resp_obj))?;
-
-              set_data_prop(
-                &mut scope,
-                resp_obj,
-                ENV_ID_KEY,
-                Value::Number(env_id as f64),
-                false,
-              )?;
-              set_data_prop(
-                &mut scope,
-                resp_obj,
-                RESPONSE_ID_KEY,
-                Value::Number(response_id as f64),
-                false,
-              )?;
-              set_data_prop(
-                &mut scope,
-                resp_obj,
-                "status",
-                Value::Number(status as f64),
-                false,
-              )?;
-              set_data_prop(&mut scope, resp_obj, "ok", Value::Bool(ok), false)?;
-              let url_s = scope.alloc_string(&url)?;
-              let st_s = scope.alloc_string(&status_text)?;
-              set_data_prop(&mut scope, resp_obj, "url", Value::String(url_s), false)?;
-              set_data_prop(
-                &mut scope,
-                resp_obj,
-                "statusText",
-                Value::String(st_s),
-                false,
-              )?;
-
-              let headers_obj = make_headers_wrapper(
-                &mut scope,
-                env_id,
-                headers_proto,
-                HEADERS_KIND_RESPONSE,
-                response_id,
-              )?;
-              set_data_prop(
-                &mut scope,
-                resp_obj,
-                "headers",
-                Value::Object(headers_obj),
-                false,
-              )?;
+              let resp_obj = make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
 
               // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
               // EventLoop microtask queue.
@@ -2856,6 +3391,77 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.heap_mut().object_set_prototype(for_each_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "forEach", Value::Object(for_each_fn), true)?;
 
+    // Deterministic iteration for `Headers` (`entries`/`keys`/`values` + @@iterator).
+    let iter_proto = {
+      let object_proto = realm.intrinsics().object_prototype();
+      let iter_proto = scope.alloc_object_with_prototype(Some(object_proto))?;
+      scope.push_root(Value::Object(iter_proto))?;
+
+      let next_id = vm.register_native_call(headers_iterator_next_native)?;
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_fn = scope.alloc_native_function(next_id, None, next_name, 0)?;
+      scope.heap_mut().object_set_prototype(next_fn, Some(func_proto))?;
+      set_data_prop(&mut scope, iter_proto, "next", Value::Object(next_fn), true)?;
+
+      let iter_id = vm.register_native_call(headers_iterator_iterator_native)?;
+      let iter_name = scope.alloc_string("Symbol.iterator")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      scope.heap_mut().object_set_prototype(iter_fn, Some(func_proto))?;
+      let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+      scope.define_property(iter_proto, sym_key, data_desc(Value::Object(iter_fn), true))?;
+
+      iter_proto
+    };
+
+    let entries_id = vm.register_native_call(headers_entries_native)?;
+    let entries_name = scope.alloc_string("entries")?;
+    scope.push_root(Value::String(entries_name))?;
+    let entries_fn = scope.alloc_native_function_with_slots(
+      entries_id,
+      None,
+      entries_name,
+      0,
+      &[Value::Object(iter_proto)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(entries_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "entries", Value::Object(entries_fn), true)?;
+
+    let keys_id = vm.register_native_call(headers_keys_native)?;
+    let keys_name = scope.alloc_string("keys")?;
+    scope.push_root(Value::String(keys_name))?;
+    let keys_fn = scope.alloc_native_function_with_slots(
+      keys_id,
+      None,
+      keys_name,
+      0,
+      &[Value::Object(iter_proto)],
+    )?;
+    scope.heap_mut().object_set_prototype(keys_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "keys", Value::Object(keys_fn), true)?;
+
+    let values_id = vm.register_native_call(headers_values_native)?;
+    let values_name = scope.alloc_string("values")?;
+    scope.push_root(Value::String(values_name))?;
+    let values_fn = scope.alloc_native_function_with_slots(
+      values_id,
+      None,
+      values_name,
+      0,
+      &[Value::Object(iter_proto)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(values_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "values", Value::Object(values_fn), true)?;
+
+    // `[Symbol.iterator]` is an alias for `entries()`.
+    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    scope.define_property(proto, sym_key, data_desc(Value::Object(entries_fn), true))?;
+
     // Define global.
     let key = alloc_key(&mut scope, "Headers")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
@@ -2896,6 +3502,55 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     )?;
     scope.heap_mut().object_set_prototype(clone_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "clone", Value::Object(clone_fn), true)?;
+
+    let text_id = vm.register_native_call(request_text_native)?;
+    let text_name = scope.alloc_string("text")?;
+    scope.push_root(Value::String(text_name))?;
+    let text_fn = scope.alloc_native_function(text_id, None, text_name, 0)?;
+    scope.heap_mut().object_set_prototype(text_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "text", Value::Object(text_fn), true)?;
+
+    let json_id = vm.register_native_call(request_json_native)?;
+    let json_name = scope.alloc_string("json")?;
+    scope.push_root(Value::String(json_name))?;
+    let json_fn = scope.alloc_native_function(json_id, None, json_name, 0)?;
+    scope.heap_mut().object_set_prototype(json_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "json", Value::Object(json_fn), true)?;
+
+    let array_buffer_id = vm.register_native_call(request_array_buffer_native)?;
+    let array_buffer_name = scope.alloc_string("arrayBuffer")?;
+    scope.push_root(Value::String(array_buffer_name))?;
+    let array_buffer_fn = scope.alloc_native_function(array_buffer_id, None, array_buffer_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(array_buffer_fn, Some(func_proto))?;
+    set_data_prop(
+      &mut scope,
+      proto,
+      "arrayBuffer",
+      Value::Object(array_buffer_fn),
+      true,
+    )?;
+
+    // bodyUsed accessor (getter only).
+    let body_used_get_id = vm.register_native_call(request_body_used_get_native)?;
+    let body_used_get_name = scope.alloc_string("get bodyUsed")?;
+    scope.push_root(Value::String(body_used_get_name))?;
+    let body_used_get = scope.alloc_native_function(body_used_get_id, None, body_used_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(body_used_get, Some(func_proto))?;
+    let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+    scope.define_property(
+      proto,
+      body_used_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(body_used_get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
 
     let key = alloc_key(&mut scope, "Request")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
@@ -3059,6 +3714,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 mod tests {
   use super::*;
 
+  use std::collections::VecDeque;
   use vm_js::{HeapLimits, VmOptions};
   use vm_js::{Job, RealmId, VmHostHooks};
 
@@ -3068,6 +3724,152 @@ mod tests {
     fn window_realm(&mut self) -> &mut WindowRealm {
       panic!("DummyHost.window_realm should not be called in install tests");
     }
+  }
+
+  #[derive(Default)]
+  struct JobQueueHooks {
+    jobs: VecDeque<(Job, Option<RealmId>)>,
+  }
+
+  impl VmHostHooks for JobQueueHooks {
+    fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+      self.jobs.push_back((job, realm));
+    }
+  }
+
+  struct TestJobContext<'a, H: vm_js::VmHost> {
+    vm: &'a mut Vm,
+    heap: &'a mut Heap,
+    host: &'a mut H,
+    realm: Option<RealmId>,
+  }
+
+  impl<H: vm_js::VmHost> vm_js::VmJobContext for TestJobContext<'_, H> {
+    fn call(
+      &mut self,
+      host_hooks: &mut dyn VmHostHooks,
+      callee: Value,
+      this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      let mut scope = self.heap.scope();
+      if let Some(realm) = self.realm {
+        let mut vm = self.vm.execution_context_guard(ExecutionContext {
+          realm,
+          script_or_module: None,
+        });
+        vm.call_with_host_and_hooks(self.host, &mut scope, host_hooks, callee, this, args)
+      } else {
+        self
+          .vm
+          .call_with_host_and_hooks(self.host, &mut scope, host_hooks, callee, this, args)
+      }
+    }
+
+    fn construct(
+      &mut self,
+      host_hooks: &mut dyn VmHostHooks,
+      callee: Value,
+      args: &[Value],
+      new_target: Value,
+    ) -> Result<Value, VmError> {
+      let mut scope = self.heap.scope();
+      if let Some(realm) = self.realm {
+        let mut vm = self.vm.execution_context_guard(ExecutionContext {
+          realm,
+          script_or_module: None,
+        });
+        vm.construct_with_host_and_hooks(self.host, &mut scope, host_hooks, callee, args, new_target)
+      } else {
+        self.vm.construct_with_host_and_hooks(
+          self.host,
+          &mut scope,
+          host_hooks,
+          callee,
+          args,
+          new_target,
+        )
+      }
+    }
+
+    fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+      self.heap.add_root(value)
+    }
+
+    fn remove_root(&mut self, id: RootId) {
+      self.heap.remove_root(id);
+    }
+  }
+
+  fn drain_jobs(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    host: &mut impl vm_js::VmHost,
+    hooks: &mut JobQueueHooks,
+  ) -> Result<(), VmError> {
+    let mut remaining = 1000usize;
+    while let Some((job, realm)) = hooks.jobs.pop_front() {
+      remaining = remaining
+        .checked_sub(1)
+        .ok_or(VmError::InvariantViolation("job queue exceeded test limit"))?;
+      let mut ctx = TestJobContext {
+        vm,
+        heap,
+        host,
+        realm,
+      };
+      job.run(&mut ctx, hooks)?;
+    }
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct CaptureHostState {
+    fulfilled: Option<String>,
+    rejected: Option<String>,
+  }
+
+  fn capture_promise_string_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let kind = slots.get(0).copied().unwrap_or(Value::Number(0.0));
+    let kind = number_to_u64(kind).unwrap_or(0);
+    let value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let s = match value {
+      Value::Object(obj) => {
+        scope.push_root(Value::Object(obj))?;
+        // `vm-js` does not yet implement `ToString` on arbitrary objects; for Error objects (the
+        // common Promise rejection case) extract `message` instead so tests can assert on it.
+        let message_key_s = scope.alloc_string("message")?;
+        scope.push_root(Value::String(message_key_s))?;
+        let message_key = PropertyKey::from_string(message_key_s);
+        match vm.get(scope, obj, message_key)? {
+          Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy().to_string(),
+          _ => "[object]".to_string(),
+        }
+      }
+      other => {
+        let s = scope.heap_mut().to_string(other)?;
+        scope.heap().get_string(s)?.to_utf8_lossy().to_string()
+      }
+    };
+    let state = host
+      .as_any_mut()
+      .downcast_mut::<CaptureHostState>()
+      .ok_or(VmError::InvariantViolation("unexpected host state type"))?;
+    if kind == 0 {
+      state.fulfilled = Some(s);
+    } else {
+      state.rejected = Some(s);
+    }
+    Ok(Value::Undefined)
   }
 
   #[test]
@@ -3929,6 +4731,601 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_init_mode_no_cors_applies_header_guard() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+
+    let mode_s = scope.alloc_string("no-cors")?;
+    set_data_prop(&mut scope, init_obj, "mode", Value::String(mode_s), true)?;
+
+    let headers_init = scope.alloc_object()?;
+    scope.push_root(Value::Object(headers_init))?;
+    let x_name = scope.alloc_string("x-test")?;
+    scope.push_root(Value::String(x_name))?;
+    let x_value = scope.alloc_string("a")?;
+    set_data_prop(&mut scope, headers_init, "x-test", Value::String(x_value), true)?;
+    set_data_prop(&mut scope, init_obj, "headers", Value::Object(headers_init), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Request constructor must return an object"));
+    };
+
+    let Value::String(mode_prop) = get_data_prop(&mut scope, req_obj, "mode")? else {
+      return Err(VmError::InvariantViolation("Request.mode missing"));
+    };
+    let mode = scope.heap().get_string(mode_prop)?.to_utf8_lossy();
+    assert_eq!(mode, "no-cors");
+
+    let Value::Object(headers_obj) = get_data_prop(&mut scope, req_obj, "headers")? else {
+      return Err(VmError::InvariantViolation("Request.headers missing"));
+    };
+
+    let callee = scope.alloc_object()?;
+    let value = headers_get_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(headers_obj),
+      &[Value::String(x_name)],
+    )?;
+    assert!(matches!(value, Value::Null));
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_init_redirect_manual_is_exposed() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let redirect_s = scope.alloc_string("manual")?;
+    set_data_prop(
+      &mut scope,
+      init_obj,
+      "redirect",
+      Value::String(redirect_s),
+      true,
+    )?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Request constructor must return an object"));
+    };
+
+    let Value::String(redirect_prop) = get_data_prop(&mut scope, req_obj, "redirect")? else {
+      return Err(VmError::InvariantViolation("Request.redirect missing"));
+    };
+    let redirect = scope.heap().get_string(redirect_prop)?.to_utf8_lossy();
+    assert_eq!(redirect, "manual");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_body_mixin_double_consume_and_clone_preserves_body() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let bindings = match install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    ) {
+      Ok(bindings) => bindings,
+      Err(err) => {
+        realm.teardown(&mut heap);
+        return Err(err);
+      }
+    };
+
+    let mut host_state = CaptureHostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let result = (|| -> Result<(), VmError> {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+        return Err(VmError::InvariantViolation("Request constructor missing"));
+      };
+
+      let url_s = scope.alloc_string("https://example.com/")?;
+      scope.push_root(Value::String(url_s))?;
+
+      // new Request(url, { body: "hello" })
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+      let body_s = scope.alloc_string("hello")?;
+      scope.push_root(Value::String(body_s))?;
+      let method_s = scope.alloc_string("POST")?;
+      scope.push_root(Value::String(method_s))?;
+      set_data_prop(&mut scope, init_obj, "method", Value::String(method_s), true)?;
+      set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+      let Value::Object(req_obj) = request_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        request_ctor,
+        &[Value::String(url_s), Value::Object(init_obj)],
+        Value::Object(request_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation("Request constructor must return an object"));
+      };
+
+      // clone()
+      let clone_key = alloc_key(&mut scope, "clone")?;
+      let clone_fn = vm.get(&mut scope, req_obj, clone_key)?;
+      let cloned = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        clone_fn,
+        Value::Object(req_obj),
+        &[],
+      )?;
+      let Value::Object(cloned_obj) = cloned else {
+        return Err(VmError::InvariantViolation("Request.clone must return an object"));
+      };
+
+      // cloned.text().then(...)
+      let text_key = alloc_key(&mut scope, "text")?;
+      let text_fn = vm.get(&mut scope, cloned_obj, text_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        text_fn,
+        Value::Object(cloned_obj),
+        &[],
+      )?;
+
+      let capture_id = vm.register_native_call(capture_promise_string_native)?;
+      let func_proto = realm.intrinsics().function_prototype();
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function_with_slots(
+          capture_id,
+          None,
+          name,
+          1,
+          &[Value::Number(0.0)],
+        )?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+      let on_rejected = {
+        let name = scope.alloc_string("onRejected")?;
+        scope.push_root(Value::String(name))?;
+        let f = scope.alloc_native_function_with_slots(
+          capture_id,
+          None,
+          name,
+          1,
+          &[Value::Number(1.0)],
+        )?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("Request.text must return a Promise object"));
+    };
+    let then_key = alloc_key(&mut scope, "then")?;
+    let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+    vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      then_fn,
+      Value::Object(promise_obj),
+      &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+    )?;
+
+    // Drain Promise jobs.
+    let req_root = scope.heap_mut().add_root(Value::Object(req_obj))?;
+    let cloned_root = scope.heap_mut().add_root(Value::Object(cloned_obj))?;
+    let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+    let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+    drop(scope);
+    drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+
+    assert_eq!(host_state.fulfilled.as_deref(), Some("hello"));
+    assert!(host_state.rejected.is_none());
+
+    // Verify `bodyUsed` toggles only on the consumed clone.
+    let mut scope = heap.scope();
+    let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+    let used_original = vm.get(&mut scope, req_obj, body_used_key)?;
+    assert!(matches!(used_original, Value::Bool(false)));
+    let used_cloned = vm.get(&mut scope, cloned_obj, body_used_key)?;
+    assert!(matches!(used_cloned, Value::Bool(true)));
+
+    // Double-consume should reject.
+    host_state.fulfilled = None;
+    host_state.rejected = None;
+
+    let text_key = alloc_key(&mut scope, "text")?;
+    let text_fn = vm.get(&mut scope, cloned_obj, text_key)?;
+    let promise2 = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      text_fn,
+      Value::Object(cloned_obj),
+      &[],
+    )?;
+    let Value::Object(promise2_obj) = promise2 else {
+      return Err(VmError::InvariantViolation("Request.text must return a Promise object"));
+    };
+    let then_key = alloc_key(&mut scope, "then")?;
+    let then_fn = vm.get(&mut scope, promise2_obj, then_key)?;
+    vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      then_fn,
+      Value::Object(promise2_obj),
+      &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+    )?;
+
+    drop(scope);
+    drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+
+    let rejected = host_state.rejected.clone().unwrap_or_default();
+    assert!(
+      rejected.contains("body is already used"),
+      "expected rejection to mention BodyUsed, got {rejected:?}"
+    );
+
+    // Smoke test for `json()` consumption.
+    let mut scope = heap.scope();
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+      let json_body = scope.alloc_string("null")?;
+      let json_method = scope.alloc_string("POST")?;
+      scope.push_root(Value::String(json_method))?;
+      set_data_prop(&mut scope, init_obj, "method", Value::String(json_method), true)?;
+      set_data_prop(&mut scope, init_obj, "body", Value::String(json_body), true)?;
+    let Value::Object(req_json_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Request constructor must return an object"));
+    };
+    host_state.fulfilled = None;
+    host_state.rejected = None;
+    let json_key = alloc_key(&mut scope, "json")?;
+    let json_fn = vm.get(&mut scope, req_json_obj, json_key)?;
+    let promise = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      json_fn,
+      Value::Object(req_json_obj),
+      &[],
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("Request.json must return a Promise object"));
+    };
+    let then_key = alloc_key(&mut scope, "then")?;
+    let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+    vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      then_fn,
+      Value::Object(promise_obj),
+      &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+    )?;
+
+    drop(scope);
+    drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+    assert_eq!(host_state.fulfilled.as_deref(), Some("null"));
+    assert!(host_state.rejected.is_none());
+
+      heap.remove_root(req_root);
+      heap.remove_root(cloned_root);
+      heap.remove_root(on_fulfilled_root);
+      heap.remove_root(on_rejected_root);
+
+      Ok(())
+    })();
+
+    drop(bindings);
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn headers_entries_and_symbol_iterator_are_deterministic() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(headers_ctor) = get_data_prop(&mut scope, global, "Headers")? else {
+      return Err(VmError::InvariantViolation("Headers constructor missing"));
+    };
+
+    // new Headers({ b: "2", a: "1" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let b_val = scope.alloc_string("2")?;
+    let a_val = scope.alloc_string("1")?;
+    set_data_prop(&mut scope, init_obj, "b", Value::String(b_val), true)?;
+    set_data_prop(&mut scope, init_obj, "a", Value::String(a_val), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(headers_obj) = headers_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      headers_ctor,
+      &[Value::Object(init_obj)],
+      Value::Object(headers_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Headers constructor must return an object"));
+    };
+
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    let entries_fn = vm.get(&mut scope, headers_obj, entries_key)?;
+    let Value::Object(entries_fn_obj) = entries_fn else {
+      return Err(VmError::InvariantViolation("Headers.entries missing"));
+    };
+
+    let iter = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      Value::Object(entries_fn_obj),
+      Value::Object(headers_obj),
+      &[],
+    )?;
+    let Value::Object(iter_obj) = iter else {
+      return Err(VmError::InvariantViolation("Headers.entries must return an object"));
+    };
+
+    let next_key = alloc_key(&mut scope, "next")?;
+    let next_fn = vm.get(&mut scope, iter_obj, next_key)?;
+    let Value::Object(next_fn_obj) = next_fn else {
+      return Err(VmError::InvariantViolation("Headers iterator next missing"));
+    };
+
+    // First next(): ["a", "1"]
+    let Value::Object(res1_obj) = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      Value::Object(next_fn_obj),
+      Value::Object(iter_obj),
+      &[],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Iterator result must be an object"));
+    };
+    let done_key = alloc_key(&mut scope, "done")?;
+    let value_key = alloc_key(&mut scope, "value")?;
+    assert!(matches!(vm.get(&mut scope, res1_obj, done_key)?, Value::Bool(false)));
+    let Value::Object(pair1) = vm.get(&mut scope, res1_obj, value_key)? else {
+      return Err(VmError::InvariantViolation("Iterator value must be an object"));
+    };
+    let k0 = alloc_key(&mut scope, "0")?;
+    let k1 = alloc_key(&mut scope, "1")?;
+    let Value::String(k1_s) = vm.get(&mut scope, pair1, k0)? else {
+      return Err(VmError::InvariantViolation("pair[0] missing"));
+    };
+    let Value::String(v1_s) = vm.get(&mut scope, pair1, k1)? else {
+      return Err(VmError::InvariantViolation("pair[1] missing"));
+    };
+    assert_eq!(scope.heap().get_string(k1_s)?.to_utf8_lossy(), "a");
+    assert_eq!(scope.heap().get_string(v1_s)?.to_utf8_lossy(), "1");
+
+    // Second next(): ["b", "2"]
+    let Value::Object(res2_obj) = vm.call_with_host_and_hooks(
+      &mut host_state,
+      &mut scope,
+      &mut hooks,
+      Value::Object(next_fn_obj),
+      Value::Object(iter_obj),
+      &[],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Iterator result must be an object"));
+    };
+    assert!(matches!(vm.get(&mut scope, res2_obj, done_key)?, Value::Bool(false)));
+    let Value::Object(pair2) = vm.get(&mut scope, res2_obj, value_key)? else {
+      return Err(VmError::InvariantViolation("Iterator value must be an object"));
+    };
+    let Value::String(k2_s) = vm.get(&mut scope, pair2, k0)? else {
+      return Err(VmError::InvariantViolation("pair[0] missing"));
+    };
+    let Value::String(v2_s) = vm.get(&mut scope, pair2, k1)? else {
+      return Err(VmError::InvariantViolation("pair[1] missing"));
+    };
+    assert_eq!(scope.heap().get_string(k2_s)?.to_utf8_lossy(), "b");
+    assert_eq!(scope.heap().get_string(v2_s)?.to_utf8_lossy(), "2");
+
+    // [Symbol.iterator] should alias entries().
+    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    let sym_fn = vm.get(&mut scope, headers_obj, sym_key)?;
+    let Value::Object(sym_fn_obj) = sym_fn else {
+      return Err(VmError::InvariantViolation("Headers @@iterator missing"));
+    };
+    assert_eq!(sym_fn_obj, entries_fn_obj);
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_type_and_redirected_match_core_response() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let env_id = bindings.env_id();
+
+    let response_id = with_env_state_mut(env_id, |state| {
+      let id = state.alloc_id();
+      let mut response = CoreResponse::new(200);
+      response.r#type = ResponseType::Cors;
+      response.redirected = true;
+      response.url = "https://example.com/".to_string();
+      response.status_text = "OK".to_string();
+      state.responses.insert(id, response);
+      Ok(id)
+    })?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(headers_ctor) = get_data_prop(&mut scope, global, "Headers")? else {
+      return Err(VmError::InvariantViolation("Headers constructor missing"));
+    };
+    let Value::Object(headers_proto) = get_data_prop(&mut scope, headers_ctor, "prototype")? else {
+      return Err(VmError::InvariantViolation("Headers.prototype missing"));
+    };
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let Value::Object(response_proto) = get_data_prop(&mut scope, response_ctor, "prototype")? else {
+      return Err(VmError::InvariantViolation("Response.prototype missing"));
+    };
+
+    let resp_obj = make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
+    let Value::String(type_s) = get_data_prop(&mut scope, resp_obj, "type")? else {
+      return Err(VmError::InvariantViolation("Response.type missing"));
+    };
+    let ty = scope.heap().get_string(type_s)?.to_utf8_lossy();
+    assert_eq!(ty, "cors");
+    assert!(matches!(get_data_prop(&mut scope, resp_obj, "redirected")?, Value::Bool(true)));
+
+    drop(scope);
+    drop(bindings);
     realm.teardown(&mut heap);
     Ok(())
   }
