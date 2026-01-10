@@ -796,6 +796,83 @@ document.body.dispatchEvent(new Event('x'));
 }
 
 #[test]
+fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  assert!(host.dom().get_element_by_id("ur").is_none());
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+window.addEventListener('unhandledrejection', () => {
+  const d = document.createElement('div');
+  d.id = 'ur';
+  document.body.appendChild(d);
+});
+
+// Keep the rejected promise alive so the host can still dispatch the notification task.
+globalThis.__ur = Promise.reject('boom');
+"#,
+  )?;
+
+  // HTML dispatches unhandledrejection after a microtask checkpoint; drive one to enqueue the
+  // notification task, then run tasks.
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after dispatching the unhandledrejection task"
+  );
+
+  assert!(
+    host.dom().get_element_by_id("ur").is_some(),
+    "expected unhandledrejection event listener to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
+fn abort_signal_onabort_callbacks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  assert!(host.dom().get_element_by_id("abo").is_none());
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+const controller = new AbortController();
+controller.signal.onabort = () => {
+  const d = document.createElement('div');
+  d.id = 'abo';
+  document.body.appendChild(d);
+};
+controller.abort();
+"#,
+  )?;
+
+  // `abort()` dispatches synchronously, but run a checkpoint anyway to ensure any nested microtasks
+  // don't affect assertions.
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  assert!(
+    host.dom().get_element_by_id("abo").is_some(),
+    "expected AbortSignal onabort handler to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn request_animation_frame_callbacks_can_access_dom_shims() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;

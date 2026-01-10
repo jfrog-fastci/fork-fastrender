@@ -12588,22 +12588,22 @@ mod tests {
 
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-      let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
-      let global = realm_ref.global_object();
-      let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
-        Value::Object(obj) => obj,
-        other => panic!("expected document object, got {other:?}"),
-      };
-      let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
-        Value::Object(obj) => obj,
-        other => panic!("expected Event object, got {other:?}"),
-      };
-      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-    let mut host_ctx = ();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let global = realm_ref.global_object();
+    let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected document object, got {other:?}"),
+    };
+    let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected Event object, got {other:?}"),
+    };
+    let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+
     let mut hooks = NoopHostHooks::default();
     let mut host_ctx = ();
     let mut invoker = super::VmJsDomEventInvoker {
