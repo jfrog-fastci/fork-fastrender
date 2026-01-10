@@ -4188,8 +4188,8 @@ impl FormattingContext for FlexFormattingContext {
     if fragment.bounds.width().is_finite() && fragment.bounds.height().is_finite() {
       let max_w = fragment.bounds.width().max(0.0);
       let max_h = fragment.bounds.height().max(0.0);
-      let runaway_x = max_w.max(1.0) * 20.0;
-      let runaway_y = max_h.max(1.0) * 20.0;
+      let runaway_x_base = max_w.max(1.0) * 20.0;
+      let runaway_y_base = max_h.max(1.0) * 20.0;
       let mut deadline_counter = 0usize;
       for child in fragment.children_mut() {
         check_layout_deadline(&mut deadline_counter)?;
@@ -4216,6 +4216,8 @@ impl FormattingContext for FlexFormattingContext {
           changed = true;
         }
 
+        let runaway_x = runaway_x_base.max(w.max(1.0) * 20.0);
+        let runaway_y = runaway_y_base.max(h.max(1.0) * 20.0);
         let max_x = x + w;
         let max_y = y + h;
         if !max_x.is_finite() || x.abs() > runaway_x {
@@ -10532,17 +10534,19 @@ impl FlexFormattingContext {
         check_layout_deadline(&mut deadline_counter)?;
         max_child_x = max_child_x.max(child.bounds.max_x());
       }
-      // If all children have been pushed far to the left (beyond 2× the container width),
-      // shift them back so the leftmost child starts at the origin. This guards against
-      // runaway negative positions from broken intrinsic sizing or cached fragments.
       let min_child_x = children
         .iter()
         .map(|c| c.bounds.x())
         .fold(f32::INFINITY, f32::min);
-      if min_child_x.is_finite() {
+      // Guard against runaway negative positions from broken intrinsic sizing or cached fragments.
+      //
+      // Only translate when *all* children are far to the left of the container (no overlap). A
+      // large negative offset is legitimate when `justify-content` is applied to oversized items
+      // (negative free space), so we must not shift rows that still intersect the container.
+      if min_child_x.is_finite() && max_child_x.is_finite() {
         let clamp_width = container_w.max(self.viewport_size.width).max(1.0) * 2.0;
-        if min_child_x < -clamp_width {
-          let dx = -min_child_x;
+        if max_child_x < rect.origin.x - clamp_width {
+          let dx = rect.origin.x - min_child_x;
           for child in &mut children {
             child.bounds = Rect::new(
               Point::new(child.bounds.x() + dx, child.bounds.y()),

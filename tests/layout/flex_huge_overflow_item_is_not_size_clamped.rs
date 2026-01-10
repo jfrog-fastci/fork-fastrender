@@ -2,7 +2,7 @@ use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
-use fastrender::style::types::FlexWrap;
+use fastrender::style::types::{FlexDirection, FlexWrap, JustifyContent};
 use fastrender::style::values::Length;
 use fastrender::{BoxNode, ComputedStyle, FormattingContextType, FragmentNode};
 use std::sync::Arc;
@@ -32,6 +32,7 @@ fn flex_huge_overflow_item_is_not_size_clamped() {
 
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
   container_style.flex_wrap = FlexWrap::NoWrap;
   container_style.width = Some(Length::px(100.0));
   container_style.height = Some(Length::px(20.0));
@@ -75,5 +76,51 @@ fn flex_huge_overflow_item_is_not_size_clamped() {
     child_fragment.bounds.height(),
     5000.0,
     "huge flex item should not have its height clamped",
+  );
+}
+
+#[test]
+fn flex_huge_overflow_item_preserves_negative_justify_content_offset() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::NoWrap;
+  container_style.justify_content = JustifyContent::Center;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(20.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(5000.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.flex_shrink = 0.0;
+
+  let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 20.0))
+    .expect("layout succeeds");
+
+  let child_fragment = find_fragment_with_id(&fragment, 1).expect("child fragment");
+  assert_approx(
+    child_fragment.bounds.width(),
+    5000.0,
+    "huge flex item should not have its width clamped",
+  );
+  // justify-content:center should offset an oversized item by half the negative free space.
+  // (100 - 5000) / 2 = -2450.
+  assert_approx(
+    child_fragment.bounds.x(),
+    -2450.0,
+    "justify-content:center should preserve large negative overflow offsets",
   );
 }
