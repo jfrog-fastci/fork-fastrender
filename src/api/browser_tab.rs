@@ -2368,15 +2368,40 @@ impl BrowserTab {
     // images, etc) see consistent referrer/origin context during parsing.
     tab.host.document.renderer_mut().set_document_url(document_url);
 
+    let options_for_parse = options.clone();
+    // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+    // - HTML parsing,
+    // - and any synchronous navigation requests triggered by scripts during parsing.
+    let deadline_enabled =
+      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
+    let root_deadline_is_enabled =
+      crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
+    let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
+      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+    });
+    let _deadline_guard = deadline
+      .as_ref()
+      .map(|deadline| DeadlineGuard::install(Some(deadline)));
+
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab
       .host
       .reset_scripting_state(Some(document_url.to_string()), document_referrer_policy)?;
-    let base_url =
-      tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &options)?;
+    let mut parse_options = options_for_parse.clone();
+    if root_deadline_is_enabled {
+      // Avoid installing a nested deadline: the outer root deadline already enforces the render
+      // budget across parsing + any follow-up navigation committed from scripts.
+      parse_options.timeout = None;
+      parse_options.cancel_callback = None;
+    }
+    let base_url = tab.parse_html_streaming_and_schedule_scripts(
+      html,
+      Some(document_url),
+      &parse_options,
+    )?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -6495,6 +6520,98 @@ html, body { margin: 0; padding: 0; }
       "<!doctype html><html><body><script>NAVIGATE</script></body></html>",
       RenderOptions::default().with_timeout(Some(Duration::from_millis(40))),
       executor,
+    ) {
+      Ok(_) => panic!("expected deadline to span script-triggered navigation"),
+      Err(err) => err,
+    };
+
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::DomParse,
+        ..
+      }) => {}
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn from_html_with_document_url_timeout_spans_script_triggered_navigation() -> Result<()> {
+    use crate::error::{RenderError, RenderStage};
+    use std::time::Duration;
+
+    struct SleepyNavigateExecutor {
+      target_url: String,
+      pending: Option<LocationNavigationRequest>,
+    }
+
+    impl BrowserTabJsExecutor for SleepyNavigateExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          std::thread::sleep(Duration::from_millis(60));
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: false,
+          });
+        }
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let dir = tempdir().map_err(Error::Io)?;
+    let document_path = dir.path().join("index.html");
+    std::fs::write(&document_path, "<!doctype html><html></html>").map_err(Error::Io)?;
+    let document_url = Url::from_file_path(&document_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let target_path = dir.path().join("target.html");
+    std::fs::write(
+      &target_path,
+      "<!doctype html><html><body><div id=done></div></body></html>",
+    )
+    .map_err(Error::Io)?;
+    let target_url = Url::from_file_path(&target_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(LoggingFileFetcher { log });
+
+    let executor = SleepyNavigateExecutor {
+      target_url,
+      pending: None,
+    };
+
+    let err = match BrowserTab::from_html_with_document_url_and_fetcher(
+      "<!doctype html><html><body><script>NAVIGATE</script></body></html>",
+      &document_url,
+      RenderOptions::default().with_timeout(Some(Duration::from_millis(40))),
+      executor,
+      fetcher,
     ) {
       Ok(_) => panic!("expected deadline to span script-triggered navigation"),
       Err(err) => err,
