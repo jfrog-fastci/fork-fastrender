@@ -2652,15 +2652,26 @@ fn sync(args: SyncArgs) -> io::Result<()> {
     };
 
     migrate_progress_config(&mut progress);
-    progress.url = cache_path
+    // Preserve the previously recorded URL unless we have cached HTML metadata available. This
+    // keeps `progress/pages/*.json` stable on checkouts without `fetches/html/` (the committed
+    // progress scoreboard still reflects the last successful run, including redirect-resolved
+    // final URLs).
+    if let Some(url) = cache_path
       .as_ref()
       .and_then(|path| cached_url_from_cache_meta(path))
-      .unwrap_or_else(|| entry.url.clone());
+    {
+      progress.url = url;
+    } else if previous.is_none() {
+      progress.url = entry.url.clone();
+    }
 
     migrate_legacy_notes(&mut progress);
     normalize_missing_cache_placeholder(&mut progress, cache_exists);
 
-    if !cache_exists {
+    // Only create a "missing cache" placeholder when materializing a new progress entry. Existing
+    // committed progress artifacts should not be downgraded just because the local checkout does
+    // not contain `fetches/html/` (use `pageset_progress run` to refresh timings once caches exist).
+    if !cache_exists && previous.is_none() {
       progress.status = ProgressStatus::Error;
       if is_hotspot_unset(&progress.hotspot) {
         progress.hotspot = "fetch".to_string();

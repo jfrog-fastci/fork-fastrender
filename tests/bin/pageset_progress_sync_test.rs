@@ -185,7 +185,7 @@ fn pageset_progress_sync_prunes_stale_files() {
 }
 
 #[test]
-fn pageset_progress_sync_preserves_manual_fields() {
+fn pageset_progress_sync_preserves_existing_progress_without_cache() {
   let tmp = tempfile::tempdir().expect("temp dir");
   let progress_dir = tmp.path().join("progress");
   let html_dir = tmp.path().join("html");
@@ -237,28 +237,29 @@ fn pageset_progress_sync_preserves_manual_fields() {
   );
   assert_eq!(
     updated.get("url"),
-    Some(&Value::String(target.url.to_string()))
+    Some(&Value::String("https://old.example.com".into())),
+    "sync should not overwrite the recorded URL when cache metadata is unavailable"
   );
   assert_eq!(
     updated.get("status"),
-    Some(&Value::String("error".into())),
-    "missing caches should reset status to error even when manual fields are present"
+    Some(&Value::String("ok".into())),
+    "sync should not clobber existing status when caches are unavailable"
   );
   assert!(
-    updated.get("total_ms").is_some_and(Value::is_null),
-    "missing caches should clear stale timings"
+    updated.get("total_ms").is_some_and(|v| v.as_f64() == Some(123.0)),
+    "sync should preserve existing timings when caches are unavailable"
   );
   assert_eq!(
     updated.get("stages_ms"),
     Some(&serde_json::json!({
-      "fetch": 0.0,
-      "css": 0.0,
-      "cascade": 0.0,
+      "fetch": 1.0,
+      "css": 2.0,
+      "cascade": 3.0,
       "box_tree": 0.0,
-      "layout": 0.0,
-      "paint": 0.0
+      "layout": 4.0,
+      "paint": 5.0
     })),
-    "missing caches should clear stale stage timings"
+    "sync should preserve existing stage timings when caches are unavailable"
   );
 }
 

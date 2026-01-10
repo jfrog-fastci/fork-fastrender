@@ -3,7 +3,7 @@
 This directory contains the **committed pageset scoreboard**: one tiny JSON file per cached page stem.
 
 - Bootstrap with `pageset_progress sync` (`bash scripts/cargo_agent.sh run --release --bin pageset_progress -- sync [--prune]`) to materialize one placeholder per official pageset URL, even on a fresh checkout with no caches.
-- `sync` writes minimal `status: error` entries with `auto_notes: "not run"` or `auto_notes: "missing cache"`; `--prune` removes files for URLs no longer in the pageset list.
+- `sync` writes minimal `status: error` entries with `auto_notes: "not run"` or `auto_notes: "missing cache"` for newly created pages; it does not downgrade existing committed progress artifacts just because the local checkout is missing cached HTML. `--prune` removes files for URLs no longer in the pageset list.
 - `pageset_progress run` updates these files after caches exist.
 - `pageset_progress migrate` rewrites existing progress files without rendering, applying legacy schema migrations (e.g. splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`), backfilling missing `inputs` fingerprints when cached HTML exists, and reserializing deterministically.
 - Non-placeholder progress files may include an `inputs` section describing the cached HTML used for the run:
