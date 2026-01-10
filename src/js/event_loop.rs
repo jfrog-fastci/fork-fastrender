@@ -2,12 +2,13 @@ use crate::error::{Error, RenderStage, Result};
 use crate::debug::trace::TraceHandle;
 use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::clock::{Clock, RealClock};
 use super::time::duration_to_ms_f64;
+use vm_js::PromiseHandle;
 
 pub type MicrotaskCheckpointHook<Host> = fn(&mut Host, &mut EventLoop<Host>) -> Result<()>;
 
@@ -183,6 +184,21 @@ pub type TimerId = i32;
 /// without lossy conversions.
 pub type AnimationFrameId = i32;
 
+/// Minimal host-side state for `unhandledrejection` / `rejectionhandled` tracking.
+///
+/// HTML tracks rejected promises per-global using:
+/// - an "about-to-be-notified rejected promises list" (strong), and
+/// - an "outstanding rejected promises weak set" (weak).
+///
+/// FastRender's event loop is host-owned (not traced by `vm-js`), so this stores only promise
+/// identities. The embedding is responsible for rooting promises while dispatching events.
+#[derive(Debug, Default)]
+pub(crate) struct PromiseRejectionTrackerState {
+  pub(crate) about_to_be_notified: Vec<PromiseHandle>,
+  pub(crate) maybe_handled: Vec<PromiseHandle>,
+  pub(crate) outstanding_rejected: HashSet<PromiseHandle>,
+}
+
 type TimerCallback<Host> =
   Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
 
@@ -210,6 +226,7 @@ pub struct EventLoop<Host: 'static> {
   queue_limits: QueueLimits,
   trace: TraceHandle,
   microtask_checkpoint_hook: Option<MicrotaskCheckpointHook<Host>>,
+  pub(crate) promise_rejection_tracker: PromiseRejectionTrackerState,
   task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
   microtask_queue: VecDeque<Task<Host>>,
   next_task_seq: u64,
@@ -233,6 +250,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
       queue_limits: QueueLimits::default(),
       trace: TraceHandle::default(),
       microtask_checkpoint_hook: None,
+      promise_rejection_tracker: PromiseRejectionTrackerState::default(),
       task_queues: BTreeMap::new(),
       microtask_queue: VecDeque::new(),
       next_task_seq: 0,

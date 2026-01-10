@@ -8,15 +8,16 @@
 //! String handlers are intentionally rejected with a `TypeError` for now to avoid string-eval and
 //! keep behavior deterministic.
 
-use crate::js::event_loop::TimerId;
+use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
 use crate::render_control;
 use std::time::{Duration, Instant};
 use vm_js::{
-  Budget, ExecutionContext, Heap, Job, JobCallback, PropertyDescriptor, PropertyKey, PropertyKind,
-  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  Budget, ExecutionContext, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation,
+  PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks, VmJobContext,
 };
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
@@ -448,6 +449,208 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       arguments,
     )
   }
+
+  fn host_promise_rejection_tracker(
+    &mut self,
+    promise: PromiseHandle,
+    operation: PromiseRejectionOperation,
+  ) {
+    let Some(event_loop) = current_event_loop_mut::<Host>() else {
+      // Not executing inside a FastRender `EventLoop` turn; ignore.
+      return;
+    };
+
+    // Ensure we have a microtask checkpoint hook installed so we can dispatch events after the
+    // microtask queue is drained (HTML "notify about rejected promises").
+    event_loop.set_microtask_checkpoint_hook(Some(promise_rejection_microtask_checkpoint_hook::<Host>));
+
+    let cap = event_loop.queue_limits().max_pending_tasks;
+    let tracker = &mut event_loop.promise_rejection_tracker;
+
+    match operation {
+      PromiseRejectionOperation::Reject => {
+        if tracker.about_to_be_notified.len() >= cap {
+          return;
+        }
+        // Avoid duplicate tracking if the engine calls `Reject` more than once for the same
+        // promise (defensive).
+        if tracker.about_to_be_notified.iter().any(|p| *p == promise) {
+          return;
+        }
+        tracker.about_to_be_notified.push(promise);
+      }
+      PromiseRejectionOperation::Handle => {
+        // If the promise is still in the about-to-be-notified list, a handler was added before the
+        // end-of-checkpoint notification step, so no `unhandledrejection` should be queued.
+        if let Some(idx) = tracker
+          .about_to_be_notified
+          .iter()
+          .position(|p| *p == promise)
+        {
+          tracker.about_to_be_notified.swap_remove(idx);
+          return;
+        }
+
+        // If the promise was previously notified as unhandled and is now handled, queue a
+        // `rejectionhandled` notification.
+        if tracker.outstanding_rejected.remove(&promise) {
+          if tracker.maybe_handled.len() >= cap {
+            return;
+          }
+          tracker.maybe_handled.push(promise);
+        }
+      }
+    }
+  }
+}
+
+fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
+  event_loop: &mut EventLoop<Host>,
+  heap: &mut Heap,
+  promise: PromiseHandle,
+  event_type: &'static str,
+) -> crate::error::Result<()> {
+  let promise_obj: vm_js::GcObject = promise.into();
+  if !heap.is_valid_object(promise_obj) {
+    return Ok(());
+  }
+
+  // Keep the promise (and thus its `[[PromiseResult]]`) alive until the event task runs.
+  let root = heap
+    .add_root(Value::Object(promise_obj))
+    .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+
+  // `event_loop.queue_task` is fallible (queue limits); ensure the root is removed on failure.
+  let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+    let window_realm = host.window_realm();
+    window_realm.reset_interrupt();
+    let global_obj = window_realm.global_object();
+    let (vm, heap) = window_realm.vm_and_heap_mut();
+
+    let result: crate::error::Result<bool> = with_event_loop(event_loop, || {
+      vm.set_budget(callback_budget_from_render_deadline());
+      vm.tick()
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
+
+      let mut hooks = VmJsEventLoopHooks::<Host>::new();
+      let handled_after_dispatch = (|| -> Result<bool, VmError> {
+        let promise_value = heap.get_root(root).unwrap_or(Value::Undefined);
+        let Value::Object(promise_obj) = promise_value else {
+          // Root slot should always contain the promise object, but be defensive in release builds.
+          return Ok(true);
+        };
+
+        let reason = heap
+          .promise_result(promise_obj)?
+          .unwrap_or(Value::Undefined);
+
+        let mut scope = heap.scope();
+
+        scope.push_root(Value::Object(global_obj))?;
+        scope.push_root(Value::Object(promise_obj))?;
+        scope.push_root(reason)?;
+
+        // Minimal event object: `dispatchEvent` only requires `{ type: string }`.
+        let event_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(event_obj))?;
+
+        let type_s = scope.alloc_string(event_type)?;
+        scope.push_root(Value::String(type_s))?;
+        let type_key = alloc_key(&mut scope, "type")?;
+        scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
+
+        // `PromiseRejectionEvent`-like payload (minimal).
+        let reason_key = alloc_key(&mut scope, "reason")?;
+        scope.define_property(event_obj, reason_key, data_desc(reason))?;
+        let promise_key = alloc_key(&mut scope, "promise")?;
+        scope.define_property(event_obj, promise_key, data_desc(Value::Object(promise_obj)))?;
+
+        // Make the event cancelable to match `unhandledrejection` behavior on the web platform.
+        let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+        scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+
+        let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
+        let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
+        let _ = vm.call_with_host(
+          &mut scope,
+          &mut hooks,
+          dispatch,
+          Value::Object(global_obj),
+          &[Value::Object(event_obj)],
+        )?;
+
+        Ok(scope.heap().promise_is_handled(promise_obj)?)
+      })();
+
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+
+      handled_after_dispatch
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+    });
+
+    // Always remove the persistent root, even if dispatch failed.
+    heap.remove_root(root);
+
+    let handled_after_dispatch = result?;
+
+    // Only promises that remain unhandled after `unhandledrejection` dispatch should be eligible
+    // for `rejectionhandled` later.
+    if event_type == "unhandledrejection" && !handled_after_dispatch {
+      let cap = event_loop.queue_limits().max_pending_tasks;
+      let tracker = &mut event_loop.promise_rejection_tracker;
+      if tracker.outstanding_rejected.len() < cap {
+        tracker.outstanding_rejected.insert(promise);
+      }
+    }
+
+    Ok(())
+  });
+
+  if let Err(err) = queue_result {
+    heap.remove_root(root);
+    return Err(err);
+  }
+
+  Ok(())
+}
+
+fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+) -> crate::error::Result<()> {
+  let (to_notify, to_handle) = {
+    let tracker = &mut event_loop.promise_rejection_tracker;
+    (
+      std::mem::take(&mut tracker.about_to_be_notified),
+      std::mem::take(&mut tracker.maybe_handled),
+    )
+  };
+
+  let window_realm = host.window_realm();
+  let heap = window_realm.heap_mut();
+
+  for promise in to_notify {
+    let promise_obj: vm_js::GcObject = promise.into();
+    if !heap.is_valid_object(promise_obj) {
+      continue;
+    }
+    let Ok(PromiseState::Rejected) = heap.promise_state(promise_obj) else {
+      continue;
+    };
+    let Ok(false) = heap.promise_is_handled(promise_obj) else {
+      continue;
+    };
+
+    queue_promise_rejection_event_task::<Host>(event_loop, heap, promise, "unhandledrejection")?;
+  }
+
+  for promise in to_handle {
+    queue_promise_rejection_event_task::<Host>(event_loop, heap, promise, "rejectionhandled")?;
+  }
+
+  Ok(())
 }
 
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
