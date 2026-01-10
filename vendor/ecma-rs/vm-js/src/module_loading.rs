@@ -1060,7 +1060,11 @@ fn clone_heap_string_to_string(heap: &crate::Heap, s: GcString) -> Result<String
   Ok(out)
 }
 
-fn clone_heap_string_to_string_unbounded(heap: &crate::Heap, s: GcString) -> Result<String, VmError> {
+fn clone_heap_string_to_string_unbounded_with_ticks(
+  vm: &mut Vm,
+  heap: &crate::Heap,
+  s: GcString,
+) -> Result<String, VmError> {
   let js = heap.get_string(s)?;
 
   // `String::from_utf16_lossy` is infallible and aborts the process on allocator OOM.
@@ -1081,11 +1085,56 @@ fn clone_heap_string_to_string_unbounded(heap: &crate::Heap, s: GcString) -> Res
     .try_reserve_exact(max_utf8_len)
     .map_err(|_| VmError::OutOfMemory)?;
 
-  for r in std::char::decode_utf16(units.iter().copied()) {
-    match r {
-      Ok(ch) => out.push(ch),
-      Err(_) => out.push('\u{FFFD}'),
+  // Dynamic import specifiers can be arbitrarily large (unlike import attribute keys/values, which
+  // are capped to 1024 UTF-16 code units). Decoding the specifier must still be budgeted so hostile
+  // inputs cannot perform unbounded work within a single tick interval.
+  const TICK_EVERY_CODE_UNITS: usize = 1024;
+  let mut since_tick: usize = 0;
+  let mut i: usize = 0;
+  while i < units.len() {
+    // Track work by UTF-16 code unit count so surrogate-heavy strings can't skip tick boundaries.
+    if since_tick >= TICK_EVERY_CODE_UNITS {
+      vm.tick()?;
+      since_tick = 0;
     }
+
+    let u = units[i];
+    if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate. If it's followed by a low surrogate, decode the pair; otherwise this is an
+      // unpaired surrogate and becomes U+FFFD.
+      if i + 1 < units.len() {
+        let u2 = units[i + 1];
+        if (0xDC00..=0xDFFF).contains(&u2) {
+          let high = (u as u32) - 0xD800;
+          let low = (u2 as u32) - 0xDC00;
+          let scalar = 0x10000 + ((high << 10) | low);
+          match std::char::from_u32(scalar) {
+            Some(ch) => out.push(ch),
+            None => out.push('\u{FFFD}'),
+          }
+          i += 2;
+          since_tick = since_tick.saturating_add(2);
+          continue;
+        }
+      }
+      out.push('\u{FFFD}');
+      i += 1;
+      since_tick = since_tick.saturating_add(1);
+      continue;
+    }
+
+    if (0xDC00..=0xDFFF).contains(&u) {
+      // Unpaired low surrogate.
+      out.push('\u{FFFD}');
+      i += 1;
+      since_tick = since_tick.saturating_add(1);
+      continue;
+    }
+
+    // Non-surrogate BMP code unit.
+    out.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
+    i += 1;
+    since_tick = since_tick.saturating_add(1);
   }
 
   Ok(out)
@@ -1301,7 +1350,7 @@ pub fn start_dynamic_import(
         state.teardown_roots(import_scope.heap_mut());
         return Err(err);
       }
-      match clone_heap_string_to_string_unbounded(import_scope.heap(), s) {
+      match clone_heap_string_to_string_unbounded_with_ticks(vm, import_scope.heap(), s) {
         Ok(s) => s,
         Err(err) => {
           state.teardown_roots(import_scope.heap_mut());
