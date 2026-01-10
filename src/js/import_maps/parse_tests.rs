@@ -271,3 +271,17 @@ fn imports_are_sorted_in_descending_code_unit_order() {
   let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
   assert_eq!(keys, vec!["foo/bar/", "foo/"]);
 }
+
+#[test]
+fn imports_sorting_uses_utf16_code_units_not_scalar_values() {
+  // U+FFFF is a single UTF-16 code unit, while "💩" is represented as a surrogate pair.
+  // HTML's import maps sorting is defined in terms of UTF-16 code units, so "a\uFFFF" should sort
+  // after "a💩" in ascending order (and thus before it in descending order).
+  let (map, _warnings) = parse_import_map_string(
+    r#"{ "imports": { "a\uFFFF": "/x.js", "a💩": "/y.js" } }"#,
+    &base_url(),
+  )
+  .unwrap();
+  let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
+  assert_eq!(keys, vec!["a\u{FFFF}", "a💩"]);
+}
