@@ -2054,7 +2054,10 @@ fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &Algo
       .fold(0.0, |acc, x| acc.max(x));
 
     for child in line.items.iter_mut() {
-      let free_space = line_cross_size - child.outer_target_size.cross(constants.dir);
+      let mut free_space = line_cross_size - child.outer_target_size.cross(constants.dir);
+      if !free_space.is_finite() {
+        free_space = 0.0;
+      }
 
       if child.margin_is_auto.cross_start(constants.dir)
         && child.margin_is_auto.cross_end(constants.dir)
@@ -2096,11 +2099,15 @@ fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &Algo
 #[inline]
 fn align_flex_items_along_cross_axis(
   child: &FlexItem,
-  free_space: f32,
+  mut free_space: f32,
   max_baseline: f32,
   constants: &AlgoConstants,
 ) -> f32 {
-  match child.align_self {
+  if !free_space.is_finite() {
+    free_space = 0.0;
+  }
+
+  let offset = match child.align_self {
     AlignSelf::Start => 0.0,
     AlignSelf::FlexStart => {
       if constants.is_wrap_reverse {
@@ -2136,7 +2143,9 @@ fn align_flex_items_along_cross_axis(
         0.0
       }
     }
-  }
+  };
+
+  if offset.is_finite() { offset } else { 0.0 }
 }
 
 /// Determine the flex container’s used cross size.
