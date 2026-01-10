@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, DomNodeType};
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
@@ -11,40 +11,67 @@ struct Frame {
 
 fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> NodeId {
   let inert_subtree = src.template_contents_are_inert();
-  let kind = match &src.node_type {
-    DomNodeType::Document { quirks_mode, .. } => NodeKind::Document {
-      quirks_mode: *quirks_mode,
-    },
+  let (kind, is_html_script) = match &src.node_type {
+    DomNodeType::Document { quirks_mode, .. } => (
+      NodeKind::Document {
+        quirks_mode: *quirks_mode,
+      },
+      false,
+    ),
     DomNodeType::ShadowRoot {
       mode,
       delegates_focus,
-    } => NodeKind::ShadowRoot {
-      mode: *mode,
-      delegates_focus: *delegates_focus,
-    },
+    } => (
+      NodeKind::ShadowRoot {
+        mode: *mode,
+        delegates_focus: *delegates_focus,
+      },
+      false,
+    ),
     DomNodeType::Slot {
       namespace,
       attributes,
       assigned,
-    } => NodeKind::Slot {
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-      assigned: *assigned,
-    },
+    } => (
+      NodeKind::Slot {
+        namespace: namespace.clone(),
+        attributes: attributes.clone(),
+        assigned: *assigned,
+      },
+      false,
+    ),
     DomNodeType::Element {
       tag_name,
       namespace,
       attributes,
-    } => NodeKind::Element {
-      tag_name: tag_name.clone(),
-      namespace: namespace.clone(),
-      attributes: attributes.clone(),
-    },
-    DomNodeType::Text { content } => NodeKind::Text {
-      content: content.clone(),
-    },
+    } => {
+      let is_html_script =
+        tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE);
+      (
+        NodeKind::Element {
+          tag_name: tag_name.clone(),
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+        },
+        is_html_script,
+      )
+    }
+    DomNodeType::Text { content } => (
+      NodeKind::Text {
+        content: content.clone(),
+      },
+      false,
+    ),
   };
-  doc.push_node(kind, Some(parent), inert_subtree)
+
+  let id = doc.push_node(kind, Some(parent), inert_subtree);
+  if is_html_script {
+    // `dom2` initializes `Node.script_force_async=true` for HTML script elements, but renderer DOM
+    // trees come from HTML parsing. Mirror the HTML parser behavior and force it to `false` for
+    // imported parser-created scripts.
+    doc.node_mut(id).script_force_async = false;
+  }
+  id
 }
 
 fn import_subtree(doc: &mut Document, parent: NodeId, root: &DomNode) -> NodeId {
