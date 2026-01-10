@@ -2986,6 +2986,36 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
 
   #[test]
+  fn script_async_attribute_addition_clears_force_async() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            function assert(cond) { if (!cond) throw new Error("assert"); }
+            var s = document.createElement("script");
+            assert(s.async === true);
+            s.setAttribute("async", "");
+            s.removeAttribute("async");
+            assert(s.getAttribute("async") === null);
+            assert(s.async === false);
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
   fn parser_inserted_script_async_is_false() -> Result<()> {
     let renderer_dom = fastrender::dom::parse_html(concat!(
       "<!doctype html>",
