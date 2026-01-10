@@ -1,4 +1,4 @@
-use crate::dom2::{self, NodeId};
+use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
@@ -847,6 +847,8 @@ const NODE_FIRST_CHILD_GET_KEY: &str = "__fastrender_node_first_child_get";
 const NODE_PREVIOUS_SIBLING_GET_KEY: &str = "__fastrender_node_previous_sibling_get";
 const NODE_NEXT_SIBLING_GET_KEY: &str = "__fastrender_node_next_sibling_get";
 const NODE_REMOVE_KEY: &str = "__fastrender_node_remove";
+const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
+const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
@@ -1917,6 +1919,18 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let text_content_get = {
+    let key = alloc_key(scope, NODE_TEXT_CONTENT_GET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let text_content_set = {
+    let key = alloc_key(scope, NODE_TEXT_CONTENT_SET_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
   let add_event_listener = {
     let key = alloc_key(scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
     scope
@@ -2576,6 +2590,22 @@ fn get_or_create_node_wrapper(
         kind: PropertyKind::Accessor {
           get: Value::Object(get),
           set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (text_content_get, text_content_set) {
+    let key = alloc_key(scope, "textContent")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
         },
       },
     )?;
@@ -3399,6 +3429,145 @@ fn document_create_element_native(
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_element(&tag_name, "");
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_create_text_node_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createTextNode must be called on a document object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "document.createTextNode requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "document.createTextNode requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.create_text(&data);
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_create_comment_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createComment must be called on a document object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "document.createComment requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "document.createComment requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.create_comment(&data);
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_create_document_fragment_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createDocumentFragment must be called on a document object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "document.createDocumentFragment requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "document.createDocumentFragment requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.create_document_fragment();
 
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
@@ -4988,6 +5157,278 @@ fn node_remove_native(
 
   if let Err(err) = dom.remove_child(parent, node_id) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn node_text_content_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.textContent must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent must be called on a node object",
+      ));
+    }
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.textContent requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
+
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. } | NodeKind::Doctype { .. } => Ok(Value::Null),
+    NodeKind::Text { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
+    NodeKind::Element { .. }
+    | NodeKind::Slot { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. } => {
+      let mut out = String::new();
+
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      let mut stack: Vec<NodeId> = Vec::new();
+
+      // Seed traversal with children in reverse so we pop in tree order.
+      let root_node = dom.node(node_id);
+      for &child in root_node.children.iter().rev() {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        if dom.node(child).parent != Some(node_id) {
+          continue;
+        }
+        // `ShadowRoot` is not part of the light DOM tree for `textContent` semantics.
+        if matches!(&root_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+          && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+        {
+          continue;
+        }
+        stack.push(child);
+      }
+
+      while let Some(id) = stack.pop() {
+        if remaining == 0 {
+          break;
+        }
+        remaining -= 1;
+
+        let node = dom.node(id);
+        if let NodeKind::Text { content } = &node.kind {
+          out.push_str(content);
+        }
+
+        for &child in node.children.iter().rev() {
+          if child.index() >= dom.nodes_len() {
+            continue;
+          }
+          if dom.node(child).parent != Some(id) {
+            continue;
+          }
+          if matches!(&node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+            && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. })
+          {
+            continue;
+          }
+          stack.push(child);
+        }
+      }
+
+      Ok(Value::String(scope.alloc_string(&out)?))
+    }
+  }
+}
+
+fn node_text_content_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.textContent must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.textContent must be called on a node object",
+      ));
+    }
+  };
+
+  let value_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = match value_value {
+    // `textContent` is `DOMString?`; `null` and `undefined` act as the empty string.
+    Value::Null | Value::Undefined => String::new(),
+    other => {
+      let s = scope.heap_mut().to_string(other)?;
+      scope
+        .heap()
+        .get_string(s)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_default()
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.textContent requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
+
+  #[derive(Clone, Copy)]
+  enum TextContentTarget {
+    Text,
+    Comment,
+    ProcessingInstruction,
+    ReplaceChildren { preserve_shadow_roots: bool },
+    NoOp,
+  }
+
+  let target = match &dom.node(node_id).kind {
+    NodeKind::Text { .. } => TextContentTarget::Text,
+    NodeKind::Comment { .. } => TextContentTarget::Comment,
+    NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+      TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: true,
+      }
+    }
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
+      preserve_shadow_roots: false,
+    },
+    NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
+  };
+
+  match target {
+    TextContentTarget::Text => {
+      if let Err(err) = dom.set_text_data(node_id, &value) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+    }
+    TextContentTarget::Comment => {
+      let node = dom.node_mut(node_id);
+      if let NodeKind::Comment { content } = &mut node.kind {
+        if content != &value {
+          content.clear();
+          content.push_str(&value);
+        }
+      }
+    }
+    TextContentTarget::ProcessingInstruction => {
+      let node = dom.node_mut(node_id);
+      if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
+        if data != &value {
+          data.clear();
+          data.push_str(&value);
+        }
+      }
+    }
+    TextContentTarget::ReplaceChildren {
+      preserve_shadow_roots,
+    } => {
+      let old_children = {
+        let node = dom.node_mut(node_id);
+        std::mem::take(&mut node.children)
+      };
+
+      let mut preserved: Vec<NodeId> = Vec::new();
+      for child in old_children {
+        if child.index() >= dom.nodes_len() {
+          continue;
+        }
+        if dom.node(child).parent != Some(node_id) {
+          continue;
+        }
+
+        if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
+          preserved.push(child);
+          continue;
+        }
+
+        dom.node_mut(child).parent = None;
+      }
+
+      dom.node_mut(node_id).children = preserved;
+
+      if !value.is_empty() {
+        let text_node = dom.create_text(&value);
+        if let Err(err) = dom.append_child(node_id, text_node) {
+          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        }
+      }
+    }
+    TextContentTarget::NoOp => {}
   }
 
   Ok(Value::Undefined)
@@ -7224,6 +7665,60 @@ fn init_window_globals(
     data_desc(Value::Object(create_element_func)),
   )?;
 
+  // document.createTextNode
+  let create_text_node_key = alloc_key(&mut scope, "createTextNode")?;
+  let create_text_node_call_id = vm.register_native_call(document_create_text_node_native)?;
+  let create_text_node_name = scope.alloc_string("createTextNode")?;
+  scope.push_root(Value::String(create_text_node_name))?;
+  let create_text_node_func =
+    scope.alloc_native_function(create_text_node_call_id, None, create_text_node_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    create_text_node_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_text_node_func))?;
+  scope.define_property(
+    document_obj,
+    create_text_node_key,
+    data_desc(Value::Object(create_text_node_func)),
+  )?;
+
+  // document.createComment
+  let create_comment_key = alloc_key(&mut scope, "createComment")?;
+  let create_comment_call_id = vm.register_native_call(document_create_comment_native)?;
+  let create_comment_name = scope.alloc_string("createComment")?;
+  scope.push_root(Value::String(create_comment_name))?;
+  let create_comment_func =
+    scope.alloc_native_function(create_comment_call_id, None, create_comment_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    create_comment_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_comment_func))?;
+  scope.define_property(
+    document_obj,
+    create_comment_key,
+    data_desc(Value::Object(create_comment_func)),
+  )?;
+
+  // document.createDocumentFragment
+  let create_fragment_key = alloc_key(&mut scope, "createDocumentFragment")?;
+  let create_fragment_call_id = vm.register_native_call(document_create_document_fragment_native)?;
+  let create_fragment_name = scope.alloc_string("createDocumentFragment")?;
+  scope.push_root(Value::String(create_fragment_name))?;
+  let create_fragment_func =
+    scope.alloc_native_function(create_fragment_call_id, None, create_fragment_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    create_fragment_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_fragment_func))?;
+  scope.define_property(
+    document_obj,
+    create_fragment_key,
+    data_desc(Value::Object(create_fragment_func)),
+  )?;
+
   // --- DOM Events (MVP): Event / CustomEvent / document.createEvent -----------------------------
   //
   // Many real-world bundles include the "CustomEvent polyfill" pattern that calls
@@ -7774,6 +8269,49 @@ fn init_window_globals(
     document_obj,
     next_sibling_get_key,
     data_desc(Value::Object(next_sibling_get_func)),
+  )?;
+
+  // Store shared Node.textContent getter/setter on `document` so wrappers can reuse them.
+  let text_content_get_call_id = vm.register_native_call(node_text_content_get_native)?;
+  let text_content_get_name = scope.alloc_string("get textContent")?;
+  scope.push_root(Value::String(text_content_get_name))?;
+  let text_content_get_func = scope.alloc_native_function(
+    text_content_get_call_id,
+    None,
+    text_content_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    text_content_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(text_content_get_func))?;
+  let text_content_get_key = alloc_key(&mut scope, NODE_TEXT_CONTENT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    text_content_get_key,
+    data_desc(Value::Object(text_content_get_func)),
+  )?;
+
+  let text_content_set_call_id = vm.register_native_call(node_text_content_set_native)?;
+  let text_content_set_name = scope.alloc_string("set textContent")?;
+  scope.push_root(Value::String(text_content_set_name))?;
+  let text_content_set_func = scope.alloc_native_function(
+    text_content_set_call_id,
+    None,
+    text_content_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    text_content_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(text_content_set_func))?;
+  let text_content_set_key = alloc_key(&mut scope, NODE_TEXT_CONTENT_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    text_content_set_key,
+    data_desc(Value::Object(text_content_set_func)),
   )?;
 
   let node_remove_call_id = vm.register_native_call(node_remove_native)?;
@@ -9310,6 +9848,66 @@ mod tests {
       dom.inner_html(root).unwrap(),
       r#"<b><i></i></b><span id="target"></span>"#
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn document_create_text_node_and_node_text_content_round_trip() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=root></div></body></html>")
+        .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const t = document.createTextNode('hello');\n\
+        root.appendChild(t);\n\
+        if (t.textContent !== 'hello') return 't1:' + t.textContent;\n\
+        if (root.textContent !== 'hello') return 'r1:' + root.textContent;\n\
+\n\
+        t.textContent = 'world';\n\
+        if (root.textContent !== 'world') return 'r2:' + root.textContent;\n\
+        if (root.innerHTML !== 'world') return 'html1:' + root.innerHTML;\n\
+\n\
+        root.innerHTML = '<span>hi</span><b>!</b>';\n\
+        if (root.textContent !== 'hi!') return 'r3:' + root.textContent;\n\
+\n\
+        root.textContent = 'x';\n\
+        if (root.innerHTML !== 'x') return 'html2:' + root.innerHTML;\n\
+        root.textContent = '';\n\
+        if (root.innerHTML !== '') return 'html3:' + root.innerHTML;\n\
+\n\
+        const frag = document.createDocumentFragment();\n\
+        frag.appendChild(document.createTextNode('a'));\n\
+        frag.appendChild(document.createTextNode('b'));\n\
+        root.appendChild(frag);\n\
+        if (root.textContent !== 'ab') return 'frag1:' + root.textContent;\n\
+        if (frag.textContent !== '') return 'frag2:' + frag.textContent;\n\
+\n\
+        const c = document.createComment('ignore');\n\
+        root.appendChild(c);\n\
+        if (c.textContent !== 'ignore') return 'c1:' + c.textContent;\n\
+        c.textContent = 'changed';\n\
+        if (c.textContent !== 'changed') return 'c2:' + c.textContent;\n\
+        if (root.textContent !== 'ab') return 'c3:' + root.textContent;\n\
+\n\
+        const docNode = document.documentElement.parentNode;\n\
+        if (docNode.textContent !== null) return 'doc:' + docNode.textContent;\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(dom.inner_html(root).unwrap(), "ab");
 
     Ok(())
   }
