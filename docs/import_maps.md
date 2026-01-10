@@ -130,6 +130,11 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `add module to resolved module set` (**implemented as** `add_module_to_resolved_module_set`):
   * `rg -n 'add module to resolved module set' specs/whatwg-html/source`
 
+### Fetch option helpers (implemented)
+
+* `resolve a module integrity metadata` (**implemented as** `resolve_module_integrity_metadata`):
+  * `rg -n 'resolve a module integrity metadata' specs/whatwg-html/source`
+
 ---
 
 ## Data structures

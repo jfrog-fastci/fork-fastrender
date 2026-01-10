@@ -41,6 +41,13 @@ impl ImportMapState {
     Self::default()
   }
 
+  /// HTML: "resolve a module integrity metadata".
+  ///
+  /// Convenience wrapper around [`crate::js::import_maps::resolve_module_integrity_metadata`].
+  pub fn resolve_module_integrity_metadata(&self, url: &Url) -> &str {
+    super::integrity::resolve_module_integrity_metadata(self, url)
+  }
+
   pub fn import_map(&self) -> &ImportMap {
     &self.import_map
   }
