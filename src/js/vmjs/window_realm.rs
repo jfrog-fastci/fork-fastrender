@@ -6673,8 +6673,18 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       return Ok(());
     };
 
+    // Host-driven dispatch is a "new turn" of JS execution: clear any prior termination state and
+    // install the latest per-run budgets from `JsExecutionOptions` so hostile listeners cannot hang
+    // the host.
+    realm.reset_interrupt();
+    let budget = realm.vm_budget_now();
+
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut vm = vm.push_budget(budget);
+    // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
+    vm.tick()
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let mut scope = heap.scope();
     let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
       realm: realm_id,
@@ -6806,8 +6816,14 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       return Err(web_events::DomError::new(err.to_string()));
     }
 
-    if let Err(_err) = call_result {
-      // Listener errors should not abort dispatch.
+    if let Err(err) = call_result {
+      // Per web platform behavior, exceptions from event listeners should not abort dispatch.
+      //
+      // Termination (out of fuel, interrupted, deadline exceeded) is not a "normal" exception: it
+      // is a safety mechanism enforced by the host, so it must propagate to the embedding.
+      if matches!(err, VmError::Termination(_)) {
+        return Err(web_events::DomError::new(err.to_string()));
+      }
     }
 
     // Best-effort cleanup: remove callback roots for `{ once: true }` listeners.
@@ -15969,6 +15985,87 @@ mod tests {
 
     assert_eq!(default_not_prevented, true);
     assert_eq!(realm.exec_script("__count")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dom_event_dispatch_respects_max_instruction_count() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut js_execution_options = JsExecutionOptions::default();
+    // Increase the wall time budget so debug builds running in parallel don't trip the default 100ms
+    // budget.
+    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    // Keep the heap limits configured by `WindowRealmConfig`.
+    js_execution_options.max_vm_heap_bytes = None;
+    // Provide enough fuel for the initial script to install listeners.
+    js_execution_options.max_instruction_count = Some(10_000);
+    let mut realm = WindowRealm::new_with_js_execution_options(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+      js_execution_options,
+    )?;
+
+    realm.exec_script(
+      "globalThis.__ran = false;\n\
+       document.addEventListener('x', () => { globalThis.__ran = true; });",
+    )?;
+
+    // Simulate stale VM state that would otherwise allow the listener to run.
+    realm.js_execution_options.max_instruction_count = Some(0);
+    realm.vm_mut().set_budget(vm_js::Budget::unlimited(100));
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut invoker =
+      WindowRealmDomEventListenerInvoker::<DummyHost>::new(&mut realm_slot, &mut vm_host_slot);
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    let err = web_events::dispatch_event(
+      web_events::EventTargetId::Document,
+      &mut event,
+      dom.as_ref(),
+      dom.events(),
+      &mut invoker,
+    )
+    .expect_err("expected host-driven dispatch to abort when max_instruction_count is exhausted");
+
+    assert!(
+      err.to_string().to_lowercase().contains("fuel"),
+      "expected out-of-fuel error, got: {err}"
+    );
+
+    // Inspect global state without `exec_script` (which would itself hit the zero fuel budget).
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    vm.set_budget(vm_js::Budget::unlimited(100));
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let global = realm_ref.global_object();
+    assert_eq!(get_prop(&mut vm, &mut scope, global, "__ran")?, Value::Bool(false));
+
     Ok(())
   }
 
