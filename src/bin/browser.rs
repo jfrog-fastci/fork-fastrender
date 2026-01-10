@@ -19,6 +19,8 @@ fn main() {
 
 #[cfg(feature = "browser_ui")]
 use clap::Parser;
+#[cfg(feature = "browser_ui")]
+use arboard::Clipboard;
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
@@ -665,6 +667,12 @@ struct App {
   /// Clipboard text received from the worker that should be forwarded to the OS clipboard on the
   /// next egui frame.
   pending_clipboard_text: Option<String>,
+  /// Whether the current frame should ignore `egui::Event::Paste` events.
+  ///
+  /// We handle Ctrl/Cmd+V ourselves (reading the OS clipboard and sending `UiToWorker::Paste`) when
+  /// the rendered page has focus. On some platforms/egui versions, egui-winit may still emit a
+  /// `Paste` event for the same keypress; this flag avoids double-pasting.
+  suppress_paste_events: bool,
 
   window_focused: bool,
   window_occluded: bool,
@@ -820,6 +828,7 @@ impl App {
       viewport_cache_dpr: 0.0,
       modifiers: winit::event::ModifiersState::default(),
       pending_clipboard_text: None,
+      suppress_paste_events: false,
       window_focused: true,
       window_occluded: false,
       window_minimized: size.width == 0 || size.height == 0,
@@ -2195,6 +2204,15 @@ impl App {
                 self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
                 return;
               }
+              VirtualKeyCode::V => {
+                if let Ok(mut clipboard) = Clipboard::new() {
+                  if let Ok(text) = clipboard.get_text() {
+                    self.suppress_paste_events = true;
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                  }
+                }
+                return;
+              }
               VirtualKeyCode::A => {
                 self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                 return;
@@ -2655,7 +2673,12 @@ impl App {
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 
-    if !paste_events.is_empty() && self.page_has_focus && !self.egui_ctx.wants_keyboard_input() {
+    let suppress_paste_events = std::mem::take(&mut self.suppress_paste_events);
+    if !paste_events.is_empty()
+      && self.page_has_focus
+      && !self.egui_ctx.wants_keyboard_input()
+      && !suppress_paste_events
+    {
       if let Some(tab_id) = self.browser_state.active_tab_id() {
         for text in paste_events {
           self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });

@@ -33,6 +33,7 @@ browser_ui = [
   "dep:egui-winit",
   "dep:egui-wgpu",
   "dep:pollster",
+  "dep:arboard",
   "dep:directories",
 ]
 browser_ui_wayland = [
@@ -51,6 +52,7 @@ browser_ui_wayland = [
 base64 = "0.22"
 avif-decode = { version = "1.0", default-features = false }
 avif-parse = "1.4"
+arboard = { version = "3.6", optional = true }
 brotli = "6"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = "0.4.42"
