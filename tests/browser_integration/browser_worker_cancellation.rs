@@ -3,7 +3,9 @@
 use super::support;
 use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
@@ -694,6 +696,7 @@ fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerDown");
   worker
@@ -702,6 +705,7 @@ fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerUp");
 

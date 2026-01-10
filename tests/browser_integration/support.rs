@@ -223,7 +223,7 @@ pub fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 
 #[cfg(feature = "browser_ui")]
 use fastrender::ui::messages::{
-  KeyAction, NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 
 #[cfg(feature = "browser_ui")]
@@ -247,6 +247,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
     return Some(*tab_id);
   }
   if let WorkerToUi::NavigationFailed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::RequestOpenInNewTab { tab_id, .. } = msg {
     return Some(*tab_id);
   }
   if let WorkerToUi::ScrollStateUpdated { tab_id, .. } = msg {
@@ -526,6 +529,7 @@ pub fn pointer_move(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -
     tab_id,
     pos_css,
     button,
+    modifiers: PointerModifiers::NONE,
   }
 }
 
@@ -536,6 +540,7 @@ pub fn pointer_down(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -
     tab_id,
     pos_css,
     button,
+    modifiers: PointerModifiers::NONE,
   }
 }
 
@@ -546,6 +551,7 @@ pub fn pointer_up(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -> 
     tab_id,
     pos_css,
     button,
+    modifiers: PointerModifiers::NONE,
   }
 }
 

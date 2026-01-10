@@ -3,7 +3,7 @@
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::absolute_bounds_for_box_id;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxNode, BoxTree, Point, Result, Rgba};
@@ -337,11 +337,13 @@ fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row(
     tab_id,
     pos_css: click_viewport_css,
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
   let _ = controller.handle_message(UiToWorker::PointerUp {
     tab_id,
     pos_css: click_viewport_css,
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
 
   let page_point = Point::new(click_viewport_css.0, click_viewport_css.1)
@@ -420,11 +422,13 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
     tab_id,
     pos_css: (15.0, 15.0),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
   let open_msgs = controller.handle_message(UiToWorker::PointerUp {
     tab_id,
     pos_css: (15.0, 15.0),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
 
   let opened = open_msgs.iter().find_map(|msg| match msg {

@@ -28,7 +28,8 @@ pub mod zoom;
 pub mod chrome;
 
 pub use messages::{
-  NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
+  WorkerToUi,
 };
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the

@@ -638,6 +638,12 @@ impl BrowserAppState {
         }
         update.request_redraw = true;
       }
+      WorkerToUi::RequestOpenInNewTab { .. } => {
+        // The UI owns tab identifiers; front-ends are expected to handle this message directly by
+        // allocating a new tab id and issuing `CreateTab`/`Navigate`. The shared state model does
+        // not automatically create tabs.
+        update.request_redraw = true;
+      }
       WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.scroll_state = scroll;

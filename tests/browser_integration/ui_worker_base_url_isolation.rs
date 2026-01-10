@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -175,6 +175,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       tab_id: tab1,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down tab1");
   ui_tx
@@ -182,6 +183,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       tab_id: tab1,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up tab1");
   assert_eq!(next_navigation_committed(&ui_rx, tab1), a_next);
@@ -194,6 +196,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       tab_id: tab2,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down tab2");
   ui_tx
@@ -201,6 +204,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       tab_id: tab2,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up tab2");
   assert_eq!(next_navigation_committed(&ui_rx, tab2), b_next);

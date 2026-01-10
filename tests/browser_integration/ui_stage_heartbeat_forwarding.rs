@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
-use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::RenderWorker;
 use fastrender::ui::spawn_ui_worker;
 use fastrender::{PreparedPaintOptions, RenderOptions};
@@ -232,6 +234,7 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::None,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerMove");
 

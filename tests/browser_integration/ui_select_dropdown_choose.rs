@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::BrowserTabController;
 use fastrender::Result;
 
@@ -63,11 +65,13 @@ fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> R
     tab_id,
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
   let open_msgs = controller.handle_message(UiToWorker::PointerUp {
     tab_id,
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
 
   let (select_node_id, control) = open_msgs

@@ -350,12 +350,14 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     tab_id,
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
+    modifiers: fastrender::ui::PointerModifiers::NONE,
   })
   .unwrap();
   tx.send(UiToWorker::PointerUp {
     tab_id,
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
+    modifiers: fastrender::ui::PointerModifiers::NONE,
   })
   .unwrap();
 

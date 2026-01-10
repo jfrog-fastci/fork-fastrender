@@ -3,7 +3,7 @@
 use super::support;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
 
 // Worker startup + first render can take a few seconds under parallel load (CI).
@@ -74,12 +74,14 @@ fn browser_thread_select_dropdown_choose_updates_styles_and_repaints() {
     tab_id,
     pos_css: click_pos,
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })
   .expect("PointerDown");
   tx.send(UiToWorker::PointerUp {
     tab_id,
     pos_css: click_pos,
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })
   .expect("PointerUp");
 

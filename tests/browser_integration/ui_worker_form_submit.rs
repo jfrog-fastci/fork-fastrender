@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  KeyAction, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
+  KeyAction, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
@@ -75,6 +75,7 @@ fn click_submit_navigates_to_get_form_submission_url() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down");
   ui_tx
@@ -82,6 +83,7 @@ fn click_submit_navigates_to_get_form_submission_url() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up");
 
@@ -182,6 +184,7 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
       tab_id,
       pos_css: (10.0, 70.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down");
   ui_tx
@@ -189,6 +192,7 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
       tab_id,
       pos_css: (10.0, 70.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up");
   ui_tx

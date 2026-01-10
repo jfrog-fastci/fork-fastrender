@@ -68,6 +68,51 @@ pub enum PointerButton {
   Other(u16),
 }
 
+/// Snapshot of modifier keys/buttons active during a pointer event.
+///
+/// This is part of the UI↔worker protocol, so it must remain small, `Copy`, and independent of any
+/// specific windowing backend types (e.g. winit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PointerModifiers(u8);
+
+impl PointerModifiers {
+  pub const NONE: Self = Self(0);
+  pub const CTRL: Self = Self(1 << 0);
+  pub const SHIFT: Self = Self(1 << 1);
+  pub const ALT: Self = Self(1 << 2);
+  pub const META: Self = Self(1 << 3);
+
+  pub fn ctrl(self) -> bool {
+    (self.0 & Self::CTRL.0) != 0
+  }
+
+  pub fn shift(self) -> bool {
+    (self.0 & Self::SHIFT.0) != 0
+  }
+
+  pub fn alt(self) -> bool {
+    (self.0 & Self::ALT.0) != 0
+  }
+
+  pub fn meta(self) -> bool {
+    (self.0 & Self::META.0) != 0
+  }
+}
+
+impl std::ops::BitOr for PointerModifiers {
+  type Output = Self;
+
+  fn bitor(self, rhs: Self) -> Self::Output {
+    Self(self.0 | rhs.0)
+  }
+}
+
+impl std::ops::BitOrAssign for PointerModifiers {
+  fn bitor_assign(&mut self, rhs: Self) {
+    self.0 |= rhs.0;
+  }
+}
+
 /// An owned rendered frame produced by the render worker.
 ///
 /// This owns the underlying pixel buffer (`tiny_skia::Pixmap`) and is expected to be sent to the
@@ -188,6 +233,7 @@ pub enum UiToWorker {
     /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
+    modifiers: PointerModifiers,
   },
   PointerDown {
     tab_id: TabId,
@@ -199,6 +245,7 @@ pub enum UiToWorker {
     /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
+    modifiers: PointerModifiers,
   },
   PointerUp {
     tab_id: TabId,
@@ -210,6 +257,7 @@ pub enum UiToWorker {
     /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
+    modifiers: PointerModifiers,
   },
   /// Request a page hit-test for context menu purposes.
   ///
@@ -311,6 +359,16 @@ pub enum WorkerToUi {
     error: String,
     can_go_back: bool,
     can_go_forward: bool,
+  },
+  /// Request that the UI open `url` in a new tab (e.g. for `<a target="_blank">` or
+  /// Ctrl/Cmd-click/middle-click).
+  ///
+  /// The worker does not allocate `TabId`s; the UI owns tab identity and is responsible for
+  /// creating a new tab and issuing the corresponding [`UiToWorker::CreateTab`] +
+  /// [`UiToWorker::Navigate`] messages.
+  RequestOpenInNewTab {
+    tab_id: TabId,
+    url: String,
   },
   ScrollStateUpdated {
     tab_id: TabId,

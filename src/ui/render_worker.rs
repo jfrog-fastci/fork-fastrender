@@ -515,7 +515,8 @@ impl BrowserRuntime {
     // Pointer-move can arrive at a very high frequency (especially with high polling-rate mice).
     // The renderer only needs the *latest* pointer position before repainting, so collapsing
     // back-to-back moves avoids redundant DOM hit-testing work.
-    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton)> = HashMap::new();
+    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton, crate::ui::PointerModifiers)> =
+      HashMap::new();
 
     while let Some(msg) = self.try_recv_message() {
       match msg {
@@ -523,15 +524,17 @@ impl BrowserRuntime {
           tab_id,
           pos_css,
           button,
+          modifiers,
         } => {
-          pending_pointer_moves.insert(tab_id, (pos_css, button));
+          pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
         other => {
-          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
             self.handle_message(UiToWorker::PointerMove {
               tab_id,
               pos_css,
               button,
+              modifiers,
             });
           }
           self.handle_message(other);
@@ -539,11 +542,12 @@ impl BrowserRuntime {
       }
     }
 
-    for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+    for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
       self.handle_message(UiToWorker::PointerMove {
         tab_id,
         pos_css,
         button,
+        modifiers,
       });
     }
   }
@@ -559,7 +563,8 @@ impl BrowserRuntime {
 
     // Reuse the existing pointer-move coalescing logic during scroll bursts so we don't do
     // redundant hit-testing work while the user is scrolling.
-    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton)> = HashMap::new();
+    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton, crate::ui::PointerModifiers)> =
+      HashMap::new();
 
     loop {
       let msg = match self.try_recv_message() {
@@ -587,25 +592,28 @@ impl BrowserRuntime {
           tab_id,
           pos_css,
           button,
+          modifiers,
         } => {
-          pending_pointer_moves.insert(tab_id, (pos_css, button));
+          pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
         UiToWorker::Scroll { .. } => {
-          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
             self.handle_message(UiToWorker::PointerMove {
               tab_id,
               pos_css,
               button,
+              modifiers,
             });
           }
           self.handle_message(msg);
         }
         other => {
-          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
             self.handle_message(UiToWorker::PointerMove {
               tab_id,
               pos_css,
               button,
+              modifiers,
             });
           }
           // Defer non-coalescible messages (clicks, navigations, etc) until after we render the
@@ -616,11 +624,12 @@ impl BrowserRuntime {
       }
     }
 
-    for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+    for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
       self.handle_message(UiToWorker::PointerMove {
         tab_id,
         pos_css,
         button,
+        modifiers,
       });
     }
   }
@@ -878,7 +887,7 @@ impl BrowserRuntime {
       UiToWorker::PointerMove {
         tab_id,
         pos_css,
-        button: _,
+        ..
       } => {
         self.handle_pointer_move(tab_id, pos_css);
       }
@@ -886,15 +895,17 @@ impl BrowserRuntime {
         tab_id,
         pos_css,
         button,
+        modifiers,
       } => {
-        self.handle_pointer_down(tab_id, pos_css, button);
+        self.handle_pointer_down(tab_id, pos_css, button, modifiers);
       }
       UiToWorker::PointerUp {
         tab_id,
         pos_css,
         button,
+        modifiers,
       } => {
-        self.handle_pointer_up(tab_id, pos_css, button);
+        self.handle_pointer_up(tab_id, pos_css, button, modifiers);
       }
       UiToWorker::ContextMenuRequest { tab_id, pos_css } => {
         self.handle_context_menu_request(tab_id, pos_css);
@@ -1192,8 +1203,14 @@ impl BrowserRuntime {
     }
   }
 
-  fn handle_pointer_down(&mut self, tab_id: TabId, pos_css: (f32, f32), button: PointerButton) {
-    if !matches!(button, PointerButton::Primary) {
+  fn handle_pointer_down(
+    &mut self,
+    tab_id: TabId,
+    pos_css: (f32, f32),
+    button: PointerButton,
+    _modifiers: crate::ui::PointerModifiers,
+  ) {
+    if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       return;
     }
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -1222,8 +1239,14 @@ impl BrowserRuntime {
     }
   }
 
-  fn handle_pointer_up(&mut self, tab_id: TabId, pos_css: (f32, f32), button: PointerButton) {
-    if !matches!(button, PointerButton::Primary) {
+  fn handle_pointer_up(
+    &mut self,
+    tab_id: TabId,
+    pos_css: (f32, f32),
+    button: PointerButton,
+    modifiers: crate::ui::PointerModifiers,
+  ) {
+    if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       return;
     }
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -1252,6 +1275,8 @@ impl BrowserRuntime {
           hit_tree,
           &scroll_snapshot,
           viewport_point,
+          button,
+          modifiers,
           &document_url,
           &base_url,
         );
@@ -1297,6 +1322,12 @@ impl BrowserRuntime {
     match action {
       InteractionAction::Navigate { href } => {
         self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
+      }
+      InteractionAction::OpenInNewTab { href } => {
+        let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+        if dom_changed {
+          tab.needs_repaint = true;
+        }
       }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
@@ -1530,6 +1561,13 @@ impl BrowserRuntime {
       match action {
         InteractionAction::Navigate { href } => {
           navigate_to = Some(href);
+        }
+        InteractionAction::OpenInNewTab { href } => {
+          let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
         }
         InteractionAction::OpenSelectDropdown {
           select_node_id,

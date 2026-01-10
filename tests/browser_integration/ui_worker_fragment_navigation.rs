@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -394,6 +396,7 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down");
   worker
@@ -402,6 +405,7 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up");
 

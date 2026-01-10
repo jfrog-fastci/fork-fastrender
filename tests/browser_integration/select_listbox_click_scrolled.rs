@@ -2,7 +2,8 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RepaintReason, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RepaintReason, RenderedFrame, TabId, UiToWorker,
+  WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -157,6 +158,7 @@ fn select_listbox_click_accounts_for_scroll_offset() {
       tab_id,
       pos_css: click_pos,
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerDown 2");
   worker
@@ -165,6 +167,7 @@ fn select_listbox_click_accounts_for_scroll_offset() {
       tab_id,
       pos_css: click_pos,
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerUp 2");
 
@@ -313,6 +316,7 @@ fn select_listbox_click_on_scrollbar_does_not_select_option() {
       tab_id,
       pos_css: click_pos,
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerDown");
   worker
@@ -321,6 +325,7 @@ fn select_listbox_click_on_scrollbar_does_not_select_option() {
       tab_id,
       pos_css: click_pos,
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerUp");
   worker

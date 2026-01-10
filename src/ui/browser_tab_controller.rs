@@ -116,12 +116,14 @@ impl BrowserTabController {
         tab_id,
         pos_css,
         button,
+        modifiers: _,
       } if tab_id == self.tab_id => self.handle_pointer_down(pos_css, button),
       UiToWorker::PointerUp {
         tab_id,
         pos_css,
         button,
-      } if tab_id == self.tab_id => self.handle_pointer_up(pos_css, button),
+        modifiers,
+      } if tab_id == self.tab_id => self.handle_pointer_up(pos_css, button, modifiers),
       UiToWorker::SelectDropdownChoose {
         tab_id,
         select_node_id,
@@ -245,7 +247,7 @@ impl BrowserTabController {
   }
 
   fn handle_pointer_down(&mut self, pos_css: (f32, f32), button: PointerButton) -> Result<Vec<WorkerToUi>> {
-    if button != PointerButton::Primary {
+    if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
     }
 
@@ -282,8 +284,13 @@ impl BrowserTabController {
     }
   }
 
-  fn handle_pointer_up(&mut self, pos_css: (f32, f32), button: PointerButton) -> Result<Vec<WorkerToUi>> {
-    if button != PointerButton::Primary {
+  fn handle_pointer_up(
+    &mut self,
+    pos_css: (f32, f32),
+    button: PointerButton,
+    modifiers: crate::ui::PointerModifiers,
+  ) -> Result<Vec<WorkerToUi>> {
+    if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
     }
 
@@ -303,24 +310,36 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let mut action = InteractionAction::None;
-    let changed = self.document.mutate_dom(|dom| {
-      let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
-        dom,
-        unsafe { &*box_tree_ptr },
-        fragment_tree,
-        &self.scroll_state,
-        viewport_point,
-        &self.current_url,
-        &self.base_url,
-      );
-      action = next_action;
-      dom_changed
+     let changed = self.document.mutate_dom(|dom| {
+       let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
+         dom,
+         unsafe { &*box_tree_ptr },
+         fragment_tree,
+         &self.scroll_state,
+         viewport_point,
+         button,
+         modifiers,
+         &self.current_url,
+         &self.base_url,
+       );
+       action = next_action;
+       dom_changed
     });
 
     match action {
       InteractionAction::Navigate { href } => {
         // Link click navigation.
         return self.handle_navigation_action(href, NavigationReason::LinkClick);
+      }
+      InteractionAction::OpenInNewTab { href } => {
+        let mut out = vec![WorkerToUi::RequestOpenInNewTab {
+          tab_id: self.tab_id,
+          url: href,
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
       }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
@@ -448,6 +467,12 @@ impl BrowserTabController {
     match action {
       InteractionAction::Navigate { href } => {
         return self.handle_navigation_action(href, NavigationReason::LinkClick);
+      }
+      InteractionAction::OpenInNewTab { href } => {
+        out.push(WorkerToUi::RequestOpenInNewTab {
+          tab_id: self.tab_id,
+          url: href,
+        });
       }
       InteractionAction::OpenSelectDropdown {
         select_node_id,

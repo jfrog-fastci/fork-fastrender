@@ -28,6 +28,7 @@ pub enum WorkerToUiEvent {
     select_node_id: usize,
     control: SelectControl,
   },
+  RequestOpenInNewTab { tab_id: TabId, url: String },
   NavigationStarted { tab_id: TabId, url: String },
   NavigationCommitted {
     tab_id: TabId,
@@ -53,6 +54,7 @@ pub enum WorkerEventKind {
   Stage,
   FrameReady,
   OpenSelectDropdown,
+  RequestOpenInNewTab,
   NavigationStarted,
   NavigationCommitted,
   NavigationFailed,
@@ -70,6 +72,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::Stage { .. } => WorkerEventKind::Stage,
       WorkerToUiEvent::FrameReady { .. } => WorkerEventKind::FrameReady,
       WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
+      WorkerToUiEvent::RequestOpenInNewTab { .. } => WorkerEventKind::RequestOpenInNewTab,
       WorkerToUiEvent::NavigationStarted { .. } => WorkerEventKind::NavigationStarted,
       WorkerToUiEvent::NavigationCommitted { .. } => WorkerEventKind::NavigationCommitted,
       WorkerToUiEvent::NavigationFailed { .. } => WorkerEventKind::NavigationFailed,
@@ -118,6 +121,10 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
         select_node_id,
         control,
       },
+      None,
+    ),
+    WorkerToUi::RequestOpenInNewTab { tab_id, url } => (
+      WorkerToUiEvent::RequestOpenInNewTab { tab_id, url },
       None,
     ),
     WorkerToUi::NavigationStarted { tab_id, url } => {

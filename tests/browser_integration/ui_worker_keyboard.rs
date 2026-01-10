@@ -5,7 +5,9 @@ use super::support::{
   create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, viewport_changed_msg,
   DEFAULT_TIMEOUT,
 };
-use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -339,6 +341,7 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
       tab_id,
       pos_css: (90.0, 90.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerDown");
   ui_tx
@@ -346,6 +349,7 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
       tab_id,
       pos_css: (90.0, 90.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("PointerUp");
   let mut frame = wait_for_frame_ready(&ui_rx, tab_id);

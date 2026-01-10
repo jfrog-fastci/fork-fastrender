@@ -970,6 +970,55 @@ impl App {
   }
 
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> bool {
+    // Worker-initiated tab creation/navigation.
+    if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
+      use fastrender::ui::cancel::CancelGens;
+      use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
+      use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+
+      // Close any transient UI state before switching tabs.
+      if self.open_select_dropdown.is_some() {
+        self.cancel_select_dropdown();
+      }
+      if self.pointer_captured {
+        self.cancel_pointer_capture();
+      }
+
+      let new_tab_id = TabId::new();
+      let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
+      tab_state.loading = true;
+      let cancel: CancelGens = tab_state.cancel.clone();
+      self.tab_cancel.insert(new_tab_id, cancel.clone());
+      self.browser_state.push_tab(tab_state, true);
+
+      // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
+      self.page_has_focus = false;
+      self.viewport_cache_tab = None;
+      self.pointer_captured = false;
+      self.captured_button = PointerButton::None;
+      self.cursor_in_page = false;
+      self.hover_sync_pending = true;
+      self.pending_pointer_move = None;
+
+      self.send_worker_msg(UiToWorker::CreateTab {
+        tab_id: new_tab_id,
+        initial_url: None,
+        cancel,
+      });
+      self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
+      self.send_worker_msg(UiToWorker::Navigate {
+        tab_id: new_tab_id,
+        url,
+        reason: NavigationReason::LinkClick,
+      });
+      self.send_worker_msg(UiToWorker::RequestRepaint {
+        tab_id: new_tab_id,
+        reason: RepaintReason::Explicit,
+      });
+
+      return true;
+    }
+
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
     match &msg {
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
@@ -1440,6 +1489,7 @@ impl App {
         tab_id,
         pos_css,
         button: PointerButton::None,
+        modifiers: map_modifiers(self.modifiers),
       });
     } else {
       self.cursor_in_page = false;
@@ -1471,6 +1521,7 @@ impl App {
         tab_id,
         pos_css: (-1.0, -1.0),
         button,
+        modifiers: fastrender::ui::PointerModifiers::NONE,
       });
     }
   }
@@ -1483,6 +1534,7 @@ impl App {
       tab_id,
       pos_css: (-1.0, -1.0),
       button: fastrender::ui::PointerButton::None,
+      modifiers: fastrender::ui::PointerModifiers::NONE,
     });
     self.flush_pending_pointer_move();
     self.cursor_in_page = false;
@@ -1594,6 +1646,7 @@ impl App {
           tab_id,
           pos_css,
           button,
+          modifiers: map_modifiers(self.modifiers),
         });
         // `egui_winit` may not request a repaint for pointer moves inside a single widget. We need
         // a redraw so `render_frame` can flush the coalesced PointerMove to the worker.
@@ -1720,20 +1773,22 @@ impl App {
               tab_id,
               pos_css,
               button: mapped_button,
+              modifiers: map_modifiers(self.modifiers),
             });
           }
           ElementState::Released => {
-            if !self.pointer_captured
-              || !matches!(mapped_button, fastrender::ui::PointerButton::Primary)
-              || !matches!(self.captured_button, fastrender::ui::PointerButton::Primary)
-            {
-              return;
+            if self.pointer_captured {
+              if !matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+                || !matches!(self.captured_button, fastrender::ui::PointerButton::Primary)
+              {
+                return;
+              }
+              // Flush any coalesced pointer moves so interactions (e.g. range drags) see the latest
+              // pointer position before the release.
+              self.flush_pending_pointer_move();
+              self.pointer_captured = false;
+              self.captured_button = fastrender::ui::PointerButton::None;
             }
-            // Flush any coalesced pointer moves so interactions (e.g. range drags) see the latest
-            // pointer position before the release.
-            self.flush_pending_pointer_move();
-            self.pointer_captured = false;
-            self.captured_button = fastrender::ui::PointerButton::None;
 
             let Some(rect) = self.page_rect_points else {
               return;
@@ -1760,6 +1815,7 @@ impl App {
               tab_id,
               pos_css,
               button: mapped_button,
+              modifiers: map_modifiers(self.modifiers),
             });
             self.cursor_in_page = in_page;
           }
@@ -2443,4 +2499,24 @@ fn map_mouse_button(button: winit::event::MouseButton) -> fastrender::ui::Pointe
       _ => fastrender::ui::PointerButton::Other(v),
     },
   }
+}
+
+#[cfg(feature = "browser_ui")]
+fn map_modifiers(modifiers: winit::event::ModifiersState) -> fastrender::ui::PointerModifiers {
+  use fastrender::ui::PointerModifiers;
+
+  let mut out = PointerModifiers::NONE;
+  if modifiers.ctrl() {
+    out |= PointerModifiers::CTRL;
+  }
+  if modifiers.shift() {
+    out |= PointerModifiers::SHIFT;
+  }
+  if modifiers.alt() {
+    out |= PointerModifiers::ALT;
+  }
+  if modifiers.logo() {
+    out |= PointerModifiers::META;
+  }
+  out
 }

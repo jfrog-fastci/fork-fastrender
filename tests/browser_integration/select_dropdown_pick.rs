@@ -3,7 +3,7 @@
 use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -132,6 +132,7 @@ fn dropdown_select_pick_updates_dom_and_repaints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
   ui_tx
@@ -139,6 +140,7 @@ fn dropdown_select_pick_updates_dom_and_repaints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
 
@@ -258,6 +260,7 @@ fn dropdown_select_cancel_emits_select_dropdown_closed_message() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
   ui_tx
@@ -265,6 +268,7 @@ fn dropdown_select_cancel_emits_select_dropdown_closed_message() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
 

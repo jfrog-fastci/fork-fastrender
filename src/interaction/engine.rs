@@ -15,6 +15,7 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
+use crate::ui::messages::{PointerButton, PointerModifiers};
 use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
@@ -34,6 +35,7 @@ pub enum InputModality {
 pub enum InteractionAction {
   None,
   Navigate { href: String },
+  OpenInNewTab { href: String },
   FocusChanged { node_id: Option<usize> },
   OpenSelectDropdown {
     select_node_id: usize,
@@ -1676,6 +1678,8 @@ impl InteractionEngine {
     fragment_tree: &FragmentTree,
     scroll: &ScrollState,
     viewport_point: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
@@ -1830,7 +1834,20 @@ impl InteractionEngine {
 
             if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
               dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
-              action = InteractionAction::Navigate { href: resolved };
+
+              let target_blank = index
+                .node(target_id)
+                .and_then(|node| node.get_attribute_ref("target"))
+                .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
+
+              let gesture_new_tab = matches!(button, PointerButton::Middle)
+                || (matches!(button, PointerButton::Primary) && (modifiers.ctrl() || modifiers.meta()));
+
+              action = if target_blank || gesture_new_tab {
+                InteractionAction::OpenInNewTab { href: resolved }
+              } else {
+                InteractionAction::Navigate { href: resolved }
+              };
             }
           } else if index.node(target_id).is_some_and(is_checkbox_input) {
             if !node_is_disabled(&index, target_id) {
@@ -1899,6 +1916,8 @@ impl InteractionEngine {
     box_tree: &BoxTree,
     fragment_tree: &FragmentTree,
     viewport_point: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
@@ -1908,6 +1927,8 @@ impl InteractionEngine {
       fragment_tree,
       &ScrollState::default(),
       viewport_point,
+      button,
+      modifiers,
       document_url,
       base_url,
     )
@@ -2335,7 +2356,15 @@ impl InteractionEngine {
         {
           if let Some(resolved) = resolve_url(base_url, href) {
             changed |= set_data_flag(&mut index, focused, "data-fastr-visited", true);
-            action = InteractionAction::Navigate { href: resolved };
+            let target_blank = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("target"))
+              .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
+            action = if target_blank {
+              InteractionAction::OpenInNewTab { href: resolved }
+            } else {
+              InteractionAction::Navigate { href: resolved }
+            };
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
@@ -2419,7 +2448,11 @@ impl InteractionEngine {
       _ => {}
     }
 
-    if !matches!(action, InteractionAction::Navigate { .. }) && self.focused != prev_focus {
+    if !matches!(
+      action,
+      InteractionAction::Navigate { .. } | InteractionAction::OpenInNewTab { .. }
+    ) && self.focused != prev_focus
+    {
       action = InteractionAction::FocusChanged {
         node_id: self.focused,
       };

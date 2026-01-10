@@ -2,7 +2,7 @@
 
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::tree::box_tree::SelectItem;
-use fastrender::ui::messages::{PointerButton, RepaintReason, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{PointerButton, PointerModifiers, RepaintReason, UiToWorker, WorkerToUi};
 use fastrender::ui::{BrowserTabController, TabId};
 
 fn node_id_by_id_attr(root: &DomNode, id_attr: &str) -> usize {
@@ -76,6 +76,7 @@ fn select_dropdown_open_and_choose_roundtrip() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer down");
 
@@ -84,6 +85,7 @@ fn select_dropdown_open_and_choose_roundtrip() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .expect("pointer up");
 

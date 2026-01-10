@@ -4,7 +4,7 @@ use super::support;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -122,6 +122,7 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
   ui_tx
@@ -129,6 +130,7 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
     })
     .unwrap();
 

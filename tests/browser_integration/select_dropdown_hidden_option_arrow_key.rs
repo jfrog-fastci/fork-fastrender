@@ -1,5 +1,6 @@
 use fastrender::interaction::{absolute_bounds_for_box_id, InteractionEngine, KeyAction};
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
+use fastrender::ui::messages::{PointerButton, PointerModifiers};
 use fastrender::{BoxType, BrowserDocument, Point, RenderOptions, Result};
 
 use super::support;
@@ -95,6 +96,8 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
       fragment_tree,
       &scroll_state,
       click_viewport_point,
+      PointerButton::Primary,
+      PointerModifiers::NONE,
       "",
       "",
     );

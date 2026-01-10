@@ -2,7 +2,7 @@
 
 use fastrender::interaction::absolute_bounds_for_box_id;
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
-use fastrender::ui::messages::{PointerButton, RepaintReason, TabId, UiToWorker};
+use fastrender::ui::messages::{PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker};
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxType, Point, Result};
 
@@ -161,11 +161,13 @@ fn browser_tab_controller_listbox_click_accounts_for_wheel_scroll() -> Result<()
     tab_id,
     pos_css: (click_viewport_point.x, click_viewport_point.y),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
   let _ = controller.handle_message(UiToWorker::PointerUp {
     tab_id,
     pos_css: (click_viewport_point.x, click_viewport_point.y),
     button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
   })?;
 
   assert_eq!(

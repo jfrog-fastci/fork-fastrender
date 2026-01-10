@@ -3,6 +3,7 @@ use fastrender::interaction::{
   absolute_bounds_for_box_id, content_rect_for_border_rect, InteractionEngine,
 };
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
+use fastrender::ui::messages::{PointerButton, PointerModifiers};
 use fastrender::{BoxType, BrowserDocument, Overflow, Point, RenderOptions, Result};
 
 fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
@@ -170,7 +171,17 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
     let _ = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
     let (changed, _action) =
-      engine.pointer_up_with_scroll(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point, "", "");
+      engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        &scroll_state,
+        click_viewport_point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        "",
+        "",
+      );
     (changed, ())
   })?;
 
