@@ -1168,6 +1168,7 @@ const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
 const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
@@ -5348,6 +5349,33 @@ fn event_target_constructor_construct_native(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
+
+  // FastRender-only extension: allow `new EventTarget(parent)` so WPT fixtures can build a manual
+  // event propagation chain without DOM nodes.
+  let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(parent_value, Value::Undefined | Value::Null) {
+    let Value::Object(parent_obj) = parent_value else {
+      return Err(VmError::TypeError("EventTarget parent must be an EventTarget object"));
+    };
+    if !is_branded_event_target(scope, parent_obj)? {
+      return Err(VmError::TypeError("EventTarget parent must be an EventTarget object"));
+    }
+
+    let parent_key = alloc_key(scope, EVENT_TARGET_PARENT_KEY)?;
+    scope.push_root(Value::Object(parent_obj))?;
+    scope.define_property(
+      obj,
+      parent_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(parent_obj),
+          writable: false,
+        },
+      },
+    )?;
+  }
   // Brand-check for EventTarget.prototype methods (so borrowing the methods onto random objects
   // throws, matching web platform behavior).
   let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
@@ -7120,7 +7148,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
       listener_roots_owner,
       registry,
       listener_id,
-      None,
+      target_for_owner,
     ) {
       return Err(web_events::DomError::new(err.to_string()));
     }
@@ -7626,8 +7654,6 @@ fn event_target_dispatch_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
-  // DOM-backed `EventTarget`s root callbacks on the realm's `document` object. Keep that roots
-  // object handy so the invoker can resolve listeners while dispatching through the DOM event path.
   let document_roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
   let mut invoker = VmJsDomEventInvoker {
     vm,
@@ -7841,19 +7867,6 @@ fn node_append_child_native(
     ));
   };
 
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.appendChild must be called on a node object",
-      ));
-    }
-  };
-
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let source_id = match scope
     .heap()
@@ -8008,19 +8021,6 @@ fn node_insert_before_native(
     return Err(VmError::TypeError(
       "Node.insertBefore must be called on a node object",
     ));
-  };
-
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.insertBefore must be called on a node object",
-      ));
-    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -8227,19 +8227,6 @@ fn node_remove_child_native(
     ));
   };
 
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.removeChild must be called on a node object",
-      ));
-    }
-  };
-
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let source_id = match scope
     .heap()
@@ -8359,19 +8346,6 @@ fn node_replace_child_native(
     return Err(VmError::TypeError(
       "Node.replaceChild must be called on a node object",
     ));
-  };
-
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Node.replaceChild must be called on a node object",
-      ));
-    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -13580,7 +13554,7 @@ fn init_window_globals(
     event_target_ctor_call_id,
     Some(event_target_ctor_construct_id),
     event_target_ctor_name,
-    0,
+    1,
   )?;
   scope.heap_mut().object_set_prototype(
     event_target_ctor_func,
@@ -14167,6 +14141,12 @@ fn init_window_globals(
     append_child_key,
     data_desc(Value::Object(append_child_func)),
   )?;
+  let append_child_public_key = alloc_key(&mut scope, "appendChild")?;
+  scope.define_property(
+    document_obj,
+    append_child_public_key,
+    data_desc(Value::Object(append_child_func)),
+  )?;
 
   // Store shared Node.insertBefore function on `document` so wrappers can reuse it.
   let insert_before_call_id = vm.register_native_call(node_insert_before_native)?;
@@ -14183,6 +14163,12 @@ fn init_window_globals(
   scope.define_property(
     document_obj,
     insert_before_key,
+    data_desc(Value::Object(insert_before_func)),
+  )?;
+  let insert_before_public_key = alloc_key(&mut scope, "insertBefore")?;
+  scope.define_property(
+    document_obj,
+    insert_before_public_key,
     data_desc(Value::Object(insert_before_func)),
   )?;
 
@@ -14203,6 +14189,12 @@ fn init_window_globals(
     remove_child_key,
     data_desc(Value::Object(remove_child_func)),
   )?;
+  let remove_child_public_key = alloc_key(&mut scope, "removeChild")?;
+  scope.define_property(
+    document_obj,
+    remove_child_public_key,
+    data_desc(Value::Object(remove_child_func)),
+  )?;
 
   // Store shared Node.replaceChild function on `document` so wrappers can reuse it.
   let replace_child_call_id = vm.register_native_call(node_replace_child_native)?;
@@ -14221,6 +14213,12 @@ fn init_window_globals(
     replace_child_key,
     data_desc(Value::Object(replace_child_func)),
   )?;
+  let replace_child_public_key = alloc_key(&mut scope, "replaceChild")?;
+  scope.define_property(
+    document_obj,
+    replace_child_public_key,
+    data_desc(Value::Object(replace_child_func)),
+  )?;
 
   // Store shared Node.cloneNode function on `document` so wrappers can reuse it.
   let clone_node_call_id = vm.register_native_call(node_clone_node_native)?;
@@ -14237,6 +14235,12 @@ fn init_window_globals(
   scope.define_property(
     document_obj,
     clone_node_key,
+    data_desc(Value::Object(clone_node_func)),
+  )?;
+  let clone_node_public_key = alloc_key(&mut scope, "cloneNode")?;
+  scope.define_property(
+    document_obj,
+    clone_node_public_key,
     data_desc(Value::Object(clone_node_func)),
   )?;
 
@@ -15996,7 +16000,8 @@ mod tests {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
-      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let document_listener_roots =
+        super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
 
       let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
@@ -16008,7 +16013,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        document_listener_roots: listener_roots,
+        document_listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -16151,7 +16156,8 @@ mod tests {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
-      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let document_listener_roots =
+        super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
       let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
       let mut invoker = super::VmJsDomEventInvoker {
@@ -16162,7 +16168,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        document_listener_roots: listener_roots,
+        document_listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -16224,7 +16230,8 @@ mod tests {
         Value::Object(obj) => obj,
         other => panic!("expected Event object, got {other:?}"),
       };
-      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let document_listener_roots =
+        super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
       let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
       let mut invoker = super::VmJsDomEventInvoker {
@@ -16235,7 +16242,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        document_listener_roots: listener_roots,
+        document_listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -16453,7 +16460,7 @@ mod tests {
       Value::Object(obj) => obj,
       other => panic!("expected Event object, got {other:?}"),
     };
-    let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let document_listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
     let mut vm_host = ();
     let mut hooks = NoopHostHooks::default();
     let mut invoker = super::VmJsDomEventInvoker {
@@ -16464,7 +16471,7 @@ mod tests {
       window_obj: global,
       document_obj,
       event_obj,
-      document_listener_roots: listener_roots,
+      document_listener_roots,
       opaque_target_obj: None,
       registry: dom.events(),
     };

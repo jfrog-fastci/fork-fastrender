@@ -1401,6 +1401,12 @@ impl Document {
     let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
       && snapshot_dom.is_element())
     .then_some(OpaqueElement::new(snapshot_dom));
+    let scope_is_element = scope.is_some_and(|id| {
+      matches!(
+        self.node(id).kind,
+        NodeKind::Element { .. } | NodeKind::Slot { .. }
+      )
+    });
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -1461,7 +1467,10 @@ impl Document {
               scope_anchor,
             )
           {
-            return Ok(Some(dom2_id));
+            if scope == Some(dom2_id) && !scope_is_element {
+            } else {
+              return Ok(Some(dom2_id));
+            }
           }
         }
       }
@@ -1611,6 +1620,12 @@ impl Document {
     let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
       && snapshot_dom.is_element())
     .then_some(OpaqueElement::new(snapshot_dom));
+    let scope_is_element = scope.is_some_and(|id| {
+      matches!(
+        self.node(id).kind,
+        NodeKind::Element { .. } | NodeKind::Slot { .. }
+      )
+    });
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -1671,7 +1686,10 @@ impl Document {
               scope_anchor,
             )
           {
-            results.push(dom2_id);
+            if scope == Some(dom2_id) && !scope_is_element {
+            } else {
+              results.push(dom2_id);
+            }
           }
         }
       }
