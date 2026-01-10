@@ -340,6 +340,33 @@ fn array_destructuring_rest_consumes_fuel() {
 }
 
 #[test]
+fn array_destructuring_assignment_elements_consume_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  // Destructuring *assignment* does not participate in declaration instantiation/hoisting, so the
+  // only scalable work here is runtime destructuring. Ensure the per-element binding work is
+  // budgeted even when the RHS expression is trivial (`src`).
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("var src = { length: 2000 }; [");
+  for i in 0..2000 {
+    if i != 0 {
+      src.push(',');
+    }
+    write!(src, "a{i}").unwrap();
+  }
+  src.push_str("] = src;");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn builtins_function_apply_consumes_fuel_in_native_loop() {
   fn data_desc(value: Value) -> PropertyDescriptor {
     PropertyDescriptor {
