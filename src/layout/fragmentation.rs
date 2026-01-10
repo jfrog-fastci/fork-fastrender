@@ -1041,6 +1041,13 @@ fn is_row_flex_container(style: &ComputedStyle) -> bool {
     )
 }
 
+fn is_table_row_like(display: Display) -> bool {
+  matches!(
+    display,
+    Display::TableRow | Display::TableHeaderGroup | Display::TableFooterGroup
+  )
+}
+
 fn is_in_flow_flex_child(content: &FragmentContent, style: &ComputedStyle) -> bool {
   if matches!(
     content,
@@ -2296,14 +2303,8 @@ pub(crate) fn clip_node(
   {
     return Ok(None);
   }
-  let is_table_row_like = matches!(
-    style.display,
-    Display::TableRow
-      | Display::TableRowGroup
-      | Display::TableHeaderGroup
-      | Display::TableFooterGroup
-  );
-  let mut avoid_inside = avoids_break_inside(style.break_inside, context) || is_table_row_like;
+  let table_row_like = is_table_row_like(style.display);
+  let mut avoid_inside = avoids_break_inside(style.break_inside, context) || table_row_like;
   if avoid_inside && node_block_size > (fragment_end - fragment_start) + 0.01 {
     avoid_inside = false;
   }
@@ -3343,16 +3344,10 @@ fn collect_break_opportunities(
     .as_ref()
     .map(|s| s.writing_mode)
     .unwrap_or(inherited_writing_mode);
-  let is_table_row_like = matches!(
-    style.display,
-    Display::TableRow
-      | Display::TableRowGroup
-      | Display::TableHeaderGroup
-      | Display::TableFooterGroup
-  );
+  let table_row_like = is_table_row_like(style.display);
   let inside_avoid = avoid_depth
     + usize::from(avoids_break_inside(style.break_inside, context))
-    + usize::from(is_table_row_like);
+    + usize::from(table_row_like);
   let inside_inline = inline_depth
     + usize::from(matches!(
       node.content,
@@ -4306,14 +4301,8 @@ fn collect_atomic_candidate_for_node(
     });
   }
 
-  let is_table_row_like = matches!(
-    style.display,
-    Display::TableRow
-      | Display::TableRowGroup
-      | Display::TableHeaderGroup
-      | Display::TableFooterGroup
-  );
-  let avoid_inside = avoids_break_inside(style.break_inside, context) || is_table_row_like;
+  let table_row_like = is_table_row_like(style.display);
+  let avoid_inside = avoids_break_inside(style.break_inside, context) || table_row_like;
   if avoid_inside {
     let required = (end - start).max(0.0);
     candidates.push(AtomicCandidate {
@@ -4510,14 +4499,8 @@ fn collect_atomic_range_for_node(
   let fits_fragmentainer = fragmentainer_size
     .map(|size| height <= size + BREAK_EPSILON)
     .unwrap_or(true);
-  let is_table_row_like = matches!(
-    style.display,
-    Display::TableRow
-      | Display::TableRowGroup
-      | Display::TableHeaderGroup
-      | Display::TableFooterGroup
-  );
-  let avoid_inside = avoids_break_inside(style.break_inside, context) || is_table_row_like;
+  let table_row_like = is_table_row_like(style.display);
+  let avoid_inside = avoids_break_inside(style.break_inside, context) || table_row_like;
   if avoid_inside && (fits_fragmentainer || !matches!(context, FragmentationContext::Page)) {
     ranges.push(AtomicRange { start, end });
   }
