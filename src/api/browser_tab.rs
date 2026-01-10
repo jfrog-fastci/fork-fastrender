@@ -1516,11 +1516,12 @@ impl BrowserTab {
     let trace_handle = trace_session.handle.clone();
     let trace_output = trace_session.output.clone();
 
+    // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
+    // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
       .build()?;
-    let options_for_media = options.clone();
-    let document = BrowserDocumentDom2::new(renderer, html, options)?;
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -1539,18 +1540,16 @@ impl BrowserTab {
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab.host.reset_scripting_state(None, document_referrer_policy)?;
-    tab.host.update_stylesheet_media_context(&options_for_media);
-    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_from_html(html) {
-      match tab.host.csp.as_mut() {
-        Some(existing) => {
-          existing.extend(meta_csp);
-        }
-        None => {
-          tab.host.csp = Some(meta_csp);
-        }
+    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
+    if let Some(req) = tab.host.pending_navigation.take() {
+      tab.navigate_to_url(&req.url, options.clone())?;
+    } else {
+      let renderer = tab.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
       }
     }
-    tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
 

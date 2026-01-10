@@ -456,6 +456,29 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
 }
 
 #[test]
+fn browser_tab_with_event_loop_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let html = "<!doctype html><script>assert-partial-dom</script><div id=after></div>";
+  let event_loop = EventLoop::<BrowserTabHost>::new();
+  let tab = BrowserTab::from_html_with_event_loop(html, options, executor, event_loop)?;
+
+  assert!(
+    find_element_by_id(tab.dom(), "after").is_some(),
+    "expected parsing to resume after executing the script"
+  );
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["assert-partial-dom".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
