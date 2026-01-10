@@ -14,7 +14,7 @@
     "layout": 50.02879491525424,
     "paint": 141.08120166101696
   },
-  "notes": "Visually good. Remaining diffs vs Chrome are dominated by text rasterization/hinting (tiny-skia outline fill; no FreeType hinting/subpixel AA) plus small per-pixel rounding noise from image decode/blur/gradient implementations.",
+  "notes": "Visually good. Reconfirmed via fixture page-loop: remaining ~13% pixel diffs vs Chrome are overwhelmingly text rasterization/hinting (tiny-skia outline fill; no FreeType hinting/subpixel AA) plus minor per-pixel rounding noise from image decode/blur/gradient; no non-text primitive issues found.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 170888,
