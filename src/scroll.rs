@@ -1441,7 +1441,7 @@ pub(crate) fn scroll_bounds_for_fragment(
     let reserve_top = sanitize_nonneg(reservation.top);
     let reserve_bottom = sanitize_nonneg(reservation.bottom);
     (
-      Point::ZERO,
+      Point::new(reserve_left, reserve_top),
       Size::new(
         (viewport.width - reserve_left - reserve_right).max(0.0),
         (viewport.height - reserve_top - reserve_bottom).max(0.0),

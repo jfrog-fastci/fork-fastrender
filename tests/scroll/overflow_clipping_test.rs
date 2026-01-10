@@ -281,3 +281,29 @@ fn element_scroll_bounds_use_padding_box_when_border_is_present() {
     chain[0].bounds
   );
 }
+
+#[test]
+fn viewport_scroll_bounds_respect_left_scrollbar_reservation() {
+  // Simulate `scrollbar-gutter: stable both-edges` by reserving space on both inline edges. The
+  // effective scrollport should be shifted right by the left gutter; that shift must not inflate
+  // the scroll range.
+  let mut root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![]);
+  root.scrollbar_reservation.left = 10.0;
+  root.scrollbar_reservation.right = 10.0;
+
+  // Content exactly fills the effective scrollport (100 - 10 - 10 = 80px) and is positioned at the
+  // scrollport start edge (x=10).
+  let child = FragmentNode::new_block(Rect::from_xywh(10.0, 0.0, 80.0, 10.0), vec![]);
+  root.children = vec![child].into();
+
+  let mut tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+  tree.ensure_scroll_metadata();
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[]);
+  assert_eq!(chain.len(), 1);
+  assert!(
+    chain[0].bounds.max_x.abs() < 1e-3,
+    "viewport scroll bounds should not be inflated by left gutter reservation; got {:#?}",
+    chain[0].bounds
+  );
+}
