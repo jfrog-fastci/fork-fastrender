@@ -117,7 +117,12 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     }
     // BigInts are currently bounded (inline u128) in `vm-js`; format them directly so `throw 1n`
     // surfaces a useful value.
-    Value::BigInt(b) => return Some(b.to_decimal_string()),
+    Value::BigInt(b) => {
+      let mut out = b.to_decimal_string();
+      // Match common JS console output (`1n`) and disambiguate from Numbers.
+      out.push('n');
+      return Some(out);
+    }
     Value::Symbol(sym) => {
       let desc_s = heap.get_symbol_description(sym).ok().flatten();
       if let Some(desc_s) = desc_s {
@@ -150,11 +155,19 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     Value::Object(obj) => obj,
   };
 
+  let fallback_marker = if heap.is_promise_object(obj) {
+    "[promise]"
+  } else if heap.is_callable(Value::Object(obj)).unwrap_or(false) {
+    "[function]"
+  } else {
+    "[object]"
+  };
+
   let mut scope = heap.scope();
   if scope.push_root(Value::Object(obj)).is_err() {
     // If we cannot grow the scope root stack, avoid any further heap allocations that might trigger
     // GC and invalidate the unrooted object handle.
-    return Some("[object]".to_string());
+    return Some(fallback_marker.to_string());
   }
 
   let mut get_prop_str = |name: &str| -> Option<String> {
@@ -191,7 +204,7 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     (Some(name), Some(message)) if !message.is_empty() => Some(format!("{name}: {message}")),
     (Some(name), _) if !name.is_empty() => Some(name),
     (_, Some(message)) if !message.is_empty() => Some(message),
-    _ => Some("[object]".to_string()),
+    _ => Some(fallback_marker.to_string()),
   }
 }
 
@@ -591,7 +604,7 @@ mod tests {
     let err = realm.exec_script("throw 1n").expect_err("expected throw");
     let msg = vm_error_to_string(realm.heap_mut(), err);
     assert!(
-      msg.starts_with('1'),
+      msg.starts_with("1n"),
       "expected bigint thrown value to be formatted, got {msg:?}"
     );
     assert!(
@@ -614,6 +627,71 @@ mod tests {
     );
     assert!(
       msg.contains("at <inline>:"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_function_without_name_or_message_uses_function_marker() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let name_s = scope.alloc_string("").expect("alloc name");
+    scope.push_root(Value::String(name_s)).expect("root name");
+
+    let func = scope
+      .alloc_native_function(vm_js::NativeFunctionId(0), None, name_s, 0)
+      .expect("alloc function");
+    scope.push_root(Value::Object(func)).expect("root function");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(func),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("[function]"),
+      "expected thrown function without name/message to use marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_promise_without_name_or_message_uses_promise_marker() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let promise = scope.alloc_promise().expect("alloc promise");
+    scope
+      .push_root(Value::Object(promise))
+      .expect("root promise");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(promise),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("[promise]"),
+      "expected thrown Promise to use marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
       "expected stack trace to be included, got {msg:?}"
     );
   }
