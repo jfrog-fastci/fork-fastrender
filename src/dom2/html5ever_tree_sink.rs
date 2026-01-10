@@ -546,6 +546,8 @@ impl TreeSink for Dom2TreeSink {
 
   fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
     let namespace = Self::normalize_namespace_for_storage(name.ns.as_ref());
+    let is_html_script =
+      name.local.as_ref().eq_ignore_ascii_case("script") && Self::is_html_namespace(namespace.as_str());
     let mut attributes = Vec::with_capacity(attrs.len());
     for attr in attrs {
       attributes.push((attr.name.local.to_string(), attr.value.to_string()));
@@ -573,6 +575,10 @@ impl TreeSink for Dom2TreeSink {
     let mut doc = self.document.borrow_mut();
     let id = doc.push_node(kind, None, inert_subtree);
     doc.node_mut(id).mathml_annotation_xml_integration_point = flags.mathml_annotation_xml_integration_point;
+    if is_html_script {
+      doc.node_mut(id).script_force_async = false;
+      doc.node_mut(id).script_parser_document = true;
+    }
     id
   }
 

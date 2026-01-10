@@ -446,6 +446,29 @@ fn inner_html_marks_script_elements_as_already_started() {
 }
 
 #[test]
+fn inner_html_sets_script_force_async_false() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc.set_inner_html(div, "<script id=s></script>").unwrap();
+
+  let script = find_element_by_id(&doc, "s");
+  assert!(
+    !doc.node(script).script_force_async,
+    "scripts created by fragment parsing should have force_async=false"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "scripts created by fragment parsing must not be treated as parser-inserted"
+  );
+  assert!(
+    doc.node(script).script_already_started,
+    "scripts inserted via innerHTML should be marked already started"
+  );
+}
+
+#[test]
 fn insert_adjacent_html_inserts_beforebegin_and_afterend() {
   let root = parse_html(
     "<!doctype html><html><body><div id=root><span id=target>hi</span></div></body></html>",

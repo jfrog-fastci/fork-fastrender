@@ -35,6 +35,14 @@ fn create_contextual_fragment_resets_script_already_started() {
     !doc.node(script).script_already_started,
     "scripts created by createContextualFragment must not be marked already started"
   );
+  assert!(
+    !doc.node(script).script_force_async,
+    "scripts created by fragment parsing should have force_async=false"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "scripts created by createContextualFragment must not be treated as parser-inserted"
+  );
   assert_eq!(
     super::serialization::serialize_children(&doc, fragment),
     r#"<script id="s">console.log("x")</script>"#

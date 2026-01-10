@@ -86,6 +86,7 @@ pub(super) fn parse_html_fragment_as_fragment(
       continue;
     }
     doc.nodes[node_id.index()].script_already_started = true;
+    doc.nodes[node_id.index()].script_force_async = false;
   }
 
   Ok(fragment)
