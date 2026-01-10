@@ -56,6 +56,7 @@ mod dom2_js_events;
 mod js_current_script;
 mod js_script_fetch_semantics;
 mod script_crossorigin_cors;
+mod vm_js_dynamic_script_crossorigin_cors;
 #[cfg(feature = "quickjs")]
 mod js_dom_quickjs_bindings;
 mod js_event_loop_timers;

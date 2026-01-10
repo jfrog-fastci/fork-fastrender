@@ -15,7 +15,10 @@ use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
-use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher};
+use crate::resource::{
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
+  origin_from_url, CorsMode, FetchDestination, FetchRequest, ReferrerPolicy, ResourceFetcher,
+};
 use crate::style::media::MediaContext;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
@@ -8449,7 +8452,8 @@ fn queue_dynamic_script_task_external(
   url: String,
   destination: FetchDestination,
   nomodule_attr: bool,
-  crossorigin: Option<crate::resource::CorsMode>,
+  crossorigin: Option<CorsMode>,
+  referrer_policy: Option<ReferrerPolicy>,
   integrity_attr_present: bool,
   integrity: Option<String>,
 ) -> Result<(), VmError> {
@@ -8463,8 +8467,8 @@ fn queue_dynamic_script_task_external(
         return Ok(());
       }
 
-      let doc_origin = crate::resource::origin_from_url(&host.document_url);
-      let target_origin = crate::resource::origin_from_url(&url);
+      let doc_origin = origin_from_url(&host.document_url);
+      let target_origin = origin_from_url(&url);
 
       // Subresource Integrity (SRI) enforcement mirrors BrowserTabHost: when `integrity` is present
       // we must reject invalid metadata and verify the fetched bytes.
@@ -8499,6 +8503,9 @@ fn queue_dynamic_script_task_external(
       if let Some(origin) = doc_origin.as_ref() {
         req = req.with_client_origin(origin);
       }
+      if let Some(referrer_policy) = referrer_policy {
+        req = req.with_referrer_policy(referrer_policy);
+      }
       if let Some(cors_mode) = crossorigin {
         req = req.with_credentials_mode(cors_mode.credentials_mode());
       }
@@ -8507,11 +8514,11 @@ fn queue_dynamic_script_task_external(
       let res = host.fetcher().fetch_partial_with_request(req, max_fetch)?;
       options.check_script_source_bytes(res.bytes.len(), &context)?;
 
-      crate::resource::ensure_http_success(&res, &url)?;
+      ensure_http_success(&res, &url)?;
       ensure_script_mime_sane(&res, &url)?;
       if let Some(cors_mode) = crossorigin {
-        if crate::resource::cors_enforcement_enabled() {
-          crate::resource::ensure_cors_allows_origin(doc_origin.as_ref(), &res, &url, cors_mode)?;
+        if cors_enforcement_enabled() {
+          ensure_cors_allows_origin(doc_origin.as_ref(), &res, &url, cors_mode)?;
         }
       }
       if integrity_attr_present {
@@ -8623,6 +8630,7 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
         destination,
         spec.nomodule_attr,
         spec.crossorigin,
+        spec.referrer_policy,
         spec.integrity_attr_present,
         spec.integrity,
       );

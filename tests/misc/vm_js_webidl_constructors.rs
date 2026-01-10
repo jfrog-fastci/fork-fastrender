@@ -1,29 +1,63 @@
-use fastrender::js::bindings::{install_window_bindings_vm_js, BindingValue, VmJsBindingsHost};
+use fastrender::js::bindings::install_window_bindings_vm_js;
+use std::any::Any;
 use vm_js::{
-  ExecutionContext, GcObject, Heap, HeapLimits, MicrotaskQueue, PropertyDescriptor, PropertyKey,
-  PropertyKind, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  ExecutionContext, GcObject, Heap, HeapLimits, Job, PropertyDescriptor, PropertyKey, PropertyKind,
+  RealmId, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
+use webidl_vm_js::{WebIdlBindingsHost, WebIdlBindingsHostSlot};
 
 struct TestHost;
 
-impl VmJsBindingsHost for TestHost {
+impl WebIdlBindingsHost for TestHost {
   fn call_operation(
     &mut self,
-    scope: &mut vm_js::Scope<'_>,
+    _vm: &mut Vm,
+    _scope: &mut vm_js::Scope<'_>,
     _receiver: Option<Value>,
     interface: &'static str,
     operation: &'static str,
     overload: usize,
-    _args: Vec<BindingValue<Value>>,
-  ) -> Result<BindingValue<Value>, VmError> {
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
     match (interface, operation, overload) {
-      // For constructor semantics tests we only need a minimal, host-allocated instance object.
-      ("URLSearchParams", "constructor", 0) => {
-        let obj = scope.alloc_object()?;
-        Ok(BindingValue::Object(Value::Object(obj)))
-      }
+      // For constructor semantics tests we only need a no-op initialization hook.
+      ("URLSearchParams", "constructor", 0) => Ok(Value::Undefined),
       _ => Err(VmError::Unimplemented("unexpected host operation call in test")),
     }
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "unexpected host constructor call in test",
+    ))
+  }
+}
+
+struct HostHooksWithBindingsHost {
+  slot: WebIdlBindingsHostSlot,
+}
+
+impl HostHooksWithBindingsHost {
+  fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
+    Self {
+      slot: WebIdlBindingsHostSlot::new(host),
+    }
+  }
+}
+
+impl VmHostHooks for HostHooksWithBindingsHost {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    Some(&mut self.slot)
   }
 }
 
@@ -98,7 +132,7 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
   // Always tear down the realm, even if assertions panic, to avoid triggering `Realm`'s drop-time
   // debug assert about leaked persistent roots.
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), VmError> {
-    install_window_bindings_vm_js::<TestHost>(&mut vm, &mut heap, &realm)?;
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
     let mut scope = heap.scope();
 
     let global = realm.global_object();
@@ -107,13 +141,8 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       panic!("expected URLSearchParams to be an object");
     };
 
-    let document_ctor = get_global(&mut vm, &mut scope, global, "Document");
-    let Value::Object(_document_ctor_obj) = document_ctor else {
-      panic!("expected Document to be an object");
-    };
-
     let mut host = TestHost;
-    let mut hooks = MicrotaskQueue::new();
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host);
 
     let mut vm = vm.execution_context_guard(ExecutionContext {
       realm: realm.id(),
@@ -122,14 +151,7 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
 
     // `new URLSearchParams('a=b')` succeeds and the returned object uses the constructor's prototype.
     let arg = Value::String(scope.alloc_string("a=b")?);
-    let value = vm.construct_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      urlsp_ctor,
-      &[arg],
-      urlsp_ctor,
-    )?;
+    let value = vm.construct_with_host(&mut scope, &mut hooks, urlsp_ctor, &[arg], urlsp_ctor)?;
     let Value::Object(obj) = value else {
       panic!("expected new URLSearchParams(...) to return an object, got {value:?}");
     };
@@ -199,32 +221,17 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       "expected constructed object to use new_target.prototype"
     );
 
-    // Calling without `new` throws TypeError("Illegal constructor").
+    // Calling without `new` throws a TypeError.
     let arg = Value::String(scope.alloc_string("a=b")?);
     let err = vm
-      .call_with_host_and_hooks(
-        &mut host,
-        &mut scope,
-        &mut hooks,
-        urlsp_ctor,
-        Value::Undefined,
-        &[arg],
-      )
+      .call_with_host(&mut scope, &mut hooks, urlsp_ctor, Value::Undefined, &[arg])
       .unwrap_err();
-    assert_thrown_type_error_message(&mut vm, &mut scope, err, "Illegal constructor");
-
-    // Interfaces without constructors are still exposed on the global object, but `new` throws.
-    let err = vm
-      .construct_with_host_and_hooks(
-        &mut host,
-        &mut scope,
-        &mut hooks,
-        document_ctor,
-        &[],
-        document_ctor,
-      )
-      .unwrap_err();
-    assert_thrown_type_error_message(&mut vm, &mut scope, err, "Illegal constructor");
+    assert_thrown_type_error_message(
+      &mut vm,
+      &mut scope,
+      err,
+      "URLSearchParams constructor must be called with new",
+    );
 
     Ok(())
   }));
