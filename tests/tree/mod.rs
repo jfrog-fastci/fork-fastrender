@@ -9,4 +9,5 @@ mod form_controls_appearance_none_fallback;
 mod select_control_option_dom_ids;
 mod svg_intrinsic_size;
 mod svg_transform_override;
+mod svg_root_transform_neutralization;
 mod test_anonymous_boxes;

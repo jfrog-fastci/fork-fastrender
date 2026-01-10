@@ -2417,6 +2417,16 @@ fn serialize_svg_subtree(
       out.push_str("; opacity: 1 !important");
     }
 
+    if style.has_transform() {
+      // The root inline SVG is rasterized as a replaced element, so the outer renderer already
+      // applies its computed transform as a CSS box transform. Ensure resvg/usvg does not apply it
+      // again when rendering the serialized SVG markup.
+      out.push_str("; transform: none !important");
+      out.push_str("; translate: none !important");
+      out.push_str("; rotate: none !important");
+      out.push_str("; scale: none !important");
+    }
+
     out
   }
 
@@ -2798,6 +2808,11 @@ fn serialize_svg_subtree(
         if is_root {
           let include_fill_current_color = root_style_includes_fill_current_color(attributes);
           let mut attrs = attributes.clone();
+          // If the authored SVG root has a `transform` attribute, it participates in the CSS
+          // cascade as a presentation hint. The replaced-element renderer will apply it as a CSS
+          // box transform, so remove it from the serialized SVG markup to avoid double-applying it
+          // internally.
+          attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
           let has_xmlns = attrs
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("xmlns"));
