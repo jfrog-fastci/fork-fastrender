@@ -1734,6 +1734,10 @@ impl<'a> Evaluator<'a> {
   }
 
   fn collect_var_names(&mut self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
+    // `VarDeclaredNames` can traverse large statement trees (e.g. nested blocks/ifs with no `var`
+    // declarations). Budget it so strict-mode scripts can't bypass fuel/interrupt checks during
+    // hoisting by forcing an `O(N)` scan that performs no statement/expression evaluation.
+    self.tick()?;
     match stmt {
       Stmt::VarDecl(var) => {
         if var.stx.mode != VarDeclMode::Var {

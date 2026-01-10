@@ -116,6 +116,31 @@ fn instantiation_consumes_fuel() {
 }
 
 #[test]
+fn strict_var_declared_names_traversal_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // In strict mode the instantiation path does not traverse nested statements for Annex B
+  // function-declaration hoisting. That means `VarDeclaredNames` traversal is the primary
+  // statement-tree walk that can still be `O(N)` even when runtime evaluation is trivial (e.g. an
+  // `if(false){ ... }` with a huge statement list).
+  //
+  // Ensure that the traversal is budgeted so large nested statement lists can't bypass fuel limits.
+  let n = 5000;
+  let mut src = String::from("\"use strict\"; if(false){");
+  src.push_str(&";".repeat(n));
+  src.push('}');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn function_parameter_list_instantiation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
