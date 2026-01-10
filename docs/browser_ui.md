@@ -114,11 +114,14 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Shortcut | Action |
 |---|---|
 | Ctrl/Cmd+L | Focus address bar (select all) |
+| Ctrl/Cmd+K | Focus address bar (select all) |
 | Ctrl/Cmd+T | New tab |
+| Ctrl/Cmd+Shift+T | Reopen last closed tab |
 | Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+F4 | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+Tab | Next tab |
 | Ctrl/Cmd+Shift+Tab | Previous tab |
+| Ctrl/Cmd+1..9 (9 = last tab) | Activate tab by number |
 | Ctrl/Cmd+PageUp | Previous tab |
 | Ctrl/Cmd+PageDown | Next tab |
 | Alt+Left | Back |
@@ -129,6 +132,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl/Cmd+0 | Reset zoom |
 | Ctrl/Cmd + Mouse Wheel | Zoom in/out |
 | Middle-click tab | Close tab (no-op if only one tab) |
+| Ctrl/Cmd+Click link | Open link in new tab |
+| Middle-click link | Open link in new tab |
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
