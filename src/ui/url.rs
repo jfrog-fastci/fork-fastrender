@@ -41,7 +41,24 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
   }
 
   match Url::parse(input) {
-    Ok(url) => Ok(url.to_string()),
+    Ok(url) => {
+      // `url::Url` treats strings of the form `host:port` as opaque URLs with a custom scheme named
+      // `host` (because RFC 3986 schemes can contain dots). In a browser address bar, users almost
+      // always intend `localhost:3000` / `example.com:8080` to mean an HTTP(S) URL with an implied
+      // scheme.
+      //
+      // Only apply this heuristic when the input does *not* already contain an explicit `://`
+      // separator and the `:port` portion looks numeric. This preserves existing behaviour for
+      // unsupported-but-explicit schemes like `foo:bar` (which should still round-trip through
+      // normalization so callers can display a meaningful "unsupported scheme" error).
+      if url.cannot_be_a_base() && looks_like_host_port_without_scheme(input) {
+        let with_scheme = format!("https://{input}");
+        return Url::parse(&with_scheme)
+          .map(|url| url.to_string())
+          .map_err(|parse_err| parse_err.to_string());
+      }
+      Ok(url.to_string())
+    }
     Err(parse_err) => {
       if !input.contains("://") && !input.contains(' ') {
         let with_scheme = format!("https://{input}");
@@ -96,6 +113,30 @@ fn looks_like_file_path(input: &str) -> bool {
     || input.starts_with("../")
     || looks_like_windows_drive_path(input)
     || looks_like_windows_unc_path(input)
+}
+
+fn looks_like_host_port_without_scheme(input: &str) -> bool {
+  if input.contains("://") || input.contains(' ') {
+    return false;
+  }
+  let Some((host, rest)) = input.split_once(':') else {
+    return false;
+  };
+
+  // Be conservative: only treat obvious hostname inputs as host:port. This covers the common dev
+  // cases (`localhost:3000`, `example.com:8080`) without misclassifying arbitrary `foo:bar` opaque
+  // URLs as missing-scheme HTTPS URLs.
+  let host = host.trim();
+  if !(host.eq_ignore_ascii_case("localhost") || host.contains('.')) {
+    return false;
+  }
+
+  let rest = rest.trim();
+  // A host:port candidate must have a numeric port immediately after the colon.
+  rest
+    .as_bytes()
+    .first()
+    .is_some_and(|ch| ch.is_ascii_digit())
 }
 
 fn looks_like_windows_drive_path(input: &str) -> bool {
@@ -319,6 +360,18 @@ mod tests {
     assert_eq!(
       resolve_link_url("https://example.com/dir/page.html", "javascript:alert(1)"),
       None
+    );
+  }
+
+  #[test]
+  fn host_port_is_treated_as_https_url() {
+    assert_eq!(
+      normalize_user_url("localhost:3000").unwrap(),
+      "https://localhost:3000/"
+    );
+    assert_eq!(
+      normalize_user_url("example.com:8080/path").unwrap(),
+      "https://example.com:8080/path"
     );
   }
 }
