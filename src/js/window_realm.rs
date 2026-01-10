@@ -24,6 +24,13 @@ use vm_js::{
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
+// Compile-time guard: `vm-js` must keep exposing the borrow-splitting accessor used by FastRender
+// embeddings (see `WindowRealm::new`).
+#[allow(dead_code)]
+const _VM_JS_RUNTIME_VM_REALM_AND_HEAP_MUT_GUARD: fn(
+  &mut VmJsRuntime,
+) -> (&mut Vm, &Realm, &mut Heap) = VmJsRuntime::vm_realm_and_heap_mut;
+
 #[derive(Clone)]
 pub struct WindowRealmConfig {
   pub document_url: String,
@@ -144,14 +151,7 @@ impl WindowRealm {
       .set_user_data(WindowRealmUserData::new(config.document_url.clone()));
     let realm_id = runtime.realm().id();
 
-    // `vm-js::JsRuntime` does not expose a borrow-splitting accessor for `(vm, realm, heap)`. Use a
-    // raw pointer to the realm to allow simultaneously borrowing `vm`/`heap` mutably.
-    //
-    // SAFETY: `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields. We do not
-    // move the runtime while these borrows are live.
-    let realm_ptr = runtime.realm() as *const Realm;
-    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
-    let realm = unsafe { &*realm_ptr };
+    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
 
     let (console_sink_id, current_script_source_id, match_media_env_id) =
       init_window_globals(vm, heap, realm, &config)?;
@@ -189,12 +189,7 @@ impl WindowRealm {
   }
 
   pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
-    // SAFETY: `realm` is stored separately from `vm` and `heap` inside `vm-js::JsRuntime`.
-    let realm_ptr = self.runtime.realm() as *const Realm;
-    let vm = &mut self.runtime.vm;
-    let heap = &mut self.runtime.heap;
-    let realm = unsafe { &*realm_ptr };
-    (vm, realm, heap)
+    self.runtime.vm_realm_and_heap_mut()
   }
 
   pub fn realm(&self) -> &Realm {

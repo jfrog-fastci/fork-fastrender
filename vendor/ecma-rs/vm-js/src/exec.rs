@@ -504,6 +504,22 @@ impl JsRuntime {
     &self.realm
   }
 
+  /// Borrow-split the runtime into its core components: the VM, the current realm, and the heap.
+  ///
+  /// Embeddings often need `&mut Vm` + `&mut Heap` to execute code, allocate, and/or run GC, while
+  /// also needing immutable access to realm metadata (global object, intrinsics, realm id). Doing
+  /// this via `JsRuntime::{vm, heap}` + `JsRuntime::realm()` requires an embedder-side raw-pointer
+  /// workaround to satisfy the borrow checker.
+  ///
+  /// This accessor is safe because `vm`, `realm`, and `heap` are stored as disjoint fields inside
+  /// [`JsRuntime`].
+  pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
+    let vm = &mut self.vm;
+    let realm = &self.realm;
+    let heap = &mut self.heap;
+    (vm, realm, heap)
+  }
+
   pub fn heap(&self) -> &Heap {
     &self.heap
   }
