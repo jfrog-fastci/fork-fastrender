@@ -340,3 +340,24 @@ impl Drop for Realm {
     );
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{HeapLimits, VmOptions};
+
+  #[test]
+  fn realm_id_is_not_derived_from_global_object_heap_id() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    // On a fresh heap the global object should be the first allocation, making its packed HeapId
+    // raw value `0`. Realm IDs are host-facing tokens and must not be derived from GC handles.
+    assert_eq!(realm.global_object().id().0, 0);
+    assert_ne!(realm.id().to_raw(), realm.global_object().id().0);
+
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+}

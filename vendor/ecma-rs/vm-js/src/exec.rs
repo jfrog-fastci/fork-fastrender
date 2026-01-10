@@ -5095,3 +5095,31 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
     _ => false,
   })
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{HeapLimits, VmOptions};
+
+  #[test]
+  fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let err = rt
+      // Ensure the statement isn't on line 1 so the test verifies location capture.
+      .exec_script("let a = {};\n\nObject.setPrototypeOf(a, a);")
+      .unwrap_err();
+    match err {
+      VmError::ThrowWithStack { stack, .. } => {
+        assert!(!stack.is_empty(), "ThrowWithStack must include at least one frame");
+        assert_eq!(stack[0].line, 3);
+        assert_eq!(stack[0].col, 1);
+      }
+      other => panic!("expected ThrowWithStack, got {other:?}"),
+    }
+
+    Ok(())
+  }
+}
