@@ -162,7 +162,7 @@ This requires tracking the base URL while parsing (see `BaseUrlTracker` below).
 
 ---
 
-## Explicitly NOT implemented yet (non-goals for v1)
+## Explicitly NOT fully implemented yet (non-goals for v1)
 These features exist in the HTML spec and matter for web-compat, but are intentionally deferred so
 we can land a correct classic-script core first:
 
@@ -184,6 +184,9 @@ we can land a correct classic-script core first:
   - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
     subset; no implicit `document.open()` / destructive post-load writes).
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
+  - `api::BrowserTab` enforces basic classic-script CORS + Subresource Integrity (SRI) checks for
+    external scripts, but the full HTML+Fetch integration surface is still incomplete (especially
+    for module scripts and all edge cases).
 - End-to-end author-script execution with a production JS runtime + complete DOM/WebIDL bindings
   - Host-side `currentScript` bookkeeping exists (`src/js/orchestrator.rs`) and is exposed in the
     QuickJS bindings (`crates/js-dom-bindings`), but full page script execution is still in
