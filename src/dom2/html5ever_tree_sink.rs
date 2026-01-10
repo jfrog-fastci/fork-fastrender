@@ -551,8 +551,6 @@ impl TreeSink for Dom2TreeSink {
       attributes.push((attr.name.local.to_string(), attr.value.to_string()));
     }
 
-    let is_html_script =
-      name.local.as_ref().eq_ignore_ascii_case("script") && Self::is_html_namespace(namespace.as_str());
     let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot")
       && Self::is_html_namespace(namespace.as_str());
     let is_html_script = name.local.as_ref().eq_ignore_ascii_case("script")
@@ -581,10 +579,6 @@ impl TreeSink for Dom2TreeSink {
       doc.node_mut(id).script_parser_document = true;
     }
     doc.node_mut(id).mathml_annotation_xml_integration_point = flags.mathml_annotation_xml_integration_point;
-    if is_html_script {
-      doc.node_mut(id).script_force_async = false;
-      doc.node_mut(id).script_parser_document = true;
-    }
     id
   }
 
