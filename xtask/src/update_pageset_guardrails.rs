@@ -112,6 +112,12 @@ pub enum PagesetGuardrailsSelectionStrategy {
   /// Timeout/panic/error pages are always included first; remaining slots (up to `--count`) are
   /// filled with the slowest OK pages.
   Slowest,
+  /// Pick the OK pages with the worst visual correctness metrics (Chrome-vs-FastRender diffs).
+  ///
+  /// Timeout/panic/error pages are always included first; remaining slots (up to `--count`) are
+  /// filled with the worst-accuracy OK pages by `accuracy.diff_percent` (desc), tie-breaking by
+  /// `accuracy.perceptual` (desc) then fixture name.
+  WorstAccuracy,
   /// Prioritize coverage across OK-page hotspots.
   ///
   /// Timeout/panic/error pages are always included first, and a small number of OK pages are
@@ -165,6 +171,16 @@ struct PageProgress {
   total_ms: Option<f64>,
   #[serde(default)]
   hotspot: Option<String>,
+  #[serde(default)]
+  accuracy: Option<ProgressAccuracy>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProgressAccuracy {
+  #[serde(default)]
+  diff_percent: Option<f64>,
+  #[serde(default)]
+  perceptual: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +190,8 @@ struct ProgressEntry {
   status: ProgressStatus,
   total_ms: f64,
   hotspot: Option<String>,
+  accuracy_diff_percent: Option<f64>,
+  accuracy_perceptual: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -553,12 +571,28 @@ fn read_progress_entries(progress_dir: &Path) -> Result<Vec<ProgressEntry>> {
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let parsed: PageProgress =
       serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    let mut total_ms = parsed.total_ms.unwrap_or(0.0);
+    if !total_ms.is_finite() {
+      total_ms = 0.0;
+    }
+    let accuracy_diff_percent = parsed
+      .accuracy
+      .as_ref()
+      .and_then(|accuracy| accuracy.diff_percent)
+      .filter(|v| v.is_finite());
+    let accuracy_perceptual = parsed
+      .accuracy
+      .as_ref()
+      .and_then(|accuracy| accuracy.perceptual)
+      .filter(|v| v.is_finite());
     entries.push(ProgressEntry {
       name,
       url: parsed.url,
       status: parsed.status,
-      total_ms: parsed.total_ms.unwrap_or(0.0),
+      total_ms,
       hotspot: parsed.hotspot,
+      accuracy_diff_percent,
+      accuracy_perceptual,
     });
   }
 
@@ -577,6 +611,7 @@ fn select_pages(
 ) -> Vec<ProgressEntry> {
   match strategy {
     PagesetGuardrailsSelectionStrategy::Slowest => select_pages_slowest(entries, count),
+    PagesetGuardrailsSelectionStrategy::WorstAccuracy => select_pages_worst_accuracy(entries, count),
     PagesetGuardrailsSelectionStrategy::Coverage => select_pages_coverage(entries, count),
   }
 }
@@ -595,6 +630,32 @@ fn entry_failure_first(a: &ProgressEntry, b: &ProgressEntry) -> std::cmp::Orderi
     .then_with(|| {
       b.total_ms
         .partial_cmp(&a.total_ms)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    })
+    .then_with(|| a.name.cmp(&b.name))
+}
+
+fn entry_worst_accuracy_first(a: &ProgressEntry, b: &ProgressEntry) -> std::cmp::Ordering {
+  let a_diff = a.accuracy_diff_percent.filter(|v| v.is_finite());
+  let b_diff = b.accuracy_diff_percent.filter(|v| v.is_finite());
+  match (a_diff.is_some(), b_diff.is_some()) {
+    (true, false) => return std::cmp::Ordering::Less,
+    (false, true) => return std::cmp::Ordering::Greater,
+    _ => {}
+  }
+  b_diff
+    .partial_cmp(&a_diff)
+    .unwrap_or(std::cmp::Ordering::Equal)
+    .then_with(|| {
+      let a_perc = a.accuracy_perceptual.filter(|v| v.is_finite());
+      let b_perc = b.accuracy_perceptual.filter(|v| v.is_finite());
+      match (a_perc.is_some(), b_perc.is_some()) {
+        (true, false) => return std::cmp::Ordering::Less,
+        (false, true) => return std::cmp::Ordering::Greater,
+        _ => {}
+      }
+      b_perc
+        .partial_cmp(&a_perc)
         .unwrap_or(std::cmp::Ordering::Equal)
     })
     .then_with(|| a.name.cmp(&b.name))
@@ -619,6 +680,29 @@ fn select_pages_slowest(entries: &[ProgressEntry], count: usize) -> Vec<Progress
     .cloned()
     .collect();
   ok.sort_by(entry_slowest_first);
+  failures.extend(ok.into_iter().take(ok_slots));
+  failures
+}
+
+fn select_pages_worst_accuracy(entries: &[ProgressEntry], count: usize) -> Vec<ProgressEntry> {
+  let mut failures: Vec<ProgressEntry> = entries
+    .iter()
+    .filter(|e| e.status.is_failure())
+    .cloned()
+    .collect();
+  failures.sort_by(entry_failure_first);
+
+  let ok_slots = count.saturating_sub(failures.len());
+  if ok_slots == 0 {
+    return failures;
+  }
+
+  let mut ok: Vec<ProgressEntry> = entries
+    .iter()
+    .filter(|e| e.status == ProgressStatus::Ok)
+    .cloned()
+    .collect();
+  ok.sort_by(entry_worst_accuracy_first);
   failures.extend(ok.into_iter().take(ok_slots));
   failures
 }
@@ -797,6 +881,7 @@ mod tests {
     let entries = read_progress_entries(&fixture_progress_dir()).expect("read fixture progress");
     for strategy in [
       PagesetGuardrailsSelectionStrategy::Slowest,
+      PagesetGuardrailsSelectionStrategy::WorstAccuracy,
       PagesetGuardrailsSelectionStrategy::Coverage,
     ] {
       let selected = select_pages(&entries, 1, strategy);
@@ -900,6 +985,8 @@ mod tests {
       status,
       total_ms,
       hotspot: hotspot.map(|s| s.to_string()),
+      accuracy_diff_percent: None,
+      accuracy_perceptual: None,
     }
   }
 
@@ -960,6 +1047,90 @@ mod tests {
     assert_eq!(parsed[0].status, ProgressStatus::Ok);
     assert_eq!(parsed[0].total_ms, 123.0);
     assert_eq!(parsed[0].hotspot, None);
+    assert_eq!(parsed[0].accuracy_diff_percent, None);
+    assert_eq!(parsed[0].accuracy_perceptual, None);
+  }
+
+  #[test]
+  fn parses_progress_entries_with_accuracy_metrics() {
+    let temp = TempDir::new().expect("tempdir");
+    let progress_dir = temp.path();
+    fs::write(
+      progress_dir.join("with-accuracy.json"),
+      r#"{
+        "url":"https://example.test",
+        "status":"ok",
+        "total_ms":123.0,
+        "accuracy": { "diff_percent": 42.5, "perceptual": 0.1234 }
+      }"#,
+    )
+    .unwrap();
+
+    let parsed = read_progress_entries(progress_dir).expect("read progress entries");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].name, "with-accuracy");
+    assert_eq!(parsed[0].accuracy_diff_percent, Some(42.5));
+    assert_eq!(parsed[0].accuracy_perceptual, Some(0.1234));
+  }
+
+  #[test]
+  fn worst_accuracy_strategy_sorts_ok_pages_by_diff_percent_then_perceptual_then_name() {
+    let entries = vec![
+      mk_entry("panic", ProgressStatus::Panic, 0.0, None),
+      ProgressEntry {
+        name: "a".to_string(),
+        url: "https://a/".to_string(),
+        status: ProgressStatus::Ok,
+        total_ms: 10.0,
+        hotspot: None,
+        accuracy_diff_percent: Some(20.0),
+        accuracy_perceptual: Some(0.2),
+      },
+      ProgressEntry {
+        name: "c".to_string(),
+        url: "https://c/".to_string(),
+        status: ProgressStatus::Ok,
+        total_ms: 10.0,
+        hotspot: None,
+        accuracy_diff_percent: Some(20.0),
+        accuracy_perceptual: Some(0.2),
+      },
+      ProgressEntry {
+        name: "b".to_string(),
+        url: "https://b/".to_string(),
+        status: ProgressStatus::Ok,
+        total_ms: 10.0,
+        hotspot: None,
+        accuracy_diff_percent: Some(20.0),
+        accuracy_perceptual: Some(0.1),
+      },
+      ProgressEntry {
+        name: "worse-diff".to_string(),
+        url: "https://worse-diff/".to_string(),
+        status: ProgressStatus::Ok,
+        total_ms: 10.0,
+        hotspot: None,
+        accuracy_diff_percent: Some(30.0),
+        accuracy_perceptual: Some(0.0),
+      },
+      ProgressEntry {
+        name: "no-accuracy".to_string(),
+        url: "https://no-accuracy/".to_string(),
+        status: ProgressStatus::Ok,
+        total_ms: 9999.0,
+        hotspot: None,
+        accuracy_diff_percent: None,
+        accuracy_perceptual: None,
+      },
+    ];
+
+    let selected = select_pages(&entries, 6, PagesetGuardrailsSelectionStrategy::WorstAccuracy);
+    let names: Vec<&str> = selected.iter().map(|e| e.name.as_str()).collect();
+    // Always include failures first.
+    assert_eq!(
+      names,
+      vec!["panic", "worse-diff", "a", "c", "b", "no-accuracy"]
+    );
   }
 
   #[test]

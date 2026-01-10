@@ -431,11 +431,14 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
     "chrome args should include --headless=new; got:\n{log}"
   );
   assert!(
-    log.contains("--disable-gpu")
-      && log.contains("--no-sandbox")
+    log.contains("--no-sandbox")
       && log.contains("--disable-dev-shm-usage")
       && log.contains("--hide-scrollbars"),
     "chrome args should include CI-safe flags; got:\n{log}"
+  );
+  assert!(
+    !log.contains("--disable-gpu"),
+    "--disable-gpu should not be used with --headless=new; got:\n{log}"
   );
   assert!(
     log.contains("--window-size=64,152"),

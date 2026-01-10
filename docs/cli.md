@@ -126,6 +126,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Validate that offline page fixtures do not reference network resources: `bash scripts/cargo_agent.sh xtask validate-page-fixtures [--only stripe.com]`
 - Update `tests/pages/pageset_guardrails.json` from the pageset scoreboard: `bash scripts/cargo_agent.sh xtask update-pageset-guardrails`
   - Defaults to `--strategy coverage`; always includes every `timeout`/`panic`/`error` page from `progress/pages/*.json` for offline triage, then adds a small set of slow `ok` pages for hotspot coverage.
+  - Use `--strategy worst_accuracy` to select `ok` pages with the worst Chrome-vs-FastRender diffs (by `accuracy.diff_percent`, tie-breaking by perceptual distance).
   - Warns when failures exceed `--count`.
   - Defaults to crawl-based capture for missing fixtures.
   - Use `--capture-missing-fixtures --capture-mode cache` to build bundles from warmed pageset caches without network access (requires `--features disk_cache`; pass `--asset-cache-dir <dir>`/`--cache-dir <dir>` when the warmed cache is not under `fetches/assets/`).
