@@ -861,6 +861,62 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_page_down_cycles_tabs_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::PageDown,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
+      "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_page_up_cycles_tabs_backward_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::PageUp,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+      "expected ChromeAction::ActivateTab({tab_a:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
   fn ctrl_shift_tab_cycles_tabs_backward_even_when_address_bar_focused() {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);

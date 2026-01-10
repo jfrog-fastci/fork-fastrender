@@ -118,6 +118,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+Tab | Next tab |
 | Ctrl/Cmd+Shift+Tab | Previous tab |
+| Ctrl/Cmd+PageUp | Previous tab |
+| Ctrl/Cmd+PageDown | Next tab |
 | Alt+Left | Back |
 | Alt+Right | Forward |
 | Ctrl/Cmd+R / F5 | Reload |

@@ -154,6 +154,10 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::W, _) if cmd => Some(ShortcutAction::CloseTab),
     (Key::Tab, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::PrevTab),
     (Key::Tab, _) if cmd => Some(ShortcutAction::NextTab),
+    // Many browsers (notably Firefox/Chromium on Windows/Linux) also support Ctrl+PageUp/PageDown
+    // for tab cycling.
+    (Key::PageUp, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::PrevTab),
+    (Key::PageDown, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::NextTab),
 
     // Navigation.
     (Key::Left, Modifiers { alt: true, ctrl: false, meta: false, .. }) => {
@@ -363,6 +367,50 @@ mod tests {
       map_shortcut_with_platform(
         KeyEvent::new(Key::Tab, Modifiers::new(true, true, false, false)),
         Platform::Other
+      ),
+      Some(ShortcutAction::PrevTab)
+    );
+  }
+
+  #[test]
+  fn ctrl_pageup_pagedown_cycle_tabs() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::PageDown, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::NextTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::PageUp, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::PrevTab)
+    );
+    // Shift should suppress this mapping so Shift+PageDown can remain a selection/navigation key.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::PageDown, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn mac_cmd_pageup_pagedown_cycle_tabs() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::PageDown, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::NextTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::PageUp, Modifiers::new(false, false, false, true)),
+        Platform::Mac
       ),
       Some(ShortcutAction::PrevTab)
     );
