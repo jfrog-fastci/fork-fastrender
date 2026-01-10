@@ -140,7 +140,7 @@ To pull in additional WebIDL sources (WebSockets/etc.), you will need to:
 Downstream binding generation (Rust glue / JS-visible APIs) should treat the snapshot as the source
 of truth for *shape* (members, overload sets, extended attributes) and implement behavior in Rust.
 
-## WebIDL-driven JS bindings codegen (`cargo xtask webidl-bindings`)
+## WebIDL-driven JS bindings codegen (`bash scripts/cargo_agent.sh xtask webidl-bindings`)
 
 The committed WebIDL snapshot (`src/webidl/generated/mod.rs`) is also used as the *shape source* for
 generating Rust glue that exposes DOM/web APIs to a JavaScript runtime.
@@ -157,14 +157,14 @@ bash scripts/cargo_agent.sh xtask webidl-bindings --check
 
 Notes:
 
-- Unlike `cargo xtask webidl`, **`webidl-bindings` does not require the vendored `specs/` submodules**
+- Unlike `bash scripts/cargo_agent.sh xtask webidl`, **`webidl-bindings` does not require the vendored `specs/` submodules**
   to be present. It consumes the committed snapshot world (`src/webidl/generated/mod.rs`) instead.
 - The generator is intentionally incremental and only supports a small subset of WebIDL features
   needed by FastRender today. Expand it as new APIs are wired up.
 
 ### Outputs
 
-`cargo xtask webidl-bindings` writes two committed Rust modules:
+`bash scripts/cargo_agent.sh xtask webidl-bindings` writes two committed Rust modules:
 
 - **Window-facing bindings glue**: `src/js/bindings/generated/mod.rs`
   - Generated wrappers perform WebIDL-ish argument conversions then dispatch into the host
@@ -174,7 +174,7 @@ Notes:
   - Controlled by an explicit allowlist: `tools/webidl/bindings_allowlist.toml`.
 
 To add new scaffold bindings, edit `tools/webidl/bindings_allowlist.toml` (interfaces, attributes,
-operations) and rerun `cargo xtask webidl-bindings`. The generator fails fast if allowlisted members
+operations) and rerun `bash scripts/cargo_agent.sh xtask webidl-bindings`. The generator fails fast if allowlisted members
 do not exist in the snapshot world (typo guard).
 
 ## Debugging unsupported/odd IDL

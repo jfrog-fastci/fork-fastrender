@@ -231,7 +231,7 @@ FastRender uses WebIDL as the “shape source of truth” for DOM/web APIs.
   - `src/webidl/generated/mod.rs` is committed, deterministic IDL metadata (updated via xtask)
 - `xtask/src/webidl/*` + `xtask/src/webidl_codegen.rs`
   - extract/resolve/generate the committed snapshot
-- `xtask/src/webidl_bindings_codegen.rs` (`cargo xtask webidl-bindings`)
+- `xtask/src/webidl_bindings_codegen.rs` (`bash scripts/cargo_agent.sh xtask webidl-bindings`)
   - generates committed Rust glue under `src/js/bindings/` from the snapshot world:
     - `src/js/bindings/generated/mod.rs` (Window-facing bindings wrappers)
     - `src/js/bindings/dom_generated.rs` (temporary `vm-js` DOM scaffold; controlled by

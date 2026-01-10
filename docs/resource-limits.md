@@ -152,7 +152,7 @@ Use the repo wrapper `bash scripts/cargo_agent.sh`, which:
 - throttles concurrent cargo invocations with lock “slots”
 - enforces an address-space cap (`RLIMIT_AS`) by default via `bash scripts/run_limited.sh`
   - most cargo commands default to `64G` (`FASTR_CARGO_LIMIT_AS`)
-  - `cargo xtask` (i.e. `cargo run -p xtask`) defaults to `96G` (`FASTR_XTASK_LIMIT_AS`) because headless Chrome reserves >64GiB of virtual address space and can fail with `Oilpan: Out of memory`
+  - xtask runs (`bash scripts/cargo_agent.sh xtask ...`) default to `96G` (`FASTR_XTASK_LIMIT_AS`) because headless Chrome reserves >64GiB of virtual address space and can fail with `Oilpan: Out of memory`
 
 To override the xtask limit (for Chrome workflows like `page-loop --chrome` / `fixture-chrome-diff`):
 

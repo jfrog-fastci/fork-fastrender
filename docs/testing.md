@@ -106,7 +106,7 @@ On Linux we run most commands under an address-space limit (`RLIMIT_AS`) to prot
 Oilpan: Out of memory
 ```
 
-`bash scripts/cargo_agent.sh` keeps the default cap at `64G` for normal Cargo commands, but bumps it to `96G` for xtask runs (`cargo xtask`, i.e. `cargo run -p xtask`; configurable via `FASTR_XTASK_LIMIT_AS`).
+`bash scripts/cargo_agent.sh` keeps the default cap at `64G` for normal Cargo commands, but bumps it to `96G` for xtask runs (`bash scripts/cargo_agent.sh xtask ...`; configurable via `FASTR_XTASK_LIMIT_AS`).
 
 If you hit an Oilpan OOM (or are running a particularly large fixture set), rerun the command with a higher xtask address-space cap:
 
