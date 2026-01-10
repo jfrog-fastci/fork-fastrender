@@ -11,18 +11,20 @@
 //! The runtime provides caching and basic circular import handling so repeated imports share a
 //! single module instance and cycles do not recurse infinitely.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::js::import_maps::ImportMapState;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::resource::{
   ensure_http_success, ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher,
 };
+use crate::render_control::{check_active, check_active_periodic};
 
 use parse_js::ast::import_export::{ExportNames, ImportNames, ModuleExportImportName};
 use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl};
 use parse_js::ast::stmt::{ExportDefaultExprStmt, ExportListStmt, ImportStmt, Stmt};
 use parse_js::ast::{expr::pat::Pat, node::Node, stx::TopLevel};
-use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use parse_js::error::SyntaxErrorType;
+use parse_js::{parse_with_options_cancellable_by, Dialect, ParseOptions, SourceType};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -349,20 +351,49 @@ fn transform_module_source(
   source: &str,
   resolve_specifier: &mut impl FnMut(&str, &str) -> Result<String>,
 ) -> Result<TransformOutput> {
+  check_active(RenderStage::Script)?;
   let opts = ParseOptions {
     dialect: Dialect::Ecma,
     source_type: SourceType::Module,
   };
-  let top: Node<TopLevel> = parse_with_options(source, opts).map_err(|err| {
-    Error::Other(format!("failed to parse module {module_id}: {err}"))
-  })?;
+  const PARSE_CANCEL_STRIDE: usize = 1024;
+  let mut parse_counter = 0usize;
+  let mut render_cancel = None;
+  let top: Node<TopLevel> = match parse_with_options_cancellable_by(source, opts, || {
+    parse_counter = parse_counter.wrapping_add(1);
+    if parse_counter % PARSE_CANCEL_STRIDE != 0 {
+      return false;
+    }
+    match check_active(RenderStage::Script) {
+      Ok(()) => false,
+      Err(err) => {
+        render_cancel = Some(err);
+        true
+      }
+    }
+  }) {
+    Ok(top) => top,
+    Err(err) => {
+      if err.typ == SyntaxErrorType::Cancelled {
+        if let Some(render_err) = render_cancel.take() {
+          return Err(Error::Render(render_err));
+        }
+        // Fallback: the parser observed cancellation but the callback did not store the error.
+        // Re-run the check to surface the structured render error.
+        check_active(RenderStage::Script)?;
+      }
+      return Err(Error::Other(format!("failed to parse module {module_id}: {err}")));
+    }
+  };
 
   let mut replacements: Vec<(usize, usize, String)> = Vec::new();
   let mut hoisted: String = String::new();
   let mut deps: Vec<String> = Vec::new();
   let mut temp_idx: usize = 0;
 
+  let mut deadline_counter = 0usize;
   for stmt in &top.stx.body {
+    check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
     match &*stmt.stx {
       Stmt::Import(import_stmt) => {
         let import = &import_stmt.stx;
@@ -416,9 +447,11 @@ fn transform_module_source(
           replacement.push('\n');
         }
         for declarator in &decl.declarators {
+          check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
           let mut names = Vec::new();
-          collect_binding_idents(&declarator.pattern.stx, &mut names)?;
+          collect_binding_idents(&declarator.pattern.stx, &mut names, &mut deadline_counter)?;
           for name in names {
+            check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
             replacement.push_str("exports[");
             replacement.push_str(&js_string_literal(&name)?);
             replacement.push_str("] = ");
@@ -521,6 +554,7 @@ fn transform_module_source(
   replacements.sort_by_key(|(start, _, _)| *start);
   // Ensure replacements do not overlap.
   for w in replacements.windows(2) {
+    check_active_periodic(&mut deadline_counter, 1024, RenderStage::Script)?;
     let (a_start, a_end, _) = w[0];
     let (b_start, _, _) = w[1];
     if b_start < a_end {
@@ -533,6 +567,7 @@ fn transform_module_source(
   let mut rewritten = String::new();
   let mut cursor = 0usize;
   for (start, end, repl) in replacements {
+    check_active_periodic(&mut deadline_counter, 1024, RenderStage::Script)?;
     if start > cursor {
       rewritten.push_str(&source[cursor..start]);
     }
@@ -618,7 +653,9 @@ fn emit_import_binding(import: &ImportStmt, resolved_url: &str, temp_idx: &mut u
         out.push_str(";\n");
       }
       ImportNames::Specific(list) => {
+        let mut deadline_counter = 0usize;
         for item in list {
+          check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
           if item.stx.type_only {
             continue;
           }
@@ -651,7 +688,9 @@ fn emit_export_from(export: &ExportListStmt, resolved_url: &str, temp_idx: &mut 
       out.push_str(" = __import(");
       out.push_str(&url_lit);
       out.push_str(");\n");
+      let mut deadline_counter = 0usize;
       for name in list {
+        check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
         if name.stx.type_only {
           continue;
         }
@@ -690,7 +729,9 @@ fn emit_local_export_list(export: &ExportListStmt) -> Result<String> {
   };
 
   let mut out = String::new();
+  let mut deadline_counter = 0usize;
   for name in list {
+    check_active_periodic(&mut deadline_counter, 256, RenderStage::Script)?;
     if name.stx.type_only {
       continue;
     }
@@ -721,29 +762,39 @@ fn pat_decl_ident(decl: &Node<PatDecl>) -> Result<&str> {
   }
 }
 
-fn collect_binding_idents(decl: &PatDecl, out: &mut Vec<String>) -> Result<()> {
-  collect_pat_idents(&decl.pat, out)
+fn collect_binding_idents(
+  decl: &PatDecl,
+  out: &mut Vec<String>,
+  deadline_counter: &mut usize,
+) -> Result<()> {
+  collect_pat_idents(&decl.pat, out, deadline_counter)
 }
 
-fn collect_pat_idents(pat: &Node<Pat>, out: &mut Vec<String>) -> Result<()> {
+fn collect_pat_idents(
+  pat: &Node<Pat>,
+  out: &mut Vec<String>,
+  deadline_counter: &mut usize,
+) -> Result<()> {
   match &*pat.stx {
     Pat::Id(id) => out.push(id.stx.name.clone()),
     Pat::Arr(arr) => {
       for elem in &arr.stx.elements {
+        check_active_periodic(deadline_counter, 256, RenderStage::Script)?;
         if let Some(elem) = elem {
-          collect_pat_idents(&elem.target, out)?;
+          collect_pat_idents(&elem.target, out, deadline_counter)?;
         }
       }
       if let Some(rest) = arr.stx.rest.as_ref() {
-        collect_pat_idents(rest, out)?;
+        collect_pat_idents(rest, out, deadline_counter)?;
       }
     }
     Pat::Obj(obj) => {
       for prop in &obj.stx.properties {
-        collect_pat_idents(&prop.stx.target, out)?;
+        check_active_periodic(deadline_counter, 256, RenderStage::Script)?;
+        collect_pat_idents(&prop.stx.target, out, deadline_counter)?;
       }
       if let Some(rest) = obj.stx.rest.as_ref() {
-        collect_pat_idents(rest, out)?;
+        collect_pat_idents(rest, out, deadline_counter)?;
       }
     }
     Pat::AssignTarget(_) => {
@@ -758,6 +809,7 @@ fn collect_pat_idents(pat: &Node<Pat>, out: &mut Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::render_control::RenderDeadline;
   use crate::resource::FetchedResource;
   use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
   use url::Url;
@@ -933,5 +985,27 @@ mod tests {
         .all(|d| matches!(d, FetchDestination::ScriptCors)),
       "expected all module fetches to use FetchDestination::ScriptCors, got: {destinations:?}"
     );
+  }
+
+  #[test]
+  fn module_graph_loader_respects_render_deadline() {
+    let fetcher = Arc::new(MapFetcher::default());
+    fetcher.insert(
+      "https://example.com/main.js",
+      r#"export const ok = true; globalThis.__ok = ok;"#,
+    );
+    let mut loader = ModuleGraphLoader::new(fetcher);
+
+    // Immediate cancellation should abort module parse/transform work.
+    let deadline = RenderDeadline::new(None, Some(Arc::new(|| true)));
+    let err = crate::render_control::with_deadline(Some(&deadline), || {
+      loader.build_bundle_for_url("https://example.com/main.js", 1024 * 1024)
+    })
+    .unwrap_err();
+
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Script),
+      other => panic!("expected script timeout render error, got {other:?}"),
+    }
   }
 }
