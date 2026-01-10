@@ -1,3 +1,4 @@
+use fastrender::api::VmJsBrowserTabExecutor;
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{Clock, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock};
 use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result};
@@ -283,11 +284,7 @@ fn browser_tab_task_error_does_not_prevent_later_dom_mutations_and_rendering() -
   let frame_a = tab.render_frame()?;
   assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
 
-  let run_limits = RunLimits {
-    max_wall_time: Some(Duration::from_secs(1)),
-    ..RunLimits::unbounded()
-  };
-  let outcome = tab.run_until_stable_with_run_limits(run_limits, 10)?;
+  let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 10)?;
   match outcome {
     fastrender::RunUntilStableOutcome::Stable { frames_rendered } => {
       assert!(
@@ -714,5 +711,90 @@ fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_tim
     log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
     &["inline-check".to_string(), "external-check".to_string()]
   );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_lifecycle_events_invoke_js_listeners_and_microtasks() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <script id="setup">
+          (function () {
+            function push(msg) {
+              const el = document.documentElement;
+              const prev = el.getAttribute("data-log") || "";
+              el.setAttribute("data-log", prev + msg + "|");
+            }
+
+            document.addEventListener("readystatechange", () => {
+              push("listener:rs:" + document.readyState);
+              queueMicrotask(() => push("microtask:rs:" + document.readyState));
+            });
+
+            document.addEventListener("DOMContentLoaded", () => {
+              push("listener:dom");
+              queueMicrotask(() => {
+                push("microtask:dom");
+                const box = document.getElementById("box");
+                if (box) box.setAttribute("data-dom", "1");
+              });
+            });
+
+            window.addEventListener("load", () => {
+              push("listener:load");
+              queueMicrotask(() => {
+                push("microtask:load");
+                const box = document.getElementById("box");
+                if (box) box.setAttribute("data-load", "1");
+              });
+            });
+          })();
+        </script>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new().with_viewport(1, 1);
+  let mut tab = BrowserTab::from_html(html, options, VmJsBrowserTabExecutor::new())?;
+  let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 8)?;
+  assert!(
+    matches!(outcome, fastrender::RunUntilStableOutcome::Stable { .. }),
+    "expected run_until_stable to reach Stable, got {outcome:?}"
+  );
+
+  let dom = tab.dom();
+  let box_id = find_element_by_id(dom, "box").expect("#box id");
+  let doc_el = dom.document_element().expect("documentElement");
+  let log = dom
+    .get_attribute(doc_el, "data-log")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let ready_state = dom.ready_state().as_str();
+  assert_eq!(
+    dom
+      .get_attribute(box_id, "data-dom")
+      .map_err(|e| Error::Other(e.to_string()))?,
+    Some("1"),
+    "expected DOMContentLoaded listener microtask to mutate DOM (readyState={ready_state}, log={log:?})"
+  );
+  assert_eq!(
+    dom
+      .get_attribute(box_id, "data-load")
+      .map_err(|e| Error::Other(e.to_string()))?,
+    Some("1"),
+    "expected load listener microtask to mutate DOM (readyState={ready_state}, log={log:?})"
+  );
+
+  assert_eq!(
+    log,
+    Some("listener:rs:interactive|microtask:rs:interactive|listener:dom|microtask:dom|listener:rs:complete|listener:load|microtask:rs:complete|microtask:load|"),
+    "expected lifecycle event + microtask ordering to match HTML semantics"
+  );
+
   Ok(())
 }

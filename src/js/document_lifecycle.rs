@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::js::{EventLoop, TaskSource};
+use crate::js::runtime::with_event_loop;
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 pub use crate::web::dom::DocumentReadyState;
@@ -176,8 +177,8 @@ impl DocumentLifecycle {
     //   barrier task → microtask checkpoint → DOMContentLoaded task
     // always holds, even when parsing completion is signalled from the host stack.
     event_loop.queue_task(TaskSource::DOMManipulation, |_host, _event_loop| Ok(()))?;
-    event_loop.queue_task(TaskSource::DOMManipulation, |host, _event_loop| {
-      fire_dom_content_loaded(host)
+    event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      with_event_loop(event_loop, || fire_dom_content_loaded(host))
     })?;
 
     // `load` must be after DOMContentLoaded and after a microtask checkpoint. Queueing it as a
@@ -185,7 +186,9 @@ impl DocumentLifecycle {
     // required boundary.
     if !self.load_queued && !self.load_fired {
       self.load_queued = true;
-      event_loop.queue_task(TaskSource::DOMManipulation, |host, _event_loop| fire_load(host))?;
+      event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+        with_event_loop(event_loop, || fire_load(host))
+      })?;
     }
 
     Ok(())

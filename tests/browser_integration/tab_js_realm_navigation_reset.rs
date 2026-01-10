@@ -3,7 +3,6 @@ use fastrender::dom2::NodeId;
 use fastrender::error::{Error, Result};
 use fastrender::js::RunLimits;
 use fastrender::{BrowserTab, RenderOptions};
-use std::time::Duration;
 
 fn attr(doc: &fastrender::dom2::Document, node: NodeId, name: &str) -> Result<Option<String>> {
   doc
@@ -45,11 +44,11 @@ fn tab_navigation_resets_vm_js_realm_and_current_script() -> Result<()> {
   let options = RenderOptions::new().with_viewport(64, 64);
   let mut tab = BrowserTab::from_html(html_a, options.clone(), VmJsBrowserTabExecutor::new())?;
 
-  let run_limits = RunLimits {
-    max_wall_time: Some(Duration::from_secs(1)),
-    ..RunLimits::unbounded()
-  };
-  tab.run_until_stable_with_run_limits(run_limits, 8)?;
+  let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 8)?;
+  assert!(
+    matches!(outcome, fastrender::RunUntilStableOutcome::Stable { .. }),
+    "expected navigation A to reach Stable, got {outcome:?}"
+  );
 
   let marker = tab
     .dom()
@@ -58,7 +57,11 @@ fn tab_navigation_resets_vm_js_realm_and_current_script() -> Result<()> {
   assert_eq!(attr(tab.dom(), marker, "data-from")?.as_deref(), Some("A"));
 
   tab.navigate_to_html(html_b, options)?;
-  tab.run_until_stable_with_run_limits(run_limits, 8)?;
+  let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 8)?;
+  assert!(
+    matches!(outcome, fastrender::RunUntilStableOutcome::Stable { .. }),
+    "expected navigation B to reach Stable, got {outcome:?}"
+  );
 
   let marker = tab
     .dom()

@@ -1,9 +1,13 @@
 use crate::error::{Error, Result};
-use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+use crate::js::runtime::with_event_loop;
 use crate::js::time::update_time_bindings_clock;
+use crate::js::vm_error_format;
+use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
 use std::sync::Arc;
+use vm_js::SourceText;
 
 use super::BrowserDocumentDom2;
 use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
@@ -71,7 +75,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .with_current_script_state(current_script.clone());
     if let Some(diag) = self.diagnostics.clone() {
       let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
-        let message = crate::js::vm_error_format::format_console_arguments_limited(heap, args);
+        let message = vm_error_format::format_console_arguments_limited(heap, args);
         diag.record_console_message(level, message);
       });
       config.console_sink = Some(sink);
@@ -79,6 +83,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let mut realm = WindowRealm::new_with_js_execution_options(config, js_execution_options)
       .map_err(|err| Error::Other(err.to_string()))?;
+    // Install timer/microtask APIs (`queueMicrotask`, `setTimeout`, etc) so scripts and event
+    // listeners can schedule work onto the host event loop.
+    {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::install_window_timers_bindings::<BrowserTabHost>(vm, realm_ref, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
     realm.set_cookie_fetcher(document.fetcher());
     self.realm = Some(realm);
     Ok(())
@@ -105,7 +116,18 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .src
       .as_deref()
       .unwrap_or("source=inline");
-    match realm.exec_script_with_name(source_name, script_text) {
+    let source = Arc::new(SourceText::new(source_name, script_text));
+
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new();
+    let mut host = ();
+    let result = with_event_loop(event_loop, || {
+      realm.exec_script_source_with_host_and_hooks(&mut host, &mut hooks, source)
+    });
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+
+    match result {
       Ok(_) => Ok(()),
       Err(err) => {
         if let Some(req) = realm.take_pending_navigation_request() {
@@ -115,18 +137,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           self.pending_navigation = Some(req);
           return Ok(());
         }
-        if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+        if vm_error_format::vm_error_is_js_exception(&err) {
           if let Some(diag) = &self.diagnostics {
             let (message, stack) =
-              crate::js::vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+              vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
             diag.record_js_exception(message, stack);
           }
           Ok(())
         } else {
-          Err(crate::js::vm_error_format::vm_error_to_error(
-            realm.heap_mut(),
-            err,
-          ))
+          Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
     }
@@ -159,7 +178,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     );
 
     realm.reset_interrupt();
-    match realm.exec_script(&source) {
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new();
+    let result = realm.exec_script_with_hooks(&mut hooks, &source);
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+
+    match result {
       Ok(_) => Ok(()),
       Err(err) => {
         if let Some(req) = realm.take_pending_navigation_request() {
@@ -167,20 +192,21 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           self.pending_navigation = Some(req);
           return Ok(());
         }
-        if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+        if vm_error_format::vm_error_is_js_exception(&err) {
           if let Some(diag) = &self.diagnostics {
             let (message, stack) =
-              crate::js::vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+              vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
             diag.record_js_exception(message, stack);
           }
           Ok(())
         } else {
-          Err(crate::js::vm_error_format::vm_error_to_error(
-            realm.heap_mut(),
-            err,
-          ))
+          Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
     }
+  }
+
+  fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
+    self.realm.as_mut()
   }
 }

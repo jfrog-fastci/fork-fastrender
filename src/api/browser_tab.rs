@@ -15,6 +15,7 @@ use crate::js::{
   LocationNavigationRequest, ScriptBlockingStyleSheetSet, ScriptOrchestrator, ScriptScheduler,
   ScriptSchedulerAction, ScriptType, TaskSource,
 };
+use crate::js::runtime::with_event_loop;
 use crate::css::encoding::decode_css_bytes_cow;
 use crate::css::loader::resolve_href_with_base;
 use crate::css::parser::{parse_stylesheet_with_media, tokenize_rel_list};
@@ -96,6 +97,14 @@ pub trait BrowserTabJsExecutor {
   fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: &Event) -> Result<()> {
     let _ = (target, event);
     Ok(())
+  }
+
+  /// Returns the underlying [`crate::js::WindowRealm`] if this executor is backed by `vm-js`.
+  ///
+  /// This is used by timer/microtask bindings (`queueMicrotask`, `setTimeout`, etc) to execute
+  /// queued JS callbacks on the correct realm.
+  fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
+    None
   }
 }
 
@@ -1204,10 +1213,10 @@ impl BrowserTabHost {
         }
         ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
           let type_str = event.as_type_str();
-          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
             let mut ev = Event::new(type_str, EventInit::default());
             ev.is_trusted = true;
-            host.dispatch_lifecycle_event(EventTargetId::Node(node_id), ev)?;
+            with_event_loop(event_loop, || host.dispatch_lifecycle_event(EventTargetId::Node(node_id), ev))?;
             Ok(())
           })?;
         }
@@ -1560,7 +1569,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
         },
       );
       event.is_trusted = true;
-      self.dispatch_lifecycle_event(EventTargetId::Document, event)?;
+      with_event_loop(event_loop, || self.dispatch_lifecycle_event(EventTargetId::Document, event))?;
     }
 
     self.document_lifecycle_mut().parsing_completed(event_loop)?;
@@ -1579,7 +1588,13 @@ impl DocumentLifecycleHost for BrowserTabHost {
     target: crate::web::events::EventTargetId,
     event: crate::web::events::Event,
   ) -> Result<()> {
-    let result = self.executor.dispatch_lifecycle_event(target, &event);
+    let target = target.normalize();
+    let result = match target {
+      EventTargetId::Document | EventTargetId::Window => self.executor.dispatch_lifecycle_event(target, &event),
+      // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
+      // `load`/`error` events queued by the script scheduler).
+      EventTargetId::Node(_) | EventTargetId::Opaque(_) => self.dispatch_dom_event(target, event),
+    };
     if let Some(req) = self.executor.take_navigation_request() {
       self.pending_navigation = Some(req);
     }
@@ -1592,6 +1607,16 @@ impl DocumentLifecycleHost for BrowserTabHost {
 
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
     &mut self.lifecycle
+  }
+}
+
+impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut crate::js::WindowRealm) {
+    let BrowserTabHost { document, executor, .. } = self;
+    let Some(realm) = executor.window_realm_mut() else {
+      panic!("BrowserTabHost does not have an active vm-js WindowRealm for timer/microtask callbacks");
+    };
+    (document.as_mut(), realm)
   }
 }
 

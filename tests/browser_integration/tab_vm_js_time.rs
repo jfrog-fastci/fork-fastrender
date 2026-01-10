@@ -1,5 +1,5 @@
 use fastrender::api::VmJsBrowserTabExecutor;
-use fastrender::js::{Clock, EventLoop, VirtualClock};
+use fastrender::js::{Clock, EventLoop, RunLimits, VirtualClock};
 use fastrender::{BrowserTab, Error, RenderOptions, Result};
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,7 +41,11 @@ fn tab_vm_js_time_apis_follow_event_loop_clock() -> Result<()> {
     event_loop,
   )?;
 
-  tab.run_until_stable(4)?;
+  let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 4)?;
+  assert!(
+    matches!(outcome, fastrender::RunUntilStableOutcome::Stable { .. }),
+    "expected run_until_stable to reach Stable, got {outcome:?}"
+  );
 
   let marker = tab
     .dom()
