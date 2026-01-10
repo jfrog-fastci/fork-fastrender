@@ -4736,10 +4736,10 @@ impl Drop for ActiveDomEventGuard {
   }
 }
 
-struct VmJsDomEventInvoker<'a, 'hooks> {
+struct VmJsDomEventInvoker<'a, 'host, 'hooks> {
   vm: *mut Vm,
   scope: *mut Scope<'a>,
-  host: *mut (dyn VmHost + 'hooks),
+  host: *mut (dyn VmHost + 'host),
   hooks: *mut (dyn VmHostHooks + 'hooks),
   window_obj: GcObject,
   document_obj: GcObject,
@@ -4750,7 +4750,7 @@ struct VmJsDomEventInvoker<'a, 'hooks> {
   registry: *const web_events::EventListenerRegistry,
 }
 
-impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
+impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
   fn js_value_for_target(
     &mut self,
     target: Option<web_events::EventTargetId>,
@@ -4880,7 +4880,7 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
   }
 }
 
-impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
+impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
   fn invoke(
     &mut self,
     listener_id: web_events::ListenerId,
@@ -10864,6 +10864,7 @@ mod tests {
 
       let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
+      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
@@ -10938,6 +10939,7 @@ mod tests {
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
       let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
+      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
@@ -11012,6 +11014,7 @@ mod tests {
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
       let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
+      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
@@ -11081,6 +11084,7 @@ mod tests {
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
     let mut host_ctx = ();
     let mut hooks = NoopHostHooks::default();
+    let mut host_ctx = ();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,
       scope: &mut scope,

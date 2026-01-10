@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vm_js::{Heap, PropertyKey, Scope, TerminationReason, Value, Vm, VmError, VmHost};
 
+const ASSERT_VM_HOST_FN_NAME: &str = "__fastrender_assert_vm_host";
+
 fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &mut EventLoop<Host>) {
   fn drain<Host: WindowRealmHost>(host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     with_event_loop(event_loop, || {
@@ -92,6 +94,72 @@ fn get_data_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Val
     .object_get_own_data_property_value(obj, &key)
     .unwrap()
     .unwrap()
+}
+
+fn install_assert_non_dummy_vm_host(host: &mut WindowHostState) -> Result<()> {
+  fn assert_vm_host_native(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    if std::mem::size_of_val(&*host) == 0 {
+      Err(VmError::TypeError("callback invoked with dummy VmHost"))
+    } else {
+      Ok(Value::Undefined)
+    }
+  }
+
+  let window = host.window_mut();
+  let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+  let call_id = vm
+    .register_native_call(assert_vm_host_native)
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope
+    .push_root(Value::Object(global))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let name_s = scope
+    .alloc_string(ASSERT_VM_HOST_FN_NAME)
+    .map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .push_root(Value::String(name_s))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let func = scope
+    .alloc_native_function(call_id, None, name_s, 0)
+    .map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+    .map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .push_root(Value::Object(func))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let key = PropertyKey::from_string(name_s);
+  scope
+    .define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(func),
+          writable: true,
+        },
+      },
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  Ok(())
 }
 
 fn find_script_elements(dom: &Dom2Document) -> Vec<NodeId> {
@@ -550,11 +618,13 @@ fn promise_jobs_callbacks_can_mutate_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 Promise.resolve().then(() => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'p';
   document.body.appendChild(d);
@@ -580,11 +650,13 @@ fn queue_microtask_callbacks_can_mutate_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 queueMicrotask(() => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'm';
   document.body.appendChild(d);
@@ -610,11 +682,13 @@ fn set_timeout_callbacks_can_mutate_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 setTimeout(() => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 't';
   document.body.appendChild(d);
@@ -694,12 +768,14 @@ fn event_listener_callbacks_can_mutate_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   assert!(host.dom().get_element_by_id("e").is_none());
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 document.body.addEventListener('x', () => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'e';
   document.body.appendChild(d);
@@ -725,12 +801,14 @@ fn request_animation_frame_callbacks_can_access_dom_shims() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
     host.exec_script_in_event_loop(
       event_loop,
       r#"
 requestAnimationFrame(() => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'raf';
   document.body.appendChild(d);
@@ -749,6 +827,32 @@ requestAnimationFrame(() => {
   event_loop.run_animation_frame(&mut host)?;
 
   assert!(host.dom().get_element_by_id("raf").is_some());
+  Ok(())
+}
+
+#[test]
+fn abort_signal_onabort_callbacks_receive_real_vm_host() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+const c = new AbortController();
+c.signal.onabort = () => {
+  __fastrender_assert_vm_host();
+  const d = document.createElement('div');
+  d.id = 'ab';
+  document.body.appendChild(d);
+};
+c.abort();
+"#,
+  )?;
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert!(host.dom().get_element_by_id("ab").is_some());
   Ok(())
 }
 
