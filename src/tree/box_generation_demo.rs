@@ -248,6 +248,7 @@ impl DOMNode {
       "img" => Some(ReplacedType::Image {
         src,
         alt,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1470,6 +1471,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

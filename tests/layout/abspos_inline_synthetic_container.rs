@@ -73,6 +73,7 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,

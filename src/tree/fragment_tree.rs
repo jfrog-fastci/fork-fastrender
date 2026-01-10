@@ -2663,6 +2663,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),

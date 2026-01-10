@@ -6392,6 +6392,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

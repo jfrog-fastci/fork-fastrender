@@ -143,8 +143,8 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
 use crate::tree::box_tree::{
-  CrossOriginAttribute, FormControl, FormControlKind, ImageDecodingAttribute, SelectItem,
-  TextControlKind,
+  CrossOriginAttribute, FormControl, FormControlKind, ImageDecodingAttribute, ImageLoadingAttribute,
+  SelectItem, TextControlKind,
 };
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -7241,11 +7241,18 @@ impl Painter {
       }
       ReplacedType::Image {
         alt,
+        loading,
         decoding,
         crossorigin,
         referrer_policy,
         ..
       } => {
+        if *loading == ImageLoadingAttribute::Lazy {
+          // `loading="lazy"` images do not block initial page load and are typically absent from
+          // headless Chrome `--screenshot` baselines. Keep them transparent so author-supplied
+          // placeholders remain visible.
+          return;
+        }
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
           .with_env_overrides();
@@ -19372,6 +19379,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt".to_string()),
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -19503,6 +19511,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
@@ -19548,6 +19557,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,

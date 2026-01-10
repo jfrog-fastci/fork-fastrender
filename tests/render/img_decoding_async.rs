@@ -106,3 +106,46 @@ fn img_decoding_async_defers_only_for_large_destinations() {
     "expected decoding=sync image to paint"
   );
 }
+
+#[test]
+fn img_loading_lazy_keeps_image_transparent() {
+  let png = png_with_dimensions_and_color(100, 100, [255, 0, 0, 255]);
+  let resources = HashMap::from([("test://img.png".to_string(), png)]);
+  let fetcher = Arc::new(MapFetcher {
+    resources,
+    mime: "image/png".to_string(),
+  }) as Arc<dyn ResourceFetcher>;
+
+  let html_lazy = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 255, 0); }
+        img { display: block; width: 100px; height: 100px; }
+      </style>
+      <img loading="lazy" src="test://img.png">
+    "#;
+  let pixmap_lazy = render_single_img(html_lazy, Arc::clone(&fetcher), 100, 100).expect("render lazy");
+  let px = pixmap_lazy.pixel(50, 50).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (0, 255, 0),
+    "expected loading=lazy image to remain transparent (show background)"
+  );
+
+  let html_eager = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 255, 0); }
+        img { display: block; width: 100px; height: 100px; }
+      </style>
+      <img loading="eager" src="test://img.png">
+    "#;
+  let pixmap_eager =
+    render_single_img(html_eager, Arc::clone(&fetcher), 100, 100).expect("render eager");
+  let px = pixmap_eager.pixel(50, 50).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (255, 0, 0),
+    "expected loading=eager image to paint"
+  );
+}

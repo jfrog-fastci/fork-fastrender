@@ -170,6 +170,7 @@ use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ImageLoadingAttribute;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::ReplacedType;
@@ -6096,6 +6097,10 @@ impl DisplayListBuilder {
             ReplacedType::Image { crossorigin, .. } => *crossorigin,
             _ => CrossOriginAttribute::None,
           };
+          let loading = match replaced_type {
+            ReplacedType::Image { loading, .. } => *loading,
+            _ => ImageLoadingAttribute::Auto,
+          };
           let decoding = match replaced_type {
             ReplacedType::Image { decoding, .. } => *decoding,
             _ => ImageDecodingAttribute::Auto,
@@ -6130,6 +6135,13 @@ impl DisplayListBuilder {
           // Only attempt to decode the selected candidate (the first entry in `sources`).
           let mut deferred_async = false;
           let decoded = sources.first().and_then(|source| {
+            if loading == ImageLoadingAttribute::Lazy {
+              // `loading="lazy"` images are typically fetched/decoded after initial page load and do
+              // not block headless Chrome `--screenshot` baselines. Keep the image transparent so
+              // author-supplied placeholders (e.g. background-image blur SVGs) remain visible.
+              deferred_async = true;
+              return None;
+            }
             if decoding == ImageDecodingAttribute::Async
               && self.should_defer_async_image_decode(
                 slot_rect.width(),
@@ -13352,6 +13364,7 @@ mod tests {
       ReplacedType::Image {
         src: src.to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -15461,6 +15474,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -15518,6 +15532,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -16030,6 +16045,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16084,6 +16100,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16171,6 +16188,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16229,6 +16247,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%222%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16302,6 +16321,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%222%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16518,6 +16538,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16557,6 +16578,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16592,6 +16614,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16787,6 +16810,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt text".to_string()),
+          loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16831,6 +16855,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -16860,6 +16885,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

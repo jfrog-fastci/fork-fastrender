@@ -15878,6 +15878,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16108,6 +16109,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16390,6 +16392,7 @@ mod tests {
         replaced_type: box_tree::ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16892,6 +16895,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -16943,6 +16947,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -17017,6 +17022,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -17120,6 +17126,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -17170,6 +17177,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -17346,6 +17354,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          loading: Default::default(),
           decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -17618,6 +17627,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

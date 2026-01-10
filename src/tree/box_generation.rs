@@ -58,6 +58,7 @@ use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ImageLoadingAttribute;
 use crate::resource::ReferrerPolicy;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
@@ -4156,6 +4157,7 @@ fn create_pseudo_element_box(
           ReplacedType::Image {
             src: url.clone(),
             alt: None,
+            loading: ImageLoadingAttribute::Auto,
             decoding: ImageDecodingAttribute::Auto,
             crossorigin: CrossOriginAttribute::None,
             referrer_policy: None,
@@ -4645,6 +4647,7 @@ pub(crate) fn marker_content_from_style(
         replaced_type: ReplacedType::Image {
           src,
           alt: None,
+          loading: ImageLoadingAttribute::Auto,
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -4668,6 +4671,7 @@ pub(crate) fn marker_content_from_style(
         replaced_type: ReplacedType::Image {
           src: url.clone(),
           alt: None,
+          loading: ImageLoadingAttribute::Auto,
           decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
@@ -5702,6 +5706,11 @@ fn create_replaced_box_from_styled(
       .get_attribute_ref("alt")
       .filter(|s| !s.is_empty())
       .map(|s| s.to_string());
+    let loading = styled
+      .node
+      .get_attribute_ref("loading")
+      .map(ImageLoadingAttribute::from_attribute)
+      .unwrap_or_default();
     let decoding = styled
       .node
       .get_attribute_ref("decoding")
@@ -5732,6 +5741,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Image {
       src,
       alt,
+      loading,
       decoding,
       crossorigin,
       referrer_policy,
@@ -5824,6 +5834,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Image {
       src,
       alt,
+      loading: ImageLoadingAttribute::Auto,
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
@@ -6410,6 +6421,73 @@ mod tests {
       match &node.box_type {
         BoxType::Replaced(replaced) => match &replaced.replaced_type {
           ReplacedType::Image { decoding, .. } => assert_eq!(*decoding, want),
+          other => panic!("expected image replaced type, got {other:?}"),
+        },
+        other => panic!("expected replaced box, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn img_loading_attribute_parses() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut img_default = styled_element("img");
+    img_default.node_id = 1;
+    set_attr(&mut img_default, "src", "/a.png");
+
+    let mut img_empty = styled_element("img");
+    img_empty.node_id = 2;
+    set_attr(&mut img_empty, "src", "/a.png");
+    set_attr(&mut img_empty, "loading", "");
+
+    let mut img_lazy = styled_element("img");
+    img_lazy.node_id = 3;
+    set_attr(&mut img_lazy, "src", "/a.png");
+    set_attr(&mut img_lazy, "loading", "lazy");
+
+    let mut img_eager = styled_element("img");
+    img_eager.node_id = 4;
+    set_attr(&mut img_eager, "src", "/a.png");
+    set_attr(&mut img_eager, "loading", "EAGER");
+
+    let mut img_auto = styled_element("img");
+    img_auto.node_id = 5;
+    set_attr(&mut img_auto, "src", "/a.png");
+    set_attr(&mut img_auto, "loading", "  auto ");
+
+    let mut img_invalid = styled_element("img");
+    img_invalid.node_id = 6;
+    set_attr(&mut img_invalid, "src", "/a.png");
+    set_attr(&mut img_invalid, "loading", "wat");
+
+    let mut root = styled_element("div");
+    root.children = vec![img_default, img_empty, img_lazy, img_eager, img_auto, img_invalid];
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(tree.root.children.len(), 6);
+
+    let expected = [
+      ImageLoadingAttribute::Auto,
+      ImageLoadingAttribute::Auto,
+      ImageLoadingAttribute::Lazy,
+      ImageLoadingAttribute::Eager,
+      ImageLoadingAttribute::Auto,
+      ImageLoadingAttribute::Auto,
+    ];
+
+    for (idx, want) in expected.into_iter().enumerate() {
+      let node = &tree.root.children[idx];
+      match &node.box_type {
+        BoxType::Replaced(replaced) => match &replaced.replaced_type {
+          ReplacedType::Image { loading, .. } => assert_eq!(*loading, want),
           other => panic!("expected image replaced type, got {other:?}"),
         },
         other => panic!("expected replaced box, got {other:?}"),
@@ -8789,6 +8867,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

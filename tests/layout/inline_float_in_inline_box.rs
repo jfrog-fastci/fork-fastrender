@@ -38,6 +38,7 @@ fn floated_replaced_inside_inline_box_creates_fragment() {
     ReplacedType::Image {
       src: "float.png".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,

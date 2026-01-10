@@ -35,7 +35,8 @@ use crate::style::values::Length;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::{
-  BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType,
+  BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ImageLoadingAttribute,
+  ReplacedType,
 };
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, TextSourceRange};
 
@@ -2607,6 +2608,7 @@ fn build_margin_box_children(
               ReplacedType::Image {
                 src: url.clone(),
                 alt: None,
+                loading: ImageLoadingAttribute::Auto,
                 decoding: ImageDecodingAttribute::Auto,
                 crossorigin: CrossOriginAttribute::None,
                 referrer_policy: None,

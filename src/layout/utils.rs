@@ -1430,6 +1430,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1456,6 +1457,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1490,6 +1492,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1522,6 +1525,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1548,6 +1552,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1579,6 +1584,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1617,6 +1623,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1647,6 +1654,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1673,6 +1681,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1703,6 +1712,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1733,6 +1743,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1761,6 +1772,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1785,6 +1797,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1809,6 +1822,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1836,6 +1850,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1856,6 +1871,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1884,6 +1900,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1907,6 +1924,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1949,6 +1967,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1976,6 +1995,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2007,6 +2027,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2035,6 +2056,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2069,6 +2091,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2097,6 +2120,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2132,6 +2156,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2162,6 +2187,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2202,6 +2228,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2240,6 +2267,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2276,6 +2304,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2311,6 +2340,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2346,6 +2376,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2381,6 +2412,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2414,6 +2446,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        loading: Default::default(),
         decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,

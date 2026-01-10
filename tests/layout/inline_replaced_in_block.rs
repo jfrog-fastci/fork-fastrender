@@ -33,6 +33,7 @@ fn inline_replaced_children_form_single_line_in_block_context() {
     ReplacedType::Image {
       src: "a.png".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
@@ -49,6 +50,7 @@ fn inline_replaced_children_form_single_line_in_block_context() {
     ReplacedType::Image {
       src: "b.png".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,

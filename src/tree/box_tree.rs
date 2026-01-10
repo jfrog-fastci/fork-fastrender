@@ -79,6 +79,33 @@ impl ImageDecodingAttribute {
   }
 }
 
+/// Parsed `loading` attribute hint for `<img>` elements.
+///
+/// https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-loading
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ImageLoadingAttribute {
+  /// `loading` missing/invalid/`auto`.
+  #[default]
+  Auto,
+  /// `loading="eager"`.
+  Eager,
+  /// `loading="lazy"`.
+  Lazy,
+}
+
+impl ImageLoadingAttribute {
+  pub fn from_attribute(value: &str) -> Self {
+    let value = trim_ascii_whitespace(value);
+    if value.eq_ignore_ascii_case("lazy") {
+      return Self::Lazy;
+    }
+    if value.eq_ignore_ascii_case("eager") {
+      return Self::Eager;
+    }
+    Self::Auto
+  }
+}
+
 /// A block-level box
 ///
 /// Block boxes stack vertically and establish block formatting contexts.
@@ -657,6 +684,8 @@ pub enum ReplacedType {
     src: String,
     /// Alternative text for fallback rendering
     alt: Option<String>,
+    /// `loading` attribute hint.
+    loading: ImageLoadingAttribute,
     /// `decoding` attribute hint.
     decoding: ImageDecodingAttribute,
     /// Parsed `crossorigin` attribute, used to drive CORS-mode image requests.
@@ -1878,6 +1907,7 @@ mod tests {
       ReplacedType::Image {
         src: "image.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -1900,6 +1930,7 @@ mod tests {
       ReplacedType::Image {
         src: "image.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
@@ -2063,6 +2094,7 @@ mod tests {
       ReplacedType::Image {
         src: "img.png".to_string(),
         alt: None,
+        loading: Default::default(),
         decoding: ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
@@ -2201,6 +2233,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2249,6 +2282,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2296,6 +2330,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2349,6 +2384,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2405,6 +2441,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2461,6 +2498,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2511,6 +2549,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2562,6 +2601,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2611,6 +2651,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2666,6 +2707,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2710,6 +2752,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2760,6 +2803,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2810,6 +2854,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2854,6 +2899,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2896,6 +2942,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2938,6 +2985,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "base".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -2987,6 +3035,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "  base  ".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: Vec::new(),
       sizes: None,
@@ -3053,6 +3102,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
@@ -3126,6 +3176,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
@@ -3174,6 +3225,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
@@ -3222,6 +3274,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -3278,6 +3331,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
@@ -3344,6 +3398,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      loading: Default::default(),
       decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
