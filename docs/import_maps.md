@@ -406,6 +406,18 @@ treat as “blocked”).
   (i.e. URL parsing with a base URL). This matches the HTML spec’s normalization example (relative
   URLs like `"node_modules/helper/index.mjs"` become absolute under the document base URL).
 
+### Resource-safety notes (current limitations)
+
+Import maps are attacker-controlled input, but this module currently has **no explicit size limits**:
+
+* JSON parsing uses `serde_json` without an input-length cap.
+* URL parsing uses `url::Url` (unbounded) instead of FastRender’s bounded URL wrapper
+  (`crate::resource::web_url::WebUrl` / `js::Url`).
+
+As import maps become integrated into real page execution, consider enforcing size limits at the
+call-site (e.g. script size limits for `<script type="importmap">`) and/or migrating this module to
+use bounded URL parsing to match the rest of the JS-facing surface.
+
 ### Trailing slash normalization edge case (implicit `/` from URL serialization)
 
 Import maps treat any **normalized** specifier key ending in `/` as a prefix match. Prefix matches
