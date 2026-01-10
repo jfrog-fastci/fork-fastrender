@@ -119,9 +119,6 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
-
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
@@ -134,8 +131,6 @@ pub mod quickjs_dom;
 pub mod dom_integration;
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 
 // Legacy `dom2` DOM mutation → script execution helpers (dynamic `<script>` insertion).
 // Kept for tests/experiments; the canonical execution path is the streaming parser pipeline.
