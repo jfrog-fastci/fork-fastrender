@@ -409,6 +409,9 @@ impl Intrinsics {
     let date_prototype_value_of = vm.register_native_call(builtins::date_prototype_value_of)?;
     let date_prototype_to_primitive = vm.register_native_call(builtins::date_prototype_to_primitive)?;
     let symbol_prototype_value_of = vm.register_native_call(builtins::symbol_prototype_value_of)?;
+    let symbol_prototype_to_string = vm.register_native_call(builtins::symbol_prototype_to_string)?;
+    let symbol_prototype_to_primitive =
+      vm.register_native_call(builtins::symbol_prototype_to_primitive)?;
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
 
@@ -957,6 +960,40 @@ impl Intrinsics {
         symbol_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Symbol.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func = scope.alloc_native_function(symbol_prototype_to_string, None, to_string_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        symbol_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Symbol.prototype[Symbol.toPrimitive]
+    {
+      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+      scope.push_root(Value::String(to_prim_s))?;
+      let to_prim_fn =
+        scope.alloc_native_function(symbol_prototype_to_primitive, None, to_prim_s, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+      scope.define_property(
+        symbol_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_primitive),
+        data_desc(Value::Object(to_prim_fn), true, false, true),
       )?;
     }
 

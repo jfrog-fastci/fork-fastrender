@@ -4109,15 +4109,51 @@ pub fn symbol_prototype_value_of(
         .object_get_own_data_property_value(obj, &marker_key)?
       {
         Some(Value::Symbol(s)) => Ok(Value::Symbol(s)),
-        _ => Err(VmError::Unimplemented(
-          "Symbol.prototype.valueOf on non-Symbol object",
+        _ => Err(VmError::TypeError(
+          "Symbol.prototype.valueOf called on non-Symbol object",
         )),
       }
     }
-    _ => Err(VmError::Unimplemented(
-      "Symbol.prototype.valueOf on non-symbol",
+    _ => Err(VmError::TypeError(
+      "Symbol.prototype.valueOf called on non-symbol",
     )),
   }
+}
+
+/// `Symbol.prototype.toString` (minimal).
+pub fn symbol_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Symbol(sym) = symbol_prototype_value_of(vm, scope, host, hooks, callee, this, &[])? else {
+    // `symbol_prototype_value_of` returning a non-symbol would indicate a bug in our intrinsic
+    // marker storage.
+    return Err(VmError::InvariantViolation(
+      "Symbol.prototype.valueOf returned non-symbol",
+    ));
+  };
+
+  let s = symbol_descriptive_string(scope, sym)?;
+  Ok(Value::String(s))
+}
+
+/// `Symbol.prototype[Symbol.toPrimitive]` (minimal).
+pub fn symbol_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // The spec ignores the hint and returns the Symbol value.
+  symbol_prototype_value_of(vm, scope, host, hooks, callee, this, &[])
 }
 
 /// Global `isNaN(x)` (minimal).

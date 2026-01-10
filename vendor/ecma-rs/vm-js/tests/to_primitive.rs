@@ -182,3 +182,37 @@ fn to_property_key_throws_when_symbol_to_primitive_is_not_callable_in_computed_m
     .unwrap();
   assert_eq!(ok, Value::Bool(true));
 }
+
+#[test]
+fn symbol_prototype_to_string_returns_descriptive_string() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        const s1 = Symbol('x');\n\
+        const s2 = Symbol();\n\
+        return s1.toString() === 'Symbol(x)' && s2.toString() === 'Symbol()';\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
+fn symbol_prototype_to_string_and_to_primitive_work_on_symbol_objects() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        const s = Symbol('x');\n\
+        const o = Object(s);\n\
+        return (\n\
+          o.toString() === 'Symbol(x)' &&\n\
+          s[Symbol.toPrimitive]('string') === s &&\n\
+          o[Symbol.toPrimitive]('string') === s\n\
+        );\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}

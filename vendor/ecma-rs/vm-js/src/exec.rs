@@ -3056,12 +3056,10 @@ impl<'a> Evaluator<'a> {
       return Ok(Value::Undefined);
     }
 
-    let Value::Object(object) = base else {
-      return Err(VmError::Unimplemented("member access on non-object"));
-    };
-
-    // Root `object` across property-key allocation in case it triggers GC.
+    // `MemberExpression` uses `ToObject` on non-nullish primitives.
     let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let object = self.to_object_operator(&mut key_scope, base)?;
     key_scope.push_root(Value::Object(object))?;
     let key_s = key_scope.alloc_string(&expr.right)?;
     let reference = Reference::Property {
@@ -3081,12 +3079,11 @@ impl<'a> Evaluator<'a> {
       return Ok(Value::Undefined);
     }
 
-    let Value::Object(object) = base else {
-      return Err(VmError::Unimplemented("computed member access on non-object"));
-    };
-
-    // Root `object` across key evaluation + `ToPropertyKey`, which may allocate and trigger GC.
+    // `ComputedMemberExpression` uses `ToObject` on non-nullish primitives and `ToPropertyKey` on
+    // the member value, both of which may allocate and trigger GC.
     let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let object = self.to_object_operator(&mut key_scope, base)?;
     key_scope.push_root(Value::Object(object))?;
     let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
     key_scope.push_root(member_value)?;
@@ -3107,11 +3104,10 @@ impl<'a> Evaluator<'a> {
         if member.stx.optional_chaining {
           return Err(VmError::Unimplemented("optional chaining member access"));
         }
-        let object = self.eval_expr(scope, &member.stx.left)?;
-        let Value::Object(object) = object else {
-          return Err(VmError::Unimplemented("member access on non-object"));
-        };
+        let base = self.eval_expr(scope, &member.stx.left)?;
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         Ok(Reference::Property {
@@ -3125,11 +3121,10 @@ impl<'a> Evaluator<'a> {
             "optional chaining computed member access",
           ));
         }
-        let object = self.eval_expr(scope, &member.stx.object)?;
-        let Value::Object(object) = object else {
-          return Err(VmError::Unimplemented("computed member access on non-object"));
-        };
+        let base = self.eval_expr(scope, &member.stx.object)?;
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
@@ -3425,12 +3420,11 @@ impl<'a> Evaluator<'a> {
           // Optional chaining short-circuit on the base value.
           return Ok(Value::Undefined);
         }
-        let Value::Object(object) = base else {
-          return Err(VmError::Unimplemented("member access on non-object"));
-        };
 
-        // Root `object` across property-key allocation in case it triggers GC.
+        // Optional chaining member access uses `ToObject` on non-nullish primitives.
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         let reference = Reference::Property {
@@ -3445,12 +3439,12 @@ impl<'a> Evaluator<'a> {
         if is_nullish(base) {
           return Ok(Value::Undefined);
         }
-        let Value::Object(object) = base else {
-          return Err(VmError::Unimplemented("computed member access on non-object"));
-        };
 
-        // Root `object` across key evaluation + `ToPropertyKey`, which may allocate and trigger GC.
+        // Optional chaining computed member access uses `ToObject` on non-nullish primitives and
+        // `ToPropertyKey` on the member value, both of which may allocate and trigger GC.
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
@@ -4364,12 +4358,11 @@ impl<'a> Evaluator<'a> {
           // Optional chaining short-circuit on the base value.
           return Ok(Value::Undefined);
         }
-        let Value::Object(object) = base else {
-          return Err(VmError::Unimplemented("member access on non-object"));
-        };
 
-        // Root `object` across property-key allocation in case it triggers GC.
+        // Optional chaining member call uses `ToObject` on non-nullish primitives.
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         let reference = Reference::Property {
@@ -4384,12 +4377,12 @@ impl<'a> Evaluator<'a> {
         if is_nullish(base) {
           return Ok(Value::Undefined);
         }
-        let Value::Object(object) = base else {
-          return Err(VmError::Unimplemented("computed member access on non-object"));
-        };
 
-        // Root `object` across key evaluation + `ToPropertyKey`, which may allocate and trigger GC.
+        // Optional chaining computed-member call uses `ToObject` on non-nullish primitives and
+        // `ToPropertyKey` on the member value, both of which may allocate and trigger GC.
         let mut key_scope = scope.reborrow();
+        key_scope.push_root(base)?;
+        let object = self.to_object_operator(&mut key_scope, base)?;
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
@@ -5027,6 +5020,43 @@ impl<'a> Evaluator<'a> {
       Ok(s) => Ok(s),
       Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut string_scope, msg)?),
       Err(err) => Err(err),
+    }
+  }
+
+  fn to_object_operator(
+    &mut self,
+    scope: &mut Scope<'_>,
+    value: Value,
+  ) -> Result<GcObject, VmError> {
+    match value {
+      Value::Object(obj) => Ok(obj),
+      Value::Undefined | Value::Null => Err(throw_type_error(
+        self.vm,
+        scope,
+        "Cannot convert undefined or null to object",
+      )?),
+      other => {
+        // Use the intrinsic `Object` constructor to box primitives. This matches `ToObject` for
+        // non-nullish primitives and shares wrapper marker semantics with our built-in prototype
+        // methods.
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let object_ctor = Value::Object(intr.object_constructor());
+
+        let mut to_obj_scope = scope.reborrow();
+        to_obj_scope.push_root(other)?;
+        to_obj_scope.push_root(object_ctor)?;
+        let args = [other];
+        let value = self.call(&mut to_obj_scope, object_ctor, Value::Undefined, &args)?;
+        match value {
+          Value::Object(obj) => Ok(obj),
+          _ => Err(VmError::InvariantViolation(
+            "Object(..) conversion returned non-object",
+          )),
+        }
+      }
     }
   }
 
