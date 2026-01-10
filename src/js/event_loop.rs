@@ -582,11 +582,40 @@ impl<Host: 'static> EventLoop<Host> {
     let mut trace_span = self.trace.span("js.microtask_checkpoint", "js");
     trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
     let mut drained: u64 = 0;
+    // Safety: microtasks can re-queue themselves indefinitely (e.g. `queueMicrotask(function f(){ queueMicrotask(f); })`).
+    // Browsers can hang on such input; FastRender must remain bounded on hostile pages.
+    //
+    // Use the *pending microtask cap* as a hard limit for how many microtasks we are willing to
+    // drain in a single checkpoint. This is not spec behavior, but it prevents unbounded host work
+    // when there is no outer render deadline.
+    let drain_limit = self.queue_limits.max_pending_microtasks as u64;
+    trace_span.arg_u64("drain_limit", drain_limit);
+    let stage_for_deadline = render_control::active_stage().unwrap_or(self.default_deadline_stage);
+    let mut deadline_counter: usize = 0;
     let hook = self.microtask_checkpoint_hook;
     let result = (|| {
       let mut first_err: Option<Error> = None;
       loop {
-        while let Some(task) = self.microtask_queue.pop_front() {
+        while !self.microtask_queue.is_empty() {
+          if drained >= drain_limit {
+            return Err(Error::Other(format!(
+              "EventLoop microtask checkpoint exceeded drain limit (drained={drained}, limit={drain_limit}); possible infinite microtask loop"
+            )));
+          }
+
+          // Integrate renderer-level cancellation/deadlines so microtask checkpoints can't hang the
+          // host.
+          //
+          // IMPORTANT: check before popping so a timeout/cancel does not drop the next queued
+          // microtask. Dropping a `vm-js` job without running/discarding it can leak GC roots and
+          // trigger debug assertions.
+          render_control::check_active_periodic(&mut deadline_counter, 1024, stage_for_deadline)
+            .map_err(|err| Error::Render(err))?;
+
+          let Some(task) = self.microtask_queue.pop_front() else {
+            break;
+          };
+
           self.currently_running_task = Some(RunningTask {
             source: task.source,
             is_microtask: true,
@@ -854,6 +883,7 @@ impl<Host: 'static> EventLoop<Host> {
     run_state: &mut RunState,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
+      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
@@ -880,6 +910,7 @@ impl<Host: 'static> EventLoop<Host> {
     hook: &mut impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
+      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
@@ -911,6 +942,7 @@ impl<Host: 'static> EventLoop<Host> {
     F: FnMut(Error),
   {
     loop {
+      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
@@ -942,6 +974,7 @@ impl<Host: 'static> EventLoop<Host> {
     Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   {
     loop {
+      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
@@ -2161,6 +2194,35 @@ mod tests {
     // The next microtask should still be queued: the limit is enforced before popping.
     assert_eq!(event_loop.pending_microtask_count(), 1);
     Ok(())
+  }
+
+  #[test]
+  fn unbounded_microtask_checkpoint_aborts_infinite_microtask_chains_via_queue_limit() {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+    let mut limits = QueueLimits::unbounded();
+    limits.max_pending_microtasks = 5;
+    event_loop.set_queue_limits(limits);
+
+    event_loop.queue_microtask(self_requeue_microtask).unwrap();
+
+    let err = event_loop
+      .perform_microtask_checkpoint(&mut host)
+      .expect_err("expected microtask checkpoint to abort an infinite chain");
+    assert!(
+      err
+        .to_string()
+        .contains("microtask checkpoint exceeded drain limit"),
+      "unexpected error: {err}"
+    );
+    assert_eq!(host.count, 5);
+    assert_eq!(
+      event_loop.pending_microtask_count(),
+      1,
+      "expected the next microtask to remain queued"
+    );
   }
 
   #[test]
