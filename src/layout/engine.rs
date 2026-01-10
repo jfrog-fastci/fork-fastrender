@@ -1065,12 +1065,13 @@ impl LayoutEngine {
     let icb = &self.config.initial_containing_block;
     let mut fragmentainer_block_hint: Option<f32> = None;
     let mut fragmentainer_axes_hint: Option<FragmentAxes> = None;
+    let root_style = &box_tree.root.style;
+    let wm = root_style.writing_mode;
+    let dir = root_style.direction;
+    let inline_is_horizontal = inline_axis_is_horizontal(wm);
+    let block_is_horizontal = block_axis_is_horizontal(wm);
+
     let (base_width, base_height) = if let Some(options) = &self.config.fragmentation {
-      let root_style = &box_tree.root.style;
-      let wm = root_style.writing_mode;
-      let dir = root_style.direction;
-      let inline_is_horizontal = inline_axis_is_horizontal(wm);
-      let block_is_horizontal = block_axis_is_horizontal(wm);
       fragmentainer_axes_hint = Some(FragmentAxes::from_writing_mode_and_direction(wm, dir));
 
       let mut available_width = icb.width;
@@ -1116,7 +1117,12 @@ impl LayoutEngine {
     let _fragmentainer_offset_guard =
       fragmentainer_block_hint.map(|_| set_fragmentainer_block_offset_hint(0.0));
 
-    let constraints = LayoutConstraints::definite(base_width, base_height);
+    // The initial containing block establishes a definite percentage basis in the block axis (CSS2.1
+    // §10.5). This is required for the common `html, body { height: 100% }` pattern used by many
+    // pageset targets.
+    let block_percentage_base = if block_is_horizontal { base_width } else { base_height };
+    let constraints = LayoutConstraints::definite(base_width, base_height)
+      .with_block_percentage_base(Some(block_percentage_base));
     let root_fragment = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
 
     if let Some(options) = &self.config.fragmentation {

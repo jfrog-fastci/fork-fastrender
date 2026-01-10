@@ -15,6 +15,7 @@ mod aria_hidden_layout;
 mod block_constraints_viewport_clamp;
 mod block_intrinsic_includes_child_margins;
 mod block_percent_height_auto;
+mod html_body_percent_height;
 mod block_margin_collapse;
 mod block_nonblock_fc_does_not_inherit_definite_height;
 mod box_shadow_outset_cutout;
