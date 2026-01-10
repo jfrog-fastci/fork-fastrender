@@ -79,7 +79,7 @@ fn planned_bundle_page_cache_command_includes_required_args() {
 }
 
 #[test]
-fn planned_prefetch_assets_command_does_not_include_prefetch_scripts() {
+fn planned_prefetch_assets_command_includes_prefetch_scripts_when_enabled() {
   let mut args = plan_for_page("https://www.example.com/");
   args.include_scripts = true;
 
@@ -106,9 +106,34 @@ fn planned_prefetch_assets_command_does_not_include_prefetch_scripts() {
     cmd.args
   );
   assert!(
-    !cmd.args.iter().any(|arg| arg == "--prefetch-scripts"),
-    "expected freeze-page-fixture prefetch step to omit removed --prefetch-scripts flag; got: {:?}",
+    cmd.args.iter().any(|arg| arg == "--prefetch-scripts"),
+    "expected freeze-page-fixture prefetch step to include --prefetch-scripts when --include-scripts is set; got: {:?}",
     cmd.args
+  );
+}
+
+#[test]
+fn planned_bundle_page_cache_command_includes_bundle_scripts_when_enabled() {
+  let temp = TempDir::new().expect("tempdir");
+  let args = FreezePageFixturePlanArgs {
+    pages: vec!["https://www.example.com/".to_string()],
+    html_dir: temp.path().join("html"),
+    asset_cache_dir: temp.path().join("assets"),
+    fixtures_root: temp.path().join("fixtures"),
+    bundle_out_dir: temp.path().join("bundles"),
+    overwrite: true,
+    allow_missing_resources: false,
+    include_scripts: true,
+    user_agent: DEFAULT_USER_AGENT.to_string(),
+    accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
+    viewport: (1200, 800),
+    dpr: 1.0,
+  };
+  let plan = plan_freeze_page_fixture(&args).expect("plan");
+  let joined = plan.pages[0].bundle_command.args.join(" ");
+  assert!(
+    joined.contains("--bundle-scripts"),
+    "expected --include-scripts to enable --bundle-scripts on bundle_page cache command; got: {joined}"
   );
 }
 

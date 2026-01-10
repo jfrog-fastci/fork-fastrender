@@ -352,8 +352,8 @@ mod tests {
     )
     .args;
     assert!(
-      !prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
-      "freeze-page-fixture should not pass removed prefetch_assets flags: {prefetch_args:?}"
+      prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
+      "freeze-page-fixture should pass --prefetch-scripts when --include-scripts is set: {prefetch_args:?}"
     );
 
     let fetch_cmd = build_fetch_pages_command(&args, "example.com");

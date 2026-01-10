@@ -179,6 +179,10 @@ pub fn build_prefetch_assets_command_spec(
     "--prefetch-css-url-assets".to_string(),
   ];
 
+  if args.include_scripts {
+    cmd.push("--prefetch-scripts".to_string());
+  }
+
   if disk_cache_allow_no_store {
     cmd.push("--disk-cache-allow-no-store".to_string());
   }

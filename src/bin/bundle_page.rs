@@ -13,7 +13,7 @@ use common::render_pipeline::{
 use fastrender::css::encoding::decode_css_bytes;
 use fastrender::css::loader::resolve_href;
 use fastrender::debug::runtime;
-use fastrender::dom::{parse_html_with_options, DomParseOptions};
+use fastrender::dom::{parse_html_with_options, DomParseOptions, HTML_NAMESPACE};
 use fastrender::geometry::Size;
 use fastrender::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
 use fastrender::html::images::ImageSelectionContext;
@@ -184,6 +184,13 @@ struct FetchArgs {
   #[arg(long, action = ArgAction::SetTrue, alias = "crawl")]
   no_render: bool,
 
+  /// Include `<script src>` and related script preload/modulepreload resources in the bundle.
+  ///
+  /// This is primarily intended for JS-enabled offline fixtures and can significantly increase
+  /// bundle size.
+  #[arg(long, action = ArgAction::SetTrue)]
+  bundle_scripts: bool,
+
   /// Per-request fetch timeout (seconds).
   ///
   /// This bounds network I/O while crawling large pages. Omit to use the default
@@ -268,6 +275,13 @@ struct CacheArgs {
   /// the resulting bundle is deterministic and self-contained.
   #[arg(long, action = ArgAction::SetTrue)]
   allow_missing: bool,
+
+  /// Include `<script src>` and related script preload/modulepreload resources in the bundle.
+  ///
+  /// This is primarily intended for JS-enabled offline fixtures and can significantly increase
+  /// bundle size.
+  #[arg(long, action = ArgAction::SetTrue)]
+  bundle_scripts: bool,
 
   /// Viewport size as WxH (e.g., 1200x800)
   #[arg(long, value_parser = parse_viewport, default_value = "1200x800")]
@@ -960,7 +974,13 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
   let (prepared, document_resource) = fetch_document(&recording, &args.url)?;
 
   if args.no_render {
-    crawl_document(&recording, &prepared, &render, CrawlMode::BestEffort)?;
+    crawl_document(
+      &recording,
+      &prepared,
+      &render,
+      CrawlMode::BestEffort,
+      args.bundle_scripts,
+    )?;
 
     let recorded = recording.snapshot();
     let (manifest, resources, document_bytes) = build_manifest(
@@ -1007,6 +1027,16 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
 
   // Render once to ensure all subresources are fetched and cached.
   let _ = render_fetched_document(&mut renderer, &document_resource, Some(&args.url), &options)?;
+
+  if args.bundle_scripts {
+    crawl_document(
+      &recording,
+      &prepared,
+      &render,
+      CrawlMode::BestEffort,
+      args.bundle_scripts,
+    )?;
+  }
 
   let recorded = recording.snapshot();
   let (manifest, resources, document_bytes) =
@@ -1173,7 +1203,13 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
   } else {
     CrawlMode::Strict
   };
-  crawl_document(&recording, &prepared, &render, crawl_mode)?;
+  crawl_document(
+    &recording,
+    &prepared,
+    &render,
+    crawl_mode,
+    args.bundle_scripts,
+  )?;
 
   let recorded = recording.snapshot();
   let original_url = pageset_url_hint.unwrap_or(base_hint);
@@ -1747,6 +1783,7 @@ fn crawl_document(
   document: &common::render_pipeline::PreparedDocument,
   render: &BundleRenderConfig,
   mode: CrawlMode,
+  bundle_scripts: bool,
 ) -> Result<()> {
   fn html_has_style_tag(html: &str) -> bool {
     let bytes = html.as_bytes();
@@ -1903,6 +1940,150 @@ fn crawl_document(
         continue;
       }
       out.push((req.url, destination, credentials_mode));
+    }
+
+    Ok(out)
+  }
+
+  fn discover_html_scripts(
+    html: &str,
+    base_url: &str,
+    dom_compat_mode: fastrender::dom::DomCompatibilityMode,
+  ) -> Result<Vec<(String, FetchDestination, FetchCredentialsMode, Option<ReferrerPolicy>)>> {
+    let dom = parse_html_with_options(
+      html,
+      DomParseOptions {
+        compatibility_mode: dom_compat_mode,
+        ..Default::default()
+      },
+    )?;
+
+    let mut out: Vec<(String, FetchDestination, FetchCredentialsMode, Option<ReferrerPolicy>)> =
+      Vec::new();
+    let mut seen: HashSet<(String, FetchDestination, FetchCredentialsMode)> = HashSet::new();
+    let mut stack: Vec<&fastrender::dom::DomNode> = vec![&dom];
+
+    while let Some(node) = stack.pop() {
+      match &node.node_type {
+        fastrender::dom::DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
+          if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+            // Ignore non-HTML namespaces for script/link discovery.
+          } else if tag_name.eq_ignore_ascii_case("script") {
+            let Some(src_raw) = node.get_attribute_ref("src") else {
+              // Inline script; nothing to crawl.
+              continue;
+            };
+            let Some(resolved) = resolve_href(base_url, src_raw) else {
+              continue;
+            };
+            if should_skip_crawl_url(&resolved) {
+              continue;
+            }
+
+            let crossorigin = node.get_attribute_ref("crossorigin").map(|value| {
+              let value = trim_ascii_whitespace(value);
+              if value.eq_ignore_ascii_case("use-credentials") {
+                CorsMode::UseCredentials
+              } else {
+                CorsMode::Anonymous
+              }
+            });
+
+            let referrer_policy = node
+              .get_attribute_ref("referrerpolicy")
+              .and_then(ReferrerPolicy::from_attribute);
+
+            let (destination, credentials_mode) = match crossorigin {
+              Some(mode) => (FetchDestination::ScriptCors, mode.credentials_mode()),
+              None => (FetchDestination::Script, FetchCredentialsMode::Include),
+            };
+            if seen.insert((resolved.clone(), destination, credentials_mode)) {
+              out.push((resolved, destination, credentials_mode, referrer_policy));
+            }
+          } else if tag_name.eq_ignore_ascii_case("link") {
+            let rel_attr = node.get_attribute_ref("rel").unwrap_or("");
+            if trim_ascii_whitespace(rel_attr).is_empty() {
+              continue;
+            }
+            let as_attr = node.get_attribute_ref("as").unwrap_or("");
+            let href_attr = node.get_attribute_ref("href").unwrap_or("");
+            if trim_ascii_whitespace(href_attr).is_empty() {
+              continue;
+            }
+
+            let mut has_preload = false;
+            let mut has_modulepreload = false;
+            for token in rel_attr.split_ascii_whitespace() {
+              if token.eq_ignore_ascii_case("preload") {
+                has_preload = true;
+              } else if token.eq_ignore_ascii_case("modulepreload") {
+                has_modulepreload = true;
+              }
+            }
+
+            let as_trimmed = trim_ascii_whitespace(as_attr);
+            let is_preload_script = has_preload
+              && (as_trimmed.eq_ignore_ascii_case("script")
+                || as_trimmed.eq_ignore_ascii_case("worker")
+                || as_trimmed.eq_ignore_ascii_case("sharedworker"));
+            if !has_modulepreload && !is_preload_script {
+              continue;
+            }
+
+            let Some(resolved) = resolve_href(base_url, href_attr) else {
+              continue;
+            };
+            if should_skip_crawl_url(&resolved) {
+              continue;
+            }
+
+            let crossorigin = node.get_attribute_ref("crossorigin").map(|value| {
+              let value = trim_ascii_whitespace(value);
+              if value.eq_ignore_ascii_case("use-credentials") {
+                CorsMode::UseCredentials
+              } else {
+                CorsMode::Anonymous
+              }
+            });
+
+            let referrer_policy = node
+              .get_attribute_ref("referrerpolicy")
+              .and_then(ReferrerPolicy::from_attribute);
+
+            let (destination, credentials_mode) = if has_modulepreload {
+              match crossorigin {
+                Some(mode) => (FetchDestination::ScriptCors, mode.credentials_mode()),
+                None => (FetchDestination::Script, FetchCredentialsMode::Include),
+              }
+            } else {
+              match crossorigin {
+                Some(mode) => (FetchDestination::ScriptCors, mode.credentials_mode()),
+                None => (FetchDestination::Script, FetchCredentialsMode::Include),
+              }
+            };
+
+            if seen.insert((resolved.clone(), destination, credentials_mode)) {
+              out.push((resolved, destination, credentials_mode, referrer_policy));
+            }
+          }
+        }
+        fastrender::dom::DomNodeType::ShadowRoot { .. } => {
+          // Conservative: do not discover scripts inside shadow roots.
+          continue;
+        }
+        _ => {}
+      }
+
+      if node.template_contents_are_inert() {
+        continue;
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
     }
 
     Ok(out)
@@ -2132,6 +2313,46 @@ fn crawl_document(
     }
   }
 
+  if bundle_scripts {
+    let mut enqueue_scripts = |scripts: Vec<(
+      String,
+      FetchDestination,
+      FetchCredentialsMode,
+      Option<ReferrerPolicy>,
+    )>| {
+      for (url, destination, credentials_mode, referrer_policy) in scripts {
+        let effective_referrer_policy = referrer_policy.unwrap_or(root_referrer_policy);
+        enqueue_unique(
+          &mut queue,
+          &mut seen_urls,
+          &mut queued,
+          url,
+          destination,
+          credentials_mode,
+          root_referrer,
+          root_client_origin.as_ref(),
+          effective_referrer_policy,
+          root_referrer,
+          root_referrer_policy,
+        );
+      }
+    };
+
+    if matches!(mode, CrawlMode::BestEffort) {
+      if let Ok(scripts) =
+        discover_html_scripts(&document.html, &document.base_url, render.dom_compat_mode)
+      {
+        enqueue_scripts(scripts);
+      }
+    } else {
+      enqueue_scripts(discover_html_scripts(
+        &document.html,
+        &document.base_url,
+        render.dom_compat_mode,
+      )?);
+    }
+  }
+
   // Ensure image candidates discovered from HTML (including `<img crossorigin>`) win over URLs
   // discovered from inline CSS `url(...)` so we capture the same request mode as the renderer.
   for css_chunk in extract_inline_css_chunks(&document.html) {
@@ -2206,7 +2427,10 @@ fn crawl_document(
     let origin_key = if cors_cache_partitioning_enabled()
       && matches!(
         destination,
-        FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors
+        FetchDestination::Font
+          | FetchDestination::ImageCors
+          | FetchDestination::StyleCors
+          | FetchDestination::ScriptCors
       ) {
       client_origin
         .clone()
@@ -2530,6 +2754,46 @@ fn crawl_document(
               doc_referrer,
               doc_referrer_policy,
             );
+          }
+        }
+
+        if bundle_scripts {
+          let mut enqueue_scripts = |scripts: Vec<(
+            String,
+            FetchDestination,
+            FetchCredentialsMode,
+            Option<ReferrerPolicy>,
+          )>| {
+            for (url, destination, credentials_mode, referrer_policy) in scripts {
+              let effective_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+              enqueue_unique(
+                &mut queue,
+                &mut seen_urls,
+                &mut queued,
+                url,
+                destination,
+                credentials_mode,
+                doc_referrer,
+                doc_origin.as_ref(),
+                effective_referrer_policy,
+                doc_referrer,
+                doc_referrer_policy,
+              );
+            }
+          };
+
+          if matches!(mode, CrawlMode::BestEffort) {
+            if let Ok(scripts) =
+              discover_html_scripts(&doc.html, &doc.base_url, render.dom_compat_mode)
+            {
+              enqueue_scripts(scripts);
+            }
+          } else {
+            enqueue_scripts(discover_html_scripts(
+              &doc.html,
+              &doc.base_url,
+              render.dom_compat_mode,
+            )?);
           }
         }
 
@@ -2929,7 +3193,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let base_hint = doc.base_hint.clone();
     let calls = inner.calls();
@@ -2962,6 +3226,7 @@ mod tests {
       FetchDestination::Font,
       FetchDestination::ImageCors,
       FetchDestination::StyleCors,
+      FetchDestination::ScriptCors,
     ] {
       assert_eq!(
         default_credentials_mode_for_destination(destination),
@@ -3096,7 +3361,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     for (url, destination) in [
@@ -3199,7 +3464,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -3300,7 +3565,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -3402,7 +3667,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -3503,7 +3768,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -3612,7 +3877,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -3729,7 +3994,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let expected_origin = origin_from_url(DOC).expect("doc origin");
     let calls = inner.calls();
@@ -4148,7 +4413,7 @@ mod tests {
         dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
       };
 
-      crawl_document(&recording, &doc, &render, CrawlMode::Strict).expect("crawl");
+      crawl_document(&recording, &doc, &render, CrawlMode::Strict, false).expect("crawl");
 
       let calls = inner.calls();
       let font_calls: Vec<_> = calls
@@ -4350,7 +4615,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -4433,7 +4698,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::BestEffort)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::BestEffort, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -4516,7 +4781,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -4618,7 +4883,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -4725,7 +4990,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -4815,7 +5080,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let urls = inner.urls();
     assert_eq!(
@@ -4886,7 +5151,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let urls = inner.urls();
     assert_eq!(
@@ -4954,7 +5219,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::AllowMissing)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::AllowMissing, false)?;
 
     let recorded = recording.snapshot();
     let res = recorded
@@ -5092,7 +5357,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    let err = crawl_document(&recording, &doc, &render, CrawlMode::Strict)
+    let err = crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)
       .expect_err("crawl should fail in strict mode for HTTP error pages");
     let msg = err.to_string();
     assert!(msg.contains("https://example.com/style.css"));
@@ -5183,7 +5448,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(calls.iter().any(|(url, dest, referrer)| {
@@ -5277,7 +5542,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(
@@ -5368,7 +5633,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let calls = inner.calls();
     assert!(calls
@@ -5443,7 +5708,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let recorded = recording.snapshot();
     let res = recorded
@@ -5512,7 +5777,7 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
 
     let recorded = recording.snapshot();
     let res = recorded

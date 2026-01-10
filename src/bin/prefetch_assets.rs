@@ -20,6 +20,7 @@ struct PrefetchAssetsCapabilities {
 struct PrefetchAssetsCapabilitiesFlags {
   prefetch_fonts: bool,
   prefetch_images: bool,
+  prefetch_scripts: bool,
   prefetch_iframes: bool,
   prefetch_embeds: bool,
   prefetch_icons: bool,
@@ -39,6 +40,7 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
     PrefetchAssetsCapabilitiesFlags {
       prefetch_fonts: true,
       prefetch_images: true,
+      prefetch_scripts: true,
       prefetch_iframes: true,
       prefetch_embeds: true,
       prefetch_icons: true,
@@ -56,6 +58,7 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
     PrefetchAssetsCapabilitiesFlags {
       prefetch_fonts: false,
       prefetch_images: false,
+      prefetch_scripts: false,
       prefetch_iframes: false,
       prefetch_embeds: false,
       prefetch_icons: false,
@@ -116,6 +119,7 @@ mod capabilities_tests {
     for key in [
       "prefetch_fonts",
       "prefetch_images",
+      "prefetch_scripts",
       "prefetch_iframes",
       "prefetch_embeds",
       "prefetch_icons",
@@ -172,7 +176,7 @@ mod disk_cache_main {
   use fastrender::image_loader::ImageCache;
   use fastrender::pageset::{cache_html_path, pageset_entries, PagesetEntry, PagesetFilter};
   use fastrender::resource::{
-    ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
+    ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
     ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig, CorsMode,
     DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
     FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
@@ -253,6 +257,16 @@ mod disk_cache_main {
       default_missing_value = "true"
     )]
     prefetch_images: bool,
+
+    /// Prefetch script resources referenced directly from HTML (`<script src>`, script preloads, modulepreload) (true/false)
+    #[arg(
+      long,
+      default_value_t = false,
+      action = ArgAction::Set,
+      num_args = 0..=1,
+      default_missing_value = "true"
+    )]
+    prefetch_scripts: bool,
 
     /// Maximum number of image elements to prefetch per page (bounds cache growth)
     #[arg(long, default_value_t = 150)]
@@ -380,6 +394,7 @@ mod disk_cache_main {
     imports: UrlOutcomeSet,
     fonts: UrlOutcomeSet,
     images: UrlOutcomeSet,
+    scripts: UrlOutcomeSet,
     documents: UrlOutcomeSet,
     css_url_assets: UrlOutcomeSet,
   }
@@ -397,6 +412,9 @@ mod disk_cache_main {
     discovered_images: usize,
     fetched_images: usize,
     failed_images: usize,
+    discovered_scripts: usize,
+    fetched_scripts: usize,
+    failed_scripts: usize,
     discovered_documents: usize,
     fetched_documents: usize,
     failed_documents: usize,
@@ -411,6 +429,7 @@ mod disk_cache_main {
   struct PrefetchOptions {
     prefetch_fonts: bool,
     prefetch_images: bool,
+    prefetch_scripts: bool,
     prefetch_icons: bool,
     prefetch_video_posters: bool,
     prefetch_iframes: bool,
@@ -444,6 +463,7 @@ mod disk_cache_main {
     imports: PrefetchAssetsReportKind,
     fonts: PrefetchAssetsReportKind,
     images: PrefetchAssetsReportKind,
+    scripts: PrefetchAssetsReportKind,
     documents: PrefetchAssetsReportKind,
     css_url_assets: PrefetchAssetsReportKind,
   }
@@ -504,6 +524,7 @@ mod disk_cache_main {
           imports: build_kind_report(&page.report.imports, max_report_urls_per_kind),
           fonts: build_kind_report(&page.report.fonts, max_report_urls_per_kind),
           images: build_kind_report(&page.report.images, max_report_urls_per_kind),
+          scripts: build_kind_report(&page.report.scripts, max_report_urls_per_kind),
           documents: build_kind_report(&page.report.documents, max_report_urls_per_kind),
           css_url_assets: build_kind_report(&page.report.css_url_assets, max_report_urls_per_kind),
         })
@@ -547,6 +568,9 @@ mod disk_cache_main {
     into.discovered_images += other.discovered_images;
     into.fetched_images += other.fetched_images;
     into.failed_images += other.failed_images;
+    into.discovered_scripts += other.discovered_scripts;
+    into.fetched_scripts += other.fetched_scripts;
+    into.failed_scripts += other.failed_scripts;
     into.discovered_documents += other.discovered_documents;
     into.fetched_documents += other.fetched_documents;
     into.failed_documents += other.failed_documents;
@@ -558,6 +582,7 @@ mod disk_cache_main {
     merge_outcomes(&mut into.report.imports, other.report.imports);
     merge_outcomes(&mut into.report.fonts, other.report.fonts);
     merge_outcomes(&mut into.report.images, other.report.images);
+    merge_outcomes(&mut into.report.scripts, other.report.scripts);
     merge_outcomes(&mut into.report.documents, other.report.documents);
     merge_outcomes(&mut into.report.css_url_assets, other.report.css_url_assets);
   }
@@ -713,6 +738,13 @@ mod disk_cache_main {
     }
   }
 
+  fn merge_cors_mode(current: CorsMode, incoming: CorsMode) -> CorsMode {
+    match (current, incoming) {
+      (CorsMode::UseCredentials, _) | (_, CorsMode::UseCredentials) => CorsMode::UseCredentials,
+      _ => CorsMode::Anonymous,
+    }
+  }
+
   fn record_cors_image_candidate(
     all: &RefCell<BTreeSet<String>>,
     set: &mut BTreeMap<String, CrossOriginAttribute>,
@@ -729,6 +761,49 @@ mod disk_cache_main {
     }
     if let Some(existing) = set.get_mut(&normalized) {
       *existing = merge_crossorigin_attr(*existing, crossorigin);
+      return;
+    }
+    {
+      let mut all_urls = all.borrow_mut();
+      if !all_urls.contains(&normalized) {
+        if max_total != 0 && all_urls.len() >= max_total {
+          return;
+        }
+        all_urls.insert(normalized.clone());
+      }
+    }
+    set.insert(normalized, crossorigin);
+  }
+
+  fn record_script_candidate(
+    all: &RefCell<BTreeSet<String>>,
+    set: &mut BTreeSet<String>,
+    url: &str,
+    max_total: usize,
+    max_set: usize,
+  ) {
+    let Some(normalized) = normalize_prefetch_url(url) else {
+      return;
+    };
+    let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
+  }
+
+  fn record_cors_script_candidate(
+    all: &RefCell<BTreeSet<String>>,
+    set: &mut BTreeMap<String, CorsMode>,
+    url: &str,
+    crossorigin: CorsMode,
+    max_total: usize,
+    max_set: usize,
+  ) {
+    let Some(normalized) = normalize_prefetch_url(url) else {
+      return;
+    };
+    if max_set != 0 && set.len() >= max_set && !set.contains_key(&normalized) {
+      return;
+    }
+    if let Some(existing) = set.get_mut(&normalized) {
+      *existing = merge_cors_mode(*existing, crossorigin);
       return;
     }
     {
@@ -819,6 +894,115 @@ mod disk_cache_main {
                 }
               }
             }
+          }
+        }
+      }
+
+      if node.template_contents_are_inert() {
+        continue;
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+  }
+
+  fn record_script_candidates(
+    all: &RefCell<BTreeSet<String>>,
+    dom: &DomNode,
+    base_url: &str,
+    scripts: &mut BTreeSet<String>,
+    cors_scripts: &mut BTreeMap<String, CorsMode>,
+    max_total: usize,
+  ) {
+    let mut stack: Vec<&DomNode> = vec![dom];
+
+    while let Some(node) = stack.pop() {
+      if max_total != 0 && all.borrow().len() >= max_total {
+        break;
+      }
+
+      if let Some(tag) = node.tag_name() {
+        if tag.eq_ignore_ascii_case("script") {
+          let Some(src) = node.get_attribute_ref("src") else {
+            // Inline script.
+            continue;
+          };
+          if trim_ascii_whitespace(src).is_empty() {
+            continue;
+          }
+          let Some(resolved) = resolve_href(base_url, src) else {
+            continue;
+          };
+
+          let crossorigin = node.get_attribute_ref("crossorigin").map(|value| {
+            let value = trim_ascii_whitespace(value);
+            if value.eq_ignore_ascii_case("use-credentials") {
+              CorsMode::UseCredentials
+            } else {
+              CorsMode::Anonymous
+            }
+          });
+
+          match crossorigin {
+            Some(mode) => record_cors_script_candidate(
+              all,
+              cors_scripts,
+              &resolved,
+              mode,
+              max_total,
+              max_total,
+            ),
+            None => record_script_candidate(all, scripts, &resolved, max_total, max_total),
+          }
+        } else if tag.eq_ignore_ascii_case("link") {
+          let href = node.get_attribute_ref("href").unwrap_or("");
+          if trim_ascii_whitespace(href).is_empty() {
+            continue;
+          }
+          let rel_attr = node.get_attribute_ref("rel").unwrap_or("");
+          if trim_ascii_whitespace(rel_attr).is_empty() {
+            continue;
+          }
+          let rel_tokens = tokenize_rel_list(rel_attr);
+          if rel_tokens.is_empty() {
+            continue;
+          }
+          let has_preload = rel_tokens.iter().any(|t| t == "preload");
+          let has_modulepreload = rel_tokens.iter().any(|t| t == "modulepreload");
+          let as_attr = node.get_attribute_ref("as").unwrap_or("");
+          let as_trimmed = trim_ascii_whitespace(as_attr);
+          let is_preload_script = has_preload
+            && (as_trimmed.eq_ignore_ascii_case("script")
+              || as_trimmed.eq_ignore_ascii_case("worker")
+              || as_trimmed.eq_ignore_ascii_case("sharedworker"));
+          if !has_modulepreload && !is_preload_script {
+            continue;
+          }
+
+          let Some(resolved) = resolve_href(base_url, href) else {
+            continue;
+          };
+
+          let crossorigin = node.get_attribute_ref("crossorigin").map(|value| {
+            let value = trim_ascii_whitespace(value);
+            if value.eq_ignore_ascii_case("use-credentials") {
+              CorsMode::UseCredentials
+            } else {
+              CorsMode::Anonymous
+            }
+          });
+
+          match crossorigin {
+            Some(mode) => record_cors_script_candidate(
+              all,
+              cors_scripts,
+              &resolved,
+              mode,
+              max_total,
+              max_total,
+            ),
+            None => record_script_candidate(all, scripts, &resolved, max_total, max_total),
           }
         }
       }
@@ -1953,6 +2137,7 @@ mod disk_cache_main {
     }
     if tasks.is_empty()
       && !(opts.prefetch_images
+        || opts.prefetch_scripts
         || opts.prefetch_icons
         || opts.prefetch_video_posters
         || opts.prefetch_iframes
@@ -1969,6 +2154,8 @@ mod disk_cache_main {
 
     let mut image_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_image_urls: BTreeMap<String, CrossOriginAttribute> = BTreeMap::new();
+    let mut script_urls: BTreeSet<String> = BTreeSet::new();
+    let mut cors_script_urls: BTreeMap<String, CorsMode> = BTreeMap::new();
     let mut document_urls: BTreeSet<String> = BTreeSet::new();
 
     if opts.prefetch_images {
@@ -2046,6 +2233,19 @@ mod disk_cache_main {
           dom,
           base_url,
           &mut image_urls,
+          opts.max_discovered_assets_per_page,
+        );
+      }
+    }
+
+    if opts.prefetch_scripts {
+      if let Some(dom) = dom.as_ref() {
+        record_script_candidates(
+          &all_asset_urls,
+          dom,
+          base_url,
+          &mut script_urls,
+          &mut cors_script_urls,
           opts.max_discovered_assets_per_page,
         );
       }
@@ -2416,6 +2616,11 @@ mod disk_cache_main {
           .keys()
           .filter(|url| !image_urls.contains(*url))
           .count();
+      summary.discovered_scripts = script_urls.len()
+        + cors_script_urls
+          .keys()
+          .filter(|url| !script_urls.contains(*url))
+          .count();
       summary.discovered_documents = document_urls.len();
       summary.discovered_css_assets = css_asset_urls.len();
 
@@ -2429,6 +2634,16 @@ mod disk_cache_main {
         .images
         .discovered
         .extend(cors_image_urls.keys().cloned());
+      summary
+        .report
+        .scripts
+        .discovered
+        .extend(script_urls.iter().cloned());
+      summary
+        .report
+        .scripts
+        .discovered
+        .extend(cors_script_urls.keys().cloned());
       summary
         .report
         .documents
@@ -2546,6 +2761,83 @@ mod disk_cache_main {
         summary
           .report
           .images
+          .record_fetch_result(url.clone(), success);
+      }
+    }
+
+    if !opts.dry_run && opts.prefetch_scripts {
+      let mut summary = summary.borrow_mut();
+      for url in &script_urls {
+        let mut request = FetchRequest::new(url.as_str(), FetchDestination::Script)
+          .with_referrer_url(base_hint)
+          .with_referrer_policy(referrer_policy);
+        if let Some(origin) = document_origin.as_ref() {
+          request = request.with_client_origin(origin);
+        }
+        let success = match fetcher.fetch_with_request(request) {
+          Ok(res) => ensure_http_success(&res, url)
+            .and_then(|()| ensure_script_mime_sane(&res, url))
+            .is_ok(),
+          Err(_) => false,
+        };
+        if success {
+          summary.fetched_scripts += 1;
+        } else {
+          summary.failed_scripts += 1;
+        }
+        summary
+          .report
+          .scripts
+          .record_fetch_result(url.clone(), success);
+      }
+
+      let plain_fetched = script_urls.iter().cloned().collect::<HashSet<_>>();
+      for (url, cors_mode) in &cors_script_urls {
+        if !plain_fetched.contains(url) {
+          let mut request = FetchRequest::new(url.as_str(), FetchDestination::Script)
+            .with_referrer_url(base_hint)
+            .with_referrer_policy(referrer_policy);
+          if let Some(origin) = document_origin.as_ref() {
+            request = request.with_client_origin(origin);
+          }
+          let success = match fetcher.fetch_with_request(request) {
+            Ok(res) => ensure_http_success(&res, url)
+              .and_then(|()| ensure_script_mime_sane(&res, url))
+              .is_ok(),
+            Err(_) => false,
+          };
+          if success {
+            summary.fetched_scripts += 1;
+          } else {
+            summary.failed_scripts += 1;
+          }
+          summary
+            .report
+            .scripts
+            .record_fetch_result(url.clone(), success);
+        }
+
+        let mut request = FetchRequest::new(url.as_str(), FetchDestination::ScriptCors)
+          .with_referrer_url(base_hint)
+          .with_referrer_policy(referrer_policy)
+          .with_credentials_mode(cors_mode.credentials_mode());
+        if let Some(origin) = document_origin.as_ref() {
+          request = request.with_client_origin(origin);
+        }
+        let success = match fetcher.fetch_with_request(request) {
+          Ok(res) => ensure_http_success(&res, url)
+            .and_then(|()| ensure_script_mime_sane(&res, url))
+            .is_ok(),
+          Err(_) => false,
+        };
+        if success {
+          summary.fetched_scripts += 1;
+        } else {
+          summary.failed_scripts += 1;
+        }
+        summary
+          .report
+          .scripts
           .record_fetch_result(url.clone(), success);
       }
     }
@@ -2729,6 +3021,7 @@ mod disk_cache_main {
       for key in [
         "prefetch_fonts",
         "prefetch_images",
+        "prefetch_scripts",
         "prefetch_iframes",
         "prefetch_embeds",
         "prefetch_icons",
@@ -2900,6 +3193,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: true,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: true,
@@ -3104,6 +3398,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: true,
@@ -3182,6 +3477,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: true,
@@ -3355,6 +3651,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3471,6 +3768,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3575,6 +3873,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3684,6 +3983,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3784,6 +4084,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3871,6 +4172,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -3945,6 +4247,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4053,6 +4356,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4167,6 +4471,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4265,6 +4570,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4350,6 +4656,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4434,6 +4741,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4518,6 +4826,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4643,6 +4952,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4793,6 +5103,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -4962,6 +5273,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
         prefetch_iframes: false,
@@ -5154,6 +5466,7 @@ body { background-image: url(/bg.png); }
     let opts = PrefetchOptions {
       prefetch_fonts: args.prefetch_fonts,
       prefetch_images: args.prefetch_images,
+      prefetch_scripts: args.prefetch_scripts,
       prefetch_icons: args.prefetch_icons,
       prefetch_video_posters: args.prefetch_video_posters,
       prefetch_iframes: args.prefetch_iframes,
@@ -5168,12 +5481,13 @@ body { background-image: url(/bg.png); }
     let prefetch_any_documents = args.prefetch_iframes || args.prefetch_embeds;
 
     println!(
-      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={} dry_run={})...",
+      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} scripts={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={} dry_run={})...",
       selected.len(),
       args.jobs,
       per_request_timeout_label,
       args.prefetch_fonts,
       args.prefetch_images,
+      args.prefetch_scripts,
       args.prefetch_iframes,
       args.prefetch_embeds,
       args.prefetch_icons,
@@ -5183,14 +5497,16 @@ body { background-image: url(/bg.png); }
       args.dry_run
     );
     if args.prefetch_images
+      || args.prefetch_scripts
       || args.prefetch_iframes
       || args.prefetch_embeds
       || args.prefetch_icons
       || args.prefetch_video_posters
     {
       println!(
-        "HTML assets: images={} documents={} embeds={} icons={} video_posters={}",
+        "HTML assets: images={} scripts={} documents={} embeds={} icons={} video_posters={}",
         args.prefetch_images,
+        args.prefetch_scripts,
         args.prefetch_iframes,
         args.prefetch_embeds,
         args.prefetch_icons,
@@ -5293,6 +5609,9 @@ body { background-image: url(/bg.png); }
     let mut total_images_discovered = 0usize;
     let mut total_images_fetched = 0usize;
     let mut total_images_failed = 0usize;
+    let mut total_scripts_discovered = 0usize;
+    let mut total_scripts_fetched = 0usize;
+    let mut total_scripts_failed = 0usize;
     let mut total_documents_discovered = 0usize;
     let mut total_documents_fetched = 0usize;
     let mut total_documents_failed = 0usize;
@@ -5316,6 +5635,9 @@ body { background-image: url(/bg.png); }
       total_images_discovered += r.discovered_images;
       total_images_fetched += r.fetched_images;
       total_images_failed += r.failed_images;
+      total_scripts_discovered += r.discovered_scripts;
+      total_scripts_fetched += r.fetched_scripts;
+      total_scripts_failed += r.failed_scripts;
       total_documents_discovered += r.discovered_documents;
       total_documents_fetched += r.fetched_documents;
       total_documents_failed += r.failed_documents;
@@ -5338,6 +5660,12 @@ body { background-image: url(/bg.png); }
         line.push_str(&format!(
           " images={} img_fetched={} img_failed={}",
           r.discovered_images, r.fetched_images, r.failed_images
+        ));
+      }
+      if args.prefetch_scripts {
+        line.push_str(&format!(
+          " scripts={} scripts_fetched={} scripts_failed={}",
+          r.discovered_scripts, r.fetched_scripts, r.failed_scripts
         ));
       }
       if prefetch_any_documents {
@@ -5371,6 +5699,12 @@ body { background-image: url(/bg.png); }
       done.push_str(&format!(
         " images_discovered={} images_fetched={} images_failed={}",
         total_images_discovered, total_images_fetched, total_images_failed
+      ));
+    }
+    if args.prefetch_scripts {
+      done.push_str(&format!(
+        " scripts_discovered={} scripts_fetched={} scripts_failed={}",
+        total_scripts_discovered, total_scripts_fetched, total_scripts_failed
       ));
     }
     if prefetch_any_documents {

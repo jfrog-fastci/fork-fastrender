@@ -103,6 +103,7 @@ pub fn extract_disk_cache_args(extra: &[String]) -> Vec<String> {
 pub struct PrefetchAssetsSupport {
   pub prefetch_fonts: bool,
   pub prefetch_images: bool,
+  pub prefetch_scripts: bool,
   pub prefetch_iframes: bool,
   pub prefetch_embeds: bool,
   pub prefetch_icons: bool,
@@ -122,6 +123,7 @@ impl PrefetchAssetsSupport {
     Self {
       prefetch_fonts: true,
       prefetch_images: true,
+      prefetch_scripts: true,
       prefetch_iframes: true,
       prefetch_embeds: true,
       prefetch_icons: true,
@@ -140,6 +142,7 @@ impl PrefetchAssetsSupport {
   pub fn any(self) -> bool {
     self.prefetch_fonts
       || self.prefetch_images
+      || self.prefetch_scripts
       || self.prefetch_iframes
       || self.prefetch_embeds
       || self.prefetch_icons
@@ -182,6 +185,8 @@ pub fn extract_prefetch_assets_args(
       && (arg == "--prefetch-fonts" || arg.starts_with("--prefetch-fonts=")))
       || (support.prefetch_images
         && (arg == "--prefetch-images" || arg.starts_with("--prefetch-images=")))
+      || (support.prefetch_scripts
+        && (arg == "--prefetch-scripts" || arg.starts_with("--prefetch-scripts=")))
       || (support.prefetch_iframes
         && (arg == "--prefetch-iframes"
           || arg.starts_with("--prefetch-iframes=")
