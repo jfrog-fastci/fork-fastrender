@@ -1046,20 +1046,16 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   let mut index_by_key = std::collections::HashMap::<String, usize>::new();
 
   for key in keys {
-    // Record keys are strings; symbol keys are ignored.
-    if rt.property_key_is_symbol(key) {
-      continue;
-    }
     let Some(desc) = rt.get_own_property(v, key)? else {
       continue;
     };
     if !desc.enumerable {
       continue;
     }
-    if rt.property_key_is_symbol(key) {
-      continue;
-    }
 
+    // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
+    // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties have
+    // already been skipped above.)
     let key_value = rt.property_key_to_js_string(key)?;
     let typed_key = convert_to_idl_inner(
       rt,

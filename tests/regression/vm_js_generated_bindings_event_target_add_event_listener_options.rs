@@ -116,8 +116,17 @@ fn generated_webidl_bindings_event_target_add_event_listener_options_defaults() 
     BindingValue::String(s) => assert_eq!(s, "x", "type argument mismatch"),
     other => panic!("expected first argument to be a string, got {:?}", other),
   }
-  let BindingValue::Dictionary(map) = &args[2] else {
-    panic!("expected options dictionary, got {:?}", args[2]);
+  // `options` is a union type: (AddEventListenerOptions or boolean). The bindings now preserve the
+  // selected union member.
+  let options = match &args[2] {
+    BindingValue::Union { member_type, value } => {
+      assert_eq!(member_type, "AddEventListenerOptions");
+      value.as_ref()
+    }
+    other => other,
+  };
+  let BindingValue::Dictionary(map) = options else {
+    panic!("expected options dictionary, got {:?}", options);
   };
   assert_options_dict(map, true, false);
 
@@ -126,8 +135,15 @@ fn generated_webidl_bindings_event_target_add_event_listener_options_defaults() 
     rt.call(add_event_listener, target, &[ty, listener])
   })?;
   let args = host.last_args.take().expect("host call recorded (default options)");
-  let BindingValue::Dictionary(map) = &args[2] else {
-    panic!("expected default options dictionary, got {:?}", args[2]);
+  let options = match &args[2] {
+    BindingValue::Union { member_type, value } => {
+      assert_eq!(member_type, "AddEventListenerOptions");
+      value.as_ref()
+    }
+    other => other,
+  };
+  let BindingValue::Dictionary(map) = options else {
+    panic!("expected default options dictionary, got {:?}", options);
   };
   assert_options_dict(map, false, false);
 

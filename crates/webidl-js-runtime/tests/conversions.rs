@@ -356,7 +356,7 @@ fn frozen_array_conversion_from_custom_iterable() {
 }
 
 #[test]
-fn record_conversion_ignores_enumerable_symbol_keys() {
+fn record_conversion_throws_on_enumerable_symbol_keys() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();
 
@@ -365,8 +365,8 @@ fn record_conversion_ignores_enumerable_symbol_keys() {
   rt.define_data_property(obj, a_key, Value::Number(1.0), true)
     .unwrap();
 
-  // Use a well-known Symbol as an enumerable key; record conversion should ignore it rather than
-  // attempting to convert it to a string.
+  // Use a well-known Symbol as an enumerable key; record conversion must throw when attempting to
+  // convert the Symbol key to a string.
   let sym_key = rt.symbol_iterator().unwrap();
   rt.define_data_property(obj, sym_key, Value::Number(2.0), true)
     .unwrap();
@@ -376,12 +376,8 @@ fn record_conversion_ignores_enumerable_symbol_keys() {
     Box::new(IdlType::Numeric(NumericType::Long)),
   );
 
-  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
-  let ConvertedValue::Record { entries, .. } = converted else {
-    panic!("expected record, got {converted:?}");
-  };
-
-  assert_eq!(entries, vec![("a".to_string(), ConvertedValue::Long(1))]);
+  let err = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
 }
 
 #[test]
@@ -804,7 +800,7 @@ fn conversion_limits_are_enforced() {
   let err = convert_to_idl(&mut rt, iterable_obj, &ty, &ctx).unwrap_err();
   assert!(error_to_string(&mut rt, err).starts_with("RangeError"));
 
-  // Record limits (symbol keys are ignored, string keys count).
+  // Record limits (string keys count).
   let record_ty = IdlType::Record(
     Box::new(IdlType::String(StringType::DomString)),
     Box::new(IdlType::Numeric(NumericType::Long)),
@@ -824,8 +820,8 @@ fn conversion_limits_are_enforced() {
   let a_key = rt.property_key_from_str("a").unwrap();
   rt.define_data_property(obj, a_key, Value::Number(1.0), true)
     .unwrap();
-  // Symbol keys should be ignored for record conversion (and should not count toward limits).
-  rt.define_data_property(obj, iterator_sym, Value::Number(2.0), true)
+  // Non-enumerable symbol keys should be ignored for record conversion.
+  rt.define_data_property(obj, iterator_sym, Value::Number(2.0), false)
     .unwrap();
   let converted = convert_to_idl(&mut rt, obj, &record_ty, &ctx).unwrap();
   let ConvertedValue::Record { entries, .. } = converted else {

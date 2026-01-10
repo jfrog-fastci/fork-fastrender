@@ -3178,98 +3178,81 @@ fn emit_union_conversion_expr_ir(
     }
   }
 
-  let dict_expr = dict_member.map(|dict| {
+  let wrap = |member_type: &str, expr: String| -> String {
     format!(
-      "js_to_dict_{}::<Host, R>(rt, host, v)?",
-      to_snake_ident(dict)
+      "BindingValue::Union {{ member_type: {member_type_lit}.to_string(), value: Box::new({expr}) }}",
+      member_type_lit = rust_string_literal(member_type),
+      expr = expr
+    )
+  };
+
+  let dict_expr = dict_member.map(|dict| {
+    wrap(
+      dict,
+      format!(
+        "js_to_dict_{}::<Host, R>(rt, host, v)?",
+        to_snake_ident(dict)
+      ),
     )
   });
   let seq_expr = if let Some(ty) = sequence_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let record_expr = if let Some(ty) = record_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let callback_expr = if let Some(ty) = callback_function_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let callback_iface_expr = if let Some(ty) = callback_interface_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let boolean_expr = if let Some(ty) = boolean_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let numeric_expr = if let Some(ty) = numeric_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
   let string_expr = if let Some(ty) = string_member {
-    Some(emit_conversion_expr_ir_inner(
-      resolved,
-      type_ctx,
-      ty,
-      "v",
-      IrConversionState::default(),
-    )?)
+    let expr = emit_conversion_expr_ir_inner(resolved, type_ctx, ty, "v", IrConversionState::default())?;
+    Some(wrap(&ty.to_string(), expr))
   } else {
     None
   };
-  let bigint_expr = bigint_member.map(|_| "BindingValue::Object(v)".to_string());
-  let symbol_expr = symbol_member.map(|_| "BindingValue::Object(v)".to_string());
+  let bigint_expr = bigint_member.map(|_| wrap("bigint", "BindingValue::Object(v)".to_string()));
+  let symbol_expr = symbol_member.map(|_| wrap("symbol", "BindingValue::Object(v)".to_string()));
+
+  let any_expr = wrap("any", "BindingValue::Object(v)".to_string());
+  let object_expr = wrap("object", "BindingValue::Object(v)".to_string());
+  let null_expr = wrap("null", "BindingValue::Null".to_string());
+  let undefined_expr = wrap("undefined", "BindingValue::Undefined".to_string());
 
   let mut out = String::new();
   out.push_str("{\n");
   out.push_str(&format!("  let v = {value_ident};\n", value_ident = value_ident));
 
   if has_undefined {
-    out.push_str("  if rt.is_undefined(v) {\n    BindingValue::Undefined\n  }");
+    out.push_str("  if rt.is_undefined(v) {\n    ");
+    out.push_str(&undefined_expr);
+    out.push_str("\n  }");
   } else {
     out.push_str("  if false {\n    BindingValue::Undefined\n  }");
   }
@@ -3281,13 +3264,17 @@ fn emit_union_conversion_expr_ir(
   }
 
   if has_nullable {
-    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    BindingValue::Null\n  }");
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    ");
+    out.push_str(&null_expr);
+    out.push_str("\n  }");
   }
 
   for iface in &interface_like {
+    let iface_expr = wrap(iface, "BindingValue::Object(v)".to_string());
     out.push_str(&format!(
-      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    BindingValue::Object(v)\n  }}",
-      iface_lit = rust_string_literal(iface)
+      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    {iface_expr}\n  }}",
+      iface_lit = rust_string_literal(iface),
+      iface_expr = iface_expr
     ));
   }
 
@@ -3319,7 +3306,9 @@ fn emit_union_conversion_expr_ir(
       out.push_str(callback_iface_expr);
       out.push_str("\n    }");
     } else if has_object || has_any {
-      out.push_str(" else {\n      BindingValue::Object(v)\n    }");
+      out.push_str(" else {\n      ");
+      out.push_str(if has_object { &object_expr } else { &any_expr });
+      out.push_str("\n    }");
     } else {
       out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
     }
@@ -3337,7 +3326,9 @@ fn emit_union_conversion_expr_ir(
     out.push_str(callback_iface_expr);
     out.push_str("\n  }");
   } else if has_object || has_any {
-    out.push_str("    BindingValue::Object(v)\n  }");
+    out.push_str("    ");
+    out.push_str(if has_object { &object_expr } else { &any_expr });
+    out.push_str("\n  }");
   } else {
     out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
   }
@@ -3379,7 +3370,8 @@ fn emit_union_conversion_expr_ir(
     out.push_str(boolean_expr);
     out.push_str("\n  }\n");
   } else if has_any {
-    out.push_str("BindingValue::Object(v)\n  }\n");
+    out.push_str(&any_expr);
+    out.push_str("\n  }\n");
   } else {
     out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }\n");
   }
@@ -4462,10 +4454,16 @@ fn emit_conversion_expr_for_optional(
         _ => None,
       }) {
         let converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
-        return format!(
-          "if rt.is_undefined({value}) {{ js_to_dict_{dict}::<Host, R>(rt, host, {value})? }} else {{ {converted} }}",
-          value = value_ident,
+        let dict_expr = format!(
+          "BindingValue::Union {{ member_type: {member_lit}.to_string(), value: Box::new(js_to_dict_{dict}::<Host, R>(rt, host, {value})?) }}",
+          member_lit = rust_string_literal(dict_name),
           dict = to_snake_ident(dict_name),
+          value = value_ident,
+        );
+        return format!(
+          "if rt.is_undefined({value}) {{ {dict_expr} }} else {{ {converted} }}",
+          value = value_ident,
+          dict_expr = dict_expr,
           converted = converted
         );
       }
@@ -4473,7 +4471,7 @@ fn emit_conversion_expr_for_optional(
   }
 
   // If the argument is missing or `undefined`, use the default if present, otherwise `undefined`.
-  let default_expr = arg
+  let mut default_expr = arg
     .default
     .as_ref()
     .map(|lit| match lit {
@@ -4488,6 +4486,51 @@ fn emit_conversion_expr_for_optional(
       _ => emit_default_literal(lit),
     })
     .unwrap_or_else(|| "BindingValue::Undefined".to_string());
+
+  // For optional union arguments with an explicit default, preserve the union selection in the
+  // binding-layer value so the host can distinguish which union member was chosen.
+  if arg.default.is_some() {
+    if let IdlType::Union(members) = &arg.type_ {
+      let member_type = arg.default.as_ref().and_then(|lit| match lit {
+        IdlLiteral::String(_) => members.iter().find_map(|m| match m {
+          IdlType::Builtin(BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString) => {
+            Some(render_idl_type(m))
+          }
+          IdlType::Named(name) if resolved.enums.contains_key(name) => Some(name.clone()),
+          _ => None,
+        }),
+        IdlLiteral::Boolean(_) => members.iter().find_map(|m| match m {
+          IdlType::Builtin(BuiltinType::Boolean) => Some("boolean".to_string()),
+          _ => None,
+        }),
+        IdlLiteral::Number(_) => members.iter().find_map(|m| match m {
+          IdlType::Builtin(
+            BuiltinType::Byte
+            | BuiltinType::Octet
+            | BuiltinType::Short
+            | BuiltinType::UnsignedShort
+            | BuiltinType::Long
+            | BuiltinType::UnsignedLong
+            | BuiltinType::LongLong
+            | BuiltinType::UnsignedLongLong
+            | BuiltinType::Float
+            | BuiltinType::UnrestrictedFloat
+            | BuiltinType::Double
+            | BuiltinType::UnrestrictedDouble,
+          ) => Some(render_idl_type(m)),
+          _ => None,
+        }),
+        _ => None,
+      });
+      if let Some(member_type) = member_type {
+        default_expr = format!(
+          "BindingValue::Union {{ member_type: {member_lit}.to_string(), value: Box::new({default_expr}) }}",
+          member_lit = rust_string_literal(&member_type),
+          default_expr = default_expr
+        );
+      }
+    }
+  }
 
   let converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
   if type_contains_callback(resolved, &arg.type_) {
@@ -4740,7 +4783,7 @@ fn emit_conversion_expr(
           .collect::<Vec<_>>()
           .join(", ");
         format!(
-          "BindingValue::String(conversions::to_enum::<Host, R>(rt, {value_ident}, {enum_name}, &[{allowed}])?)",
+          "BindingValue::String(conversions::to_enum::<Host, R>(rt, host, {value_ident}, {enum_name}, &[{allowed}])?)",
           value_ident = value_ident,
           enum_name = rust_string_literal(name),
           allowed = allowed,
@@ -4878,22 +4921,48 @@ fn emit_union_conversion_expr(
     }
   }
 
-  let dict_expr = dict_member.map(|dict| {
+  let wrap = |member_type: &str, expr: String| -> String {
     format!(
-      "js_to_dict_{}::<Host, R>(rt, host, v)?",
-      to_snake_ident(dict)
+      "BindingValue::Union {{ member_type: {member_type_lit}.to_string(), value: Box::new({expr}) }}",
+      member_type_lit = rust_string_literal(member_type),
+      expr = expr
+    )
+  };
+
+  let dict_expr = dict_member.map(|dict| {
+    wrap(
+      dict,
+      format!(
+        "js_to_dict_{}::<Host, R>(rt, host, v)?",
+        to_snake_ident(dict)
+      ),
     )
   });
-  let seq_expr = sequence_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
-  let record_expr = record_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let seq_expr = sequence_member.map(|ty| wrap(&render_idl_type(ty), emit_conversion_expr(resolved, ty, &[], "v")));
+  let record_expr = record_member.map(|ty| wrap(&render_idl_type(ty), emit_conversion_expr(resolved, ty, &[], "v")));
   let callback_expr = callback_function_member.map(|name| {
-    emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v")
+    wrap(
+      name,
+      emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v"),
+    )
   });
-  let callback_iface_expr = callback_interface_member
-    .map(|name| emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v"));
-  let boolean_expr = boolean_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
-  let numeric_expr = numeric_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
-  let string_expr = string_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let callback_iface_expr = callback_interface_member.map(|name| {
+    wrap(
+      name,
+      emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v"),
+    )
+  });
+  let boolean_expr =
+    boolean_member.map(|ty| wrap(&render_idl_type(ty), emit_conversion_expr(resolved, ty, &[], "v")));
+  let numeric_expr =
+    numeric_member.map(|ty| wrap(&render_idl_type(ty), emit_conversion_expr(resolved, ty, &[], "v")));
+  let string_expr =
+    string_member.map(|ty| wrap(&render_idl_type(ty), emit_conversion_expr(resolved, ty, &[], "v")));
+
+  let any_expr = wrap("any", "BindingValue::Object(v)".to_string());
+  let object_expr = wrap("object", "BindingValue::Object(v)".to_string());
+  let null_expr = wrap("null", "BindingValue::Null".to_string());
+  let undefined_expr = wrap("undefined", "BindingValue::Undefined".to_string());
 
   let mut out = String::new();
   out.push_str("{\n");
@@ -4901,7 +4970,9 @@ fn emit_union_conversion_expr(
 
   // Undefined member special-case.
   if has_undefined {
-    out.push_str("  if rt.is_undefined(v) {\n    BindingValue::Undefined\n  }");
+    out.push_str("  if rt.is_undefined(v) {\n    ");
+    out.push_str(&undefined_expr);
+    out.push_str("\n  }");
   } else {
     out.push_str("  if false {\n    BindingValue::Undefined\n  }");
   }
@@ -4915,14 +4986,18 @@ fn emit_union_conversion_expr(
 
   // Nullable special-case.
   if has_nullable {
-    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    BindingValue::Null\n  }");
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    ");
+    out.push_str(&null_expr);
+    out.push_str("\n  }");
   }
 
   // Platform object / interface-like members.
   for iface in &interface_like {
+    let iface_expr = wrap(iface, "BindingValue::Object(v)".to_string());
     out.push_str(&format!(
-      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    BindingValue::Object(v)\n  }}",
-      iface_lit = rust_string_literal(iface)
+      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    {iface_expr}\n  }}",
+      iface_lit = rust_string_literal(iface),
+      iface_expr = iface_expr
     ));
   }
 
@@ -4956,12 +5031,14 @@ fn emit_union_conversion_expr(
       out.push_str(" else {\n      ");
       out.push_str(callback_iface_expr);
       out.push_str("\n    }");
-    } else if has_object || has_any {
-      out.push_str(" else {\n      BindingValue::Object(v)\n    }");
-    } else {
-      out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
-    }
-    out.push_str("\n  }");
+     } else if has_object || has_any {
+       out.push_str(" else {\n      ");
+       out.push_str(if has_object { &object_expr } else { &any_expr });
+       out.push_str("\n    }");
+     } else {
+       out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
+     }
+     out.push_str("\n  }");
   } else if let Some(dict_expr) = &dict_expr {
     out.push_str("    ");
     out.push_str(dict_expr);
@@ -4975,7 +5052,9 @@ fn emit_union_conversion_expr(
     out.push_str(callback_iface_expr);
     out.push_str("\n  }");
   } else if has_object || has_any {
-    out.push_str("    BindingValue::Object(v)\n  }");
+    out.push_str("    ");
+    out.push_str(if has_object { &object_expr } else { &any_expr });
+    out.push_str("\n  }");
   } else {
     out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
   }
@@ -5008,7 +5087,8 @@ fn emit_union_conversion_expr(
     out.push_str(boolean_expr);
     out.push_str("\n  }\n");
   } else if has_any {
-    out.push_str("BindingValue::Object(v)\n  }\n");
+    out.push_str(&any_expr);
+    out.push_str("\n  }\n");
   } else {
     out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }\n");
   }

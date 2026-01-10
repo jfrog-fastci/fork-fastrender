@@ -1285,6 +1285,7 @@ dependencies = [
  "vm-js",
  "walkdir",
  "webidl",
+ "webidl-ir",
  "webidl-js-runtime",
  "webidl-vm-js",
  "wgpu",

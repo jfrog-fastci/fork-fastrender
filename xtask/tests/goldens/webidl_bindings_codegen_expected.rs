@@ -215,18 +215,18 @@ pub mod window {
           let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
           converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
           let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-          converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
+          converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
           let v = v1;
           if false {
             BindingValue::Undefined
           } else if rt.is_null(v) || rt.is_undefined(v) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
           } else if rt.is_object(v) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
           } else if rt.is_boolean(v) {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
           } else {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
           }
         }
          });
@@ -242,18 +242,18 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
             let v = v1;
             if false {
               BindingValue::Undefined
             } else if rt.is_null(v) || rt.is_undefined(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_object(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_boolean(v) {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             } else {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             }
           }
            });
@@ -266,18 +266,18 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
             let v = v1;
             if false {
               BindingValue::Undefined
             } else if rt.is_null(v) || rt.is_undefined(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_object(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_boolean(v) {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             } else {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             }
           }
            });
@@ -331,18 +331,18 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
             let v = v1;
             if false {
               BindingValue::Undefined
             } else if rt.is_null(v) || rt.is_undefined(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_object(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_boolean(v) {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             } else {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             }
           }
            });
@@ -355,18 +355,18 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
             let v = v1;
             if false {
               BindingValue::Undefined
             } else if rt.is_null(v) || rt.is_undefined(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_object(v) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
             } else if rt.is_boolean(v) {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             } else {
-              BindingValue::Bool(rt.to_boolean(v)?)
+              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
             }
           }
            });

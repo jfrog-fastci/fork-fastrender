@@ -297,6 +297,27 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
     f: NativeHostFunction<Self, Host>,
   ) -> Result<Self::JsValue, Self::Error>;
 
+  /// Create a host-defined constructor function object with WebIDL-visible metadata.
+  ///
+  /// Some JS runtimes distinguish between `[[Call]]` and `[[Construct]]` internal methods. WebIDL
+  /// interface objects with a `constructor(...)` member need both:
+  /// - `call` is used for `Ctor(...)` and should generally throw a TypeError ("Illegal constructor").
+  /// - `construct` is used for `new Ctor(...)`.
+  ///
+  /// The default implementation falls back to [`WebIdlBindingsRuntime::create_function`], using the
+  /// `construct` callback for both calling and constructing. This is sufficient for runtimes that
+  /// do not expose separate `[[Construct]]` plumbing yet (but note: it does not enforce "illegal
+  /// constructor" behavior when called without `new`).
+  fn create_constructor(
+    &mut self,
+    name: &str,
+    length: u32,
+    _call: NativeHostFunction<Self, Host>,
+    construct: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
+    self.create_function(name, length, construct)
+  }
+
   /// Define a data property with explicit ECMAScript attributes.
   fn define_data_property_with_attrs(
     &mut self,
@@ -383,14 +404,14 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   /// This follows the Web IDL JavaScript binding:
   /// - writable: true
   /// - configurable: true
-  /// - enumerable: true
+  /// - enumerable: false
   fn define_method(
     &mut self,
     obj: Self::JsValue,
     name: &str,
     func: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(obj, name, func, true, true, true)
+    self.define_data_property_str_with_attrs(obj, name, func, true, false, true)
   }
 
   /// Defines a WebIDL attribute accessor property.
@@ -428,7 +449,7 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   /// objects and prototype objects:
   /// - `global[name]`: writable + configurable, non-enumerable
   /// - `ctor.prototype`: non-writable, non-enumerable, non-configurable
-  /// - `proto.constructor`: writable + configurable, non-enumerable
+  /// - `proto.constructor`: non-writable, non-enumerable, non-configurable
   fn define_constructor(
     &mut self,
     global: Self::JsValue,
@@ -438,7 +459,7 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   ) -> Result<(), Self::Error> {
     self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
     self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
-    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    self.define_data_property_str_with_attrs(proto, "constructor", ctor, false, false, false)?;
     Ok(())
   }
 }

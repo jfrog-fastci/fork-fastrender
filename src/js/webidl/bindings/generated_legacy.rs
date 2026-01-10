@@ -154,20 +154,41 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
+        BindingValue::Union {
+          member_type: "AddEventListenerOptions".to_string(),
+          value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+            rt, host, v2,
+          )?),
+        }
       } else {
         {
           let v = v2;
           if false {
             BindingValue::Undefined
           } else if rt.is_null(v) || rt.is_undefined(v) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "AddEventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+                rt, host, v,
+              )?),
+            }
           } else if rt.is_object(v) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "AddEventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+                rt, host, v,
+              )?),
+            }
           } else if rt.is_boolean(v) {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           } else {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           }
         }
       });
@@ -252,20 +273,35 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
+        BindingValue::Union {
+          member_type: "EventListenerOptions".to_string(),
+          value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?),
+        }
       } else {
         {
           let v = v2;
           if false {
             BindingValue::Undefined
           } else if rt.is_null(v) || rt.is_undefined(v) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "EventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v)?),
+            }
           } else if rt.is_object(v) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "EventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v)?),
+            }
           } else if rt.is_boolean(v) {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           } else {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           }
         }
       });
@@ -902,7 +938,10 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v0) {
-        BindingValue::String("".to_string())
+        BindingValue::Union {
+          member_type: "USVString".to_string(),
+          value: Box::new(BindingValue::String("".to_string())),
+        }
       } else {
         {
           let v = v0;
@@ -914,77 +953,89 @@ pub mod window {
               rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
-              {
-                if !rt.is_object(v) {
-                  return Err(rt.throw_type_error("expected object for sequence"));
-                }
-                rt.with_stack_roots(&[v], |rt| {
-                  let mut iterator_record = rt.get_iterator(host, v)?;
-                  rt.with_stack_roots(
-                    &[iterator_record.iterator, iterator_record.next_method],
-                    |rt| {
-                      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-                      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-                        if values.len() >= rt.limits().max_sequence_length {
-                          return Err(rt.throw_range_error("sequence exceeds maximum length"));
-                        }
-                        let converted = rt.with_stack_roots(&[next], |rt| {
-                          Ok({
-                            if !rt.is_object(next) {
-                              return Err(rt.throw_type_error("expected object for sequence"));
-                            }
-                            rt.with_stack_roots(&[next], |rt| {
-                              let mut iterator_record = rt.get_iterator(host, next)?;
-                              rt.with_stack_roots(
-                                &[iterator_record.iterator, iterator_record.next_method],
-                                |rt| {
-                                  let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-                                  while let Some(next) =
-                                    rt.iterator_step_value(host, &mut iterator_record)?
-                                  {
-                                    if values.len() >= rt.limits().max_sequence_length {
-                                      return Err(
-                                        rt.throw_range_error("sequence exceeds maximum length"),
-                                      );
+              BindingValue::Union {
+                member_type: "sequence<sequence<USVString>>".to_string(),
+                value: Box::new({
+                  if !rt.is_object(v) {
+                    return Err(rt.throw_type_error("expected object for sequence"));
+                  }
+                  rt.with_stack_roots(&[v], |rt| {
+                    let mut iterator_record = rt.get_iterator(host, v)?;
+                    rt.with_stack_roots(
+                      &[iterator_record.iterator, iterator_record.next_method],
+                      |rt| {
+                        let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                        while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+                          if values.len() >= rt.limits().max_sequence_length {
+                            return Err(rt.throw_range_error("sequence exceeds maximum length"));
+                          }
+                          let converted = rt.with_stack_roots(&[next], |rt| {
+                            Ok({
+                              if !rt.is_object(next) {
+                                return Err(rt.throw_type_error("expected object for sequence"));
+                              }
+                              rt.with_stack_roots(&[next], |rt| {
+                                let mut iterator_record = rt.get_iterator(host, next)?;
+                                rt.with_stack_roots(
+                                  &[iterator_record.iterator, iterator_record.next_method],
+                                  |rt| {
+                                    let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                                    while let Some(next) =
+                                      rt.iterator_step_value(host, &mut iterator_record)?
+                                    {
+                                      if values.len() >= rt.limits().max_sequence_length {
+                                        return Err(
+                                          rt.throw_range_error("sequence exceeds maximum length"),
+                                        );
+                                      }
+                                      let converted = rt.with_stack_roots(&[next], |rt| {
+                                        Ok({
+                                          let s = rt.to_string(host, next)?;
+                                          BindingValue::String(rt.js_string_to_rust_string(s)?)
+                                        })
+                                      })?;
+                                      values.push(converted);
                                     }
-                                    let converted = rt.with_stack_roots(&[next], |rt| {
-                                      Ok({
-                                        let s = rt.to_string(host, next)?;
-                                        BindingValue::String(rt.js_string_to_rust_string(s)?)
-                                      })
-                                    })?;
-                                    values.push(converted);
-                                  }
-                                  Ok(BindingValue::Sequence(values))
-                                },
-                              )
-                            })?
-                          })
-                        })?;
-                        values.push(converted);
-                      }
-                      Ok(BindingValue::Sequence(values))
-                    },
-                  )
-                })?
+                                    Ok(BindingValue::Sequence(values))
+                                  },
+                                )
+                              })?
+                            })
+                          })?;
+                          values.push(converted);
+                        }
+                        Ok(BindingValue::Sequence(values))
+                      },
+                    )
+                  })?
+                }),
               }
             } else {
-              conversions::to_record(rt, host, v, |rt, host, v| {
-                Ok({
-                  let s = rt.to_string(host, v)?;
-                  BindingValue::String(rt.js_string_to_rust_string(s)?)
-                })
-              })?
+              BindingValue::Union {
+                member_type: "record<USVString, USVString>".to_string(),
+                value: Box::new(conversions::to_record(rt, host, v, |rt, host, v| {
+                  Ok({
+                    let s = rt.to_string(host, v)?;
+                    BindingValue::String(rt.js_string_to_rust_string(s)?)
+                  })
+                })?),
+              }
             }
           } else if rt.is_string(v) || rt.is_string_object(v) {
-            {
-              let s = rt.to_string(host, v)?;
-              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            BindingValue::Union {
+              member_type: "USVString".to_string(),
+              value: Box::new({
+                let s = rt.to_string(host, v)?;
+                BindingValue::String(rt.js_string_to_rust_string(s)?)
+              }),
             }
           } else {
-            {
-              let s = rt.to_string(host, v)?;
-              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            BindingValue::Union {
+              member_type: "USVString".to_string(),
+              value: Box::new({
+                let s = rt.to_string(host, v)?;
+                BindingValue::String(rt.js_string_to_rust_string(s)?)
+              }),
             }
           }
         }
@@ -1149,14 +1200,20 @@ pub mod window {
         } else if rt.is_object(v) {
           return Err(rt.throw_type_error("Value is not a valid union type"));
         } else if rt.is_string(v) || rt.is_string_object(v) {
-          {
-            let s = rt.to_string(host, v)?;
-            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          BindingValue::Union {
+            member_type: "DOMString".to_string(),
+            value: Box::new({
+              let s = rt.to_string(host, v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }),
           }
         } else {
-          {
-            let s = rt.to_string(host, v)?;
-            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          BindingValue::Union {
+            member_type: "DOMString".to_string(),
+            value: Box::new({
+              let s = rt.to_string(host, v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }),
           }
         }
       });
@@ -1210,14 +1267,20 @@ pub mod window {
         } else if rt.is_object(v) {
           return Err(rt.throw_type_error("Value is not a valid union type"));
         } else if rt.is_string(v) || rt.is_string_object(v) {
-          {
-            let s = rt.to_string(host, v)?;
-            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          BindingValue::Union {
+            member_type: "DOMString".to_string(),
+            value: Box::new({
+              let s = rt.to_string(host, v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }),
           }
         } else {
-          {
-            let s = rt.to_string(host, v)?;
-            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          BindingValue::Union {
+            member_type: "DOMString".to_string(),
+            value: Box::new({
+              let s = rt.to_string(host, v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }),
           }
         }
       });
@@ -1589,20 +1652,41 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
+        BindingValue::Union {
+          member_type: "AddEventListenerOptions".to_string(),
+          value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+            rt, host, v2,
+          )?),
+        }
       } else {
         {
           let v = v2;
           if false {
             BindingValue::Undefined
           } else if rt.is_null(v) || rt.is_undefined(v) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "AddEventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+                rt, host, v,
+              )?),
+            }
           } else if rt.is_object(v) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "AddEventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_add_event_listener_options::<Host, R>(
+                rt, host, v,
+              )?),
+            }
           } else if rt.is_boolean(v) {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           } else {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           }
         }
       });
@@ -1687,20 +1771,35 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
+        BindingValue::Union {
+          member_type: "EventListenerOptions".to_string(),
+          value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?),
+        }
       } else {
         {
           let v = v2;
           if false {
             BindingValue::Undefined
           } else if rt.is_null(v) || rt.is_undefined(v) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "EventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v)?),
+            }
           } else if rt.is_object(v) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+            BindingValue::Union {
+              member_type: "EventListenerOptions".to_string(),
+              value: Box::new(js_to_dict_event_listener_options::<Host, R>(rt, host, v)?),
+            }
           } else if rt.is_boolean(v) {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           } else {
-            BindingValue::Bool(rt.to_boolean(v)?)
+            BindingValue::Union {
+              member_type: "boolean".to_string(),
+              value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)),
+            }
           }
         }
       });
@@ -2337,7 +2436,10 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v0) {
-        BindingValue::String("".to_string())
+        BindingValue::Union {
+          member_type: "USVString".to_string(),
+          value: Box::new(BindingValue::String("".to_string())),
+        }
       } else {
         {
           let v = v0;
@@ -2349,77 +2451,89 @@ pub mod worker {
               rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
-              {
-                if !rt.is_object(v) {
-                  return Err(rt.throw_type_error("expected object for sequence"));
-                }
-                rt.with_stack_roots(&[v], |rt| {
-                  let mut iterator_record = rt.get_iterator(host, v)?;
-                  rt.with_stack_roots(
-                    &[iterator_record.iterator, iterator_record.next_method],
-                    |rt| {
-                      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-                      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-                        if values.len() >= rt.limits().max_sequence_length {
-                          return Err(rt.throw_range_error("sequence exceeds maximum length"));
-                        }
-                        let converted = rt.with_stack_roots(&[next], |rt| {
-                          Ok({
-                            if !rt.is_object(next) {
-                              return Err(rt.throw_type_error("expected object for sequence"));
-                            }
-                            rt.with_stack_roots(&[next], |rt| {
-                              let mut iterator_record = rt.get_iterator(host, next)?;
-                              rt.with_stack_roots(
-                                &[iterator_record.iterator, iterator_record.next_method],
-                                |rt| {
-                                  let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-                                  while let Some(next) =
-                                    rt.iterator_step_value(host, &mut iterator_record)?
-                                  {
-                                    if values.len() >= rt.limits().max_sequence_length {
-                                      return Err(
-                                        rt.throw_range_error("sequence exceeds maximum length"),
-                                      );
+              BindingValue::Union {
+                member_type: "sequence<sequence<USVString>>".to_string(),
+                value: Box::new({
+                  if !rt.is_object(v) {
+                    return Err(rt.throw_type_error("expected object for sequence"));
+                  }
+                  rt.with_stack_roots(&[v], |rt| {
+                    let mut iterator_record = rt.get_iterator(host, v)?;
+                    rt.with_stack_roots(
+                      &[iterator_record.iterator, iterator_record.next_method],
+                      |rt| {
+                        let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                        while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+                          if values.len() >= rt.limits().max_sequence_length {
+                            return Err(rt.throw_range_error("sequence exceeds maximum length"));
+                          }
+                          let converted = rt.with_stack_roots(&[next], |rt| {
+                            Ok({
+                              if !rt.is_object(next) {
+                                return Err(rt.throw_type_error("expected object for sequence"));
+                              }
+                              rt.with_stack_roots(&[next], |rt| {
+                                let mut iterator_record = rt.get_iterator(host, next)?;
+                                rt.with_stack_roots(
+                                  &[iterator_record.iterator, iterator_record.next_method],
+                                  |rt| {
+                                    let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                                    while let Some(next) =
+                                      rt.iterator_step_value(host, &mut iterator_record)?
+                                    {
+                                      if values.len() >= rt.limits().max_sequence_length {
+                                        return Err(
+                                          rt.throw_range_error("sequence exceeds maximum length"),
+                                        );
+                                      }
+                                      let converted = rt.with_stack_roots(&[next], |rt| {
+                                        Ok({
+                                          let s = rt.to_string(host, next)?;
+                                          BindingValue::String(rt.js_string_to_rust_string(s)?)
+                                        })
+                                      })?;
+                                      values.push(converted);
                                     }
-                                    let converted = rt.with_stack_roots(&[next], |rt| {
-                                      Ok({
-                                        let s = rt.to_string(host, next)?;
-                                        BindingValue::String(rt.js_string_to_rust_string(s)?)
-                                      })
-                                    })?;
-                                    values.push(converted);
-                                  }
-                                  Ok(BindingValue::Sequence(values))
-                                },
-                              )
-                            })?
-                          })
-                        })?;
-                        values.push(converted);
-                      }
-                      Ok(BindingValue::Sequence(values))
-                    },
-                  )
-                })?
+                                    Ok(BindingValue::Sequence(values))
+                                  },
+                                )
+                              })?
+                            })
+                          })?;
+                          values.push(converted);
+                        }
+                        Ok(BindingValue::Sequence(values))
+                      },
+                    )
+                  })?
+                }),
               }
             } else {
-              conversions::to_record(rt, host, v, |rt, host, v| {
-                Ok({
-                  let s = rt.to_string(host, v)?;
-                  BindingValue::String(rt.js_string_to_rust_string(s)?)
-                })
-              })?
+              BindingValue::Union {
+                member_type: "record<USVString, USVString>".to_string(),
+                value: Box::new(conversions::to_record(rt, host, v, |rt, host, v| {
+                  Ok({
+                    let s = rt.to_string(host, v)?;
+                    BindingValue::String(rt.js_string_to_rust_string(s)?)
+                  })
+                })?),
+              }
             }
           } else if rt.is_string(v) || rt.is_string_object(v) {
-            {
-              let s = rt.to_string(host, v)?;
-              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            BindingValue::Union {
+              member_type: "USVString".to_string(),
+              value: Box::new({
+                let s = rt.to_string(host, v)?;
+                BindingValue::String(rt.js_string_to_rust_string(s)?)
+              }),
             }
           } else {
-            {
-              let s = rt.to_string(host, v)?;
-              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            BindingValue::Union {
+              member_type: "USVString".to_string(),
+              value: Box::new({
+                let s = rt.to_string(host, v)?;
+                BindingValue::String(rt.js_string_to_rust_string(s)?)
+              }),
             }
           }
         }

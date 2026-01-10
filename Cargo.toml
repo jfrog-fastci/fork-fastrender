@@ -135,6 +135,7 @@ skrifa = "0.20"
 walkdir = "2"
 webidl-js-runtime = { path = "crates/webidl-js-runtime" }
 webidl-vm-js = { path = "crates/webidl-vm-js" }
+webidl-ir = { path = "crates/webidl-ir" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }
 diagnostics = { path = "vendor/ecma-rs/diagnostics" }

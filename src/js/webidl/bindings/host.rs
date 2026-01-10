@@ -21,6 +21,13 @@ pub enum BindingValue<JsValue: Copy> {
   Sequence(Vec<BindingValue<JsValue>>),
   FrozenArray(Vec<BindingValue<JsValue>>),
   Dictionary(BTreeMap<String, BindingValue<JsValue>>),
+  /// WebIDL `record<..., ...>` value preserving `[[OwnPropertyKeys]]` order.
+  Record(Vec<(String, BindingValue<JsValue>)>),
+  /// WebIDL union value preserving which member type was selected during conversion.
+  Union {
+    member_type: String,
+    value: Box<BindingValue<JsValue>>,
+  },
 }
 
 /// Convert a host-facing [`BindingValue`] back into a JS value.
@@ -62,6 +69,17 @@ where
         Ok(obj)
       })
     }
+    BindingValue::Record(entries) => {
+      let obj = rt.create_object()?;
+      rt.with_stack_roots(&[obj], |rt| {
+        for (key, item) in entries {
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
+        }
+        Ok(obj)
+      })
+    }
+    BindingValue::Union { value, .. } => binding_value_to_js::<Host, R>(rt, *value),
   }
 }
 

@@ -1638,6 +1638,19 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
     })
   }
 
+  fn create_constructor(
+    &mut self,
+    name: &str,
+    length: u32,
+    call: NativeHostFunction<Self, Host>,
+    _construct: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
+    // `VmJsRuntime` is a minimal harness runtime and does not model `[[Construct]]`. Still honour
+    // the WebIDL requirement that interface objects are not callable without `new` by wiring the
+    // `call` handler (usually an "Illegal constructor" TypeError thrower).
+    self.create_function(name, length, call)
+  }
+
   fn define_data_property_with_attrs(
     &mut self,
     obj: Value,

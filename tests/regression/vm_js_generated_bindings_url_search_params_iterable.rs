@@ -178,7 +178,15 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
   ) -> Result<BindingValue<Value>, VmError> {
     match (interface, operation) {
       ("URLSearchParams", "constructor") => {
-        let params = match args.get(0) {
+        // The generated bindings convert `URLSearchParamsInit` as an optional union; unwrap the
+        // selected union member for the host implementation logic below.
+        let init = match args.get(0) {
+          None => None,
+          Some(BindingValue::Union { value, .. }) => Some(value.as_ref()),
+          Some(other) => Some(other),
+        };
+
+        let params = match init {
           None => UrlSearchParams::new(&self.limits),
 
           // URLSearchParamsInit string.
@@ -193,6 +201,22 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
           }
 
           // record<USVString, USVString>.
+          Some(BindingValue::Record(entries)) => {
+            let params = UrlSearchParams::new(&self.limits);
+            for (k, v) in entries {
+              let BindingValue::String(v) = v else {
+                return Err(rt.throw_type_error(
+                  "URLSearchParams constructor failed: record value is not a string",
+                ));
+              };
+              params.append(k, v).map_err(|e| {
+                rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
+              })?;
+            }
+            params
+          }
+
+          // Backwards compatibility for older bindings that used a BTreeMap dictionary container.
           Some(BindingValue::Dictionary(map)) => {
             let params = UrlSearchParams::new(&self.limits);
             for (k, v) in map {
@@ -209,7 +233,7 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
           }
 
           // sequence<sequence<USVString>>.
-          Some(BindingValue::Sequence(pairs)) => {
+          Some(BindingValue::Sequence(pairs) | BindingValue::FrozenArray(pairs)) => {
             let params = UrlSearchParams::new(&self.limits);
             for pair in pairs {
               let pair = match pair {

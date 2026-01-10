@@ -4,7 +4,7 @@
 //! bindings can share conversion logic across the real `vm-js` realm runtime and the legacy
 //! heap-only runtime.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::js::bindings::BindingValue;
 use super::WebIdlBindingsRuntime;
@@ -49,7 +49,7 @@ where
 /// Convert an ECMAScript value to a WebIDL `record<K, V>`.
 ///
 /// This returns the binding-layer representation:
-/// `BindingValue::Dictionary(BTreeMap<_, _>)`.
+/// `BindingValue::Record(Vec<(String, BindingValue)>)`.
 ///
 /// Spec: <https://webidl.spec.whatwg.org/#js-to-record>
 pub fn to_record<Host, R, F>(
@@ -67,53 +67,62 @@ where
     rt.with_stack_roots(&[obj], |rt| {
       let keys = rt.own_property_keys(obj)?;
 
-      // Root string keys returned by `OwnPropertyKeys` for the duration of the conversion.
-      //
-      // `vm-js` can synthesize index keys (e.g. for String objects). Those strings are not
-      // reachable from `obj` and would be collected unless they are treated as stack roots while
-      // we iterate.
-      let mut key_roots: Vec<R::JsValue> = Vec::with_capacity(keys.len());
-      for key in &keys {
-        if rt.property_key_is_symbol(*key) {
-          continue;
-        }
-        key_roots.push(rt.property_key_to_js_string(*key)?);
-      }
+       // Root string keys returned by `OwnPropertyKeys` for the duration of the conversion.
+       //
+       // `vm-js` can synthesize index keys (e.g. for String objects). Those strings are not
+       // reachable from `obj` and would be collected unless they are treated as stack roots while
+       // we iterate.
+       //
+       // Note: this intentionally skips Symbol keys here (the WebIDL record algorithm only
+       // performs `PropertyKeyToString` after confirming the property is enumerable, so
+       // non-enumerable symbol properties should not throw).
+       let mut key_roots: Vec<R::JsValue> = Vec::with_capacity(keys.len());
+       for key in &keys {
+         if rt.property_key_is_symbol(*key) {
+           continue;
+         }
+         key_roots.push(rt.property_key_to_js_string(*key)?);
+       }
 
-      let mut out: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
+       let mut entries: Vec<(String, BindingValue<R::JsValue>)> = Vec::new();
+       let mut index_by_key: HashMap<String, usize> = HashMap::new();
 
-      rt.with_stack_roots(&key_roots, |rt| {
-        for key in keys {
-          // Record keys are strings; symbol keys are ignored.
-          if rt.property_key_is_symbol(key) {
-            continue;
-          }
-          let Some(desc) = rt.get_own_property(obj, key)? else {
-            continue;
-          };
-          if !desc.enumerable {
-            continue;
-          }
+       rt.with_stack_roots(&key_roots, |rt| {
+         for key in keys {
+           let Some(desc) = rt.get_own_property(obj, key)? else {
+             continue;
+           };
+           if !desc.enumerable {
+             continue;
+           }
 
-          let js_key = rt.property_key_to_js_string(key)?;
-          let typed_key = rt.js_string_to_rust_string(js_key)?;
+           // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
+           // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties
+           // have already been skipped above.)
+           let js_key = rt.property_key_to_js_string(key)?;
+           let typed_key = rt.js_string_to_rust_string(js_key)?;
 
-          // Enforce the record entry count limit on *new* keys.
-          if !out.contains_key(&typed_key) && out.len() >= rt.limits().max_record_entries {
-            return Err(rt.throw_range_error("record exceeds maximum entry count"));
-          }
+           // Enforce the record entry count limit on *new* keys.
+           if !index_by_key.contains_key(&typed_key) && entries.len() >= rt.limits().max_record_entries {
+             return Err(rt.throw_range_error("record exceeds maximum entry count"));
+           }
 
-          let typed_value = rt.with_stack_roots(&[js_key], |rt| {
-            let prop_value = rt.get(host, obj, key)?;
-            rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
-          })?;
-          out.insert(typed_key, typed_value);
-        }
+           let typed_value = rt.with_stack_roots(&[js_key], |rt| {
+             let prop_value = rt.get(host, obj, key)?;
+             rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
+           })?;
+           if let Some(idx) = index_by_key.get(&typed_key).copied() {
+             entries[idx].1 = typed_value;
+           } else {
+             index_by_key.insert(typed_key.clone(), entries.len());
+             entries.push((typed_key, typed_value));
+           }
+         }
 
-        Ok(BindingValue::Dictionary(out))
-      })
-    })
-  })
+         Ok(BindingValue::Record(entries))
+       })
+     })
+   })
 }
 
 /// Convert an ECMAScript value to an IDL `byte`.
@@ -412,20 +421,22 @@ mod tests {
     })
     .unwrap();
 
-    let BindingValue::Dictionary(map) = record else {
-      panic!("expected dictionary record, got: {record:?}");
+    let BindingValue::Record(entries) = record else {
+      panic!("expected record, got: {record:?}");
     };
 
-    assert_eq!(map.len(), 1);
-    match map.get("a") {
-      Some(BindingValue::String(v)) => assert_eq!(v, "1", "record must include enumerable properties"),
-      other => panic!("expected record['a'] to be a string, got {other:?}"),
+    assert_eq!(entries.len(), 1);
+    match &entries[0] {
+      (k, BindingValue::String(v)) => {
+        assert_eq!(k, "a", "record must include enumerable properties");
+        assert_eq!(v, "1", "record must include enumerable properties");
+      }
+      other => panic!("expected record[0] to be (\"a\", string), got {other:?}"),
     }
-    assert!(!map.contains_key("hidden"), "record must skip non-enumerable keys");
   }
 
   #[test]
-  fn record_conversion_ignores_enumerable_symbol_keys() {
+  fn record_conversion_throws_type_error_on_enumerable_symbol_keys() {
     let mut rt = VmJsRuntime::new();
     let mut host = ();
 
@@ -434,22 +445,27 @@ mod tests {
     webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, a_key, Value::Number(1.0), true)
       .unwrap();
 
-    // Record keys are strings; symbol keys should be ignored even if enumerable.
+    // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on enumerable keys,
+    // so enumerable symbol keys must throw a TypeError.
     let sym_key =
       <VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(&mut rt).unwrap();
     webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, sym_key, Value::Number(2.0), true)
       .unwrap();
 
-    let record = to_record::<(), _, _>(&mut rt, &mut host, obj, |rt, _host, v| {
+    let err = to_record::<(), _, _>(&mut rt, &mut host, obj, |rt, _host, v| {
       Ok(BindingValue::Number(webidl_js_runtime::JsRuntime::to_number(rt, v)?))
     })
-    .unwrap();
+    .unwrap_err();
 
-    let BindingValue::Dictionary(map) = record else {
-      panic!("expected dictionary record, got: {record:?}");
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
-    assert_eq!(map.len(), 1);
-    assert!(map.contains_key("a"));
+    let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, thrown).unwrap();
+    let msg = as_utf8_lossy(&rt, s);
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
   }
 
   #[test]
@@ -463,10 +479,10 @@ mod tests {
     })
     .unwrap();
 
-    let BindingValue::Dictionary(map) = record else {
-      panic!("expected dictionary record, got: {record:?}");
+    let BindingValue::Record(entries) = record else {
+      panic!("expected record, got: {record:?}");
     };
-    assert!(map.is_empty());
+    assert!(entries.is_empty());
   }
 
   #[test]
