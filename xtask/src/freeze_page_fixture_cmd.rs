@@ -36,6 +36,17 @@ pub struct FreezePageFixtureArgs {
   #[arg(long, conflicts_with = "no_fetch")]
   pub refresh: bool,
 
+  /// Allow caching pages that return HTTP error statuses (>= 400).
+  ///
+  /// This is useful for capturing fixtures for pages protected by bot mitigation where the only
+  /// obtainable response is an error page (e.g. a Cloudflare challenge) and we still want a stable
+  /// offline fixture.
+  ///
+  /// The underlying `fetch_pages` behavior ensures that an HTTP error response will not overwrite a
+  /// previously cached successful snapshot unless that snapshot is also known to be an error page.
+  #[arg(long)]
+  pub allow_http_error_status: bool,
+
   /// Root directory for offline page fixtures.
   #[arg(long, default_value = "tests/pages/fixtures", value_name = "DIR")]
   pub fixtures_root: PathBuf,
@@ -201,6 +212,14 @@ fn ensure_cached_inputs_exist(
 
 fn run_fetch_pages_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result<()> {
   let repo_root = crate::repo_root();
+  let mut cmd = build_fetch_pages_command(args, pages_csv);
+  cmd.current_dir(&repo_root);
+  crate::run_command(cmd).context("fetch_pages")?;
+  Ok(())
+}
+
+fn build_fetch_pages_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> Command {
+  let repo_root = crate::repo_root();
   let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
     .arg("run")
@@ -214,10 +233,11 @@ fn run_fetch_pages_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result
   if args.refresh {
     cmd.arg("--refresh");
   }
+  if args.allow_http_error_status {
+    cmd.arg("--allow-http-error-status");
+  }
 
-  cmd.current_dir(&repo_root);
-  crate::run_command(cmd).context("fetch_pages")?;
-  Ok(())
+  cmd
 }
 
 fn run_prefetch_assets_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result<()> {
@@ -296,13 +316,14 @@ mod tests {
   fn include_scripts_plumbs_script_flags_to_commands() {
     let repo_root = crate::repo_root();
 
-    let args = FreezePageFixtureArgs {
+    let mut args = FreezePageFixtureArgs {
       page: vec!["example.com".to_string()],
       pages: None,
       html_dir: repo_root.join("fetches/html"),
       asset_cache_dir: repo_root.join("fetches/assets"),
       no_fetch: true,
       refresh: false,
+      allow_http_error_status: false,
       fixtures_root: repo_root.join("tests/pages/fixtures"),
       bundle_out_dir: repo_root.join("target/pageset_fixture_bundles"),
       overwrite: false,
@@ -352,6 +373,27 @@ mod tests {
     assert!(
       prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
       "prefetch_assets should include --prefetch-scripts when --include-scripts is set: {prefetch_args:?}"
+    );
+
+    let fetch_cmd = build_fetch_pages_command(&args, "example.com");
+    let fetch_args: Vec<String> = fetch_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      !fetch_args.iter().any(|a| a == "--allow-http-error-status"),
+      "fetch_pages should not include --allow-http-error-status when allow_http_error_status is false: {fetch_args:?}"
+    );
+
+    args.allow_http_error_status = true;
+    let fetch_cmd = build_fetch_pages_command(&args, "example.com");
+    let fetch_args: Vec<String> = fetch_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      fetch_args.iter().any(|a| a == "--allow-http-error-status"),
+      "fetch_pages should include --allow-http-error-status when allow_http_error_status is set: {fetch_args:?}"
     );
 
     assert!(
