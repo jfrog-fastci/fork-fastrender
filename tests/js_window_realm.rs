@@ -677,6 +677,39 @@ document.body.dispatchEvent(new Event('x'));
 }
 
 #[test]
+fn request_animation_frame_callbacks_can_access_dom_shims() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script_in_event_loop(
+      event_loop,
+      r#"
+requestAnimationFrame(() => {
+  const d = document.createElement('div');
+  d.id = 'raf';
+  document.body.appendChild(d);
+});
+"#,
+    )?;
+    Ok(())
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(event_loop.has_pending_animation_frame_callbacks());
+
+  event_loop.run_animation_frame(&mut host)?;
+
+  assert!(host.dom().get_element_by_id("raf").is_some());
+  Ok(())
+}
+
+#[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new(dom, "https://example.com/")?;
