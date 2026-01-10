@@ -383,6 +383,9 @@ const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
+const NODE_INSERT_BEFORE_KEY: &str = "__fastrender_node_insert_before";
+const NODE_REMOVE_CHILD_KEY: &str = "__fastrender_node_remove_child";
+const NODE_REPLACE_CHILD_KEY: &str = "__fastrender_node_replace_child";
 const NODE_CLONE_NODE_KEY: &str = "__fastrender_node_clone_node";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
@@ -1105,6 +1108,18 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let insert_before = {
+    let key = alloc_key(scope, NODE_INSERT_BEFORE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let remove_child = {
+    let key = alloc_key(scope, NODE_REMOVE_CHILD_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let replace_child = {
+    let key = alloc_key(scope, NODE_REPLACE_CHILD_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let clone_node = {
     let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1228,6 +1243,21 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = append_child {
     let key = alloc_key(scope, "appendChild")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = insert_before {
+    let key = alloc_key(scope, "insertBefore")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = remove_child {
+    let key = alloc_key(scope, "removeChild")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = replace_child {
+    let key = alloc_key(scope, "replaceChild")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -2480,6 +2510,391 @@ fn node_append_child_native(
   }
 
   Ok(child_value)
+}
+
+fn node_insert_before_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.insertBefore must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.insertBefore requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let parent_index = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.insertBefore must be called on a node object",
+      ));
+    }
+  };
+
+  let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(new_child_obj) = new_child_value else {
+    return Err(VmError::TypeError(
+      "Node.insertBefore requires a node argument",
+    ));
+  };
+
+  let new_child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(new_child_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.insertBefore requires a node argument",
+      ));
+    }
+  };
+  if new_child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Node.insertBefore cannot move nodes between documents",
+    ));
+  }
+
+  let new_child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(new_child_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.insertBefore requires a node argument",
+      ));
+    }
+  };
+
+  let reference_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let reference_index = if matches!(reference_value, Value::Null | Value::Undefined) {
+    None
+  } else {
+    let Value::Object(reference_obj) = reference_value else {
+      return Err(VmError::TypeError(
+        "Node.insertBefore requires a reference node argument",
+      ));
+    };
+
+    let reference_source_id = match scope
+      .heap()
+      .object_get_own_data_property_value(reference_obj, &source_id_key)?
+    {
+      Some(Value::Number(n)) => n as u64,
+      _ => {
+        return Err(VmError::TypeError(
+          "Node.insertBefore requires a reference node argument",
+        ));
+      }
+    };
+    if reference_source_id != source_id {
+      return Err(VmError::TypeError(
+        "Node.insertBefore cannot move nodes between documents",
+      ));
+    }
+
+    match scope
+      .heap()
+      .object_get_own_data_property_value(reference_obj, &node_id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Some(n as usize),
+      _ => {
+        return Err(VmError::TypeError(
+          "Node.insertBefore requires a reference node argument",
+        ));
+      }
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.insertBefore requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let parent_node_id = dom
+    .node_id_from_index(parent_index)
+    .map_err(|_| VmError::TypeError("Node.insertBefore must be called on a node object"))?;
+  let new_child_node_id = dom
+    .node_id_from_index(new_child_index)
+    .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
+  let reference_node_id = match reference_index {
+    Some(reference_index) => Some(dom.node_id_from_index(reference_index).map_err(|_| {
+      VmError::TypeError("Node.insertBefore requires a reference node argument")
+    })?),
+    None => None,
+  };
+
+  if let Err(err) = dom.insert_before(parent_node_id, new_child_node_id, reference_node_id) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(new_child_value)
+}
+
+fn node_remove_child_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.removeChild must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.removeChild requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let parent_index = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.removeChild must be called on a node object",
+      ));
+    }
+  };
+
+  let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(child_obj) = child_value else {
+    return Err(VmError::TypeError(
+      "Node.removeChild requires a node argument",
+    ));
+  };
+
+  let child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(child_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.removeChild requires a node argument",
+      ));
+    }
+  };
+  if child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Node.removeChild cannot remove nodes between documents",
+    ));
+  }
+
+  let child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(child_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.removeChild requires a node argument",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.removeChild requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let parent_node_id = dom
+    .node_id_from_index(parent_index)
+    .map_err(|_| VmError::TypeError("Node.removeChild must be called on a node object"))?;
+  let child_node_id = dom
+    .node_id_from_index(child_index)
+    .map_err(|_| VmError::TypeError("Node.removeChild requires a node argument"))?;
+
+  if let Err(err) = dom.remove_child(parent_node_id, child_node_id) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(child_value)
+}
+
+fn node_replace_child_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.replaceChild must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let parent_index = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild must be called on a node object",
+      ));
+    }
+  };
+
+  let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(new_child_obj) = new_child_value else {
+    return Err(VmError::TypeError(
+      "Node.replaceChild requires a node argument",
+    ));
+  };
+
+  let new_child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(new_child_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild requires a node argument",
+      ));
+    }
+  };
+  if new_child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Node.replaceChild cannot move nodes between documents",
+    ));
+  }
+
+  let new_child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(new_child_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild requires a node argument",
+      ));
+    }
+  };
+
+  let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(old_child_obj) = old_child_value else {
+    return Err(VmError::TypeError(
+      "Node.replaceChild requires a node argument",
+    ));
+  };
+
+  let old_child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(old_child_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild requires a node argument",
+      ));
+    }
+  };
+  if old_child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Node.replaceChild cannot move nodes between documents",
+    ));
+  }
+
+  let old_child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(old_child_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild requires a node argument",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.replaceChild requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let parent_node_id = dom
+    .node_id_from_index(parent_index)
+    .map_err(|_| VmError::TypeError("Node.replaceChild must be called on a node object"))?;
+  let new_child_node_id = dom
+    .node_id_from_index(new_child_index)
+    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+  let old_child_node_id = dom
+    .node_id_from_index(old_child_index)
+    .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
+
+  if let Err(err) = dom.replace_child(parent_node_id, new_child_node_id, old_child_node_id) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(old_child_value)
 }
 
 fn node_clone_node_native(
@@ -4114,6 +4529,65 @@ fn init_window_globals(
     data_desc(Value::Object(append_child_func)),
   )?;
 
+  // Store shared Node.insertBefore function on `document` so wrappers can reuse it.
+  let insert_before_call_id = vm.register_native_call(node_insert_before_native)?;
+  let insert_before_name = scope.alloc_string("insertBefore")?;
+  scope.push_root(Value::String(insert_before_name))?;
+  let insert_before_func =
+    scope.alloc_native_function(insert_before_call_id, None, insert_before_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      insert_before_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(insert_before_func))?;
+  let insert_before_key = alloc_key(&mut scope, NODE_INSERT_BEFORE_KEY)?;
+  scope.define_property(
+    document_obj,
+    insert_before_key,
+    data_desc(Value::Object(insert_before_func)),
+  )?;
+
+  // Store shared Node.removeChild function on `document` so wrappers can reuse it.
+  let remove_child_call_id = vm.register_native_call(node_remove_child_native)?;
+  let remove_child_name = scope.alloc_string("removeChild")?;
+  scope.push_root(Value::String(remove_child_name))?;
+  let remove_child_func = scope.alloc_native_function(remove_child_call_id, None, remove_child_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      remove_child_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(remove_child_func))?;
+  let remove_child_key = alloc_key(&mut scope, NODE_REMOVE_CHILD_KEY)?;
+  scope.define_property(
+    document_obj,
+    remove_child_key,
+    data_desc(Value::Object(remove_child_func)),
+  )?;
+
+  // Store shared Node.replaceChild function on `document` so wrappers can reuse it.
+  let replace_child_call_id = vm.register_native_call(node_replace_child_native)?;
+  let replace_child_name = scope.alloc_string("replaceChild")?;
+  scope.push_root(Value::String(replace_child_name))?;
+  let replace_child_func =
+    scope.alloc_native_function(replace_child_call_id, None, replace_child_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      replace_child_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(replace_child_func))?;
+  let replace_child_key = alloc_key(&mut scope, NODE_REPLACE_CHILD_KEY)?;
+  scope.define_property(
+    document_obj,
+    replace_child_key,
+    data_desc(Value::Object(replace_child_func)),
+  )?;
+
   // Store shared Node.cloneNode function on `document` so wrappers can reuse it.
   let clone_node_call_id = vm.register_native_call(node_clone_node_native)?;
   let clone_node_name = scope.alloc_string("cloneNode")?;
@@ -4884,6 +5358,108 @@ mod tests {
       dom.inner_html(root).unwrap(),
       r#"<b><i></i></b><span id="target"></span>"#
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_remove_child_detaches_and_returns_child() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=child>hi</span><b id=other></b></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const child = document.getElementById('child');\n\
+        const removed = root.removeChild(child);\n\
+        let errName = 'no';\n\
+        try { root.removeChild(document.createElement('p')); } catch (e) { errName = e.name; }\n\
+        return removed === child && errName === 'NotFoundError';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(dom.inner_html(root).unwrap(), r#"<b id="other"></b>"#);
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_insert_before_inserts_before_reference_or_appends_on_null() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=ref>hi</span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const ref = document.getElementById('ref');\n\
+        const before = document.createElement('b');\n\
+        before.id = 'before';\n\
+        const after = document.createElement('i');\n\
+        after.id = 'after';\n\
+        const ok1 = root.insertBefore(before, ref) === before;\n\
+        const ok2 = root.insertBefore(after, null) === after;\n\
+        return ok1 && ok2 && root.innerHTML === '<b id=\"before\"></b><span id=\"ref\">hi</span><i id=\"after\"></i>';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(
+      dom.inner_html(root).unwrap(),
+      r#"<b id="before"></b><span id="ref">hi</span><i id="after"></i>"#
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_replace_child_replaces_and_returns_old_child() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=old>hi</span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const old = document.getElementById('old');\n\
+        const next = document.createElement('p');\n\
+        next.id = 'new';\n\
+        const replaced = root.replaceChild(next, old);\n\
+        return replaced === old && root.innerHTML === '<p id=\"new\"></p>';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(dom.inner_html(root).unwrap(), r#"<p id="new"></p>"#);
 
     Ok(())
   }
