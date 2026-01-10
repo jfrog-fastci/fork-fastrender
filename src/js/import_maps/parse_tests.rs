@@ -109,7 +109,7 @@ fn matches_html_spec_normalization_example() {
   let (map, warnings) = parse_import_map_string(
     r#"{
   "imports": {
-    "/app/helper": "node_modules/helper/index.mjs",
+    "/app/helper": "./node_modules/helper/index.mjs",
     "lodash": "/node_modules/lodash-es/lodash.js"
   }
 }"#,
@@ -201,6 +201,18 @@ fn scopes_normalization_collision_uses_input_key_order() {
     entry.1.as_ref().expect("URL").as_str(),
     "https://example.com/second.js"
   );
+}
+
+#[test]
+fn bare_relative_addresses_become_null_with_warning() {
+  let (map, warnings) =
+    parse_import_map_string(r#"{ "imports": { "foo": "bar/baz.js" } }"#, &base_url()).unwrap();
+  assert_eq!(map.imports.entries, vec![("foo".to_string(), None)]);
+  assert!(warnings.iter().any(|w| matches!(
+    &w.kind,
+    ImportMapWarningKind::AddressInvalid { specifier_key, address }
+      if specifier_key == "foo" && address == "bar/baz.js"
+  )));
 }
 
 #[test]

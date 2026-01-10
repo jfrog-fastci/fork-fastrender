@@ -537,9 +537,11 @@ resolution must treat as “blocked”).
 * Specifier keys are normalized using “resolve a URL-like module specifier”:
   * if the key starts with `/`, `./`, or `../`, it is URL-parsed against `base_url`
   * otherwise, it is URL-parsed as an absolute URL; if that fails, it stays a bare specifier string
-* Address values in `"imports"` and `"scopes"` are currently resolved using `base_url.join(address)`
-  (i.e. URL parsing with a base URL). This matches the HTML spec’s normalization example (relative
-  URLs like `"node_modules/helper/index.mjs"` become absolute under the document base URL).
+* Address values in `"imports"` and `"scopes"` are resolved using the same “resolve a URL-like module
+  specifier” algorithm:
+  * valid forms are absolute URLs, or strings starting with `/`, `./`, or `../`
+  * bare relative strings like `"node_modules/helper/index.mjs"` are **not** URL-like and will be
+    rejected (they normalize to a `null` entry with an `AddressInvalid` warning)
 
 ### Resource-safety notes (current limitations)
 

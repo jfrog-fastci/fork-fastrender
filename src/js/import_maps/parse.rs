@@ -104,7 +104,7 @@ pub(super) fn resolve_url_like_module_specifier(specifier: &str, base_url: &Url)
 }
 
 fn resolve_import_map_address(address: &str, base_url: &Url) -> Option<Url> {
-  base_url.join(address).ok()
+  resolve_url_like_module_specifier(address, base_url)
 }
 
 fn normalize_specifier_key(
@@ -340,4 +340,3 @@ impl<'de> Visitor<'de> for OrderedJsonVisitor {
     Ok(OrderedJsonValue::Object(entries))
   }
 }
-
