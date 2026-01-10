@@ -211,8 +211,8 @@ event-loop’s Promise job runner) should eventually call `vm-js` with the same 
 instead of the hook-only `exec_script_*_with_hooks(...)` path.
 
 > **Why not TLS?** FastRender historically used thread-local registries/stacks to smuggle embedding
-> state into native bindings (e.g. `DOM_SOURCES` in `src/js/window_realm.rs` and `EVENT_LOOP_STACK`
-> in `src/js/runtime.rs`). These were pragmatic stopgaps while `vm-js` lacked an ergonomic way to
+> state into native bindings (e.g. `DOM_SOURCES` in `src/js/vmjs/window_realm.rs` and
+> `EVENT_LOOP_STACK` in `src/js/vmjs/runtime.rs`). These were pragmatic stopgaps while `vm-js` lacked an ergonomic way to
 > pass embedding state into both script and job execution. The long-term goal is to delete these
 > TLS workarounds and rely on explicit `VmHost` plumbing.
 
