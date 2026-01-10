@@ -3106,6 +3106,62 @@ mod tests {
   }
 
   #[test]
+  fn webidl_host_slot_available_in_script_promise_microtask_and_timeout() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let webidl_dispatch = make_callback(vm, &mut scope, global, "__webidl_dispatch", cb_webidl_dispatch);
+      scope
+        .push_root(Value::Object(webidl_dispatch))
+        .expect("push root __webidl_dispatch");
+      set_prop(
+        &mut scope,
+        global,
+        "__webidl_dispatch",
+        Value::Object(webidl_dispatch),
+      );
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        let (_, window_realm) = host.vm_host_and_window_realm();
+        window_realm.reset_interrupt();
+
+        let result = window_realm.exec_script_with_hooks(
+          &mut hooks,
+          "globalThis.__webidl_dispatch();\n\
+           Promise.resolve().then(globalThis.__webidl_dispatch);\n\
+           queueMicrotask(globalThis.__webidl_dispatch);\n\
+           setTimeout(globalThis.__webidl_dispatch, 0);",
+        );
+
+        if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+          return Err(err);
+        }
+
+        result
+          .map(|_| ())
+          .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.bindings_host.webidl_dispatch_count, 4);
+    Ok(())
+  }
+
+  #[test]
   fn cancellation_timeout() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);

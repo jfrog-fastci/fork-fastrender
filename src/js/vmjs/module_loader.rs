@@ -737,6 +737,7 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::dom2;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::import_maps::{
     create_import_map_parse_result, create_import_map_parse_result_with_limits, register_import_map, ImportMapLimits,
   };
@@ -747,7 +748,10 @@ mod tests {
   use sha2::{Digest, Sha256};
   use std::sync::Mutex;
   use std::sync::Arc;
-  use vm_js::{Budget, PropertyKey};
+  use vm_js::{
+    Budget, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  };
+  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   #[derive(Default)]
   struct MapFetcher {
@@ -1112,6 +1116,120 @@ mod tests {
     Ok(())
   }
 
+  #[derive(Default)]
+  struct DispatchBindingsHost {
+    calls: usize,
+  }
+
+  impl WebIdlBindingsHost for DispatchBindingsHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: &[Value],
+    ) -> std::result::Result<Value, VmError> {
+      self.calls += 1;
+      Ok(Value::Undefined)
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> std::result::Result<Value, VmError> {
+      Err(VmError::Unimplemented(
+        "constructor dispatch not implemented in DispatchBindingsHost",
+      ))
+    }
+  }
+
+  #[derive(Default)]
+  struct DispatchHostCtx;
+
+  struct DispatchHost {
+    vm_host: DispatchHostCtx,
+    bindings_host: DispatchBindingsHost,
+    window: WindowRealm,
+  }
+
+  impl DispatchHost {
+    fn new() -> Self {
+      let window =
+        WindowRealm::new(WindowRealmConfig::new("https://example.com/index.html")).unwrap();
+      Self {
+        vm_host: DispatchHostCtx,
+        bindings_host: DispatchBindingsHost::default(),
+        window,
+      }
+    }
+  }
+
+  impl WindowRealmHost for DispatchHost {
+    fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+      (&mut self.vm_host, &mut self.window)
+    }
+
+    fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+      Some(&mut self.bindings_host)
+    }
+  }
+
+  fn native_webidl_dispatch(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let host = host_from_hooks(hooks)?;
+    let _ = host.call_operation(vm, scope, None, "TestInterface", "testOp", 0, &[])?;
+    Ok(Value::Undefined)
+  }
+
+  fn install_dispatch_binding(
+    vm: &mut Vm,
+    heap: &mut vm_js::Heap,
+    realm: &vm_js::Realm,
+  ) -> std::result::Result<(), VmError> {
+    let call_id = vm.register_native_call(native_webidl_dispatch)?;
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("__webidl_dispatch")?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+    scope.push_root(Value::Object(func))?;
+
+    let key_s = scope.alloc_string("__webidl_dispatch")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(func),
+          writable: true,
+        },
+      },
+    )?;
+
+    Ok(())
+  }
+
   #[test]
   fn module_imports_reject_mismatched_import_map_integrity_metadata() -> Result<()> {
     let entry_url = "https://example.com/entry.js";
@@ -1273,5 +1391,30 @@ mod tests {
       );
       Ok(())
     })
+  }
+
+  #[test]
+  fn module_evaluation_exposes_webidl_host_slot() -> Result<()> {
+    let fetcher = Arc::new(MapFetcher::new(HashMap::new()));
+    let mut host = DispatchHost::new();
+    let mut event_loop = EventLoop::<DispatchHost>::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_dispatch_binding(vm, heap, realm).unwrap();
+    }
+
+    let mut loader =
+      VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    loader.evaluate_inline_module(
+      &mut host,
+      &mut event_loop,
+      "https://example.com/entry.js",
+      "https://example.com/index.html",
+      "globalThis.__webidl_dispatch(); export const x = 1;",
+    )?;
+
+    assert_eq!(host.bindings_host.calls, 1);
+    Ok(())
   }
 }

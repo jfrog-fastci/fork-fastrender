@@ -582,15 +582,12 @@ impl WindowRealm {
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
       let mut dummy_host = ();
+      let mut any = VmJsHostHooksPayload::default();
+      any.set_vm_host(&mut dummy_host);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
-        any: {
-          let mut any = VmJsHostHooksPayload::default();
-          any.set_vm_host(&mut dummy_host);
-          any
-        },
+        any,
       };
-
       rt.exec_script_source_with_host_and_hooks(&mut dummy_host, &mut hooks, source)
     })
   }
@@ -15603,6 +15600,57 @@ mod tests {
     // Keep the heap limits configured by `WindowRealmConfig` (some tests tweak it).
     js_execution_options.max_vm_heap_bytes = None;
     WindowRealm::new_with_js_execution_options(config, js_execution_options)
+  }
+
+  fn check_hooks_payload_native(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let Some(any) = hooks.as_any_mut() else {
+      return Err(VmError::TypeError(
+        "VmHostHooks::as_any_mut returned None",
+      ));
+    };
+    let Some(payload) = any.downcast_mut::<VmJsHostHooksPayload>() else {
+      return Err(VmError::TypeError(
+        "VmHostHooks::as_any_mut did not downcast to VmJsHostHooksPayload",
+      ));
+    };
+    if payload.vm_host_mut().is_none() {
+      return Err(VmError::TypeError(
+        "VmJsHostHooksPayload did not contain a VmHost pointer",
+      ));
+    }
+    Ok(Value::Undefined)
+  }
+
+  #[test]
+  fn exec_script_with_name_exposes_vmjs_host_hooks_payload() -> Result<(), VmError> {
+    let mut window = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let call_id = vm.register_native_call(check_hooks_payload_native)?;
+      let name_s = scope.alloc_string("__check_hooks_payload")?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+
+      let key = alloc_key(&mut scope, "__check_hooks_payload")?;
+      scope.define_property(global, key, data_desc(Value::Object(func)))?;
+    }
+
+    window.exec_script("__check_hooks_payload()")?;
+    Ok(())
   }
 
   #[test]
