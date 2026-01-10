@@ -58,11 +58,13 @@ pub mod window {
   #[allow(dead_code)]
   fn js_to_dict_foo_options<Host, R>(
     rt: &mut R,
+    host: &mut Host,
     value: R::JsValue,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
+    let _ = host;
     if rt.is_undefined(value) || rt.is_null(value) {
       return Ok(BindingValue::Dictionary(BTreeMap::new()));
     }
@@ -150,7 +152,7 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v0) {
         BindingValue::Undefined
       } else {
-        js_to_dict_foo_options::<Host, R>(rt, v0)?
+        js_to_dict_foo_options::<Host, R>(rt, host, v0)?
       });
       let result = host.call_operation(rt, Some(this), "Foo", "qux", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
@@ -184,12 +186,12 @@ pub mod window {
           let Some(method) = rt.get_method(v0, iterator_key)? else {
             return Err(rt.throw_type_error("FrozenArray: object is not iterable"));
           };
-          let mut iterator_record = rt.get_iterator_from_method(v0, method)?;
+          let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
           rt.with_stack_roots(
             &[iterator_record.iterator, iterator_record.next_method],
             |rt| {
               let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-              while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+              while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
                 if values.len() >= rt.limits().max_sequence_length {
                   return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
                 }
@@ -240,12 +242,12 @@ pub mod window {
           let Some(method) = rt.get_method(v0, iterator_key)? else {
             return Err(rt.throw_type_error("sequence: object is not iterable"));
           };
-          let mut iterator_record = rt.get_iterator_from_method(v0, method)?;
+          let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
           rt.with_stack_roots(
             &[iterator_record.iterator, iterator_record.next_method],
             |rt| {
               let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-              while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+              while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
                 if values.len() >= rt.limits().max_sequence_length {
                   return Err(rt.throw_range_error("sequence exceeds maximum length"));
                 }

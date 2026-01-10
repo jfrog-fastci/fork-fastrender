@@ -49,11 +49,13 @@ pub mod window {
   #[allow(dead_code)]
   fn js_to_dict_add_event_listener_options<Host, R>(
     rt: &mut R,
+    host: &mut Host,
     value: R::JsValue,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
+    let _ = host;
     if rt.is_undefined(value) || rt.is_null(value) {
       return Ok(BindingValue::Dictionary(BTreeMap::new()));
     }
@@ -99,11 +101,13 @@ pub mod window {
   #[allow(dead_code)]
   fn js_to_dict_event_listener_options<Host, R>(
     rt: &mut R,
+    host: &mut Host,
     value: R::JsValue,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
+    let _ = host;
     if rt.is_undefined(value) || rt.is_null(value) {
       return Ok(BindingValue::Dictionary(BTreeMap::new()));
     }
@@ -1101,11 +1105,13 @@ pub mod worker {
   #[allow(dead_code)]
   fn js_to_dict_add_event_listener_options<Host, R>(
     rt: &mut R,
+    host: &mut Host,
     value: R::JsValue,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
+    let _ = host;
     if rt.is_undefined(value) || rt.is_null(value) {
       return Ok(BindingValue::Dictionary(BTreeMap::new()));
     }
@@ -1151,11 +1157,13 @@ pub mod worker {
   #[allow(dead_code)]
   fn js_to_dict_event_listener_options<Host, R>(
     rt: &mut R,
+    host: &mut Host,
     value: R::JsValue,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
+    let _ = host;
     if rt.is_undefined(value) || rt.is_null(value) {
       return Ok(BindingValue::Dictionary(BTreeMap::new()));
     }

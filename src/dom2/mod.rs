@@ -111,8 +111,6 @@ pub struct Node {
   /// selector matching and other traversals.
   pub inert_subtree: bool,
   pub script_already_started: bool,
-  pub script_force_async: bool,
-  pub script_parser_document: bool,
   /// Whether the script's `async` IDL attribute should default to true regardless of the presence
   /// of an explicit `async` content attribute.
   ///
@@ -120,6 +118,7 @@ pub struct Node {
   /// - Parser-inserted scripts set this to false.
   /// - Scripts created via DOM APIs default it to true.
   pub script_force_async: bool,
+  pub script_parser_document: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
 

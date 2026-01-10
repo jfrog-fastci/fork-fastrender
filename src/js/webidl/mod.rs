@@ -16,7 +16,7 @@ pub mod conversions;
 
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.
 pub use crate::js::webidl_runtime_vmjs::{
-  NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
+  IteratorRecord, NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
 };
 
 #[deprecated(note = "Use fastrender::js::webidl::legacy::VmJsRuntime instead.")]

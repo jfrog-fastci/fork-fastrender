@@ -1885,8 +1885,11 @@ fn write_dictionary_converter(
 ) {
   let fn_name = format!("js_to_dict_{}", to_snake_ident(&dict.name));
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, value: R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, value: R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
   ));
+  // `host` is required so nested conversions (e.g. `sequence<T>`) can call into JS with access to
+  // the embedder host context, but many dictionaries don't use it directly.
+  out.push_str("  let _ = host;\n");
   out.push_str("  if rt.is_undefined(value) || rt.is_null(value) {\n");
   out.push_str("    return Ok(BindingValue::Dictionary(BTreeMap::new()));\n");
   out.push_str("  }\n");
@@ -2231,7 +2234,10 @@ fn emit_conversion_expr(
     },
     IdlType::Named(name) => {
       if resolved.dictionaries.contains_key(name) {
-        format!("js_to_dict_{}::<Host, R>(rt, {value_ident})?", to_snake_ident(name))
+        format!(
+          "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
+          to_snake_ident(name)
+        )
       } else {
         // Fallback: treat as an opaque object/value.
         format!("BindingValue::Object({value_ident})")
@@ -2284,10 +2290,10 @@ fn emit_iterable_list_conversion_expr(
     let Some(method) = rt.get_method({value_ident}, iterator_key)? else {{
       return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
     }};
-    let mut iterator_record = rt.get_iterator_from_method({value_ident}, method)?;
+    let mut iterator_record = rt.get_iterator_from_method(host, {value_ident}, method)?;
     rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
       let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-      while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {{
+      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {{
         if values.len() >= rt.limits().max_sequence_length {{
           return Err(rt.throw_range_error("{kind_label} exceeds maximum length"));
         }}

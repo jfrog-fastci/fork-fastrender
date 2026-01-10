@@ -7,6 +7,17 @@ use vm_js::{
 
 use webidl::WebIdlHooks;
 
+/// ECMAScript "IteratorRecord" (ECMA-262).
+///
+/// `GetIteratorFromMethod` returns an iterator record; `IteratorStepValue` mutates the record's
+/// `[[Done]]` slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IteratorRecord<V> {
+  pub iterator: V,
+  pub next_method: V,
+  pub done: bool,
+}
+
 /// A host function callback used by generated WebIDL bindings.
 ///
 /// This matches the calling convention used by `crates/webidl-js-runtime`, but is implemented here
@@ -32,6 +43,18 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   type PropertyKey: Copy;
   /// Error type used by the runtime (usually the engine's throw/termination type).
   type Error;
+
+  /// Run `f` with `roots` treated as GC roots for the duration of the call.
+  ///
+  /// WebIDL conversion algorithms often keep VM values in local variables across allocations (for
+  /// example iterator records when converting `sequence<T>`). GC-backed runtimes must ensure those
+  /// values remain rooted so they cannot be collected while host code is still using them.
+  fn with_stack_roots<R, F>(&mut self, roots: &[Self::JsValue], f: F) -> Result<R, Self::Error>
+  where
+    F: FnOnce(&mut Self) -> Result<R, Self::Error>;
+
+  /// Conversion limits configured by the embedding.
+  fn limits(&self) -> webidl::WebIdlLimits;
 
   fn js_undefined(&self) -> Self::JsValue;
   fn js_null(&self) -> Self::JsValue;
@@ -59,6 +82,26 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
+
+  /// ECMAScript abstract operation `GetMethod ( V, P )`.
+  fn get_method(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<Self::JsValue>, Self::Error>;
+
+  fn get_iterator_from_method(
+    &mut self,
+    host: &mut Host,
+    iterable: Self::JsValue,
+    method: Self::JsValue,
+  ) -> Result<IteratorRecord<Self::JsValue>, Self::Error>;
+
+  fn iterator_step_value(
+    &mut self,
+    host: &mut Host,
+    iterator_record: &mut IteratorRecord<Self::JsValue>,
+  ) -> Result<Option<Self::JsValue>, Self::Error>;
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
@@ -217,6 +260,23 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   type PropertyKey = PropertyKey;
   type Error = VmError;
 
+  fn with_stack_roots<R, F>(&mut self, roots: &[Self::JsValue], f: F) -> Result<R, Self::Error>
+  where
+    F: FnOnce(&mut Self) -> Result<R, Self::Error>,
+  {
+    let base = self.cx.scope.heap().stack_root_len();
+    // `push_stack_roots` ensures `roots` are treated as extra roots if growing the root stack
+    // triggers GC.
+    self.cx.scope.heap_mut().push_stack_roots(roots)?;
+    let out = f(self);
+    self.cx.scope.heap_mut().truncate_stack_roots(base);
+    out
+  }
+
+  fn limits(&self) -> webidl::WebIdlLimits {
+    self.state.limits
+  }
+
   fn js_undefined(&self) -> Self::JsValue {
     Value::Undefined
   }
@@ -330,6 +390,80 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(value)
   }
 
+  fn get_method(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<Self::JsValue>, Self::Error> {
+    let func = self.get(obj, key)?;
+    if matches!(func, Value::Undefined | Value::Null) {
+      return Ok(None);
+    }
+    if !self.cx.scope.heap().is_callable(func)? {
+      return Err(self.throw_type_error("GetMethod: property is not callable"));
+    }
+    Ok(Some(func))
+  }
+
+  fn get_iterator_from_method(
+    &mut self,
+    host: &mut Host,
+    iterable: Self::JsValue,
+    method: Self::JsValue,
+  ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
+    let iterator = self.cx.vm.call(host, &mut self.cx.scope, method, iterable, &[])?;
+    if !self.is_object(iterator) {
+      return Err(self.throw_type_error("Iterator method did not return an object"));
+    }
+
+    self.with_stack_roots(&[iterator], |rt| {
+      let next_key = rt.property_key("next")?;
+      let next = rt.get(iterator, next_key)?;
+      if !rt.cx.scope.heap().is_callable(next)? {
+        return Err(rt.throw_type_error("Iterator.next is not callable"));
+      }
+      Ok(IteratorRecord {
+        iterator,
+        next_method: next,
+        done: false,
+      })
+    })
+  }
+
+  fn iterator_step_value(
+    &mut self,
+    host: &mut Host,
+    iterator_record: &mut IteratorRecord<Self::JsValue>,
+  ) -> Result<Option<Self::JsValue>, Self::Error> {
+    if iterator_record.done {
+      return Ok(None);
+    }
+
+    let iterator = iterator_record.iterator;
+    let next_method = iterator_record.next_method;
+    let result = self
+      .cx
+      .vm
+      .call(host, &mut self.cx.scope, next_method, iterator, &[])?;
+    if !self.is_object(result) {
+      return Err(self.throw_type_error("Iterator.next() did not return an object"));
+    }
+
+    self.with_stack_roots(&[result], |rt| {
+      let done_key = rt.property_key("done")?;
+      let done = rt.get(result, done_key)?;
+      let done = rt.to_boolean(done)?;
+      if done {
+        iterator_record.done = true;
+        return Ok(None);
+      }
+
+      let value_key = rt.property_key("value")?;
+      let value = rt.get(result, value_key)?;
+      Ok(Some(value))
+    })
+  }
+
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     use webidl::JsRuntime as _;
     let obj = self.cx.alloc_object()?;
@@ -427,6 +561,17 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
   type PropertyKey = PropertyKey;
   type Error = VmError;
 
+  fn with_stack_roots<R, F>(&mut self, roots: &[Self::JsValue], f: F) -> Result<R, Self::Error>
+  where
+    F: FnOnce(&mut Self) -> Result<R, Self::Error>,
+  {
+    <Self as webidl_js_runtime::JsRuntime>::with_stack_roots(self, roots, f)
+  }
+
+  fn limits(&self) -> webidl::WebIdlLimits {
+    <Self as webidl_js_runtime::WebIdlJsRuntime>::limits(self)
+  }
+
   fn js_undefined(&self) -> Self::JsValue {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::js_undefined(self)
   }
@@ -505,6 +650,50 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(self, obj, key)
+  }
+
+  fn get_method(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<Self::JsValue>, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_method(self, obj, key)
+  }
+
+  fn get_iterator_from_method(
+    &mut self,
+    _host: &mut Host,
+    iterable: Self::JsValue,
+    method: Self::JsValue,
+  ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
+    let record =
+      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_iterator_from_method(
+        self, iterable, method,
+      )?;
+    Ok(IteratorRecord {
+      iterator: record.iterator,
+      next_method: record.next_method,
+      done: record.done,
+    })
+  }
+
+  fn iterator_step_value(
+    &mut self,
+    _host: &mut Host,
+    iterator_record: &mut IteratorRecord<Self::JsValue>,
+  ) -> Result<Option<Self::JsValue>, Self::Error> {
+    // Bridge through the legacy iterator record type.
+    let mut record = webidl_js_runtime::IteratorRecord {
+      iterator: iterator_record.iterator,
+      next_method: iterator_record.next_method,
+      done: iterator_record.done,
+    };
+    let out =
+      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::iterator_step_value(
+        self, &mut record,
+      )?;
+    iterator_record.done = record.done;
+    Ok(out)
   }
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {
