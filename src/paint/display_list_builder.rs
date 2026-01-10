@@ -6329,20 +6329,41 @@ impl DisplayListBuilder {
           //
           // Only attempt to decode the selected candidate (the first entry in `sources`).
           let mut deferred_async = false;
-          let decoded = sources.first().and_then(|source| {
-            if loading == ImageLoadingAttribute::Lazy {
-              // `loading="lazy"` is a *hint*; browsers still load images that intersect the
-              // viewport. Only defer decoding when the destination rect is fully outside the
-              // viewport, matching typical lazy-loading behavior and avoiding blank above-the-fold
-              // imagery (e.g. Walmart's 404 illustration).
-              let intersects_viewport = self
-                .viewport
-                .map(|(w, h)| slot_rect.intersects(Rect::from_xywh(0.0, 0.0, w, h)))
-                .unwrap_or(true);
-              if !intersects_viewport {
-                deferred_async = true;
-                return None;
+          let should_defer_lazy = if loading == ImageLoadingAttribute::Lazy {
+            // `loading="lazy"` is a hint; Chrome still eagerly loads images that are within (or
+            // close to) the initial viewport when capturing a screenshot. However, deferring
+            // decoding for offscreen lazy images keeps headless Chrome baselines deterministic and
+            // avoids doing work for content the user cannot see.
+            //
+            // Defer only when the image is entirely outside the viewport. Partial intersection
+            // still loads the image because it can affect pixels in the capture.
+            match self.viewport {
+              Some((vw, vh))
+                if vw.is_finite()
+                  && vh.is_finite()
+                  && vw > 0.0
+                  && vh > 0.0
+                  && slot_rect.x().is_finite()
+                  && slot_rect.y().is_finite()
+                  && slot_rect.width().is_finite()
+                  && slot_rect.height().is_finite() =>
+              {
+                let x0 = slot_rect.x();
+                let y0 = slot_rect.y();
+                let x1 = x0 + slot_rect.width();
+                let y1 = y0 + slot_rect.height();
+                x1 <= 0.0 || y1 <= 0.0 || x0 >= vw || y0 >= vh
               }
+              _ => false,
+            }
+          } else {
+            false
+          };
+
+          let decoded = sources.first().and_then(|source| {
+            if should_defer_lazy {
+              deferred_async = true;
+              return None;
             }
             if decoding == ImageDecodingAttribute::Async
               && self.should_defer_async_image_decode(

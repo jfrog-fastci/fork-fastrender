@@ -101,15 +101,15 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
   let effective_base = find_base_url(&document_html, &document_base_url);
 
   let mut catalog = AssetCatalog::new(args.allow_missing);
-  // `bundle_page fetch` records additional synthetic manifest keys for `Vary`-partitioned resources
-  // (e.g. `...@@fastr:bundle:vary_v1@@<key>`). These are lookup keys for the bundle fetcher and are
-  // **not** fetchable URLs.
-  //
-  // The capture code always includes the base URL entry as well (pointing at the same bytes), so
-  // skip the synthetic Vary keys to avoid importing duplicate assets.
-  const BUNDLE_VARY_KEY_SENTINEL: &str = "@@fastr:bundle:vary_v1@@";
   for (url, info) in &manifest.resources {
-    if url.contains(BUNDLE_VARY_KEY_SENTINEL) {
+    // Bundle manifests can include synthetic keys for internal bookkeeping, such as:
+    // - `@@fastr:bundle:vary_v1@@...` for `Vary`-partitioned resources
+    // - `@@fastr:bundle:req_v*@@...` for CORS cache partitioning
+    //
+    // Offline fixtures only need one on-disk file per *real* URL referenced by HTML/CSS, so skip
+    // synthetic keys when the base URL entry is present. (If the base entry is missing, fall back
+    // to importing the synthetic key.)
+    if should_skip_synthetic_bundle_key(url, &manifest.resources) {
       continue;
     }
     let resource = bundle
@@ -178,6 +178,22 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
   );
 
   Ok(())
+}
+
+fn should_skip_synthetic_bundle_key(
+  key: &str,
+  manifest: &BTreeMap<String, BundledResourceInfo>,
+) -> bool {
+  const VARY_SENTINEL: &str = "@@fastr:bundle:vary_v1@@";
+  const REQ_SENTINEL: &str = "@@fastr:bundle:req_v";
+
+  if let Some((base, _)) = key.split_once(VARY_SENTINEL) {
+    return manifest.contains_key(base);
+  }
+  if let Some((base, _)) = key.split_once(REQ_SENTINEL) {
+    return manifest.contains_key(base);
+  }
+  false
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -1407,12 +1407,21 @@ impl ResourceFetcher for BundledFetcher {
         return Some(value);
       }
     }
+    // Some commonly varied headers (notably `Origin`/`Referer` and browser-ish `Sec-Fetch-*`) are
+    // only emitted for certain destinations (or when `FASTR_HTTP_BROWSER_HEADERS=0`). Treat their
+    // absence deterministically as an empty string so callers can still compute a stable variant
+    // key.
     if header_name.eq_ignore_ascii_case("origin")
       || header_name.eq_ignore_ascii_case("accept-encoding")
       || header_name.eq_ignore_ascii_case("accept-language")
       || header_name.eq_ignore_ascii_case("user-agent")
       || header_name.eq_ignore_ascii_case("referer")
       || header_name.eq_ignore_ascii_case("x-subdomain")
+      || header_name.eq_ignore_ascii_case("sec-fetch-dest")
+      || header_name.eq_ignore_ascii_case("sec-fetch-mode")
+      || header_name.eq_ignore_ascii_case("sec-fetch-site")
+      || header_name.eq_ignore_ascii_case("sec-fetch-user")
+      || header_name.eq_ignore_ascii_case("upgrade-insecure-requests")
     {
       return Some(String::new());
     }
@@ -1548,6 +1557,95 @@ mod tests {
       .expect("fetch empty data url prefix");
     assert!(res_empty.bytes.is_empty());
     assert_eq!(res_empty.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn bundled_fetcher_fetch_falls_back_to_base_url_entry_when_vary_variant_missing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("base.bin"), b"base").expect("write base");
+    std::fs::write(tmp.path().join("variant.bin"), b"variant").expect("write variant");
+
+    let url = "https://cdn.example/font";
+    let manifest_key = vary_partitioned_resource_key(url, "deadbeef");
+
+    let base_info = BundledResourceInfo {
+      path: "base.bin".to_string(),
+      content_type: Some("application/octet-stream".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      response_headers: None,
+      vary: Some("accept-language".to_string()),
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources: BTreeMap::from([
+        (url.to_string(), base_info.clone()),
+        (
+          manifest_key.clone(),
+          BundledResourceInfo {
+            path: "variant.bin".to_string(),
+            ..base_info.clone()
+          },
+        ),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let res = fetcher.fetch(url).expect("fetch base URL");
+    assert_eq!(
+      res.bytes, b"base",
+      "expected fetch() to fall back to the base URL entry when no Vary variant matches"
+    );
+    let res = fetcher.fetch(&manifest_key).expect("fetch vary key");
+    assert_eq!(res.bytes, b"variant");
   }
 
   #[test]

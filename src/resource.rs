@@ -3052,11 +3052,17 @@ pub fn ensure_font_mime_sane(resource: &FetchedResource, requested_url: &str) ->
   if let Some(content_type) = resource.content_type.as_deref() {
     let mime = content_type_mime(content_type);
     if mime_is_html(mime) {
-      return Err(response_resource_error(
-        resource,
-        requested_url,
-        format!("unexpected content-type {mime}"),
-      ));
+      // Some font CDNs return valid font bytes while incorrectly labelling them as HTML (for
+      // example, Google Fonts `fonts.gstatic.com/l/font?...` responds with `Content-Type:
+      // text/html` even though the payload is a WOFF2 file). Avoid rejecting these responses by
+      // sniffing the payload for known font signatures; we still reject real HTML markup bodies.
+      if !file_payload_looks_like_font(&resource.bytes) {
+        return Err(response_resource_error(
+          resource,
+          requested_url,
+          format!("unexpected content-type {mime}"),
+        ));
+      }
     }
   }
 
@@ -7943,15 +7949,21 @@ impl ResourceFetcher for HttpFetcher {
         return Some(value);
       }
     }
-    // Some commonly varied headers (notably `Origin`/`Referer`) are only emitted for certain
-    // destinations. Treat their absence deterministically as an empty string so callers can still
-    // compute a stable variant key.
+    // Some commonly varied headers (notably `Origin`/`Referer` and browser-ish `Sec-Fetch-*`) are
+    // only emitted for certain destinations (or when `FASTR_HTTP_BROWSER_HEADERS=0`). Treat their
+    // absence deterministically as an empty string so callers can still compute a stable variant
+    // key.
     if header_name.eq_ignore_ascii_case("origin")
       || header_name.eq_ignore_ascii_case("accept-encoding")
       || header_name.eq_ignore_ascii_case("accept-language")
       || header_name.eq_ignore_ascii_case("user-agent")
       || header_name.eq_ignore_ascii_case("referer")
       || header_name.eq_ignore_ascii_case("x-subdomain")
+      || header_name.eq_ignore_ascii_case("sec-fetch-dest")
+      || header_name.eq_ignore_ascii_case("sec-fetch-mode")
+      || header_name.eq_ignore_ascii_case("sec-fetch-site")
+      || header_name.eq_ignore_ascii_case("sec-fetch-user")
+      || header_name.eq_ignore_ascii_case("upgrade-insecure-requests")
     {
       return Some(String::new());
     }
@@ -8247,9 +8259,14 @@ fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&s
       // is already part of the cache key (`FetchContextKind`). When browser headers are disabled
       // we use a single default `Accept` value for all requests.
       "accept" => {}
-      // `Sec-Fetch-*` headers and `Upgrade-Insecure-Requests` are derived solely from the fetch
-      // destination, which is already part of the cache key (`FetchContextKind`).
-      "sec-fetch-dest" | "sec-fetch-mode" | "sec-fetch-user" | "upgrade-insecure-requests" => {}
+      // `Sec-Fetch-*` headers and `Upgrade-Insecure-Requests` are derived from the request context
+      // and can be deterministically reconstructed (and thus included in the computed `Vary` key)
+      // by `HttpFetcher::request_header_value`.
+      "sec-fetch-dest"
+      | "sec-fetch-mode"
+      | "sec-fetch-site"
+      | "sec-fetch-user"
+      | "upgrade-insecure-requests" => {}
       // `Origin` is also safe because we include it in the computed `Vary` key (or treat the
       // response as uncacheable if we cannot determine the `Origin` request header value).
       "origin" => {}
@@ -11204,6 +11221,21 @@ fn file_payload_looks_like_markup_but_not_svg(bytes: &[u8]) -> bool {
   }
 }
 
+fn file_payload_looks_like_font(bytes: &[u8]) -> bool {
+  let Some(prefix) = bytes.get(..4) else {
+    return false;
+  };
+  // Sniff common font container signatures.
+  // - WOFF/WOFF2: https://www.w3.org/TR/WOFF/
+  // - OpenType: `OTTO` (CFF-based) or `0x00010000` (TrueType outlines)
+  // - TrueType collections: `ttcf`
+  prefix == b"wOF2"
+    || prefix == b"wOFF"
+    || prefix == b"OTTO"
+    || prefix == b"ttcf"
+    || prefix == [0x00, 0x01, 0x00, 0x00]
+}
+
 fn substitute_offline_fixture_placeholder_full(
   kind: FetchContextKind,
   bytes: &mut Vec<u8>,
@@ -11923,6 +11955,17 @@ mod tests {
       err.to_string().contains("unexpected markup response body"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn font_mime_sanity_allows_woff2_payloads_even_when_mislabelled_as_html() {
+    // Some font endpoints (e.g. Google Fonts `.../l/font?...`) return a valid WOFF2 payload while
+    // advertising `Content-Type: text/html`. When the payload is clearly a font, we should not
+    // reject it as bot-mitigation markup.
+    let mut resource = FetchedResource::new(b"wOF2".to_vec(), Some("text/html".to_string()));
+    resource.status = Some(200);
+    ensure_font_mime_sane(&resource, "https://example.com/font")
+      .expect("expected WOFF2 signature to override content-type");
   }
 
   #[test]
@@ -14697,7 +14740,7 @@ mod tests {
   }
 
   #[test]
-  fn caching_fetcher_skips_unhandled_vary_responses() {
+  fn caching_fetcher_allows_vary_sec_fetch_site() {
     if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
       eprintln!(
         "skipping caching_fetcher_skips_unhandled_vary_responses: curl backend selected but curl is unavailable"
@@ -14737,7 +14780,7 @@ mod tests {
             let _ = stream.write_all(headers.as_bytes());
             let _ = stream.write_all(body.as_bytes());
 
-            if n >= 2 {
+            if n >= 1 {
               return;
             }
           }
@@ -14749,7 +14792,7 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(5));
           }
-          Err(err) => panic!("accept caching_fetcher_skips_unhandled_vary_responses: {err}"),
+          Err(err) => panic!("accept caching_fetcher_allows_vary_sec_fetch_site: {err}"),
         }
       }
     });
@@ -14765,13 +14808,10 @@ mod tests {
 
     assert_eq!(
       request_count.load(Ordering::SeqCst),
-      2,
-      "expected unhandled Vary response to bypass caching"
+      1,
+      "expected Vary: Sec-Fetch-Site response to be cached"
     );
-    assert_ne!(
-      first.bytes, second.bytes,
-      "expected network body to differ across requests"
-    );
+    assert_eq!(first.bytes, second.bytes, "expected cached body to match");
   }
 
   #[test]

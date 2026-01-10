@@ -8024,10 +8024,28 @@ impl Painter {
         ..
       } => {
         if *loading == ImageLoadingAttribute::Lazy {
-          // `loading="lazy"` images do not block initial page load and are typically absent from
-          // headless Chrome `--screenshot` baselines. Keep them transparent so author-supplied
-          // placeholders remain visible.
-          return;
+          // `loading="lazy"` is a hint; Chrome still paints lazy images that intersect the initial
+          // viewport in headless screenshot runs. Defer only when the image is entirely outside the
+          // viewport, keeping the image transparent so author-supplied placeholders remain visible.
+          let vw = self.css_width;
+          let vh = self.css_height;
+          if vw.is_finite()
+            && vh.is_finite()
+            && vw > 0.0
+            && vh > 0.0
+            && content_rect.x().is_finite()
+            && content_rect.y().is_finite()
+            && content_rect.width().is_finite()
+            && content_rect.height().is_finite()
+          {
+            let x0 = content_rect.x();
+            let y0 = content_rect.y();
+            let x1 = x0 + content_rect.width();
+            let y1 = y0 + content_rect.height();
+            if x1 <= 0.0 || y1 <= 0.0 || x0 >= vw || y0 >= vh {
+              return;
+            }
+          }
         }
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
