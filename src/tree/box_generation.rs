@@ -1134,7 +1134,6 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
 
 fn svg_transform_attribute(style: &ComputedStyle) -> Option<String> {
   use crate::css::types::{RotateValue, ScaleValue, Transform as CssTransform, TranslateValue};
-  use crate::style::values::Length;
   use std::fmt::Write as _;
 
   fn resolve_transform_length(len: Length, style: &ComputedStyle) -> Option<f32> {
@@ -1355,6 +1354,155 @@ fn svg_transform_attribute(style: &ComputedStyle) -> Option<String> {
   }
 
   (!out.is_empty()).then_some(out)
+}
+
+fn svg_transform_style_declaration(style: &ComputedStyle) -> Option<String> {
+  use crate::css::types::{RotateValue, ScaleValue, Transform as CssTransform, TranslateValue};
+  use std::fmt::Write as _;
+
+  if !style.has_transform() {
+    return None;
+  }
+
+  let mut list = String::new();
+  let mut push_sep = |out: &mut String| {
+    if !out.is_empty() {
+      out.push(' ');
+    }
+  };
+
+  // CSS Transforms Level 2: translate → rotate → scale → transform list.
+  if let TranslateValue::Values { x, y, z } = style.translate {
+    push_sep(&mut list);
+    if z.is_zero() {
+      let _ = write!(&mut list, "translate({} {})", x, y);
+    } else {
+      let _ = write!(&mut list, "translate3d({} {} {})", x, y, z);
+    }
+  }
+
+  match style.rotate {
+    RotateValue::None => {}
+    RotateValue::Angle(deg) => {
+      push_sep(&mut list);
+      let _ = write!(&mut list, "rotate({deg}deg)");
+    }
+    RotateValue::AxisAngle { x, y, z, angle } => {
+      push_sep(&mut list);
+      let _ = write!(&mut list, "rotate3d({x} {y} {z} {angle}deg)");
+    }
+  }
+
+  if let ScaleValue::Values { x, y, z } = style.scale {
+    push_sep(&mut list);
+    if (z - 1.0).abs() <= 1e-6 {
+      let _ = write!(&mut list, "scale({x} {y})");
+    } else {
+      let _ = write!(&mut list, "scale3d({x} {y} {z})");
+    }
+  }
+
+  for component in &style.transform {
+    match *component {
+      CssTransform::Translate(x, y) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "translate({} {})", x, y);
+      }
+      CssTransform::TranslateX(x) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "translateX({})", x);
+      }
+      CssTransform::TranslateY(y) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "translateY({})", y);
+      }
+      CssTransform::TranslateZ(z) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "translateZ({})", z);
+      }
+      CssTransform::Translate3d(x, y, z) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "translate3d({} {} {})", x, y, z);
+      }
+      CssTransform::Scale(x, y) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "scale({x} {y})");
+      }
+      CssTransform::ScaleX(x) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "scaleX({x})");
+      }
+      CssTransform::ScaleY(y) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "scaleY({y})");
+      }
+      CssTransform::ScaleZ(z) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "scaleZ({z})");
+      }
+      CssTransform::Scale3d(x, y, z) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "scale3d({x} {y} {z})");
+      }
+      CssTransform::Rotate(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "rotate({deg}deg)");
+      }
+      CssTransform::RotateZ(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "rotateZ({deg}deg)");
+      }
+      CssTransform::RotateX(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "rotateX({deg}deg)");
+      }
+      CssTransform::RotateY(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "rotateY({deg}deg)");
+      }
+      CssTransform::Rotate3d(x, y, z, angle) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "rotate3d({x} {y} {z} {angle}deg)");
+      }
+      CssTransform::SkewX(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "skewX({deg}deg)");
+      }
+      CssTransform::SkewY(deg) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "skewY({deg}deg)");
+      }
+      CssTransform::Skew(ax, ay) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "skew({ax}deg {ay}deg)");
+      }
+      CssTransform::Perspective(p) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "perspective({})", p);
+      }
+      CssTransform::Matrix(a, b, c, d, e, f) => {
+        push_sep(&mut list);
+        let _ = write!(&mut list, "matrix({a} {b} {c} {d} {e} {f})");
+      }
+      CssTransform::Matrix3d(values) => {
+        push_sep(&mut list);
+        list.push_str("matrix3d(");
+        for (idx, value) in values.iter().enumerate() {
+          if idx > 0 {
+            list.push(' ');
+          }
+          let _ = write!(&mut list, "{value}");
+        }
+        list.push(')');
+      }
+    }
+  }
+
+  if list.is_empty() {
+    Some("transform: none".to_string())
+  } else {
+    Some(format!("transform: {list}"))
+  }
 }
 
 fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
@@ -1872,9 +2020,24 @@ fn serialize_svg_mask_subtree_with_namespaces(
 
       let mut attrs = attributes.clone();
       if current_ns == SVG_NAMESPACE {
-        attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
-        if let Some(transform) = svg_transform_attribute(&styled.styles) {
+        let has_transform_attr = attrs
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("transform"));
+        if !styled.styles.has_transform() {
+          if has_transform_attr {
+            attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+          }
+        } else if let Some(transform) = svg_transform_attribute(&styled.styles) {
+          attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
           attrs.push(("transform".to_string(), transform));
+        } else {
+          // If we can't represent the computed transform as an SVG `transform=""` attribute (e.g.
+          // percent/calc/viewport-relative/3D transforms), emit it as a CSS declaration. resvg/usvg
+          // currently ignores CSS `transform`, but preserving it keeps the serialized SVG faithful
+          // for other consumers and lets us avoid dropping any authored SVG `transform=""`.
+          if let Some(extra) = svg_transform_style_declaration(&styled.styles) {
+            merge_style_attribute(&mut attrs, &extra);
+          }
         }
       }
       let mut namespaces: Vec<(String, String)> = inherited_xmlns.to_vec();
@@ -2862,17 +3025,27 @@ fn serialize_svg_subtree(
               let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
               merge_style_attribute(attrs_mut, &extra);
             }
-            let transform = svg_transform_attribute(&styled.styles);
             let has_transform_attr = owned_attrs
               .as_deref()
               .unwrap_or(attributes)
               .iter()
               .any(|(name, _)| name.eq_ignore_ascii_case("transform"));
-            if has_transform_attr || transform.is_some() {
+            if !styled.styles.has_transform() {
+              if has_transform_attr {
+                let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+                attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+              }
+            } else if let Some(transform) = svg_transform_attribute(&styled.styles) {
               let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
               attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
-              if let Some(transform) = transform {
-                attrs_mut.push(("transform".to_string(), transform));
+              attrs_mut.push(("transform".to_string(), transform));
+            } else {
+              // See comment in `serialize_svg_mask_subtree_with_namespaces` for why we fall back to
+              // emitting a CSS `transform:` declaration when the computed transform cannot be
+              // serialized as an SVG attribute.
+              if let Some(extra) = svg_transform_style_declaration(&styled.styles) {
+                let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+                merge_style_attribute(attrs_mut, &extra);
               }
             }
           }

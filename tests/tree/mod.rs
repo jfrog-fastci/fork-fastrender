@@ -10,4 +10,5 @@ mod select_control_option_dom_ids;
 mod svg_intrinsic_size;
 mod svg_transform_override;
 mod svg_root_transform_neutralization;
+mod svg_transform_serialization;
 mod test_anonymous_boxes;
