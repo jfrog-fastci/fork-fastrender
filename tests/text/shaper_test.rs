@@ -97,6 +97,9 @@ fn bidi_format_chars_do_not_break_fi_ligature() {
     ("LRM", "f\u{200E}i"),
     ("RLM", "f\u{200F}i"),
     ("ALM", "f\u{061C}i"),
+    // Embedding/override controls are also default-ignorable for shaping input.
+    ("LRE/PDF", "f\u{202A}i\u{202C}"),
+    ("LRO/PDF", "f\u{202D}i\u{202C}"),
     // LRI begins an isolate sequence; PDI terminates it. Both are default-ignorable.
     ("LRI/PDI", "f\u{2066}i\u{2069}"),
   ] {
@@ -128,6 +131,8 @@ fn bidi_format_chars_remap_clusters_to_original_text() {
     ("LRM", "a\u{200E}b"),
     ("RLM", "a\u{200F}b"),
     ("ALM", "a\u{061C}b"),
+    ("LRE/PDF", "a\u{202A}b\u{202C}"),
+    ("LRO/PDF", "a\u{202D}b\u{202C}"),
     ("LRI/PDI", "a\u{2066}b\u{2069}"),
   ] {
     let shaped = shape_single_run(text, &style, &font_ctx);
