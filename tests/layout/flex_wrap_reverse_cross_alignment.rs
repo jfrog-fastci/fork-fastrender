@@ -2194,6 +2194,121 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_end_uses_
 }
 
 #[test]
+fn flex_wrap_reverse_align_content_distributed_values_stack_lines_from_cross_start() {
+  // Regression test for multi-line `flex-wrap: wrap-reverse` + distributed `align-content` values.
+  //
+  // This is the "positive free space" counterpart to the overflow safe-start tests below: the
+  // line stack should be distributed correctly while still stacking lines from cross-start to
+  // cross-end (i.e. bottom-to-top in horizontal-tb + row + wrap-reverse).
+  fn layout_positions(align_content: AlignContent) -> (f32, f32, f32) {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.align_content = align_content;
+    // Use `start` so item y positions match the physical top edge of each line, regardless of the
+    // wrap direction.
+    container_style.align_items = AlignItems::Start;
+    container_style.width = Some(Length::px(60.0));
+    container_style.width_keyword = None;
+    // Two 10px-tall lines (20px total) in a 100px container => 80px of free space.
+    container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.width = Some(Length::px(30.0));
+    child_style.width_keyword = None;
+    child_style.height = Some(Length::px(10.0));
+    child_style.height_keyword = None;
+    child_style.flex_shrink = 0.0;
+    let child_style = Arc::new(child_style);
+
+    let mut children = Vec::new();
+    for id in 1..=3 {
+      let mut child = BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![]);
+      child.id = id;
+      children.push(child);
+    }
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      children,
+    );
+
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite(60.0, 100.0))
+      .expect("layout succeeds");
+
+    let mut child1_y = None;
+    let mut child2_y = None;
+    let mut child3_y = None;
+    let mut debug_children = Vec::new();
+
+    for child in fragment.children.iter() {
+      let id = fragment_box_id(&child.content);
+      debug_children.push((
+        id,
+        child.bounds.x(),
+        child.bounds.y(),
+        child.bounds.width(),
+        child.bounds.height(),
+      ));
+      match id {
+        Some(1) => child1_y = Some(child.bounds.y()),
+        Some(2) => child2_y = Some(child.bounds.y()),
+        Some(3) => child3_y = Some(child.bounds.y()),
+        _ => {}
+      }
+    }
+
+    let child1_y = child1_y.unwrap_or_else(|| panic!("missing child1: {:?}", debug_children));
+    let child2_y = child2_y.unwrap_or_else(|| panic!("missing child2: {:?}", debug_children));
+    let child3_y = child3_y.unwrap_or_else(|| panic!("missing child3: {:?}", debug_children));
+
+    (child1_y, child2_y, child3_y)
+  }
+
+  let eps = 1e-3;
+  let space_evenly_gap = 80.0 / 3.0;
+  for (align, expected_child3_y, expected_child1_y, tol) in [
+    (AlignContent::SpaceBetween, 0.0, 90.0, eps),
+    (AlignContent::SpaceAround, 20.0, 70.0, eps),
+    // Space-evenly produces fractional offsets that may be rounded by the physical layout layer.
+    (
+      AlignContent::SpaceEvenly,
+      space_evenly_gap,
+      space_evenly_gap + 10.0 + space_evenly_gap,
+      1.0,
+    ),
+    // When `align-content: stretch`, the line cross sizes are stretched to fill the container:
+    // (100 - 20) / 2 = 40px added per line => 50px line height.
+    (AlignContent::Stretch, 0.0, 50.0, eps),
+  ] {
+    let (child1_y, child2_y, child3_y) = layout_positions(align);
+    assert!(
+      (child3_y - expected_child3_y).abs() < tol,
+      "align-content={align:?}: expected last line (child3) to start at y={expected_child3_y}, got y={child3_y}"
+    );
+    assert!(
+      (child1_y - expected_child1_y).abs() < tol,
+      "align-content={align:?}: expected first line (child1) to start at y={expected_child1_y}, got y={child1_y}"
+    );
+    assert!(
+      (child2_y - expected_child1_y).abs() < tol,
+      "align-content={align:?}: expected first line (child2) to start at y={expected_child1_y}, got y={child2_y}"
+    );
+    assert!(
+      child1_y > child3_y + eps,
+      "align-content={align:?}: expected wrap-reverse to stack first line below the last line (y1 > y3), got y1={child1_y} y3={child3_y}"
+    );
+  }
+}
+
+#[test]
 fn flex_wrap_reverse_align_content_distributed_overflow_falls_back_to_safe_start() {
   // Distributed alignment values fall back to a "safe" alignment when there is no free space. Under
   // wrap-reverse, the cross axis is mirrored, so ensure that safe start alignment survives the

@@ -3874,6 +3874,141 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
     }
+    // Distributed `align-content` values have a "safe" fallback under negative free space.
+    //
+    // That safe fallback is defined in terms of the writing-mode axis start edge, which can map
+    // to the physical right/bottom edges (e.g. `writing-mode: vertical-rl`, or `direction: rtl`
+    // when the cross axis is inline). When this happens, Taffy's fallback packs the line stack to
+    // the physical start edge instead, producing overflow on the wrong side.
+    //
+    // Detect that overflow case and shift in-flow children so overflow is biased toward the
+    // physical start edge (i.e. the stack is packed against the writing-mode start edge).
+    if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
+      && matches!(
+        box_node.style.flex_wrap,
+        FlexWrap::Wrap | FlexWrap::WrapReverse
+      )
+      && matches!(
+        box_node.style.align_content,
+        AlignContent::Stretch
+          | AlignContent::SpaceBetween
+          | AlignContent::SpaceAround
+          | AlignContent::SpaceEvenly
+      )
+      && !fragment.children.is_empty()
+    {
+      let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
+      let block_is_horizontal = !inline_is_horizontal;
+      let main_is_inline = matches!(
+        box_node.style.flex_direction,
+        FlexDirection::Row | FlexDirection::RowReverse
+      );
+      let inline_positive = self.inline_axis_positive(&box_node.style);
+      let block_positive = self.block_axis_positive(&box_node.style);
+      let cross_start_is_physical_start = if main_is_inline {
+        block_positive
+      } else {
+        inline_positive
+      };
+
+      // Only needed when the writing-mode cross-start is the physical end (right/bottom).
+      if !cross_start_is_physical_start {
+        let cross_is_horizontal = if main_is_inline {
+          block_is_horizontal
+        } else {
+          inline_is_horizontal
+        };
+        let cross_size = if cross_is_horizontal {
+          fragment.bounds.width()
+        } else {
+          fragment.bounds.height()
+        };
+        if cross_size.is_finite() && cross_size > 0.0 {
+          let cb_width = fragment.bounds.width();
+          let border_left = self.resolve_length_for_width(
+            box_node.style.used_border_left_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_right = self.resolve_length_for_width(
+            box_node.style.used_border_right_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_top = self.resolve_length_for_width(
+            box_node.style.used_border_top_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_bottom = self.resolve_length_for_width(
+            box_node.style.used_border_bottom_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let padding_left =
+            self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+          let padding_right =
+            self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
+          let padding_top =
+            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+          let padding_bottom =
+            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+
+          let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+            (border_left + padding_left, border_right + padding_right)
+          } else {
+            (border_top + padding_top, border_bottom + padding_bottom)
+          };
+          let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
+          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+            let mut max_rel = f32::NEG_INFINITY;
+            let mut deadline_counter = 0usize;
+            for child in fragment.children.iter() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let Some(style) = child.style.as_deref() else {
+                continue;
+              };
+              if style.running_position.is_some()
+                || matches!(style.position, Position::Absolute | Position::Fixed)
+              {
+                continue;
+              }
+              let (cross_pos, child_cross) = if cross_is_horizontal {
+                (child.bounds.x(), child.bounds.width())
+              } else {
+                (child.bounds.y(), child.bounds.height())
+              };
+              if !cross_pos.is_finite() || !child_cross.is_finite() {
+                continue;
+              }
+              max_rel = max_rel.max((cross_pos - cross_content_start) + child_cross);
+            }
+
+            if max_rel.is_finite() && max_rel > cross_inner_size + 1e-6 {
+              let shift = cross_inner_size - max_rel;
+              if shift.is_finite() && shift.abs() > 1e-6 {
+                for child in fragment.children_mut() {
+                  check_layout_deadline(&mut deadline_counter)?;
+                  let Some(style) = child.style.as_deref() else {
+                    continue;
+                  };
+                  if style.running_position.is_some()
+                    || matches!(style.position, Position::Absolute | Position::Fixed)
+                  {
+                    continue;
+                  }
+                  if cross_is_horizontal {
+                    translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
+                  } else {
+                    translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     // Block-level flex containers with `width:auto` fill the available inline space. Enforce that
     // here (without clamping to the viewport) so explicitly-sized or shrink-to-fit flex containers
     // can still overflow horizontally.
