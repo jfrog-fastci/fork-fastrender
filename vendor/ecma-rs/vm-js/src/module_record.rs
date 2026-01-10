@@ -1177,8 +1177,8 @@ fn with_clause_to_attributes(
     out.push(ImportAttribute { key, value });
   }
 
-  // Sort by key in lexicographic UTF-16 code unit order (ECMA-262 requirement).
-  out.sort_by(|a, b| crate::cmp_utf16(&a.key, &b.key));
+  // `ModuleRequest::new` canonicalizes attribute order for storage/comparison, so callers that turn
+  // this into a `ModuleRequest` do not need to pre-sort here.
   Ok(out)
 }
 
