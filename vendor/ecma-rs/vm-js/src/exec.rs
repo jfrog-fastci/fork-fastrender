@@ -29,6 +29,7 @@ use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
+use std::mem;
 use std::sync::Arc;
  
 use crate::function::ThisMode;
@@ -649,27 +650,35 @@ impl JsRuntime {
       line,
       col,
     };
+
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: None,
+    };
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+
     // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
     // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
     // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
-    let mut hooks = std::mem::take(self.vm.microtask_queue_mut());
-
-    let mut vm_frame = self.vm.enter_frame(frame)?;
-
-    let mut scope = self.heap.scope();
-    // In classic scripts, top-level `this` is the global object (even in strict mode).
-    let global_this = Value::Object(global_object);
-    let mut evaluator = Evaluator {
-      vm: &mut *vm_frame,
-      host,
-      hooks: &mut hooks,
-      env: &mut self.env,
-      strict,
-      this: global_this,
-      new_target: Value::Undefined,
-    };
+    let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
+    let prev_hooks = vm_ctx.push_active_host_hooks(&mut hooks);
 
     let result: Result<Value, VmError> = (|| {
+      let mut vm_frame = vm_ctx.enter_frame(frame)?;
+
+      let mut scope = self.heap.scope();
+      // In classic scripts, top-level `this` is the global object (even in strict mode).
+      let global_this = Value::Object(global_object);
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks: &mut hooks,
+        env: &mut self.env,
+        strict,
+        this: global_this,
+        new_target: Value::Undefined,
+      };
+
       evaluator.instantiate_script(&mut scope, &top.stx.body)?;
 
       let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
@@ -685,8 +694,11 @@ impl JsRuntime {
       }
     })();
 
+    // Pop any host hooks override before restoring `hooks` back into the VM to avoid leaving the VM
+    // with a dangling pointer (the override stores a raw pointer to `hooks`).
+    vm_ctx.pop_active_host_hooks(prev_hooks);
     // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
-    *vm_frame.microtask_queue_mut() = hooks;
+    *vm_ctx.microtask_queue_mut() = hooks;
 
     result
   }
