@@ -13,11 +13,13 @@ use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::bindings::DomExceptionClass;
 use crate::js::orchestrator::CurrentScriptState;
+use crate::resource::ResourceFetcher;
 use crate::web::events;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
 use vm_js::{PropertyDescriptorPatch, PropertyKey, RootId, Value, VmError, WeakGcObject};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
@@ -62,6 +64,8 @@ pub struct DomJsRealm {
   dom: Rc<RefCell<dom2::Document>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
   cookie_jar: Rc<RefCell<CookieJar>>,
+  document_url: Rc<RefCell<Option<String>>>,
+  cookie_fetcher: Rc<RefCell<Option<Arc<dyn ResourceFetcher>>>>,
 
   platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
@@ -84,6 +88,8 @@ impl DomJsRealm {
 
     let current_script_state = Rc::new(RefCell::new(CurrentScriptState::default()));
     let cookie_jar: Rc<RefCell<CookieJar>> = Rc::new(RefCell::new(CookieJar::new()));
+    let document_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let cookie_fetcher: Rc<RefCell<Option<Arc<dyn ResourceFetcher>>>> = Rc::new(RefCell::new(None));
     let platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>> =
       Rc::new(RefCell::new(FxHashMap::default()));
     let node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>> =
@@ -194,6 +200,8 @@ impl DomJsRealm {
       node_wrapper_cache.clone(),
       current_script_state.clone(),
       cookie_jar.clone(),
+      document_url.clone(),
+      cookie_fetcher.clone(),
     )?;
 
     Ok(Self {
@@ -204,6 +212,8 @@ impl DomJsRealm {
       dom,
       current_script_state,
       cookie_jar,
+      document_url,
+      cookie_fetcher,
       platform_objects,
       node_wrapper_cache,
       event_listeners,
@@ -242,6 +252,23 @@ impl DomJsRealm {
 
   pub fn cookie_jar(&self) -> Rc<RefCell<CookieJar>> {
     self.cookie_jar.clone()
+  }
+
+  pub fn set_document_url(&mut self, url: Option<String>) {
+    *self.document_url.borrow_mut() = url;
+  }
+
+  pub fn set_cookie_fetcher(&mut self, fetcher: Option<Arc<dyn ResourceFetcher>>) {
+    *self.cookie_fetcher.borrow_mut() = fetcher;
+  }
+
+  pub fn set_cookie_fetcher_for_document(
+    &mut self,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) {
+    *self.document_url.borrow_mut() = Some(document_url.into());
+    *self.cookie_fetcher.borrow_mut() = Some(fetcher);
   }
 
   pub fn current_script_state(&self) -> Rc<RefCell<CurrentScriptState>> {
@@ -1023,6 +1050,8 @@ fn install_constructors(
   node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
   cookie_jar: Rc<RefCell<CookieJar>>,
+  document_url: Rc<RefCell<Option<String>>>,
+  cookie_fetcher: Rc<RefCell<Option<Arc<dyn ResourceFetcher>>>>,
 ) -> Result<(), VmError> {
   fn illegal_constructor(rt: &mut VmJsRuntime, name: &'static str) -> Result<Value, VmError> {
     Err(rt.throw_type_error(&format!("{name} is not a constructor")))
@@ -2947,14 +2976,33 @@ fn install_constructors(
     )?;
 
     // document.cookie (MVP: deterministic name=value store; ignores attributes).
+    //
+    // When a `ResourceFetcher` is configured via `DomJsRealm::set_cookie_fetcher_for_document`, we
+    // mirror cookie state from the fetcher's `Cookie` header value so JS can observe cookies set by
+    // HTTP responses.
     let cookie_jar_for_get = cookie_jar.clone();
+    let cookie_fetcher_for_get = cookie_fetcher.clone();
+    let document_url_for_get = document_url.clone();
     let platform_objects_for_cookie_get = platform_objects.clone();
     let cookie_get = rt.alloc_function_value(move |rt, this, _args| {
       let _doc_id = extract_document_id(rt, &platform_objects_for_cookie_get, this)?;
+
+      let fetcher = cookie_fetcher_for_get.borrow().clone();
+      let url = document_url_for_get.borrow().clone();
+      if let (Some(fetcher), Some(url)) = (fetcher.as_ref(), url.as_deref()) {
+        if let Some(header) = fetcher.cookie_header_value(url) {
+          cookie_jar_for_get
+            .borrow_mut()
+            .replace_from_cookie_header(&header);
+        }
+      }
+
       let cookie = cookie_jar_for_get.borrow().cookie_string();
       rt.alloc_string_value(&cookie)
     })?;
     let cookie_jar_for_set = cookie_jar.clone();
+    let cookie_fetcher_for_set = cookie_fetcher.clone();
+    let document_url_for_set = document_url.clone();
     let platform_objects_for_cookie_set = platform_objects.clone();
     let cookie_set = rt.alloc_function_value(move |rt, this, args| {
       let _doc_id = extract_document_id(rt, &platform_objects_for_cookie_set, this)?;
@@ -2968,6 +3016,13 @@ fn install_constructors(
         return Ok(Value::Undefined);
       }
       let cookie_string = js_s.to_utf8_lossy();
+
+      let fetcher = cookie_fetcher_for_set.borrow().clone();
+      let url = document_url_for_set.borrow().clone();
+      if let (Some(fetcher), Some(url)) = (fetcher.as_ref(), url.as_deref()) {
+        fetcher.store_cookie_from_document(url, &cookie_string);
+      }
+
       cookie_jar_for_set
         .borrow_mut()
         .set_cookie_string(&cookie_string);
@@ -3613,8 +3668,11 @@ fn install_constructors(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::error::{Error, Result};
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
   use std::cell::Cell;
+  use std::sync::{Arc, Mutex};
   use webidl_js_runtime::JsPropertyKind;
 
   fn pk(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
@@ -3626,6 +3684,56 @@ mod tests {
       panic!("expected string, got {v:?}");
     };
     rt.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[derive(Default)]
+  struct CookieRecordingFetcher {
+    cookies: Mutex<Vec<(String, String)>>,
+  }
+
+  impl CookieRecordingFetcher {
+    fn cookie_header(&self) -> String {
+      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+    }
+  }
+
+  impl ResourceFetcher for CookieRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "CookieRecordingFetcher does not support fetch: {url}"
+      )))
+    }
+
+    fn cookie_header_value(&self, _url: &str) -> Option<String> {
+      Some(self.cookie_header())
+    }
+
+    fn store_cookie_from_document(&self, _url: &str, cookie_string: &str) {
+      let first = cookie_string
+        .split_once(';')
+        .map(|(a, _)| a)
+        .unwrap_or(cookie_string);
+      let first = first.trim_matches(|c: char| c.is_ascii_whitespace());
+      let Some((name, value)) = first.split_once('=') else {
+        return;
+      };
+      let name = name.trim_matches(|c: char| c.is_ascii_whitespace());
+      if name.is_empty() {
+        return;
+      }
+
+      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
+        existing.1 = value.to_string();
+      } else {
+        lock.push((name.to_string(), value.to_string()));
+      }
+    }
   }
 
   #[test]
@@ -3656,6 +3764,46 @@ mod tests {
 
     let got = realm.rt.get(document, cookie_key).unwrap();
     assert_eq!(as_str(&realm.rt, got), "a=b; b=c");
+  }
+
+  #[test]
+  fn document_cookie_syncs_with_fetcher_cookie_store() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let fetcher = Arc::new(CookieRecordingFetcher::default());
+    fetcher.store_cookie_from_document("https://example.invalid/", "z=1");
+    realm.set_cookie_fetcher_for_document("https://example.invalid/", fetcher.clone());
+
+    let cookie_key = pk(&mut realm.rt, "cookie");
+    let initial = realm.rt.get(document, cookie_key).unwrap();
+    assert_eq!(as_str(&realm.rt, initial), "z=1");
+
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.document, cookie_key)
+      .unwrap()
+      .expect("expected Document.prototype.cookie");
+    let set = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+
+    let b = realm.rt.alloc_string_value("b=c; Path=/").unwrap();
+    realm.rt.call_function(set, document, &[b]).unwrap();
+    let a = realm.rt.alloc_string_value("a=b").unwrap();
+    realm.rt.call_function(set, document, &[a]).unwrap();
+
+    assert_eq!(
+      fetcher
+        .cookie_header_value("https://example.invalid/")
+        .unwrap_or_default(),
+      "z=1; b=c; a=b"
+    );
+
+    let got = realm.rt.get(document, cookie_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "a=b; b=c; z=1");
   }
 
   #[test]

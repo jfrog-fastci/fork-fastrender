@@ -11,9 +11,11 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use crate::js::cookie_jar::CookieJar;
+use crate::resource::ResourceFetcher;
 use rquickjs::{Ctx, Function};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Shared handle for a mutable `dom2` document.
 pub type SharedDom2Document = Rc<RefCell<Document>>;
@@ -241,18 +243,67 @@ const DOM_BOOTSTRAP: &str = r#"
 /// - `document` (a wrapper around the `dom2` root document node)
 /// - `Node`, `Element`, `Document`, `Text` constructors with basic prototype properties
 pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rquickjs::Result<()> {
+  install_dom2_bindings_internal(ctx, dom, None)
+}
+
+/// Like [`install_dom2_bindings`], but wires `document.cookie` to a shared [`ResourceFetcher`]'s cookie store.
+///
+/// This keeps QuickJS `document.cookie` in sync with cookies set via HTTP `Set-Cookie` headers and makes
+/// `document.cookie = ...` affect future HTTP requests made through the same fetcher.
+pub fn install_dom2_bindings_with_cookie_fetcher<'js>(
+  ctx: Ctx<'js>,
+  dom: SharedDom2Document,
+  document_url: impl Into<String>,
+  fetcher: Arc<dyn ResourceFetcher>,
+) -> rquickjs::Result<()> {
+  install_dom2_bindings_internal(
+    ctx,
+    dom,
+    Some(CookieEnv {
+      document_url: document_url.into(),
+      fetcher,
+    }),
+  )
+}
+
+#[derive(Clone)]
+struct CookieEnv {
+  document_url: String,
+  fetcher: Arc<dyn ResourceFetcher>,
+}
+
+fn install_dom2_bindings_internal<'js>(
+  ctx: Ctx<'js>,
+  dom: SharedDom2Document,
+  cookie_env: Option<CookieEnv>,
+) -> rquickjs::Result<()> {
   let globals = ctx.globals();
   let cookie_jar: Rc<RefCell<CookieJar>> = Rc::new(RefCell::new(CookieJar::new()));
 
   // -- Cookies ---------------------------------------------------------------
   {
     let cookie_jar = Rc::clone(&cookie_jar);
-    let f = Function::new(ctx.clone(), move || cookie_jar.borrow().cookie_string())?;
+    let cookie_env = cookie_env.clone();
+    let f = Function::new(ctx.clone(), move || {
+      let mut jar = cookie_jar.borrow_mut();
+      if let Some(env) = &cookie_env {
+        if let Some(header) = env.fetcher.cookie_header_value(&env.document_url) {
+          jar.replace_from_cookie_header(&header);
+        }
+      }
+      jar.cookie_string()
+    })?;
     globals.set("__dom_cookie_get", f)?;
   }
   {
     let cookie_jar = Rc::clone(&cookie_jar);
+    let cookie_env = cookie_env.clone();
     let f = Function::new(ctx.clone(), move |value: String| -> rquickjs::Result<()> {
+      if let Some(env) = &cookie_env {
+        env
+          .fetcher
+          .store_cookie_from_document(&env.document_url, &value);
+      }
       cookie_jar.borrow_mut().set_cookie_string(&value);
       Ok(())
     })?;
@@ -904,10 +955,63 @@ fn text_content(dom: &Document, root: NodeId) -> String {
 mod tests {
   use super::*;
 
+  use crate::error::{Error, Result};
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use rquickjs::{Context, Runtime};
   use selectors::context::QuirksMode;
   use std::cell::RefCell;
   use std::rc::Rc;
+  use std::sync::{Arc, Mutex};
+
+  #[derive(Default)]
+  struct CookieRecordingFetcher {
+    cookies: Mutex<Vec<(String, String)>>,
+  }
+
+  impl CookieRecordingFetcher {
+    fn cookie_header(&self) -> String {
+      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+    }
+  }
+
+  impl ResourceFetcher for CookieRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "CookieRecordingFetcher does not support fetch: {url}"
+      )))
+    }
+
+    fn cookie_header_value(&self, _url: &str) -> Option<String> {
+      Some(self.cookie_header())
+    }
+
+    fn store_cookie_from_document(&self, _url: &str, cookie_string: &str) {
+      let first = cookie_string
+        .split_once(';')
+        .map(|(a, _)| a)
+        .unwrap_or(cookie_string);
+      let first = first.trim_matches(|c: char| c.is_ascii_whitespace());
+      let Some((name, value)) = first.split_once('=') else {
+        return;
+      };
+      let name = name.trim_matches(|c: char| c.is_ascii_whitespace());
+      if name.is_empty() {
+        return;
+      }
+
+      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
+        existing.1 = value.to_string();
+      } else {
+        lock.push((name.to_string(), value.to_string()));
+      }
+    }
+  }
 
   #[test]
   fn document_cookie_round_trip_is_deterministic() {
@@ -923,6 +1027,44 @@ mod tests {
         ctx.eval::<(), _>("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
         let cookie: String = ctx.eval("document.cookie")?;
         assert_eq!(cookie, "a=b; b=c");
+        Ok(())
+      })
+      .expect("js eval");
+  }
+
+  #[test]
+  fn document_cookie_syncs_with_fetcher_cookie_store() {
+    let dom = Document::new(QuirksMode::NoQuirks);
+    let dom: SharedDom2Document = Rc::new(RefCell::new(dom));
+    let fetcher = Arc::new(CookieRecordingFetcher::default());
+    fetcher.store_cookie_from_document("https://example.invalid/", "z=1");
+
+    let rt = Runtime::new().expect("quickjs runtime");
+    let ctx = Context::full(&rt).expect("quickjs context");
+
+    ctx
+      .with(|ctx| -> rquickjs::Result<()> {
+        install_dom2_bindings_with_cookie_fetcher(
+          ctx.clone(),
+          Rc::clone(&dom),
+          "https://example.invalid/",
+          fetcher.clone(),
+        )?;
+
+        let cookie: String = ctx.eval("document.cookie")?;
+        assert_eq!(cookie, "z=1");
+
+        ctx.eval::<(), _>("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
+
+        assert_eq!(
+          fetcher
+            .cookie_header_value("https://example.invalid/")
+            .unwrap_or_default(),
+          "z=1; b=c; a=b"
+        );
+
+        let cookie: String = ctx.eval("document.cookie")?;
+        assert_eq!(cookie, "a=b; b=c; z=1");
         Ok(())
       })
       .expect("js eval");

@@ -293,7 +293,11 @@ fn render_page(
 
     // Import into dom2 for mutation.
     let dom2 = Dom2Document::from_renderer_dom(&dom);
-    let mut host = match WindowHostState::new(dom2, base_hint.clone()) {
+    let mut host = match WindowHostState::new_with_fetcher(
+      dom2,
+      base_hint.clone(),
+      fetcher.clone(),
+    ) {
       Ok(host) => host,
       Err(err) => {
         log(&format!(
