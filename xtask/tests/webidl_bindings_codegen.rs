@@ -22,6 +22,9 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
     interface Foo {
       undefined baz(DOMString s);
       undefined baz(long x);
+      undefined doThing(DOMString name, optional (FooOptions or boolean) options = {});
+      undefined doThing(DOMString name, sequence<DOMString> items);
+      undefined doThing(DOMString name, DOMString item);
       undefined qux(optional FooOptions options);
       undefined takesSequence([Clamp] sequence<long> values);
       undefined takesFrozenArray([EnforceRange] FrozenArray<long> values);
@@ -46,8 +49,7 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
   assert_eq!(out1, out2, "expected deterministic output across runs");
 
   assert_eq!(
-    out1,
-    EXPECTED,
+    out1, EXPECTED,
     "expected generated output to match the committed golden snapshot"
   );
 

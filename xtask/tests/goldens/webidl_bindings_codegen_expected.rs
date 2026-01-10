@@ -97,40 +97,166 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    if args.len() >= 1 && args.len() <= 1 && (rt.is_string(args[0]) || rt.is_string_object(args[0]))
-    {
-      {
-        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-        let v0 = if args.len() > 0 {
-          args[0]
+    let argcount = std::cmp::min(args.len(), 1);
+    match argcount {
+      1 => {
+        let v = args[0];
+        if rt.is_string(v) || rt.is_string_object(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_number(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push(BindingValue::Number(conversions::to_long(rt, v0, conversions::IntegerConversionAttrs::default())? as f64));
+            let result = host.call_operation(rt, Some(this), "Foo", "baz", 1, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
         } else {
-          rt.js_undefined()
-        };
-        converted_args.push({
-          let s = rt.to_string(v0)?;
-          BindingValue::String(rt.js_string_to_rust_string(s)?)
-        });
-        let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
-        binding_value_to_js::<Host, R>(rt, result)
-      }
-    } else if args.len() >= 1 && args.len() <= 1 && (rt.is_number(args[0])) {
-      {
-        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-        let v0 = if args.len() > 0 {
-          args[0]
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        }
+
+      },
+      _ => Err(rt.throw_type_error(&format!("No matching overload for Foo.baz with {} arguments.\nCandidates:\n  - Foo.baz(DOMString)\n  - Foo.baz(long)", args.len()))),
+    }
+  }
+
+  #[allow(dead_code)]
+  fn foo_do_thing<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    let argcount = std::cmp::min(args.len(), 2);
+    match argcount {
+      1 => {
+        {
+          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+          let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+          converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+          let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+          converted_args.push(if rt.is_undefined(v1) { BindingValue::Dictionary(BTreeMap::new()) } else { BindingValue::Object(v1) });
+          let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
+          binding_value_to_js::<Host, R>(rt, result)
+        }
+      },
+      2 => {
+        let v = args[1];
+        if rt.is_undefined(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Dictionary(BTreeMap::new()) } else { BindingValue::Object(v1) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_null(v) || rt.is_undefined(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Dictionary(BTreeMap::new()) } else { BindingValue::Object(v1) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_string(v) || rt.is_string_object(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_object(v) && {
+          let iter = rt.symbol_iterator()?;
+          rt.get_method(v, iter)?.is_some()
+        } {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push({
+            if !rt.is_object(v1) {
+              return Err(rt.throw_type_error("expected object for sequence"));
+            }
+            rt.with_stack_roots(&[v1], |rt| {
+              let iterator_key = rt.symbol_iterator()?;
+              let Some(method) = rt.get_method(v1, iterator_key)? else {
+                return Err(rt.throw_type_error("sequence: object is not iterable"));
+              };
+              let mut iterator_record = rt.get_iterator_from_method(host, v1, method)?;
+              rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
+                let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+                  if values.len() >= rt.limits().max_sequence_length {
+                    return Err(rt.throw_range_error("sequence exceeds maximum length"));
+                  }
+                  let converted = rt.with_stack_roots(&[next], |rt| Ok({ let s = rt.to_string(next)?; BindingValue::String(rt.js_string_to_rust_string(s)?) }))?;
+                  values.push(converted);
+                }
+                Ok(BindingValue::Sequence(values))
+              })
+            })?
+          });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 1, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_object(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Dictionary(BTreeMap::new()) } else { BindingValue::Object(v1) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        } else if rt.is_boolean(v) {
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push(if rt.is_undefined(v1) { BindingValue::Dictionary(BTreeMap::new()) } else { BindingValue::Object(v1) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
         } else {
-          rt.js_undefined()
-        };
-        converted_args.push(BindingValue::Number(conversions::to_long(
-          rt,
-          v0,
-          conversions::IntegerConversionAttrs::default(),
-        )? as f64));
-        let result = host.call_operation(rt, Some(this), "Foo", "baz", 1, converted_args)?;
-        binding_value_to_js::<Host, R>(rt, result)
-      }
-    } else {
-      Err(rt.throw_type_error("no matching overload for Foo.baz"))
+          {
+            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
+            converted_args.push({ let s = rt.to_string(v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
+            binding_value_to_js::<Host, R>(rt, result)
+          }
+        }
+
+      },
+      _ => Err(rt.throw_type_error(&format!("No matching overload for Foo.doThing with {} arguments.\nCandidates:\n  - Foo.doThing(DOMString, DOMString)\n  - Foo.doThing(DOMString, optional (FooOptions or boolean) = <default>)\n  - Foo.doThing(DOMString, sequence<DOMString>)", args.len()))),
     }
   }
 
@@ -289,6 +415,8 @@ pub mod window {
     let proto_foo = rt.create_object()?;
     let func = rt.create_function("baz", 1, foo_baz::<Host, R>)?;
     rt.define_method(proto_foo, "baz", func)?;
+    let func = rt.create_function("doThing", 1, foo_do_thing::<Host, R>)?;
+    rt.define_method(proto_foo, "doThing", func)?;
     let func = rt.create_function("qux", 0, foo_qux::<Host, R>)?;
     rt.define_method(proto_foo, "qux", func)?;
     let func = rt.create_function("takesFrozenArray", 1, foo_takes_frozen_array::<Host, R>)?;

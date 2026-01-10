@@ -140,8 +140,11 @@ exit 0
   )
   .expect("write temp-sensitive stub chrome");
 
-  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
-    .expect("copy stub screenshot template PNG");
+  fs::copy(
+    &template_png,
+    format!("{}.stub_screenshot.png", path.display()),
+  )
+  .expect("copy stub screenshot template PNG");
 
   #[cfg(unix)]
   {
