@@ -215,14 +215,16 @@ impl WindowRealm {
     self.runtime.exec_script(source)
   }
 
-  pub(crate) fn exec_script_with_hooks(
+  /// Execute a classic script in this window realm using a custom host hook implementation.
+  ///
+  /// This routes Promise jobs through `VmHostHooks::host_enqueue_promise_job` instead of the
+  /// VM-owned microtask queue used by [`WindowRealm::exec_script`]. Embeddings can use this to
+  /// integrate ECMAScript jobs into an HTML-shaped microtask queue.
+  pub fn exec_script_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    // `vm-js::JsRuntime::exec_script_with_hooks` routes Promise jobs through `VmHostHooks` instead
-    // of the VM-owned microtask queue. `WindowHost` uses this to integrate Promise jobs into
-    // FastRender's HTML-like microtask queue.
     self.runtime.exec_script_with_hooks(hooks, source)
   }
 

@@ -335,14 +335,14 @@ impl VmJobContext for WindowRealmJobContext<'_> {
   }
 }
 
-pub(crate) struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
+pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   pending_discard: Vec<Job>,
   enqueue_error: Option<crate::error::Error>,
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
 
 impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
-  pub(crate) fn new() -> Self {
+  pub fn new() -> Self {
     Self {
       pending_discard: Vec::new(),
       enqueue_error: None,
@@ -350,7 +350,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     }
   }
 
-  pub(crate) fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
+  pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
     if !self.pending_discard.is_empty() {
       let mut ctx = HeapRootContext { heap };
       for job in self.pending_discard.drain(..) {
