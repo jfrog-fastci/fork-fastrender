@@ -1772,6 +1772,13 @@ impl FontDatabase {
       return Some(SANS);
     }
 
+    // `system-ui` and many cross-platform stacks include `Roboto` as a candidate UI font.
+    // In bundled-font mode we ship Roboto Flex (not the platform Roboto faces), so map requests
+    // for `Roboto` to our deterministic sans fallback to reduce wrap-driven layout drift.
+    if family.eq_ignore_ascii_case("roboto") {
+      return Some(SANS);
+    }
+
     if family.eq_ignore_ascii_case("times")
       || family.eq_ignore_ascii_case("times new roman")
       || family.eq_ignore_ascii_case("timesnewroman")
