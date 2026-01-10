@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  HostDefined, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
+  HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
   ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey, RealmId, Scope,
   SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
@@ -742,6 +742,33 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
     self.inner.host_enqueue_promise_job(job, realm);
   }
 
+  fn host_get_import_meta_properties(
+    &mut self,
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    module: ModuleId,
+  ) -> std::result::Result<Vec<ImportMetaProperty>, VmError> {
+    let Some(url) = self
+      .module_map
+      .iter()
+      .find_map(|(url, id)| (*id == module).then_some(url.as_str()))
+    else {
+      return Ok(Vec::new());
+    };
+
+    let key_s = scope.alloc_string("url")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let url_s = scope.alloc_string(url)?;
+    scope.push_root(Value::String(url_s))?;
+
+    Ok(vec![ImportMetaProperty {
+      key,
+      value: Value::String(url_s),
+    }])
+  }
+
   fn host_exotic_get(
     &mut self,
     scope: &mut Scope<'_>,
@@ -851,6 +878,81 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
     };
 
     vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, completion)?;
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::api::RenderOptions;
+
+  fn get_global_prop_utf8(realm: &mut WindowRealm, name: &str) -> Option<String> {
+    let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm_ref.global_object();
+    scope.push_root(Value::Object(global)).expect("root global");
+    let key_s = scope.alloc_string(name).expect("alloc name");
+    scope.push_root(Value::String(key_s)).expect("root name");
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)
+      .expect("get prop")
+      .unwrap_or(Value::Undefined);
+    match value {
+      Value::String(s) => Some(
+        scope
+          .heap()
+          .get_string(s)
+          .expect("get string")
+          .to_utf8_lossy(),
+      ),
+      _ => None,
+    }
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_sets_import_meta_url() -> Result<()> {
+    let mut document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      options,
+    )?;
+
+    let script_text = "globalThis.__metaUrl = import.meta.url;";
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      force_async: false,
+      node_id: None,
+      script_type: crate::js::ScriptType::Module,
+    };
+    executor.execute_module_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    assert_eq!(
+      get_global_prop_utf8(realm, "__metaUrl").as_deref(),
+      Some("https://example.com/doc.html#inline-module-0")
+    );
     Ok(())
   }
 }
