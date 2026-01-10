@@ -10996,60 +10996,6 @@ impl FlexFormattingContext {
       }
     }
 
-    // If a wrapping row still overflows the container (e.g., items sized to 100% that Taffy
-    // keeps on the same line), reflow the children into sequential rows within the container
-    // width. This mirrors flex-wrap behaviour when items exceed the line length.
-    //
-    // Important: Flex items are allowed to overflow their flex line (for example, when a single
-    // item has a definite width larger than the container and `flex-shrink: 0`). Do not apply this
-    // fallback when any item is genuinely oversized; doing so would incorrectly clamp the item to
-    // the container width and also destroy legitimate negative `justify-content` offsets.
-    if main_axis_is_horizontal
-      && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-      && rect.width().is_finite()
-      && rect.width() > 0.0
-    {
-      let max_child_x = children
-        .iter()
-        .map(|c| c.bounds.max_x())
-        .fold(f32::NEG_INFINITY, f32::max);
-      let min_child_x = children
-        .iter()
-        .map(|c| c.bounds.x())
-        .fold(f32::INFINITY, f32::min);
-      let avail = rect.width();
-      let has_oversized_item = children
-        .iter()
-        .any(|c| c.bounds.width().is_finite() && c.bounds.width() > avail + 0.5);
-      if !has_oversized_item && (max_child_x > avail + 0.5 || min_child_x < -0.5) {
-        let start_y = children
-          .iter()
-          .map(|c| c.bounds.y())
-          .fold(f32::INFINITY, f32::min);
-        let start_y = if start_y.is_finite() { start_y } else { 0.0 };
-        let mut cursor_x = 0.0;
-        let mut cursor_y = start_y;
-        let mut row_height: f32 = 0.0;
-        for child in &mut children {
-          let mut w = child.bounds.width().min(avail);
-          let h = child.bounds.height();
-          if cursor_x + w > avail + 0.01 {
-            cursor_y += row_height;
-            cursor_x = 0.0;
-            row_height = 0.0;
-          }
-          if w <= 0.0 {
-            w = 0.0;
-          }
-          child.bounds = Rect::new(Point::new(cursor_x, cursor_y), Size::new(w, h));
-          cursor_x += w;
-          row_height = row_height.max(h);
-        }
-        let new_height = (cursor_y + row_height - rect.origin.y).max(rect.height());
-        rect = Rect::new(rect.origin, Size::new(rect.width(), new_height));
-      }
-    }
-
     Ok(FragmentNode::new_with_style(
       rect,
       crate::tree::fragment_tree::FragmentContent::Block {
