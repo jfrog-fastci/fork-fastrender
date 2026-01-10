@@ -2139,21 +2139,20 @@ impl BrowserTab {
       }
     }
 
+    // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+    // - the document fetch phase,
+    // - the subsequent script-aware streaming HTML parse,
+    // - and any synchronous navigation requests triggered by scripts (redirect chains).
+    //
+    // This mirrors `FastRender::prepare_url`'s fetch-time deadline guard, but drives
+    // `StreamingHtmlParser` so parser-inserted scripts execute at `</script>` boundaries against a
+    // partially-built DOM.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let deadline = deadline_enabled.then(|| RenderDeadline::new(options.timeout, options.cancel_callback.clone()));
+    let _deadline_guard = deadline.as_ref().map(|deadline| DeadlineGuard::install(Some(deadline)));
+
     let mut target_url = url.to_string();
     loop {
-      // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
-      // - the document fetch phase,
-      // - and the subsequent script-aware streaming HTML parse.
-      //
-      // This mirrors `FastRender::prepare_url`'s fetch-time deadline guard, but drives
-      // `StreamingHtmlParser` so parser-inserted scripts execute at `</script>` boundaries against a
-      // partially-built DOM.
-      let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
-      let _deadline_guard = deadline_enabled.then(|| {
-        let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-        DeadlineGuard::install(Some(&deadline))
-      });
-
       // Fetch the document first so a failed request doesn't clobber the existing navigation's
       // committed DOM.
       let resource = {
@@ -4054,6 +4053,139 @@ html, body { margin: 0; padding: 0; }
     Ok(())
   }
 
+  #[test]
+  fn navigate_to_url_timeout_spans_script_redirect_chain() -> Result<()> {
+    use crate::error::{RenderError, RenderStage};
+    use std::time::Duration;
+ 
+    struct SlowMapFetcher {
+      pages: HashMap<String, String>,
+      delay: Duration,
+    }
+ 
+    impl ResourceFetcher for SlowMapFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+ 
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        std::thread::sleep(self.delay);
+        crate::render_control::check_active(RenderStage::DomParse).map_err(Error::Render)?;
+ 
+        let html = self.pages.get(req.url).ok_or_else(|| {
+          Error::Other(format!("no test response registered for URL {}", req.url))
+        })?;
+        Ok(FetchedResource::with_final_url(
+          html.as_bytes().to_vec(),
+          Some("text/html".to_string()),
+          Some(req.url.to_string()),
+        ))
+      }
+    }
+ 
+    struct RedirectExecutor {
+      redirects: Vec<String>,
+      next: usize,
+      pending: Option<LocationNavigationRequest>,
+    }
+ 
+    impl BrowserTabJsExecutor for RedirectExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          if let Some(url) = self.redirects.get(self.next) {
+            self.pending = Some(LocationNavigationRequest {
+              url: url.clone(),
+              replace: false,
+            });
+            self.next += 1;
+          }
+        }
+        Ok(())
+      }
+ 
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+ 
+    let url1 = "https://example.com/one".to_string();
+    let url2 = "https://example.com/two".to_string();
+    let url3 = "https://example.com/three".to_string();
+    let url4 = "https://example.com/four".to_string();
+ 
+    let mut pages = HashMap::<String, String>::new();
+    pages.insert(
+      url1.clone(),
+      "<!doctype html><html><body><script>NAVIGATE</script></body></html>".to_string(),
+    );
+    pages.insert(
+      url2.clone(),
+      "<!doctype html><html><body><script>NAVIGATE</script></body></html>".to_string(),
+    );
+    pages.insert(
+      url3.clone(),
+      "<!doctype html><html><body><script>NAVIGATE</script></body></html>".to_string(),
+    );
+    pages.insert(
+      url4.clone(),
+      "<!doctype html><html><body><div id=done></div></body></html>".to_string(),
+    );
+ 
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowMapFetcher {
+      pages,
+      delay: Duration::from_millis(15),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(RedirectExecutor {
+        redirects: vec![url2.clone(), url3.clone(), url4.clone()],
+        next: 0,
+        pending: None,
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      diagnostics: None,
+      host,
+      event_loop: EventLoop::new(),
+      pending_frame: None,
+    };
+ 
+    let err = tab
+      .navigate_to_url(
+        &url1,
+        RenderOptions::default().with_timeout(Some(Duration::from_millis(50))),
+      )
+      .expect_err("expected deadline to apply across redirect chain");
+ 
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::DomParse,
+        ..
+      }) => {}
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+ 
+    Ok(())
+  }
+ 
   #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
