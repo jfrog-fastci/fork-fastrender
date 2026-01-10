@@ -11,6 +11,7 @@ impl Document {
       kind,
       inert_subtree,
       is_html_script,
+      script_force_async,
       script_already_started,
       mathml_annotation_xml_integration_point,
     ) = {
@@ -24,6 +25,16 @@ impl Document {
         } if tag_name.eq_ignore_ascii_case("script")
           && (namespace.is_empty() || namespace == HTML_NAMESPACE)
       );
+      let script_force_async = if is_html_script {
+        let NodeKind::Element { attributes, .. } = &node.kind else {
+          unreachable!();
+        };
+        !attributes
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+      } else {
+        false
+      };
       let kind = match &node.kind {
         NodeKind::Document { quirks_mode } => {
           // A `dom2::Document` stores its primary document node at `self.root()`, but cloning a
@@ -89,6 +100,7 @@ impl Document {
         kind,
         node.inert_subtree,
         is_html_script,
+        script_force_async,
         node.script_already_started,
         node.mathml_annotation_xml_integration_point,
       )
@@ -103,6 +115,7 @@ impl Document {
       // HTML: script element cloning steps copy the "already started" flag only.
       //
       // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
+      self.nodes[dst.index()].script_force_async = script_force_async;
       self.nodes[dst.index()].script_already_started = script_already_started;
     }
     Ok(dst)
@@ -525,6 +538,10 @@ impl Document {
     };
 
     let id = self.push_node(kind, None, inert_subtree);
+    if is_html_ns && tag_name.eq_ignore_ascii_case("script") {
+      // HTML: Scripts created via DOM APIs have their "force async" flag set by default.
+      self.nodes[id.index()].script_force_async = true;
+    }
     id
   }
 
