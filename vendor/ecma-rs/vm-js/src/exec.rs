@@ -676,6 +676,10 @@ impl JsRuntime {
     let result: Result<Value, VmError> = (|| {
       let mut vm_frame = vm_ctx.enter_frame(frame)?;
 
+      // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+      // interrupt budgets.
+      vm_frame.tick()?;
+
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
@@ -749,6 +753,10 @@ impl JsRuntime {
 
     let result = (|| {
       let mut vm_frame = vm_ctx.enter_frame(frame)?;
+
+      // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+      // interrupt budgets.
+      vm_frame.tick()?;
 
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -1105,6 +1113,7 @@ impl<'a> Evaluator<'a> {
       // Strict mode: only top-level function declarations are var-scoped; block function
       // declarations are instantiated at block entry.
       for stmt in stmts {
+        self.tick()?;
         let Stmt::FunctionDecl(decl) = &*stmt.stx else {
           continue;
         };
@@ -1123,6 +1132,7 @@ impl<'a> Evaluator<'a> {
     let mut lexical_seen = HashSet::<String>::new();
     let mut lexical_bindings: Vec<(String, parse_js::loc::Loc)> = Vec::new();
     for stmt in stmts {
+      self.tick()?;
       let Stmt::VarDecl(var) = &*stmt.stx else {
         continue;
       };
@@ -1174,6 +1184,7 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     if self.strict {
       for stmt in stmts {
+        self.tick()?;
         let Stmt::FunctionDecl(decl) = &*stmt.stx else {
           continue;
         };
@@ -1193,6 +1204,7 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmt: &Stmt,
   ) -> Result<(), VmError> {
+    self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => self.instantiate_function_decl(scope, decl),
       Stmt::Block(block) => self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &block.stx.body),
@@ -1230,10 +1242,11 @@ impl<'a> Evaluator<'a> {
   }
 
   fn collect_sloppy_function_decl_names(
-    &self,
+    &mut self,
     stmt: &Stmt,
     out: &mut HashSet<String>,
   ) -> Result<(), VmError> {
+    self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
         let Some(name) = &decl.stx.name else {
@@ -1529,6 +1542,7 @@ impl<'a> Evaluator<'a> {
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
     for stmt in stmts {
+      self.tick()?;
       let Stmt::VarDecl(var) = &*stmt.stx else {
         continue;
       };
@@ -1609,7 +1623,8 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn collect_var_names(&self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
+  fn collect_var_names(&mut self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
+    self.tick()?;
     match stmt {
       Stmt::VarDecl(var) => {
         if var.stx.mode != VarDeclMode::Var {

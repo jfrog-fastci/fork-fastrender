@@ -79,6 +79,42 @@ fn native_noop(
 }
 
 #[test]
+fn instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(10),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // The statement list instantiation (hoisting + early checks) can traverse large trees even when
+  // runtime evaluation is trivial. Ensure that work is budgeted.
+  let mut src = String::from("if(false){");
+  for i in 0..200 {
+    src.push_str(&format!("var v{i};"));
+  }
+  src.push('}');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn empty_script_ticks_at_entry() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(0),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt.exec_script("").unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn native_call_consumes_tick() {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
