@@ -6,3 +6,4 @@ mod v1_linear_gradient_test;
 mod v1_radial_gradient_test;
 mod v1_sweep_gradient_test;
 mod v1_variable_outline_test;
+mod v1_variable_transform_test;

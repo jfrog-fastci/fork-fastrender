@@ -442,6 +442,10 @@ impl<'a> VariationInfo<'a> {
   fn f2dot14(&self, base: F2Dot14, var_index: u32) -> f32 {
     base.to_f32() + self.delta(var_index) / 16384.0
   }
+
+  fn fixed(&self, base: Fixed, var_index: u32) -> f32 {
+    base.to_f32() + self.delta(var_index) / 65536.0
+  }
 }
 
 struct Renderer<'a, 'p> {
@@ -514,6 +518,22 @@ impl<'a, 'p> Renderer<'a, 'p> {
       .unwrap_or(value as f32)
   }
 
+  fn vary_f2dot14(&self, value: F2Dot14, var_index_base: u32, offset: u32) -> f32 {
+    self
+      .variations
+      .as_ref()
+      .map(|variation| variation.f2dot14(value, var_index_base + offset))
+      .unwrap_or_else(|| value.to_f32())
+  }
+
+  fn vary_fixed(&self, value: Fixed, var_index_base: u32, offset: u32) -> f32 {
+    self
+      .variations
+      .as_ref()
+      .map(|variation| variation.fixed(value, var_index_base + offset))
+      .unwrap_or_else(|| value.to_f32())
+  }
+
   fn walk_paint(
     &self,
     paint: Paint<'a>,
@@ -582,13 +602,14 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarTransform(paint_transform) => {
         let transform = paint_transform.transform().ok()?;
+        let var_index = transform.var_index_base();
         let m = Transform::from_row(
-          fixed_to_f32(transform.xx()),
-          fixed_to_f32(transform.yx()),
-          fixed_to_f32(transform.xy()),
-          fixed_to_f32(transform.yy()),
-          fixed_to_f32(transform.dx()),
-          fixed_to_f32(transform.dy()),
+          self.vary_fixed(transform.xx(), var_index, 0),
+          self.vary_fixed(transform.yx(), var_index, 1),
+          self.vary_fixed(transform.xy(), var_index, 2),
+          self.vary_fixed(transform.yy(), var_index, 3),
+          self.vary_fixed(transform.dx(), var_index, 4),
+          self.vary_fixed(transform.dy(), var_index, 5),
         );
         let child = paint_transform.paint().ok()?;
         self.walk_paint(
@@ -617,9 +638,10 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarTranslate(paint_translate) => {
         let child = paint_translate.paint().ok()?;
+        let var_index = paint_translate.var_index_base();
         let m = Transform::from_translate(
-          paint_translate.dx().to_i16() as f32,
-          paint_translate.dy().to_i16() as f32,
+          self.vary_fword(paint_translate.dx().to_i16(), var_index, 0),
+          self.vary_fword(paint_translate.dy().to_i16(), var_index, 1),
         );
         self.walk_paint(
           child.clone(),
@@ -644,7 +666,11 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarScale(scale) => {
         let child = scale.paint().ok()?;
-        let m = Transform::from_scale(scale.scale_x().to_f32(), scale.scale_y().to_f32());
+        let var_index = scale.var_index_base();
+        let m = Transform::from_scale(
+          self.vary_f2dot14(scale.scale_x(), var_index, 0),
+          self.vary_f2dot14(scale.scale_y(), var_index, 1),
+        );
         self.walk_paint(
           child.clone(),
           paint_identity(&child),
@@ -673,11 +699,12 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarScaleAroundCenter(scale) => {
         let child = scale.paint().ok()?;
+        let var_index = scale.var_index_base();
         let m = scale_around_center(
-          scale.scale_x().to_f32(),
-          scale.scale_y().to_f32(),
-          scale.center_x().to_i16() as f32,
-          scale.center_y().to_i16() as f32,
+          self.vary_f2dot14(scale.scale_x(), var_index, 0),
+          self.vary_f2dot14(scale.scale_y(), var_index, 1),
+          self.vary_fword(scale.center_x().to_i16(), var_index, 2),
+          self.vary_fword(scale.center_y().to_i16(), var_index, 3),
         );
         self.walk_paint(
           child.clone(),
@@ -702,7 +729,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarScaleUniform(scale) => {
         let child = scale.paint().ok()?;
-        let s = scale.scale().to_f32();
+        let var_index = scale.var_index_base();
+        let s = self.vary_f2dot14(scale.scale(), var_index, 0);
         self.walk_paint(
           child.clone(),
           paint_identity(&child),
@@ -732,12 +760,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarScaleUniformAroundCenter(scale) => {
         let child = scale.paint().ok()?;
-        let s = scale.scale().to_f32();
+        let var_index = scale.var_index_base();
+        let s = self.vary_f2dot14(scale.scale(), var_index, 0);
         let m = scale_around_center(
           s,
           s,
-          scale.center_x().to_i16() as f32,
-          scale.center_y().to_i16() as f32,
+          self.vary_fword(scale.center_x().to_i16(), var_index, 1),
+          self.vary_fword(scale.center_y().to_i16(), var_index, 2),
         );
         self.walk_paint(
           child.clone(),
@@ -762,7 +791,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarRotate(rotate) => {
         let child = rotate.paint().ok()?;
-        let m = Transform::from_rotate(rotate_degrees(rotate.angle()));
+        let var_index = rotate.var_index_base();
+        let m = Transform::from_rotate(self.vary_f2dot14(rotate.angle(), var_index, 0) * 180.0);
         self.walk_paint(
           child.clone(),
           paint_identity(&child),
@@ -790,10 +820,11 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarRotateAroundCenter(rotate) => {
         let child = rotate.paint().ok()?;
+        let var_index = rotate.var_index_base();
         let m = rotate_around_center(
-          rotate_degrees(rotate.angle()),
-          rotate.center_x().to_i16() as f32,
-          rotate.center_y().to_i16() as f32,
+          self.vary_f2dot14(rotate.angle(), var_index, 0) * 180.0,
+          self.vary_fword(rotate.center_x().to_i16(), var_index, 1),
+          self.vary_fword(rotate.center_y().to_i16(), var_index, 2),
         );
         self.walk_paint(
           child.clone(),
@@ -818,7 +849,12 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarSkew(skew) => {
         let child = skew.paint().ok()?;
-        let m = skew_transform(skew.x_skew_angle(), skew.y_skew_angle(), None);
+        let var_index = skew.var_index_base();
+        let m = skew_transform_f32(
+          self.vary_f2dot14(skew.x_skew_angle(), var_index, 0),
+          self.vary_f2dot14(skew.y_skew_angle(), var_index, 1),
+          None,
+        );
         self.walk_paint(
           child.clone(),
           paint_identity(&child),
@@ -849,12 +885,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarSkewAroundCenter(skew) => {
         let child = skew.paint().ok()?;
-        let m = skew_transform(
-          skew.x_skew_angle(),
-          skew.y_skew_angle(),
+        let var_index = skew.var_index_base();
+        let m = skew_transform_f32(
+          self.vary_f2dot14(skew.x_skew_angle(), var_index, 0),
+          self.vary_f2dot14(skew.y_skew_angle(), var_index, 1),
           Some((
-            skew.center_x().to_i16() as f32,
-            skew.center_y().to_i16() as f32,
+            self.vary_fword(skew.center_x().to_i16(), var_index, 2),
+            self.vary_fword(skew.center_y().to_i16(), var_index, 3),
           )),
         );
         self.walk_paint(
@@ -1051,13 +1088,14 @@ impl<'a, 'p> Renderer<'a, 'p> {
       }
       Paint::VarTransform(transform) => {
         let m = transform.transform().ok()?;
+        let var_index = m.var_index_base();
         let matrix = Transform::from_row(
-          fixed_to_f32(m.xx()),
-          fixed_to_f32(m.yx()),
-          fixed_to_f32(m.xy()),
-          fixed_to_f32(m.yy()),
-          fixed_to_f32(m.dx()),
-          fixed_to_f32(m.dy()),
+          self.vary_fixed(m.xx(), var_index, 0),
+          self.vary_fixed(m.yx(), var_index, 1),
+          self.vary_fixed(m.xy(), var_index, 2),
+          self.vary_fixed(m.yy(), var_index, 3),
+          self.vary_fixed(m.dx(), var_index, 4),
+          self.vary_fixed(m.dy(), var_index, 5),
         );
         self.resolve_brush(transform.paint().ok()?, combined.pre_concat(matrix))
       }
@@ -1066,7 +1104,11 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(t.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarTranslate(t) => {
-        let m = Transform::from_translate(t.dx().to_i16() as f32, t.dy().to_i16() as f32);
+        let var_index = t.var_index_base();
+        let m = Transform::from_translate(
+          self.vary_fword(t.dx().to_i16(), var_index, 0),
+          self.vary_fword(t.dy().to_i16(), var_index, 1),
+        );
         self.resolve_brush(t.paint().ok()?, combined.pre_concat(m))
       }
       Paint::Scale(scale) => {
@@ -1074,7 +1116,11 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarScale(scale) => {
-        let m = Transform::from_scale(scale.scale_x().to_f32(), scale.scale_y().to_f32());
+        let var_index = scale.var_index_base();
+        let m = Transform::from_scale(
+          self.vary_f2dot14(scale.scale_x(), var_index, 0),
+          self.vary_f2dot14(scale.scale_y(), var_index, 1),
+        );
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
       Paint::ScaleAroundCenter(scale) => {
@@ -1087,11 +1133,12 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarScaleAroundCenter(scale) => {
+        let var_index = scale.var_index_base();
         let m = scale_around_center(
-          scale.scale_x().to_f32(),
-          scale.scale_y().to_f32(),
-          scale.center_x().to_i16() as f32,
-          scale.center_y().to_i16() as f32,
+          self.vary_f2dot14(scale.scale_x(), var_index, 0),
+          self.vary_f2dot14(scale.scale_y(), var_index, 1),
+          self.vary_fword(scale.center_x().to_i16(), var_index, 2),
+          self.vary_fword(scale.center_y().to_i16(), var_index, 3),
         );
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
@@ -1103,7 +1150,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
         )
       }
       Paint::VarScaleUniform(scale) => {
-        let s = scale.scale().to_f32();
+        let var_index = scale.var_index_base();
+        let s = self.vary_f2dot14(scale.scale(), var_index, 0);
         self.resolve_brush(
           scale.paint().ok()?,
           combined.pre_concat(Transform::from_scale(s, s)),
@@ -1120,12 +1168,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarScaleUniformAroundCenter(scale) => {
-        let s = scale.scale().to_f32();
+        let var_index = scale.var_index_base();
+        let s = self.vary_f2dot14(scale.scale(), var_index, 0);
         let m = scale_around_center(
           s,
           s,
-          scale.center_x().to_i16() as f32,
-          scale.center_y().to_i16() as f32,
+          self.vary_fword(scale.center_x().to_i16(), var_index, 1),
+          self.vary_fword(scale.center_y().to_i16(), var_index, 2),
         );
         self.resolve_brush(scale.paint().ok()?, combined.pre_concat(m))
       }
@@ -1134,7 +1183,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(rotate.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarRotate(rotate) => {
-        let m = Transform::from_rotate(rotate_degrees(rotate.angle()));
+        let var_index = rotate.var_index_base();
+        let m = Transform::from_rotate(self.vary_f2dot14(rotate.angle(), var_index, 0) * 180.0);
         self.resolve_brush(rotate.paint().ok()?, combined.pre_concat(m))
       }
       Paint::RotateAroundCenter(rotate) => {
@@ -1146,10 +1196,11 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(rotate.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarRotateAroundCenter(rotate) => {
+        let var_index = rotate.var_index_base();
         let m = rotate_around_center(
-          rotate_degrees(rotate.angle()),
-          rotate.center_x().to_i16() as f32,
-          rotate.center_y().to_i16() as f32,
+          self.vary_f2dot14(rotate.angle(), var_index, 0) * 180.0,
+          self.vary_fword(rotate.center_x().to_i16(), var_index, 1),
+          self.vary_fword(rotate.center_y().to_i16(), var_index, 2),
         );
         self.resolve_brush(rotate.paint().ok()?, combined.pre_concat(m))
       }
@@ -1158,7 +1209,12 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(skew.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarSkew(skew) => {
-        let m = skew_transform(skew.x_skew_angle(), skew.y_skew_angle(), None);
+        let var_index = skew.var_index_base();
+        let m = skew_transform_f32(
+          self.vary_f2dot14(skew.x_skew_angle(), var_index, 0),
+          self.vary_f2dot14(skew.y_skew_angle(), var_index, 1),
+          None,
+        );
         self.resolve_brush(skew.paint().ok()?, combined.pre_concat(m))
       }
       Paint::SkewAroundCenter(skew) => {
@@ -1173,12 +1229,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
         self.resolve_brush(skew.paint().ok()?, combined.pre_concat(m))
       }
       Paint::VarSkewAroundCenter(skew) => {
-        let m = skew_transform(
-          skew.x_skew_angle(),
-          skew.y_skew_angle(),
+        let var_index = skew.var_index_base();
+        let m = skew_transform_f32(
+          self.vary_f2dot14(skew.x_skew_angle(), var_index, 0),
+          self.vary_f2dot14(skew.y_skew_angle(), var_index, 1),
           Some((
-            skew.center_x().to_i16() as f32,
-            skew.center_y().to_i16() as f32,
+            self.vary_fword(skew.center_x().to_i16(), var_index, 2),
+            self.vary_fword(skew.center_y().to_i16(), var_index, 3),
           )),
         );
         self.resolve_brush(skew.paint().ok()?, combined.pre_concat(m))
@@ -1626,6 +1683,18 @@ fn rotate_degrees(angle: F2Dot14) -> f32 {
 fn skew_transform(x_angle: F2Dot14, y_angle: F2Dot14, center: Option<(f32, f32)>) -> Transform {
   let x_tan = (rotate_degrees(x_angle)).to_radians().tan();
   let y_tan = (rotate_degrees(y_angle)).to_radians().tan();
+  let mut transform = Transform::from_row(1.0, y_tan, x_tan, 1.0, 0.0, 0.0);
+  if let Some((cx, cy)) = center {
+    transform = Transform::from_translate(cx, cy)
+      .pre_concat(transform)
+      .pre_concat(Transform::from_translate(-cx, -cy));
+  }
+  transform
+}
+
+fn skew_transform_f32(x_angle: f32, y_angle: f32, center: Option<(f32, f32)>) -> Transform {
+  let x_tan = (x_angle * 180.0).to_radians().tan();
+  let y_tan = (y_angle * 180.0).to_radians().tan();
   let mut transform = Transform::from_row(1.0, y_tan, x_tan, 1.0, 0.0, 0.0);
   if let Some((cx, cy)) = center {
     transform = Transform::from_translate(cx, cy)
