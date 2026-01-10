@@ -476,3 +476,104 @@ fn browser_document2_retry_after_paint_cancellation_reuses_cached_layout() -> Re
 
   Ok(())
 }
+
+#[test]
+fn browser_document2_cancel_callback_can_target_paint_stage_via_active_stage() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  use fastrender::render_control::{active_stage, push_stage_listener, StageHeartbeat};
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>"#;
+
+  // Cancel only during paint (not during DOM parse / cascade / layout).
+  let cancel_paint = Arc::new(AtomicBool::new(false));
+  let cancel_paint_for_cb = Arc::clone(&cancel_paint);
+  let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(move || {
+    if !cancel_paint_for_cb.load(Ordering::SeqCst) {
+      return false;
+    }
+    matches!(active_stage(), Some(RenderStage::Paint))
+  });
+
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_cancel_callback(Some(cancel_callback));
+  let mut doc = BrowserDocument2::new(support::deterministic_renderer(), html, options)?;
+
+  // First frame should complete so we have a cached layout.
+  doc.render_frame()?;
+
+  // Force a layout change, then cancel the subsequent paint attempt via the shared callback.
+  doc.set_device_pixel_ratio(2.0);
+  cancel_paint.store(true, Ordering::SeqCst);
+
+  let stages_first: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+  let stages_first_for_listener = Arc::clone(&stages_first);
+  {
+    let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_first_for_listener.lock().unwrap().push(stage);
+    })));
+    let err = match doc.render_frame() {
+      Ok(_) => panic!("expected paint cancellation after layout"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Paint),
+      other => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  let stages_first = stages_first.lock().unwrap().clone();
+  assert!(
+    stages_first.iter().any(|s| *s == StageHeartbeat::Layout),
+    "expected layout stage before paint cancellation; got {stages_first:?}"
+  );
+
+  // Retry with cancellation disabled; this should repaint from cached layout without re-running
+  // cascade/layout.
+  cancel_paint.store(false, Ordering::SeqCst);
+  let stages_retry: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+  let stages_retry_for_listener = Arc::clone(&stages_retry);
+  {
+    let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_retry_for_listener.lock().unwrap().push(stage);
+    })));
+    doc.render_frame()?;
+  }
+
+  let stages_retry = stages_retry.lock().unwrap().clone();
+  assert!(
+    !stages_retry.iter().any(|s| {
+      matches!(
+        s,
+        StageHeartbeat::DomParse
+          | StageHeartbeat::CssInline
+          | StageHeartbeat::CssParse
+          | StageHeartbeat::Cascade
+          | StageHeartbeat::BoxTree
+          | StageHeartbeat::Layout
+      )
+    }),
+    "expected retry to paint from cache without layout stages; got {stages_retry:?}"
+  );
+  assert!(
+    stages_retry
+      .iter()
+      .any(|s| matches!(s, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)),
+    "expected paint stage on retry; got {stages_retry:?}"
+  );
+
+  Ok(())
+}
