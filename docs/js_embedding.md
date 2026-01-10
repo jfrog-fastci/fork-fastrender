@@ -71,11 +71,9 @@ later without changing the public API.
 
 What `BrowserTab` does today:
 
-- for `BrowserTab::from_html(...)` / `BrowserTab::navigate_to_html(...)`, drives a script-aware
-  streaming parser so **parser-inserted** classic `<script>` elements execute at parse time (scripts
-  observe a partially-built DOM),
-- for `BrowserTab::navigate_to_url(...)`, performs best-effort post-parse `<script>` discovery for
-  now,
+- for `BrowserTab::from_html(...)` / `BrowserTab::navigate_to_html(...)` / `BrowserTab::navigate_to_url(...)`,
+  drives a script-aware streaming parser so **parser-inserted** classic `<script>` elements execute
+  at parse time (scripts observe a partially-built DOM),
 - fetches external scripts through the document’s `ResourceFetcher`,
 - runs microtask checkpoints after script execution,
 - rerenders when DOM mutations invalidate layout/paint (`render_if_needed` / `render_frame`).

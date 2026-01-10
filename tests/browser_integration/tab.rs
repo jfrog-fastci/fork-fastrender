@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::support::rgba_at;
+use super::support::TempSite;
 
 fn find_element_by_id(dom: &Document, target: &str) -> Option<NodeId> {
   let mut stack = vec![dom.root()];
@@ -315,6 +316,109 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
   assert_eq!(
     log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
     &["assert-partial-dom".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let site = TempSite::new();
+  site.write("blocking.js", "assert-partial-dom");
+  let index_url = site.write(
+    "index.html",
+    "<!doctype html><script src=\"blocking.js\"></script><div id=after></div>",
+  );
+
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.navigate_to_url(&index_url, options)?;
+
+  assert!(
+    find_element_by_id(tab.dom(), "after").is_some(),
+    "expected parsing to resume after executing the script"
+  );
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["assert-partial-dom".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let site = TempSite::new();
+
+  // Create both root and subdir variants so the test can detect incorrect base resolution.
+  site.write("a.js", "A_ROOT");
+  site.write("sub/a.js", "A_SUB");
+  site.write("b.js", "B_ROOT");
+  site.write("sub/b.js", "B_SUB");
+
+  let index_url = site.write(
+    "index.html",
+    "<!doctype html>\
+     <head>\
+       <script src=\"a.js\"></script>\
+       <base href=\"sub/\">\
+       <script src=\"b.js\"></script>\
+     </head>",
+  );
+
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.navigate_to_url(&index_url, options)?;
+
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["A_ROOT".to_string(), "B_SUB".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let site = TempSite::new();
+  site.write("async.js", "ASYNC");
+  site.write("defer.js", "DEFER");
+
+  let index_url = site.write(
+    "index.html",
+    "<!doctype html>\
+     <script src=\"async.js\" async></script>\
+     <script src=\"defer.js\" defer></script>",
+  );
+
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.navigate_to_url(&index_url, options)?;
+
+  assert!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty(),
+    "async/defer scripts should not execute synchronously during parsing"
+  );
+
+  assert_eq!(
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["ASYNC".to_string(), "DEFER".to_string()]
   );
   Ok(())
 }

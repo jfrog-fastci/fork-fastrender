@@ -22,9 +22,9 @@ There is now an end-to-end “tab” integration point (`api::BrowserTab`) that 
 `dom2` document, classic script scheduling, an HTML-shaped event loop, and rendering invalidation.
 When loading HTML strings (`BrowserTab::from_html` / `BrowserTab::navigate_to_html`), it uses the
 script-aware streaming parser (`StreamingHtmlParser`) so parser-inserted scripts execute at `</script>`
-boundaries against a partially-built DOM. `BrowserTab::navigate_to_url` still uses best-effort
-post-parse `<script>` discovery for now, so treat it as an MVP integration surface rather than a final
-spec-correct pipeline.
+boundaries against a partially-built DOM. URL navigations (`BrowserTab::navigate_to_url`) now use the
+same streaming parser driver so parser-inserted classic scripts execute during parsing (instead of
+best-effort post-parse `<script>` discovery).
 
 What exists today (in-tree):
 
