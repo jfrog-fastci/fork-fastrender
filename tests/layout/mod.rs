@@ -82,6 +82,7 @@ mod flex_constraints_viewport_clamp;
 mod flex_fragmentation;
 mod flex_huge_overflow_item_is_not_size_clamped;
 mod flex_intrinsic_gap;
+mod flex_intrinsic_inline_size_accounts_for_flex_item_snapping;
 mod flex_intrinsic_gap_vertical_writing_mode;
 mod flex_intrinsic_margins_vertical_writing_mode;
 mod flex_intrinsic_mixed_writing_mode_axis_selection;

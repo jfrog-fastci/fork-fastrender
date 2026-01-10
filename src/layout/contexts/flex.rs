@@ -720,6 +720,122 @@ impl FlexFormattingContext {
   fn child_factory_for_cb(&self, cb: ContainingBlock) -> FormattingContextFactory {
     self.factory.with_positioned_cb(cb)
   }
+
+  /// Computes an inline-size hint for answering Taffy's intrinsic width probes for *flex containers*.
+  ///
+  /// Taffy asks the measure callback for `AvailableSpace::MaxContent` when resolving a flex item's
+  /// base size. For items that establish their own flex formatting context, the returned size is
+  /// later reused as the flex container's used inline size.
+  ///
+  /// However, Taffy's flex algorithm operates on **hypothetical main sizes**, which clamp the flex
+  /// base size against the flex item's automatic minimum size. In FastRender's Taffy integration we
+  /// also snap intrinsic max-content probes to whole pixels to avoid wrap decisions that disappear
+  /// after pixel snapping.
+  ///
+  /// If we answer a flex container's max-content probe by summing only the raw child max-content
+  /// widths, the returned size can be slightly smaller than the hypothetical sizes Taffy will later
+  /// assign to the flex container's own children, causing spurious wrapping (observed on the
+  /// rust-lang.org header nav).
+  fn flex_container_inline_size_taffy_probe_hint(
+    &self,
+    box_node: &BoxNode,
+    style: &ComputedStyle,
+    mode: IntrinsicSizingMode,
+  ) -> Result<f32, LayoutError> {
+    // Only adjust max-content probes for row-direction containers; other cases can fall back to the
+    // regular intrinsic sizing implementation.
+    if mode != IntrinsicSizingMode::MaxContent {
+      return <Self as FormattingContext>::compute_intrinsic_inline_size(self, box_node, mode);
+    }
+
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let is_row_axis =
+      matches!(style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+    if !is_row_axis {
+      return <Self as FormattingContext>::compute_intrinsic_inline_size(self, box_node, mode);
+    }
+
+    let factory = Arc::new(self.child_factory());
+    let container_inline_is_horizontal = inline_is_horizontal;
+
+    let mut sum = 0.0f32;
+    let mut in_flow_items = 0usize;
+
+    for child in &box_node.children {
+      let style_override = crate::layout::style_override::style_override_for(child.id);
+      let child_style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| child.style.as_ref());
+      if matches!(child_style.position, Position::Absolute | Position::Fixed) {
+        continue;
+      }
+
+      let fc_type = child
+        .formatting_context()
+        .unwrap_or(FormattingContextType::Block);
+      let fc = factory.get(fc_type);
+
+      // Measure the child's intrinsic sizes along the flex container's inline axis.
+      let child_inline_is_horizontal =
+        crate::style::inline_axis_is_horizontal(child_style.writing_mode);
+      let (min, max) = if child_inline_is_horizontal == container_inline_is_horizontal {
+        fc.compute_intrinsic_inline_sizes(child)?
+      } else {
+        // The container's inline axis maps to the child's block axis.
+        let min = fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent)?;
+        let max = fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent)?;
+        (min, max)
+      };
+
+      // Include margins along the container's inline axis when they resolve without a containing
+      // block.
+      let (margin_start, margin_end) = if container_inline_is_horizontal {
+        (child_style.margin_left, child_style.margin_right)
+      } else {
+        (child_style.margin_top, child_style.margin_bottom)
+      };
+      let margin_start = margin_start
+        .as_ref()
+        .map(|l| self.resolve_length_for_width(*l, 0.0, child_style))
+        .unwrap_or(0.0);
+      let margin_end = margin_end
+        .as_ref()
+        .map(|l| self.resolve_length_for_width(*l, 0.0, child_style))
+        .unwrap_or(0.0);
+      let min = min + margin_start + margin_end;
+      let max = max + margin_start + margin_end;
+
+      // Model the hypothetical main size:
+      // - snap the base size to whole pixels (as the intrinsic-probe path does), then
+      // - clamp against the flex item's automatic minimum size (approximated by min-content).
+      let snapped_max = if max.is_finite() { max.round() } else { max };
+      let hypothetical = snapped_max.max(min);
+
+      sum += hypothetical;
+      in_flow_items += 1;
+    }
+
+    if in_flow_items > 1 {
+      // Include column-gap between items (resolved against a 0px base to keep the hint deterministic
+      // under intrinsic sizing).
+      let gap_len = style.grid_column_gap;
+      let gap = self.resolve_length_for_width(gap_len, 0.0, style);
+      if gap.is_finite() && gap > 0.0 {
+        sum += gap * (in_flow_items as f32 - 1.0);
+      }
+    }
+
+    let edges = if inline_is_horizontal {
+      self.horizontal_edges_px(style).unwrap_or(0.0)
+    } else {
+      self.vertical_edges_px(style).unwrap_or(0.0)
+    };
+
+    let hinted = (sum + edges).max(0.0);
+    // Never return a hint smaller than the spec intrinsic size.
+    let raw = <Self as FormattingContext>::compute_intrinsic_inline_size(self, box_node, mode)?;
+    Ok(hinted.max(raw))
+  }
 }
 
 impl Default for FlexFormattingContext {
@@ -3015,7 +3131,36 @@ impl FormattingContext for FlexFormattingContext {
                         // performed specifically for flex-measure logging.
                         record_flex_measure_inline_hint_call();
                       }
-                      let intrinsic_result = if let Some(style) = override_style.clone() {
+                      let intrinsic_result = if mode == IntrinsicSizingMode::MaxContent
+                        && matches!(fc_type, FormattingContextType::Flex)
+                      {
+                        if let Some(style) = override_style.clone() {
+                          if measure_box.id != 0 {
+                            crate::layout::style_override::with_style_override(
+                              measure_box.id,
+                              style,
+                              || {
+                                this.flex_container_inline_size_taffy_probe_hint(
+                                  measure_box,
+                                  measure_style,
+                                  mode,
+                                )
+                              },
+                            )
+                          } else {
+                            let mut cloned = measure_box.clone();
+                            cloned.style = style;
+                            let style: &ComputedStyle = cloned.style.as_ref();
+                            this.flex_container_inline_size_taffy_probe_hint(&cloned, style, mode)
+                          }
+                        } else {
+                          this.flex_container_inline_size_taffy_probe_hint(
+                            measure_box,
+                            measure_style,
+                            mode,
+                          )
+                        }
+                      } else if let Some(style) = override_style.clone() {
                         if measure_box.id != 0 {
                           crate::layout::style_override::with_style_override(
                             measure_box.id,
