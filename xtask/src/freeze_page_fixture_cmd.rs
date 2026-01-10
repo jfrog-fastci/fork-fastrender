@@ -115,22 +115,22 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
     bail!("no pages specified; pass --page <URL-or-stem> and/or --pages <csv>");
   }
 
-  let plan = xtask::freeze_page_fixture::plan_freeze_page_fixture(
-    &xtask::freeze_page_fixture::FreezePageFixturePlanArgs {
-      pages,
-      html_dir: args.html_dir.clone(),
-      asset_cache_dir: args.asset_cache_dir.clone(),
-      fixtures_root: args.fixtures_root.clone(),
-      bundle_out_dir: args.bundle_out_dir.clone(),
-      overwrite: args.overwrite,
-      allow_missing_resources: args.allow_missing_resources,
-      include_scripts: args.include_scripts,
-      user_agent: args.user_agent.clone(),
-      accept_language: args.accept_language.clone(),
-      viewport: args.viewport,
-      dpr: args.dpr,
-    },
-  )?;
+  let plan_args = xtask::freeze_page_fixture::FreezePageFixturePlanArgs {
+    pages,
+    html_dir: args.html_dir.clone(),
+    asset_cache_dir: args.asset_cache_dir.clone(),
+    fixtures_root: args.fixtures_root.clone(),
+    bundle_out_dir: args.bundle_out_dir.clone(),
+    overwrite: args.overwrite,
+    allow_missing_resources: args.allow_missing_resources,
+    include_scripts: args.include_scripts,
+    user_agent: args.user_agent.clone(),
+    accept_language: args.accept_language.clone(),
+    viewport: args.viewport,
+    dpr: args.dpr,
+  };
+
+  let plan = xtask::freeze_page_fixture::plan_freeze_page_fixture(&plan_args)?;
 
   let selected_cache_stems: Vec<String> = plan.pages.iter().map(|p| p.cache_stem.clone()).collect();
   let pages_csv = selected_cache_stems.join(",");
@@ -147,7 +147,7 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
     ensure_cached_inputs_exist(&plan, &args)?;
   } else {
     run_fetch_pages_step(&args, &pages_csv)?;
-    run_prefetch_assets_step(&args, &pages_csv)?;
+    run_prefetch_assets_step(&plan_args, &pages_csv)?;
   }
 
   if !plan.pages.is_empty() {
@@ -247,44 +247,18 @@ fn build_fetch_pages_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> C
   cmd
 }
 
-fn run_prefetch_assets_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result<()> {
+fn run_prefetch_assets_step(
+  args: &xtask::freeze_page_fixture::FreezePageFixturePlanArgs,
+  pages_csv: &str,
+) -> Result<()> {
   let repo_root = crate::repo_root();
-  let mut cmd = build_prefetch_assets_command(args, pages_csv);
+  let allow_no_store = std::env::var_os("FASTR_DISK_CACHE_ALLOW_NO_STORE").is_none();
+  let mut cmd =
+    xtask::freeze_page_fixture::build_prefetch_assets_command_spec(pages_csv, args, allow_no_store)
+      .to_command();
   cmd.current_dir(&repo_root);
   crate::run_command(cmd).context("prefetch_assets")?;
   Ok(())
-}
-
-fn build_prefetch_assets_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> Command {
-  use crate::DiskCacheFeatureExt;
-
-  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
-  cmd
-    .arg("run")
-    .arg("--release")
-    .apply_disk_cache_feature(true)
-    .args(["--bin", "prefetch_assets", "--"])
-    .arg("--cache-dir")
-    .arg(&args.asset_cache_dir)
-    .args(["--pages", pages_csv])
-    .args(["--user-agent", &args.user_agent])
-    .args(["--accept-language", &args.accept_language])
-    .args([
-      "--viewport",
-      &format!("{}x{}", args.viewport.0, args.viewport.1),
-    ])
-    .args(["--dpr", &args.dpr.to_string()])
-    .arg("--prefetch-images")
-    .arg("--prefetch-css-url-assets");
-
-  if args.include_scripts {
-    cmd.arg("--prefetch-scripts");
-  }
-
-  if std::env::var_os("FASTR_DISK_CACHE_ALLOW_NO_STORE").is_none() {
-    cmd.arg("--disk-cache-allow-no-store");
-  }
-  cmd
 }
 
 fn build_import_page_fixture_args(
@@ -342,23 +316,22 @@ mod tests {
       dpr: 1.0,
     };
 
-    let plan = xtask::freeze_page_fixture::plan_freeze_page_fixture(
-      &xtask::freeze_page_fixture::FreezePageFixturePlanArgs {
-        pages: vec!["example.com".to_string()],
-        html_dir: args.html_dir.clone(),
-        asset_cache_dir: args.asset_cache_dir.clone(),
-        fixtures_root: args.fixtures_root.clone(),
-        bundle_out_dir: args.bundle_out_dir.clone(),
-        overwrite: args.overwrite,
-        allow_missing_resources: args.allow_missing_resources,
-        include_scripts: args.include_scripts,
-        user_agent: args.user_agent.clone(),
-        accept_language: args.accept_language.clone(),
-        viewport: args.viewport,
-        dpr: args.dpr,
-      },
-    )
-    .expect("plan");
+    let plan_args = xtask::freeze_page_fixture::FreezePageFixturePlanArgs {
+      pages: vec!["example.com".to_string()],
+      html_dir: args.html_dir.clone(),
+      asset_cache_dir: args.asset_cache_dir.clone(),
+      fixtures_root: args.fixtures_root.clone(),
+      bundle_out_dir: args.bundle_out_dir.clone(),
+      overwrite: args.overwrite,
+      allow_missing_resources: args.allow_missing_resources,
+      include_scripts: args.include_scripts,
+      user_agent: args.user_agent.clone(),
+      accept_language: args.accept_language.clone(),
+      viewport: args.viewport,
+      dpr: args.dpr,
+    };
+
+    let plan = xtask::freeze_page_fixture::plan_freeze_page_fixture(&plan_args).expect("plan");
 
     assert_eq!(plan.pages.len(), 1);
     let capture = &plan.pages[0];
@@ -372,14 +345,15 @@ mod tests {
       capture.bundle_command.args
     );
 
-    let prefetch_cmd = build_prefetch_assets_command(&args, "example.com");
-    let prefetch_args: Vec<String> = prefetch_cmd
-      .get_args()
-      .map(|s| s.to_string_lossy().to_string())
-      .collect();
+    let prefetch_args = xtask::freeze_page_fixture::build_prefetch_assets_command_spec(
+      "example.com",
+      &plan_args,
+      true,
+    )
+    .args;
     assert!(
-      prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
-      "prefetch_assets should include --prefetch-scripts when --include-scripts is set: {prefetch_args:?}"
+      !prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
+      "freeze-page-fixture should not pass removed prefetch_assets flags: {prefetch_args:?}"
     );
 
     let fetch_cmd = build_fetch_pages_command(&args, "example.com");

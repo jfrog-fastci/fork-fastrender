@@ -1,7 +1,9 @@
 use fastrender::resource::{DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT};
 use std::process::Command;
 use tempfile::TempDir;
-use xtask::freeze_page_fixture::{plan_freeze_page_fixture, FreezePageFixturePlanArgs};
+use xtask::freeze_page_fixture::{
+  build_prefetch_assets_command_spec, plan_freeze_page_fixture, FreezePageFixturePlanArgs,
+};
 
 fn plan_for_page(page: &str) -> FreezePageFixturePlanArgs {
   let temp = TempDir::new().expect("tempdir");
@@ -73,6 +75,40 @@ fn planned_bundle_page_cache_command_includes_required_args() {
   assert!(
     joined.contains("--allow-missing"),
     "expected allow-missing-resources to map to --allow-missing, got: {joined}"
+  );
+}
+
+#[test]
+fn planned_prefetch_assets_command_does_not_include_prefetch_scripts() {
+  let mut args = plan_for_page("https://www.example.com/");
+  args.include_scripts = true;
+
+  let cmd = build_prefetch_assets_command_spec("example.com", &args, true);
+
+  assert!(
+    cmd.args.iter().any(|arg| arg == "prefetch_assets"),
+    "expected command to invoke prefetch_assets; got: {:?}",
+    cmd.args
+  );
+  assert!(
+    cmd.args.iter().any(|arg| arg == "--prefetch-images"),
+    "expected command to enable --prefetch-images; got: {:?}",
+    cmd.args
+  );
+  assert!(
+    cmd.args.iter().any(|arg| arg == "--prefetch-css-url-assets"),
+    "expected command to enable --prefetch-css-url-assets; got: {:?}",
+    cmd.args
+  );
+  assert!(
+    cmd.args.iter().any(|arg| arg == "--disk-cache-allow-no-store"),
+    "expected command to include --disk-cache-allow-no-store; got: {:?}",
+    cmd.args
+  );
+  assert!(
+    !cmd.args.iter().any(|arg| arg == "--prefetch-scripts"),
+    "expected freeze-page-fixture prefetch step to omit removed --prefetch-scripts flag; got: {:?}",
+    cmd.args
   );
 }
 

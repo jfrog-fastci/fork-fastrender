@@ -145,3 +145,46 @@ fn build_bundle_page_cache_command(
     args: cmd,
   }
 }
+
+pub fn build_prefetch_assets_command_spec(
+  pages_csv: &str,
+  args: &FreezePageFixturePlanArgs,
+  disk_cache_allow_no_store: bool,
+) -> CommandSpec {
+  let cache_dir = args.asset_cache_dir.to_string_lossy().to_string();
+  let viewport = format!("{}x{}", args.viewport.0, args.viewport.1);
+
+  let mut cmd = vec![
+    "scripts/cargo_agent.sh".to_string(),
+    "run".to_string(),
+    "--release".to_string(),
+    "--features".to_string(),
+    "disk_cache".to_string(),
+    "--bin".to_string(),
+    "prefetch_assets".to_string(),
+    "--".to_string(),
+    "--cache-dir".to_string(),
+    cache_dir,
+    "--pages".to_string(),
+    pages_csv.to_string(),
+    "--user-agent".to_string(),
+    args.user_agent.clone(),
+    "--accept-language".to_string(),
+    args.accept_language.clone(),
+    "--viewport".to_string(),
+    viewport,
+    "--dpr".to_string(),
+    args.dpr.to_string(),
+    "--prefetch-images".to_string(),
+    "--prefetch-css-url-assets".to_string(),
+  ];
+
+  if disk_cache_allow_no_store {
+    cmd.push("--disk-cache-allow-no-store".to_string());
+  }
+
+  CommandSpec {
+    program: "bash".to_string(),
+    args: cmd,
+  }
+}
