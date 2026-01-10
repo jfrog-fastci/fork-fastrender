@@ -47,3 +47,20 @@ fn host_context_is_preserved_when_builtins_invoke_user_code() -> Result<(), VmEr
   assert_eq!(host.counter, 1);
   Ok(())
 }
+
+#[test]
+fn host_context_is_preserved_when_promise_resolve_invokes_then_getter() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
+  assert_eq!(host.counter, 0);
+
+  // `Promise.resolve` must synchronously perform `Get(thenable, "then")`, which can invoke an
+  // accessor getter.
+  rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "Promise.resolve({ get then(){ inc(); } });")?;
+
+  assert_eq!(host.counter, 1);
+  Ok(())
+}
