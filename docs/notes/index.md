@@ -16,6 +16,7 @@ Small, durable writeups that explain “why/how” decisions that are worth keep
 - [bundled-fonts.md](bundled-fonts.md) — policy for keeping bundled font coverage deterministic and small.
 - [layout-timeouts-profiling.md](layout-timeouts-profiling.md) — baseline CPU profiles for layout timeouts + layout hotspots.
 - [empty-urls-and-image-placeholders.md](empty-urls-and-image-placeholders.md) — handling `url("")` and non-image HTTP payloads to keep pageset progress signal-heavy.
+- [css-values-5-if-calc-size-attr.md](css-values-5-if-calc-size-attr.md) — supported subset of CSS Values 5 `if()`, `calc-size()`, and typed `attr()`.
 - [svg_filters_percentages.md](svg_filters_percentages.md) — SVG filter region/primitive percentage resolution rules.
 - [svg_filters_userspace_numbers.md](svg_filters_userspace_numbers.md) — SVG filter `userSpaceOnUse` numeric `x/y` resolution for CSS `filter:url(...)`.
 - [svg_filters_color_interpolation_filters.md](svg_filters_color_interpolation_filters.md) — SVG filter color spaces (`color-interpolation-filters`) and premultiplication policy.

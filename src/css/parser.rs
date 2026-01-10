@@ -2436,7 +2436,7 @@ fn parse_supports_rule<'i, 't>(
   Ok(Some(CssRule::Supports(SupportsRule { condition, rules })))
 }
 
-fn parse_supports_prelude(prelude: &str) -> SupportsCondition {
+pub(crate) fn parse_supports_prelude(prelude: &str) -> SupportsCondition {
   let mut input = ParserInput::new(prelude);
   let mut parser = Parser::new(&mut input);
   match parse_supports_condition(&mut parser) {
@@ -5973,7 +5973,7 @@ fn parse_declaration<'i, 't>(
   };
   let value = trim_ascii_whitespace_end(value.trim_end_matches(';'));
 
-  let contains_var = crate::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_arbitrary_substitution_function(value);
   let parsed_value =
     parse_property_value_in_context_known_property(context, property.as_str(), value)?;
   Some(Declaration {
@@ -6137,7 +6137,7 @@ fn parse_declaration_in_style_block<'i, 't>(
     return Ok(None);
   };
 
-  let contains_var = crate::style::var_resolution::contains_var(value);
+  let contains_var = crate::style::var_resolution::contains_arbitrary_substitution_function(value);
   let Some(parsed_value) =
     parse_property_value_in_context_known_property(context, property.as_str(), value)
   else {

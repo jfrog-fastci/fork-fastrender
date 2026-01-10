@@ -463,6 +463,54 @@ impl AbsoluteLayout {
           .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
           .map(shrink),
         },
+        IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_content = match calc.basis {
+            CalcSizeBasis::Auto => Some(shrink(available)),
+            CalcSizeBasis::MinContent => Some(preferred_min),
+            CalcSizeBasis::MaxContent => Some(preferred),
+            CalcSizeBasis::FillAvailable => Some(available.max(0.0)),
+            CalcSizeBasis::FitContent { limit } => match limit {
+              None => Some(shrink(available)),
+              Some(limit) => resolve_length_for_positioned_size(
+                &limit,
+                inline_base,
+                viewport,
+                style,
+                &self.font_context,
+              )
+              .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+              .map(shrink),
+            },
+            CalcSizeBasis::Length(len) => resolve_length_for_positioned_size(
+              &len,
+              inline_base,
+              viewport,
+              style,
+              &self.font_context,
+            )
+            .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)),
+          }?
+          .max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_content + total_horizontal_spacing,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_for_positioned_size(
+                &expr_len,
+                inline_base,
+                viewport,
+                style,
+                &self.font_context,
+              )
+            })
+            .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing).max(0.0))
+            .or(Some(basis_content))
+        }
       }
     };
 
@@ -779,6 +827,54 @@ impl AbsoluteLayout {
           .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
           .map(shrink),
         },
+        IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_content = match calc.basis {
+            CalcSizeBasis::Auto => Some(shrink(available)),
+            CalcSizeBasis::MinContent => Some(preferred_min),
+            CalcSizeBasis::MaxContent => Some(preferred),
+            CalcSizeBasis::FillAvailable => Some(available.max(0.0)),
+            CalcSizeBasis::FitContent { limit } => match limit {
+              None => Some(shrink(available)),
+              Some(limit) => resolve_length_for_positioned_size(
+                &limit,
+                block_base,
+                viewport,
+                style,
+                &self.font_context,
+              )
+              .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
+              .map(shrink),
+            },
+            CalcSizeBasis::Length(len) => resolve_length_for_positioned_size(
+              &len,
+              block_base,
+              viewport,
+              style,
+              &self.font_context,
+            )
+            .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing)),
+          }?
+          .max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_content + total_vertical_spacing,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_for_positioned_size(
+                &expr_len,
+                block_base,
+                viewport,
+                style,
+                &self.font_context,
+              )
+            })
+            .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing).max(0.0))
+            .or(Some(basis_content))
+        }
       }
     };
 

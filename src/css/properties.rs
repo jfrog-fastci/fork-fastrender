@@ -1423,13 +1423,15 @@ fn parse_property_value_in_context_internal(
     return Some(cached);
   }
 
-  // If the value contains a CSS variable, keep the raw string so it can be resolved later during
-  // cascade/computed value resolution.
+  // If the value contains an "arbitrary substitution function" (var()/if()/attr()), keep the raw
+  // string so it can be resolved later during cascade/computed value resolution.
   //
   // Note: this happens *after* the parsed-value cache lookup so repeated var-free values avoid
   // paying the var() scan cost. Values containing `var()` are intentionally not cached because the
   // cache would have to clone the raw `String` on hits, erasing most of the benefit.
-  if !skip_var_guard && crate::style::var_resolution::contains_var(trimmed) {
+  if !skip_var_guard
+    && crate::style::var_resolution::contains_arbitrary_substitution_function(trimmed)
+  {
     return Some(PropertyValue::Keyword(trimmed.to_string()));
   }
 
@@ -2743,6 +2745,99 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
     };
     if parse_length(inner).is_some() {
       return true;
+    }
+  }
+
+  // `calc-size(<basis>, <calc-sum>)` (CSS Values 5).
+  {
+    let Some(open) = trimmed.find('(') else {
+      return false;
+    };
+    let head = trim_css_whitespace(trimmed.get(..open).unwrap_or(""));
+    if head.eq_ignore_ascii_case("calc-size") {
+      let close = match trimmed.rfind(')') {
+        Some(close) => close,
+        None => return false,
+      };
+      if close <= open {
+        return false;
+      }
+      if !trim_css_whitespace(trimmed.get(close + 1..).unwrap_or("")).is_empty() {
+        return false;
+      }
+      let inner = trim_css_whitespace(trimmed.get(open + 1..close).unwrap_or(""));
+
+      let mut depth_paren: usize = 0;
+      let mut depth_square: usize = 0;
+      let mut depth_curly: usize = 0;
+      let mut in_string: Option<char> = None;
+      let mut escape = false;
+      let mut comma: Option<usize> = None;
+      for (idx, ch) in inner.char_indices() {
+        if let Some(quote) = in_string {
+          if escape {
+            escape = false;
+            continue;
+          }
+          if ch == '\\' {
+            escape = true;
+          } else if ch == quote {
+            in_string = None;
+          }
+          continue;
+        }
+
+        match ch {
+          '"' | '\'' => in_string = Some(ch),
+          '(' => depth_paren += 1,
+          ')' => depth_paren = depth_paren.saturating_sub(1),
+          '[' => depth_square += 1,
+          ']' => depth_square = depth_square.saturating_sub(1),
+          '{' => depth_curly += 1,
+          '}' => depth_curly = depth_curly.saturating_sub(1),
+          ',' if depth_paren == 0 && depth_square == 0 && depth_curly == 0 => {
+            if comma.is_some() {
+              return false;
+            }
+            comma = Some(idx);
+          }
+          _ => {}
+        }
+      }
+
+      let Some(comma) = comma else {
+        return false;
+      };
+      let basis = trim_css_whitespace(inner.get(..comma).unwrap_or(""));
+      let expr = trim_css_whitespace(inner.get(comma + 1..).unwrap_or(""));
+      if basis.is_empty() || expr.is_empty() {
+        return false;
+      }
+
+      let basis_supported = if basis.eq_ignore_ascii_case("auto") {
+        true
+      } else {
+        // Prevent infinite recursion: `<basis>` does not include `calc-size()`.
+        let is_calc_size = basis
+          .find('(')
+          .is_some_and(|open| trim_css_whitespace(basis.get(..open).unwrap_or("")).eq_ignore_ascii_case("calc-size"));
+        if !is_calc_size && supports_intrinsic_size_keyword(basis) {
+          true
+        } else {
+          parse_length(basis).is_some()
+        }
+      };
+      if !basis_supported {
+        return false;
+      }
+
+      let substituted = match crate::style::values::substitute_calc_size_expr(expr, 0.0) {
+        Some(substituted) => substituted,
+        None => return false,
+      };
+      if parse_length(&format!("calc({substituted})")).is_some() {
+        return true;
+      }
     }
   }
 

@@ -1283,6 +1283,39 @@ impl GridFormattingContext {
           available, preferred, min, max,
         )
       }
+      IntrinsicSizeKeyword::CalcSize(calc) => {
+        use crate::style::types::BoxSizing;
+        use crate::style::types::CalcSizeBasis;
+        let basis_border = match calc.basis {
+          CalcSizeBasis::Auto => available.filter(|v| v.is_finite()).unwrap_or(max).max(0.0),
+          CalcSizeBasis::MinContent => min,
+          CalcSizeBasis::MaxContent => max,
+          CalcSizeBasis::FillAvailable => available.filter(|v| v.is_finite()).unwrap_or(max).max(0.0),
+          CalcSizeBasis::FitContent { limit } => {
+            let preferred = limit
+              .and_then(|limit| self.resolve_length_px_with_base(limit, available, style))
+              .map(|px| border_size_from_box_sizing(px, edges, style.box_sizing));
+            crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+              available, preferred, min, max,
+            )
+          }
+          CalcSizeBasis::Length(len) => self
+            .resolve_length_px_with_base(len, available, style)
+            .map(|px| border_size_from_box_sizing(px, edges, style.box_sizing))
+            .unwrap_or(max),
+        }
+        .max(0.0);
+        let basis_content = (basis_border - edges).max(0.0);
+        let basis_specified = match style.box_sizing {
+          BoxSizing::ContentBox => basis_content,
+          BoxSizing::BorderBox => basis_border,
+        };
+        crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+          .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+          .and_then(|expr_len| self.resolve_length_px_with_base(expr_len, available, style))
+          .map(|px| border_size_from_box_sizing(px, edges, style.box_sizing).max(0.0))
+          .unwrap_or(basis_border)
+      }
     }
   }
 
@@ -2070,6 +2103,7 @@ impl GridFormattingContext {
         IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
         IntrinsicSizeKeyword::FillAvailable => None,
         IntrinsicSizeKeyword::FitContent { .. } => None,
+        IntrinsicSizeKeyword::CalcSize(_) => None,
       }
     };
     let author_min = author_min_kw.and_then(keyword_to_bound).or_else(|| {
@@ -2113,6 +2147,7 @@ impl GridFormattingContext {
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
       IntrinsicSizeKeyword::FillAvailable => None,
       IntrinsicSizeKeyword::FitContent { .. } => None,
+      IntrinsicSizeKeyword::CalcSize(_) => None,
     };
     let width_has_fit_content_max_constraint = style.max_width.is_none()
       && matches!(
@@ -8567,6 +8602,7 @@ impl GridFormattingContext {
             IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
             IntrinsicSizeKeyword::FillAvailable => None,
             IntrinsicSizeKeyword::FitContent { .. } => None,
+            IntrinsicSizeKeyword::CalcSize(_) => None,
           }
         };
         let percentage_base_opt = match avail_dim {
@@ -8655,9 +8691,9 @@ impl GridFormattingContext {
                   resolved.max(0.0)
                 };
                 constraints.used_border_box_width = Some(border_box.min(max_border_box));
-              } else if let Some(keyword) = style.width_keyword {
-                match keyword {
-                  IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
+                } else if let Some(keyword) = style.width_keyword {
+                  match keyword {
+                    IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
                     let use_min = matches!(keyword, IntrinsicSizeKeyword::MinContent);
                     match intrinsic_range_for_physical_axis(Axis::Horizontal) {
                       Ok((min_intrinsic, max_intrinsic)) => {
@@ -8672,7 +8708,7 @@ impl GridFormattingContext {
                       Err(_) => {}
                     }
                   }
-                  IntrinsicSizeKeyword::FillAvailable => {
+                    IntrinsicSizeKeyword::FillAvailable => {
                     let base = constraints
                       .inline_percentage_base
                       .unwrap_or(percentage_base)
@@ -8682,12 +8718,13 @@ impl GridFormattingContext {
                     } else {
                       base.max(0.0)
                     };
-                    constraints.used_border_box_width = Some(border_box.min(max_border_box));
+                      constraints.used_border_box_width = Some(border_box.min(max_border_box));
+                    }
+                    IntrinsicSizeKeyword::FitContent { .. } => {}
+                    IntrinsicSizeKeyword::CalcSize(_) => {}
                   }
-                  IntrinsicSizeKeyword::FitContent { .. } => {}
                 }
               }
-            }
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
             Err(_) => {}
             _ => {}
@@ -8746,6 +8783,7 @@ impl GridFormattingContext {
                     constraints.used_border_box_height = Some(border_box.min(max_border_box));
                   }
                   IntrinsicSizeKeyword::FitContent { .. } => {}
+                  IntrinsicSizeKeyword::CalcSize(_) => {}
                 }
               }
             }
@@ -10465,6 +10503,7 @@ impl FormattingContext for GridFormattingContext {
           IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
           IntrinsicSizeKeyword::FillAvailable => None,
           IntrinsicSizeKeyword::FitContent { .. } => None,
+          IntrinsicSizeKeyword::CalcSize(_) => None,
         };
 
         let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);

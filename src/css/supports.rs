@@ -2,7 +2,7 @@ use super::properties::{
   is_global_keyword_str, is_known_style_property, parse_property_value,
   supports_parsed_declaration_is_valid, vendor_prefixed_property_alias,
 };
-use crate::style::var_resolution::contains_var;
+use crate::style::var_resolution::contains_arbitrary_substitution_function;
 use cssparser::Parser;
 use cssparser::ParserInput;
 use cssparser::Token;
@@ -88,7 +88,8 @@ fn strip_trailing_important(value: &str) -> &str {
 /// Validates a (property, value) pair for use in @supports queries.
 ///
 /// Returns true when the property is recognized and either the value is a CSS-wide keyword,
-/// contains a var() reference, or parses according to the engine's supported grammar.
+  /// contains an arbitrary substitution function (`var()`/`if()`/`attr()`), or parses according to
+  /// the engine's supported grammar.
 pub fn supports_declaration(property: &str, value: &str) -> bool {
   let trimmed_property = trim_ascii_whitespace(property);
   if trimmed_property.is_empty() {
@@ -148,7 +149,7 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
     return true;
   }
 
-  if contains_var(value_without_important) {
+  if contains_arbitrary_substitution_function(value_without_important) {
     return true;
   }
 

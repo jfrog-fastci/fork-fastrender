@@ -1011,6 +1011,55 @@ pub fn compute_replaced_size(
           }
         }
       }
+      IntrinsicSizeKeyword::CalcSize(calc) => {
+        use crate::style::types::BoxSizing;
+        use crate::style::types::CalcSizeBasis;
+        let basis_content = match calc.basis {
+          CalcSizeBasis::Auto => intrinsic_keyword_w,
+          CalcSizeBasis::MinContent | CalcSizeBasis::MaxContent => intrinsic_keyword_w,
+          CalcSizeBasis::FillAvailable => width_base
+            .map(|base| content_size_from_box_sizing(base.max(0.0), horizontal_edges, style.box_sizing))
+            .or(intrinsic_keyword_w),
+          CalcSizeBasis::FitContent { limit } => {
+            let max_content = intrinsic_keyword_w?;
+            let min_content: f32 = 0.0;
+            match limit {
+              Some(limit) => {
+                let limit = resolve_replaced_length(&limit, width_base, viewport, style, None)
+                  .map(|v| content_size_from_box_sizing(v, horizontal_edges, style.box_sizing))
+                  .unwrap_or(max_content);
+                Some(max_content.min(min_content.max(limit)))
+              }
+              None => {
+                if let Some(base) = width_base {
+                  let available = content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
+                  Some(max_content.min(min_content.max(available)))
+                } else {
+                  Some(max_content)
+                }
+              }
+            }
+          }
+          CalcSizeBasis::Length(len) => resolve_replaced_length(&len, width_base, viewport, style, None)
+            .map(|v| content_size_from_box_sizing(v, horizontal_edges, style.box_sizing)),
+        }?;
+        let basis_content = sanitize(basis_content);
+        let basis_specified = match style.box_sizing {
+          BoxSizing::ContentBox => basis_content,
+          BoxSizing::BorderBox => basis_content + horizontal_edges,
+        };
+        crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+          .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+          .and_then(|expr_len| resolve_replaced_length(&expr_len, width_base, viewport, style, None))
+          .map(|resolved_specified| {
+            sanitize(content_size_from_box_sizing(
+              resolved_specified,
+              horizontal_edges,
+              style.box_sizing,
+            ))
+          })
+          .or(Some(basis_content))
+      }
     }
   };
 
@@ -1042,6 +1091,55 @@ pub fn compute_replaced_size(
             }
           }
         }
+      }
+      IntrinsicSizeKeyword::CalcSize(calc) => {
+        use crate::style::types::BoxSizing;
+        use crate::style::types::CalcSizeBasis;
+        let basis_content = match calc.basis {
+          CalcSizeBasis::Auto => intrinsic_keyword_h,
+          CalcSizeBasis::MinContent | CalcSizeBasis::MaxContent => intrinsic_keyword_h,
+          CalcSizeBasis::FillAvailable => height_base
+            .map(|base| content_size_from_box_sizing(base.max(0.0), vertical_edges, style.box_sizing))
+            .or(intrinsic_keyword_h),
+          CalcSizeBasis::FitContent { limit } => {
+            let max_content = intrinsic_keyword_h?;
+            let min_content: f32 = 0.0;
+            match limit {
+              Some(limit) => {
+                let limit = resolve_replaced_length(&limit, height_base, viewport, style, None)
+                  .map(|v| content_size_from_box_sizing(v, vertical_edges, style.box_sizing))
+                  .unwrap_or(max_content);
+                Some(max_content.min(min_content.max(limit)))
+              }
+              None => {
+                if let Some(base) = height_base {
+                  let available = content_size_from_box_sizing(base, vertical_edges, style.box_sizing);
+                  Some(max_content.min(min_content.max(available)))
+                } else {
+                  Some(max_content)
+                }
+              }
+            }
+          }
+          CalcSizeBasis::Length(len) => resolve_replaced_length(&len, height_base, viewport, style, None)
+            .map(|v| content_size_from_box_sizing(v, vertical_edges, style.box_sizing)),
+        }?;
+        let basis_content = sanitize(basis_content);
+        let basis_specified = match style.box_sizing {
+          BoxSizing::ContentBox => basis_content,
+          BoxSizing::BorderBox => basis_content + vertical_edges,
+        };
+        crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+          .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+          .and_then(|expr_len| resolve_replaced_length(&expr_len, height_base, viewport, style, None))
+          .map(|resolved_specified| {
+            sanitize(content_size_from_box_sizing(
+              resolved_specified,
+              vertical_edges,
+              style.box_sizing,
+            ))
+          })
+          .or(Some(basis_content))
       }
     }
   };

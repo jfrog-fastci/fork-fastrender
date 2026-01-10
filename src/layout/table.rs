@@ -5971,6 +5971,46 @@ impl FormattingContext for TableFormattingContext {
               intrinsic_max.min(limit_px.max(intrinsic_min))
             }
           },
+          IntrinsicSizeKeyword::CalcSize(calc) => {
+            use crate::style::types::CalcSizeBasis;
+            let basis_border = match calc.basis {
+              CalcSizeBasis::Auto => intrinsic_max.min(available.max(intrinsic_min)),
+              CalcSizeBasis::MinContent => intrinsic_min,
+              CalcSizeBasis::MaxContent => intrinsic_max,
+              CalcSizeBasis::FillAvailable => available,
+              CalcSizeBasis::FitContent { limit } => match limit {
+                None => intrinsic_max.min(available.max(intrinsic_min)),
+                Some(limit) => {
+                  let limit_px = resolve_length_against(
+                    &limit,
+                    font_size,
+                    table_root_style.root_font_size,
+                    containing_width,
+                  )
+                  .unwrap_or(f32::INFINITY);
+                  intrinsic_max.min(limit_px.max(intrinsic_min))
+                }
+              },
+              CalcSizeBasis::Length(len) => {
+                resolve_length_against(&len, font_size, table_root_style.root_font_size, containing_width)
+                  .unwrap_or(intrinsic_max)
+                  .max(0.0)
+              }
+            };
+            let basis_border = basis_border.max(0.0);
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis_border)
+              .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+              .and_then(|expr_len| {
+                resolve_length_against(
+                  &expr_len,
+                  font_size,
+                  table_root_style.root_font_size,
+                  containing_width,
+                )
+              })
+              .map(|px| px.max(0.0))
+              .unwrap_or(basis_border)
+          }
         };
         Ok(resolved)
       };
@@ -8858,6 +8898,46 @@ impl FormattingContext for TableFormattingContext {
             intrinsic_max.min(limit_px.max(intrinsic_min))
           }
         },
+        IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => intrinsic_max,
+            CalcSizeBasis::FitContent { limit } => match limit {
+              None => intrinsic_max,
+              Some(limit) => {
+                let limit_px = resolve_length_against(
+                  &limit,
+                  font_size,
+                  table_root_style.root_font_size,
+                  None,
+                )
+                .unwrap_or(f32::INFINITY);
+                intrinsic_max.min(limit_px.max(intrinsic_min))
+              }
+            },
+            CalcSizeBasis::Length(len) => {
+              resolve_length_against(&len, font_size, table_root_style.root_font_size, None)
+                .unwrap_or(intrinsic_max)
+                .max(0.0)
+            }
+          };
+          let basis_border = basis_border.max(0.0);
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_border)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_against(
+                &expr_len,
+                font_size,
+                table_root_style.root_font_size,
+                None,
+              )
+            })
+            .map(|px| px.max(0.0))
+            .unwrap_or(basis_border)
+        }
       })
     };
 

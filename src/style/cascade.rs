@@ -1878,7 +1878,7 @@ fn eval_plain_style_feature(
   // We only need the string form for query evaluation, but `resolve_var_for_property` returns a
   // `Cow<'a, str>` tied to the lifetime of the input `PropertyValue` (including fallbacks). Keep
   // the original `PropertyValue` alive so any borrowed `Cow` remains valid.
-  let query_value_storage = crate::style::var_resolution::contains_var(value)
+  let query_value_storage = crate::style::var_resolution::contains_arbitrary_substitution_function(value)
     .then(|| PropertyValue::Custom(value.to_string()));
   let resolved_value: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
     match crate::style::var_resolution::resolve_var_for_property(
@@ -3411,7 +3411,8 @@ fn parse_numeric_value(
   // Like `eval_plain_style_feature`, keep the original query value alive so `Cow` results that
   // borrow from the declaration text (e.g. fallbacks) are valid while we parse the resolved
   // numeric token.
-  let query_value_storage = crate::style::var_resolution::contains_var(trimmed)
+  let query_value_storage =
+    crate::style::var_resolution::contains_arbitrary_substitution_function(trimmed)
     .then(|| PropertyValue::Custom(trimmed.to_string()));
   let resolved: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
     match crate::style::var_resolution::resolve_var_for_property(
@@ -15661,6 +15662,9 @@ fn compute_base_styles<'a>(
   element_attr_cache: &ElementAttrCache,
   include_starting_style: bool,
 ) -> Result<NodeBaseStyles, RenderError> {
+  let _substitution_ctx_guard =
+    crate::style::var_resolution::push_substitution_context(node, viewport, color_scheme_pref);
+
   let container_query_ancestor_ids = if container_ctx.is_some() {
     container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
   } else {
@@ -37099,7 +37103,7 @@ fn svg_presentation_attribute_hints(
     let Some(parsed) = parse_property_value(property, value) else {
       return;
     };
-    let contains_var = crate::style::var_resolution::contains_var(value);
+    let contains_var = crate::style::var_resolution::contains_arbitrary_substitution_function(value);
     decls.push(Declaration {
       property: property.into(),
       value: parsed,
@@ -37249,7 +37253,7 @@ fn svg_presentation_attribute_hints(
     // numbers as SVG user units (px) via `parse_svg_length`.
     match parse_property_value("font-size", value) {
       Some(PropertyValue::Number(_)) => {
-        if !crate::style::var_resolution::contains_var(value) {
+        if !crate::style::var_resolution::contains_arbitrary_substitution_function(value) {
           if let Some(length) = crate::svg::parse_svg_length(value) {
             let len = match length {
               crate::svg::SvgLength::Px(px) => Length::px(px),
@@ -37271,7 +37275,7 @@ fn svg_presentation_attribute_hints(
         push_parsed(&mut declarations, "font-size", value);
       }
       None => {
-        if !crate::style::var_resolution::contains_var(value) {
+        if !crate::style::var_resolution::contains_arbitrary_substitution_function(value) {
           if let Some(length) = crate::svg::parse_svg_length(value) {
             let len = match length {
               crate::svg::SvgLength::Px(px) => Length::px(px),

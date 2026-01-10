@@ -505,6 +505,65 @@ impl BlockFormattingContext {
           max_border.min(limit_border.max(min_border))
         }
       },
+      IntrinsicSizeKeyword::CalcSize(calc) => {
+        use crate::style::types::CalcSizeBasis;
+
+        let basis_border = match calc.basis {
+          CalcSizeBasis::Auto => match style.box_sizing {
+            crate::style::types::BoxSizing::ContentBox => available_content + inline_edges,
+            crate::style::types::BoxSizing::BorderBox => available_border,
+          },
+          CalcSizeBasis::MinContent => min_border,
+          CalcSizeBasis::MaxContent => max_border,
+          CalcSizeBasis::FillAvailable => available_border,
+          CalcSizeBasis::FitContent { limit } => match limit {
+            None => max_border.min(available_border.max(min_border)),
+            Some(limit) => {
+              let limit_border = resolve_length_for_width(
+                limit,
+                containing_width,
+                style,
+                &self.font_context,
+                self.viewport_size,
+              );
+              let limit_border =
+                border_size_from_box_sizing(limit_border, inline_edges, style.box_sizing);
+              max_border.min(limit_border.max(min_border))
+            }
+          },
+          CalcSizeBasis::Length(len) => {
+            let specified = resolve_length_for_width(
+              len,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+            );
+            border_size_from_box_sizing(specified, inline_edges, style.box_sizing)
+          }
+        };
+        let basis_border = basis_border.max(0.0);
+        let basis_content = (basis_border - inline_edges).max(0.0);
+        let basis_specified = match style.box_sizing {
+          crate::style::types::BoxSizing::ContentBox => basis_content,
+          crate::style::types::BoxSizing::BorderBox => basis_border,
+        };
+
+        let resolved_border = crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+          .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+          .map(|expr_len| {
+            let resolved_specified = resolve_length_for_width(
+              expr_len,
+              containing_width,
+              style,
+              &self.font_context,
+              self.viewport_size,
+            );
+            border_size_from_box_sizing(resolved_specified, inline_edges, style.box_sizing).max(0.0)
+          })
+          .unwrap_or(basis_border);
+        resolved_border
+      }
     };
 
     (used_border - inline_edges).max(0.0)
@@ -938,6 +997,73 @@ impl BlockFormattingContext {
             None => available_block_border_box,
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+        }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height_for_percentages,
+              self.viewport_size,
+              font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
         }
       };
       specified_height = Some((used_border_box - vertical_edges).max(0.0));
@@ -1916,6 +2042,73 @@ impl BlockFormattingContext {
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height_for_percentages,
+              self.viewport_size,
+              font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
+        }
       };
       (min_border - vertical_edges).max(0.0)
     } else {
@@ -1985,6 +2178,73 @@ impl BlockFormattingContext {
             None => available_block_border_box,
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+        }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height_for_percentages,
+                  self.viewport_size,
+                  font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height_for_percentages,
+              self.viewport_size,
+              font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
         }
       };
       (max_border - vertical_edges).max(0.0)
@@ -5223,6 +5483,67 @@ impl BlockFormattingContext {
                   intrinsic_max.min(available.max(intrinsic_min))
                 }
               }
+              crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+                use crate::style::types::BoxSizing;
+                use crate::style::types::CalcSizeBasis;
+                let shrink = intrinsic_max.min(available.max(intrinsic_min));
+                let basis_border = match calc.basis {
+                  CalcSizeBasis::Auto => shrink,
+                  CalcSizeBasis::MinContent => intrinsic_min,
+                  CalcSizeBasis::MaxContent => intrinsic_max,
+                  CalcSizeBasis::FillAvailable => available,
+                  CalcSizeBasis::FitContent { limit } => {
+                    if let Some(limit) = limit {
+                      let resolved = resolve_length_for_width(
+                        limit,
+                        percentage_base,
+                        &child.style,
+                        &self.font_context,
+                        self.viewport_size,
+                      );
+                      let resolved_border =
+                        border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                      intrinsic_max.min(intrinsic_min.max(resolved_border))
+                    } else {
+                      intrinsic_max.min(available.max(intrinsic_min))
+                    }
+                  }
+                  CalcSizeBasis::Length(len) => {
+                    let specified = resolve_length_for_width(
+                      len,
+                      percentage_base,
+                      &child.style,
+                      &self.font_context,
+                      self.viewport_size,
+                    );
+                    border_size_from_box_sizing(specified, horizontal_edges, child.style.box_sizing)
+                  }
+                }
+                .max(0.0);
+                let basis_content = (basis_border - horizontal_edges).max(0.0);
+                let basis_specified = match child.style.box_sizing {
+                  BoxSizing::ContentBox => basis_content,
+                  BoxSizing::BorderBox => basis_border,
+                };
+                crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+                  .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                  .map(|expr_len| {
+                    let resolved_specified = resolve_length_for_width(
+                      expr_len,
+                      percentage_base,
+                      &child.style,
+                      &self.font_context,
+                      self.viewport_size,
+                    );
+                    border_size_from_box_sizing(
+                      resolved_specified,
+                      horizontal_edges,
+                      child.style.box_sizing,
+                    )
+                    .max(0.0)
+                  })
+                  .unwrap_or(basis_border)
+              }
             })
           });
 
@@ -5246,6 +5567,67 @@ impl BlockFormattingContext {
               } else {
                 intrinsic_max.min(available.max(intrinsic_min))
               }
+            }
+            crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+              use crate::style::types::BoxSizing;
+              use crate::style::types::CalcSizeBasis;
+              let shrink = intrinsic_max.min(available.max(intrinsic_min));
+              let basis_border = match calc.basis {
+                CalcSizeBasis::Auto => shrink,
+                CalcSizeBasis::MinContent => intrinsic_min,
+                CalcSizeBasis::MaxContent => intrinsic_max,
+                CalcSizeBasis::FillAvailable => available,
+                CalcSizeBasis::FitContent { limit } => {
+                  if let Some(limit) = limit {
+                    let resolved = resolve_length_for_width(
+                      limit,
+                      percentage_base,
+                      &child.style,
+                      &self.font_context,
+                      self.viewport_size,
+                    );
+                    let resolved_border =
+                      border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                    intrinsic_max.min(intrinsic_min.max(resolved_border))
+                  } else {
+                    intrinsic_max.min(available.max(intrinsic_min))
+                  }
+                }
+                CalcSizeBasis::Length(len) => {
+                  let specified = resolve_length_for_width(
+                    len,
+                    percentage_base,
+                    &child.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  );
+                  border_size_from_box_sizing(specified, horizontal_edges, child.style.box_sizing)
+                }
+              }
+              .max(0.0);
+              let basis_content = (basis_border - horizontal_edges).max(0.0);
+              let basis_specified = match child.style.box_sizing {
+                BoxSizing::ContentBox => basis_content,
+                BoxSizing::BorderBox => basis_border,
+              };
+              crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+                .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                .map(|expr_len| {
+                  let resolved_specified = resolve_length_for_width(
+                    expr_len,
+                    percentage_base,
+                    &child.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  );
+                  border_size_from_box_sizing(
+                    resolved_specified,
+                    horizontal_edges,
+                    child.style.box_sizing,
+                  )
+                  .max(0.0)
+                })
+                .unwrap_or(basis_border)
             }
           }
         } else {
@@ -5285,6 +5667,67 @@ impl BlockFormattingContext {
               } else {
                 intrinsic_max.min(available.max(intrinsic_min))
               }
+            }
+            crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+              use crate::style::types::BoxSizing;
+              use crate::style::types::CalcSizeBasis;
+              let shrink = intrinsic_max.min(available.max(intrinsic_min));
+              let basis_border = match calc.basis {
+                CalcSizeBasis::Auto => shrink,
+                CalcSizeBasis::MinContent => intrinsic_min,
+                CalcSizeBasis::MaxContent => intrinsic_max,
+                CalcSizeBasis::FillAvailable => available,
+                CalcSizeBasis::FitContent { limit } => {
+                  if let Some(limit) = limit {
+                    let resolved = resolve_length_for_width(
+                      limit,
+                      percentage_base,
+                      &child.style,
+                      &self.font_context,
+                      self.viewport_size,
+                    );
+                    let resolved_border =
+                      border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                    intrinsic_max.min(intrinsic_min.max(resolved_border))
+                  } else {
+                    intrinsic_max.min(available.max(intrinsic_min))
+                  }
+                }
+                CalcSizeBasis::Length(len) => {
+                  let specified = resolve_length_for_width(
+                    len,
+                    percentage_base,
+                    &child.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  );
+                  border_size_from_box_sizing(specified, horizontal_edges, child.style.box_sizing)
+                }
+              }
+              .max(0.0);
+              let basis_content = (basis_border - horizontal_edges).max(0.0);
+              let basis_specified = match child.style.box_sizing {
+                BoxSizing::ContentBox => basis_content,
+                BoxSizing::BorderBox => basis_border,
+              };
+              crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+                .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+                .map(|expr_len| {
+                  let resolved_specified = resolve_length_for_width(
+                    expr_len,
+                    percentage_base,
+                    &child.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  );
+                  border_size_from_box_sizing(
+                    resolved_specified,
+                    horizontal_edges,
+                    child.style.box_sizing,
+                  )
+                  .max(0.0)
+                })
+                .unwrap_or(basis_border)
             }
           }
         } else {
@@ -7927,6 +8370,73 @@ impl FormattingContext for BlockFormattingContext {
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height,
+              self.viewport_size,
+              style.font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
+        }
       };
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
     }
@@ -8304,6 +8814,73 @@ impl FormattingContext for BlockFormattingContext {
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height,
+              self.viewport_size,
+              style.font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
+        }
       };
       (min_border - vertical_edges).max(0.0)
     } else {
@@ -8361,6 +8938,73 @@ impl FormattingContext for BlockFormattingContext {
             None => available_block_border_box,
           };
           crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+        }
+        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          use crate::style::types::BoxSizing;
+          use crate::style::types::CalcSizeBasis;
+          let basis_border = match calc.basis {
+            CalcSizeBasis::Auto => intrinsic_max,
+            CalcSizeBasis::MinContent => intrinsic_min,
+            CalcSizeBasis::MaxContent => intrinsic_max,
+            CalcSizeBasis::FillAvailable => {
+              if available_block_border_box.is_finite() {
+                available_block_border_box
+              } else {
+                intrinsic_max
+              }
+            }
+            CalcSizeBasis::FitContent { limit } => {
+              let basis_border = match limit {
+                Some(limit) => resolve_length_with_percentage_metrics(
+                  limit,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                  Some(style),
+                  Some(&self.font_context),
+                )
+                .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+                .unwrap_or(f32::INFINITY),
+                None => available_block_border_box,
+              };
+              crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+            }
+            CalcSizeBasis::Length(len) => resolve_length_with_percentage_metrics(
+              len,
+              containing_height,
+              self.viewport_size,
+              style.font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(intrinsic_max),
+          }
+          .max(0.0);
+          let basis_content = (basis_border - vertical_edges).max(0.0);
+          let basis_specified = match style.box_sizing {
+            BoxSizing::ContentBox => basis_content,
+            BoxSizing::BorderBox => basis_border,
+          };
+          crate::style::values::calc_size_expr_with_size(calc.expr, basis_specified)
+            .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+            .and_then(|expr_len| {
+              resolve_length_with_percentage_metrics(
+                expr_len,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+              )
+            })
+            .map(|resolved_specified| {
+              border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
+            })
+            .unwrap_or(basis_border)
         }
       };
       (max_border - vertical_edges).max(0.0)

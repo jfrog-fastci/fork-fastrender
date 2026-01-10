@@ -6,7 +6,11 @@
 
 use crate::css::properties::{parse_length, parse_property_value_after_var_resolution};
 use crate::css::types::PropertyValue;
+use crate::dom::DomNode;
+use crate::geometry::Size;
 use crate::style::custom_property_store::CustomPropertyStore;
+use crate::style::color::Color;
+use crate::style::media::{ColorScheme, MediaContext, MediaQuery};
 use cssparser::ParseError;
 use cssparser::ParseErrorKind;
 use cssparser::Parser;
@@ -14,8 +18,9 @@ use cssparser::ParserInput;
 use cssparser::ToCss;
 use cssparser::Token;
 use std::borrow::Cow;
-#[cfg(test)]
 use std::cell::Cell;
+#[cfg(test)]
+use std::cell::Cell as TestCell;
 
 /// Maximum depth for recursive var() resolution to prevent infinite loops
 const MAX_RECURSION_DEPTH: usize = 10;
@@ -32,7 +37,81 @@ const TOKEN_SPLICE_SEPARATOR: &str = " ";
 
 #[cfg(test)]
 std::thread_local! {
-  static TOKEN_RESOLVER_ENTRY_COUNT: Cell<usize> = Cell::new(0);
+  static TOKEN_RESOLVER_ENTRY_COUNT: TestCell<usize> = TestCell::new(0);
+}
+
+#[derive(Clone, Copy)]
+struct SubstitutionContext {
+  element: *const DomNode,
+  viewport: Size,
+  color_scheme_pref: ColorScheme,
+}
+
+// During the cascade we resolve `var()`/`if()`/`attr()` in property values. Both `if(media(...))`
+// and typed `attr()` need access to per-node/per-render context (the styled element + viewport).
+//
+// Thread-local storage keeps the var-resolution API stable (call sites already exist across the
+// engine) while still allowing these newer substitution functions to consult the current context.
+std::thread_local! {
+  static SUBSTITUTION_CONTEXT: Cell<Option<SubstitutionContext>> = Cell::new(None);
+}
+
+pub(crate) struct SubstitutionContextGuard {
+  prev: Option<SubstitutionContext>,
+}
+
+impl Drop for SubstitutionContextGuard {
+  fn drop(&mut self) {
+    SUBSTITUTION_CONTEXT.with(|cell| cell.set(self.prev));
+  }
+}
+
+pub(crate) fn push_substitution_context(
+  element: &DomNode,
+  viewport: Size,
+  color_scheme_pref: ColorScheme,
+) -> SubstitutionContextGuard {
+  SUBSTITUTION_CONTEXT.with(|cell| {
+    let prev = cell.get();
+    cell.set(Some(SubstitutionContext {
+      element: element as *const DomNode,
+      viewport,
+      color_scheme_pref,
+    }));
+    SubstitutionContextGuard { prev }
+  })
+}
+
+pub(crate) fn with_substitution_context<R>(
+  element: &DomNode,
+  viewport: Size,
+  color_scheme_pref: ColorScheme,
+  f: impl FnOnce() -> R,
+) -> R {
+  let _guard = push_substitution_context(element, viewport, color_scheme_pref);
+  f()
+}
+
+fn current_substitution_context() -> Option<SubstitutionContext> {
+  SUBSTITUTION_CONTEXT.with(|cell| cell.get())
+}
+
+fn current_style_element() -> Option<&'static DomNode> {
+  let ctx = current_substitution_context()?;
+  if ctx.element.is_null() {
+    return None;
+  }
+  // Safety: the pointer was installed by `with_substitution_context` and is only accessed while
+  // that guard is live on the same thread.
+  Some(unsafe { &*ctx.element })
+}
+
+fn current_viewport() -> Option<Size> {
+  current_substitution_context().map(|ctx| ctx.viewport)
+}
+
+fn current_color_scheme_pref() -> Option<ColorScheme> {
+  current_substitution_context().map(|ctx| ctx.color_scheme_pref)
 }
 
 #[inline]
@@ -213,6 +292,54 @@ fn contains_ascii_case_insensitive_var_call(raw: &str) -> bool {
 }
 
 #[inline]
+fn contains_ascii_case_insensitive_substitution_call(raw: &str) -> bool {
+  // Cheap check used on the cascade hot path. This intentionally does *not* understand CSS strings
+  // or comments; false positives are acceptable (they just take the slow-path), but false negatives
+  // are not (except for escaped function names, which are handled by the backslash+paren guard).
+  let bytes = raw.as_bytes();
+  if bytes.len() < 3 {
+    return false;
+  }
+
+  let mut idx = 0usize;
+  while idx < bytes.len() {
+    match bytes[idx].to_ascii_lowercase() {
+      b'v' => {
+        if idx + 3 < bytes.len()
+          && bytes[idx + 1].to_ascii_lowercase() == b'a'
+          && bytes[idx + 2].to_ascii_lowercase() == b'r'
+          && bytes[idx + 3] == b'('
+        {
+          return true;
+        }
+      }
+      b'i' => {
+        if idx + 2 < bytes.len()
+          && bytes[idx + 1].to_ascii_lowercase() == b'f'
+          && bytes[idx + 2] == b'('
+        {
+          return true;
+        }
+      }
+      b'a' => {
+        if idx + 4 < bytes.len()
+          && bytes[idx + 1].to_ascii_lowercase() == b't'
+          && bytes[idx + 2].to_ascii_lowercase() == b't'
+          && bytes[idx + 3].to_ascii_lowercase() == b'r'
+          && bytes[idx + 4] == b'('
+        {
+          return true;
+        }
+      }
+      _ => {}
+    }
+    idx += 1;
+  }
+
+  false
+}
+
+#[inline]
 fn parse_simple_var_call<'a>(raw: &'a str) -> Option<(&'a str, Option<&'a str>)> {
   let trimmed = trim_css_whitespace(raw);
   if trimmed.len() < 6
@@ -285,6 +412,81 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
   // hide `var(` via escapes; fall back to cssparser in that case for correctness.
   if raw.as_bytes().contains(&b'\\') {
     return None;
+  }
+
+  // This fast path only understands `var()` token splicing.
+  //
+  // CSS Values 5 `if()` and typed `attr()` have *lazy* semantics: the branch/fallback that is not
+  // chosen must not be evaluated (e.g. `if(...: var(--missing); <else>)` must not fail just because
+  // the unselected branch contains an unresolved var()).
+  //
+  // The full tokenizer-based resolver implements that laziness; this substring-based var splicer
+  // does not. Conservatively disable the fast path when `if()` or `attr()` appears in the value.
+  {
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if in_comment {
+        if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      if let Some(quote) = in_string {
+        if b == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+
+      if b == b'"' || b == b'\'' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+
+      // `if(`
+      if i + 2 < bytes.len()
+        && b.to_ascii_lowercase() == b'i'
+        && bytes[i + 1].to_ascii_lowercase() == b'f'
+        && bytes[i + 2] == b'('
+      {
+        let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
+        if !prev.is_some_and(is_ident_byte) {
+          return None;
+        }
+      }
+
+      // `attr(`
+      if i + 4 < bytes.len()
+        && b.to_ascii_lowercase() == b'a'
+        && bytes[i + 1].to_ascii_lowercase() == b't'
+        && bytes[i + 2].to_ascii_lowercase() == b't'
+        && bytes[i + 3].to_ascii_lowercase() == b'r'
+        && bytes[i + 4] == b'('
+      {
+        let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
+        if !prev.is_some_and(is_ident_byte) {
+          return None;
+        }
+      }
+
+      i += 1;
+    }
   }
 
   // Cheap check: most values don't contain var() at all.
@@ -509,13 +711,14 @@ pub fn resolve_var_for_property<'a>(
   match value {
     PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
       // Most declarations are simple keywords (display, position, etc.) and do not contain any
-      // var() references. Avoid feeding such values through cssparser tokenization by doing a
-      // cheap ASCII-case-insensitive substring check for `var(` first.
+      // arbitrary substitution functions. Avoid feeding such values through cssparser tokenization
+      // by doing a cheap ASCII-case-insensitive substring check for `var(`/`if(`/`attr(` first.
       //
       // Note: If the value contains a backslash escape, conservatively fall back to token parsing
-      // so we don't miss an escaped `var()` function name. Function tokens require a literal `(`,
-      // so values without any `(` can skip the slow-path even if they contain backslashes.
-      if !contains_ascii_case_insensitive_var_call(raw)
+      // so we don't miss an escaped `var()`/`if()`/`attr()` function name. Function tokens require
+      // a literal `(`, so values without any `(` can skip the slow-path even if they contain
+      // backslashes.
+      if !contains_ascii_case_insensitive_substitution_call(raw)
         && (!raw.as_bytes().contains(&b'\\') || !raw.as_bytes().contains(&b'('))
       {
         return VarResolutionResult::Resolved {
@@ -672,6 +875,22 @@ where
         let resolved = map_nested_result(nested, "var")?;
         push_css_with_token_splice_boundary(&mut output, resolved.as_ref());
       }
+      Token::Function(name) if name.eq_ignore_ascii_case("if") => {
+        let nested = parser.parse_nested_block(|nested| {
+          parse_if_function(nested, custom_properties, stack, depth)
+            .map_err(|err| nested.new_custom_error(err))
+        });
+        let resolved = map_nested_result(nested, "if")?;
+        push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+      }
+      Token::Function(name) if name.eq_ignore_ascii_case("attr") => {
+        let nested = parser.parse_nested_block(|nested| {
+          parse_attr_function(nested, custom_properties, stack, depth)
+            .map_err(|err| nested.new_custom_error(err))
+        });
+        let resolved = map_nested_result(nested, "attr")?;
+        push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+      }
       Token::Function(name) => {
         push_css_with_token_splice_boundary(&mut output, name.as_ref());
         output.push('(');
@@ -754,6 +973,135 @@ where
   )
 }
 
+#[derive(Debug, Clone)]
+struct IfBranch {
+  condition: Option<String>,
+  value: String,
+}
+
+fn parse_if_function<'a, 'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  custom_properties: &'a CustomPropertyStore,
+  stack: &mut Vec<String>,
+  depth: usize,
+) -> Result<String, VarResolutionResult<'a>>
+where
+  'a: 'i,
+{
+  let branches = parse_if_branches(parser).map_err(|_| VarResolutionResult::InvalidSyntax("if".into()))?;
+  if branches.is_empty() {
+    return Err(VarResolutionResult::InvalidSyntax("if".into()));
+  }
+
+  let mut selected: Option<&str> = None;
+  for branch in &branches {
+    match branch.condition.as_deref() {
+      Some(cond) => {
+        let cond_resolved =
+          resolve_value_tokens(cond, custom_properties, stack, depth + 1).map_err(|err| err)?;
+        if eval_if_condition(&cond_resolved) {
+          selected = Some(branch.value.as_str());
+          break;
+        }
+      }
+      None => {
+        // Else branch.
+        if selected.is_none() {
+          selected = Some(branch.value.as_str());
+        }
+        break;
+      }
+    }
+  }
+
+  let Some(selected) = selected else {
+    return Err(VarResolutionResult::InvalidSyntax("if".into()));
+  };
+
+  if !contains_ascii_case_insensitive_substitution_call(selected)
+    && (!selected.as_bytes().contains(&b'\\') || !selected.as_bytes().contains(&b'('))
+  {
+    return Ok(selected.to_string());
+  }
+
+  resolve_value_tokens(selected, custom_properties, stack, depth + 1)
+}
+
+fn parse_attr_function<'a, 'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  custom_properties: &'a CustomPropertyStore,
+  stack: &mut Vec<String>,
+  depth: usize,
+) -> Result<String, VarResolutionResult<'a>>
+where
+  'a: 'i,
+{
+  let (name, ty, fallback_value) = parse_attr_function_arguments(parser)
+    .map_err(|_| VarResolutionResult::InvalidSyntax("attr".into()))?;
+
+  let resolve_fallback = |fallback: &str,
+                          custom_properties: &'a CustomPropertyStore,
+                          stack: &mut Vec<String>,
+                          depth: usize|
+   -> Result<String, VarResolutionResult<'a>> {
+    if !contains_ascii_case_insensitive_substitution_call(fallback)
+      && (!fallback.as_bytes().contains(&b'\\') || !fallback.as_bytes().contains(&b'('))
+    {
+      return Ok(fallback.to_string());
+    }
+    resolve_value_tokens(fallback, custom_properties, stack, depth + 1)
+  };
+
+  let mut attr_value = current_style_element()
+    .and_then(|el| el.get_attribute_ref(&name))
+    .unwrap_or("")
+    .to_string();
+  attr_value = trim_css_whitespace(&attr_value).to_string();
+
+  // Missing attribute.
+  if attr_value.is_empty()
+    && current_style_element()
+      .and_then(|el| el.get_attribute_ref(&name))
+      .is_none()
+  {
+    if let Some(fallback_text) = fallback_value.as_deref() {
+      return resolve_fallback(fallback_text, custom_properties, stack, depth);
+    }
+    return Err(VarResolutionResult::InvalidSyntax("attr".into()));
+  }
+
+  // Resolve substitution functions inside the attribute value before type parsing.
+  if contains_ascii_case_insensitive_substitution_call(&attr_value)
+    || (attr_value.as_bytes().contains(&b'\\') && attr_value.as_bytes().contains(&b'('))
+  {
+    match resolve_value_tokens(&attr_value, custom_properties, stack, depth + 1) {
+      Ok(resolved) => attr_value = resolved,
+      Err(_) => {
+        if let Some(fallback_text) = fallback_value.as_deref() {
+          return resolve_fallback(fallback_text, custom_properties, stack, depth);
+        }
+        return Err(VarResolutionResult::InvalidSyntax("attr".into()));
+      }
+    }
+  }
+
+  let resolved = if let Some(ty) = ty.as_deref() {
+    resolve_typed_attr_value(&attr_value, ty)
+  } else {
+    Some(attr_value.clone())
+  };
+
+  if let Some(resolved) = resolved {
+    return Ok(resolved);
+  }
+
+  if let Some(fallback_text) = fallback_value.as_deref() {
+    return resolve_fallback(fallback_text, custom_properties, stack, depth);
+  }
+
+  Err(VarResolutionResult::InvalidSyntax("attr".into()))
+}
+
 fn parse_var_function_arguments<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> Result<(String, Option<String>), VarResolutionResult<'a>> {
@@ -800,6 +1148,403 @@ fn parse_var_function_arguments<'a, 'i, 't>(
   Ok((name, Some(fallback_slice.to_string())))
 }
 
+fn parse_attr_function_arguments<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<(String, Option<String>, Option<String>), ParseError<'i, ()>> {
+  let mut name: Option<String> = None;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) => {
+        name = Some(ident.as_ref().to_string());
+        break;
+      }
+      _ => return Err(parser.new_custom_error(())),
+    }
+  }
+
+  let Some(name) = name else {
+    return Err(parser.new_custom_error(()));
+  };
+
+  // Optional type/unit + optional fallback.
+  let token = loop {
+    match parser.next_including_whitespace_and_comments() {
+      Ok(Token::WhiteSpace(_) | Token::Comment(_)) => continue,
+      Ok(token) => break Some(token),
+      Err(_) => break None,
+    }
+  };
+
+  let mut ty: Option<String> = None;
+  let mut fallback: Option<String> = None;
+
+  match token {
+    None => return Ok((name, None, None)),
+    Some(Token::Comma) => {
+      let start = parser.position();
+      while let Ok(_) = parser.next_including_whitespace_and_comments() {}
+      fallback = Some(parser.slice_from(start).to_string());
+      return Ok((name, None, fallback));
+    }
+    Some(Token::Ident(ident)) => {
+      ty = Some(ident.as_ref().to_string());
+    }
+    _ => return Err(parser.new_custom_error(())),
+  }
+
+  // After type, expect optional comma + fallback or end.
+  let token = loop {
+    match parser.next_including_whitespace_and_comments() {
+      Ok(Token::WhiteSpace(_) | Token::Comment(_)) => continue,
+      Ok(token) => break Some(token),
+      Err(_) => break None,
+    }
+  };
+
+  match token {
+    None => Ok((name, ty, None)),
+    Some(Token::Comma) => {
+      let start = parser.position();
+      while let Ok(_) = parser.next_including_whitespace_and_comments() {}
+      fallback = Some(parser.slice_from(start).to_string());
+      Ok((name, ty, fallback))
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn resolve_typed_attr_value(attr_value: &str, ty: &str) -> Option<String> {
+  let ty = trim_css_whitespace(ty);
+  if ty.is_empty() {
+    return None;
+  }
+  let attr_value = trim_css_whitespace(attr_value);
+  let ty_lower = ty.to_ascii_lowercase();
+
+  match ty_lower.as_str() {
+    "length" | "length-percentage" => parse_length(attr_value).map(|_| attr_value.to_string()),
+    "number" => crate::css::properties::parse_function_number(attr_value)
+      .filter(|v| v.is_finite())
+      .map(|_| attr_value.to_string()),
+    "integer" => attr_value
+      .parse::<i32>()
+      .ok()
+      .map(|v| v.to_string()),
+    "color" => Color::parse(attr_value).ok().map(|_| attr_value.to_string()),
+    // url is intentionally not implemented yet (see docs note). Treat it as unsupported so the
+    // fallback is used if present.
+    "url" => None,
+    unit => {
+      // Unit-form typed attr: `attr(data-w px, 10px)` (treat attribute value as a number in the
+      // given unit).
+      if !is_length_unit_ident(unit) {
+        return None;
+      }
+      if parse_length(attr_value).is_some() {
+        return Some(attr_value.to_string());
+      }
+      let num = crate::css::properties::parse_function_number(attr_value)?;
+      if !num.is_finite() {
+        return None;
+      }
+      Some(format!("{num}{unit}"))
+    }
+  }
+}
+
+fn is_length_unit_ident(ident: &str) -> bool {
+  matches!(
+    ident,
+    "dvmin"
+      | "dvmax"
+      | "svmin"
+      | "svmax"
+      | "lvmin"
+      | "lvmax"
+      | "dvw"
+      | "dvh"
+      | "dvi"
+      | "dvb"
+      | "cqmin"
+      | "cqmax"
+      | "cqw"
+      | "cqh"
+      | "cqi"
+      | "cqb"
+      | "svi"
+      | "svb"
+      | "lvi"
+      | "lvb"
+      | "svw"
+      | "svh"
+      | "lvw"
+      | "lvh"
+      | "vi"
+      | "vb"
+      | "vmin"
+      | "vmax"
+      | "vw"
+      | "vh"
+      | "rem"
+      | "em"
+      | "ex"
+      | "ch"
+      | "lh"
+      | "px"
+      | "pc"
+      | "pt"
+      | "cm"
+      | "mm"
+      | "q"
+      | "in"
+  )
+}
+
+fn parse_if_branches<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<Vec<IfBranch>, ParseError<'i, ()>> {
+  let mut branches: Vec<IfBranch> = Vec::new();
+  let mut condition = String::new();
+  let mut value = String::new();
+  let mut saw_colon = false;
+
+  fn flush_branch<'i, 't>(
+    parser: &Parser<'i, 't>,
+    branches: &mut Vec<IfBranch>,
+    condition: &mut String,
+    value: &mut String,
+    saw_colon: &mut bool,
+  ) -> Result<(), ParseError<'i, ()>> {
+    let cond_trimmed = trim_css_whitespace(condition);
+    if *saw_colon && cond_trimmed.is_empty() {
+      return Err(parser.new_custom_error(()));
+    }
+
+    if *saw_colon {
+      branches.push(IfBranch {
+        condition: Some(cond_trimmed.to_string()),
+        value: trim_css_whitespace(value).to_string(),
+      });
+    } else {
+      // Else branch: value only (may be empty).
+      branches.push(IfBranch {
+        condition: None,
+        value: cond_trimmed.to_string(),
+      });
+    }
+
+    condition.clear();
+    value.clear();
+    *saw_colon = false;
+    Ok(())
+  }
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Semicolon => {
+        // Only conditional branches use `;` separators. An else branch (no colon) must be the final
+        // branch and therefore cannot be terminated by `;`.
+        if !saw_colon {
+          return Err(parser.new_custom_error(()));
+        }
+        flush_branch(parser, &mut branches, &mut condition, &mut value, &mut saw_colon)?;
+      }
+      Token::Colon if !saw_colon => {
+        saw_colon = true;
+      }
+      Token::Function(name) => {
+        let target = if saw_colon { &mut value } else { &mut condition };
+        push_css_with_token_splice_boundary(target, name.as_ref());
+        target.push('(');
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        target.push_str(&nested);
+        target.push(')');
+      }
+      Token::ParenthesisBlock => {
+        let target = if saw_colon { &mut value } else { &mut condition };
+        push_css_with_token_splice_boundary(target, "(");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        target.push_str(&nested);
+        target.push(')');
+      }
+      Token::SquareBracketBlock => {
+        let target = if saw_colon { &mut value } else { &mut condition };
+        push_css_with_token_splice_boundary(target, "[");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        target.push_str(&nested);
+        target.push(']');
+      }
+      Token::CurlyBracketBlock => {
+        let target = if saw_colon { &mut value } else { &mut condition };
+        push_css_with_token_splice_boundary(target, "{");
+        let nested = parser.parse_nested_block(|nested| stringify_tokens(nested))?;
+        target.push_str(&nested);
+        target.push('}');
+      }
+      other => {
+        let target = if saw_colon { &mut value } else { &mut condition };
+        push_token_to_css(target, &other);
+      }
+    }
+  }
+
+  flush_branch(parser, &mut branches, &mut condition, &mut value, &mut saw_colon)?;
+
+  if branches.iter().all(|b| b.condition.is_none()) {
+    // Reject `if(<else-value>)` since it's indistinguishable from authoring the else value
+    // directly, and browsers currently treat it as invalid.
+    return Err(parser.new_custom_error(()));
+  }
+
+  Ok(branches)
+}
+
+fn stringify_tokens<'i, 't, E>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<String, ParseError<'i, E>> {
+  let mut output = String::new();
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Function(name) => {
+        push_css_with_token_splice_boundary(&mut output, name.as_ref());
+        output.push('(');
+        let inner = parser.parse_nested_block(stringify_tokens)?;
+        output.push_str(&inner);
+        output.push(')');
+      }
+      Token::ParenthesisBlock => {
+        push_css_with_token_splice_boundary(&mut output, "(");
+        let inner = parser.parse_nested_block(stringify_tokens)?;
+        output.push_str(&inner);
+        output.push(')');
+      }
+      Token::SquareBracketBlock => {
+        push_css_with_token_splice_boundary(&mut output, "[");
+        let inner = parser.parse_nested_block(stringify_tokens)?;
+        output.push_str(&inner);
+        output.push(']');
+      }
+      Token::CurlyBracketBlock => {
+        push_css_with_token_splice_boundary(&mut output, "{");
+        let inner = parser.parse_nested_block(stringify_tokens)?;
+        output.push_str(&inner);
+        output.push('}');
+      }
+      other => push_token_to_css(&mut output, &other),
+    }
+  }
+  Ok(output)
+}
+
+fn eval_if_condition(condition: &str) -> bool {
+  let mut input = ParserInput::new(condition);
+  let mut parser = Parser::new(&mut input);
+  match parse_if_condition(&mut parser) {
+    Ok(result) => {
+      parser.skip_whitespace();
+      parser.is_exhausted() && result
+    }
+    Err(_) => false,
+  }
+}
+
+fn parse_if_condition<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError<'i, ()>> {
+  parse_if_disjunction(parser)
+}
+
+fn parse_if_disjunction<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError<'i, ()>> {
+  let mut value = parse_if_conjunction(parser)?;
+  loop {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_ident_matching("or")).is_ok() {
+      parser.skip_whitespace();
+      value = value || parse_if_conjunction(parser)?;
+    } else {
+      break;
+    }
+  }
+  Ok(value)
+}
+
+fn parse_if_conjunction<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError<'i, ()>> {
+  let mut value = parse_if_negation(parser)?;
+  loop {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_ident_matching("and")).is_ok() {
+      parser.skip_whitespace();
+      value = value && parse_if_negation(parser)?;
+    } else {
+      break;
+    }
+  }
+  Ok(value)
+}
+
+fn parse_if_negation<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  if parser.try_parse(|p| p.expect_ident_matching("not")).is_ok() {
+    parser.skip_whitespace();
+    return Ok(!parse_if_negation(parser)?);
+  }
+  parse_if_term(parser)
+}
+
+fn parse_if_term<'i, 't>(parser: &mut Parser<'i, 't>) -> Result<bool, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next()? {
+    Token::Function(name) => {
+      let name = name.to_string();
+      let args = parser.parse_nested_block(stringify_tokens)?;
+      eval_if_test_function(&name, &args)
+    }
+    Token::Ident(ident) => {
+      if ident.eq_ignore_ascii_case("true") {
+        Ok(true)
+      } else if ident.eq_ignore_ascii_case("false") {
+        Ok(false)
+      } else {
+        Err(parser.new_custom_error(()))
+      }
+    }
+    Token::ParenthesisBlock => parser.parse_nested_block(|nested| {
+      let value = parse_if_condition(nested)?;
+      nested.skip_whitespace();
+      if nested.is_exhausted() {
+        Ok(value)
+      } else {
+        Err(nested.new_custom_error(()))
+      }
+    }),
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn eval_if_test_function<'i>(
+  name: &str,
+  args: &str,
+) -> Result<bool, ParseError<'i, ()>> {
+  let args = trim_css_whitespace(args);
+  if name.eq_ignore_ascii_case("media") {
+    let viewport = current_viewport().unwrap_or(Size::new(0.0, 0.0));
+    let mut ctx = MediaContext::screen(viewport.width, viewport.height);
+    ctx.prefers_color_scheme = current_color_scheme_pref();
+    let Ok(queries) = MediaQuery::parse_list(args) else {
+      return Ok(false);
+    };
+    return Ok(ctx.evaluate_list(&queries));
+  }
+
+  if name.eq_ignore_ascii_case("supports") {
+    let cond = crate::css::parser::parse_supports_prelude(args);
+    return Ok(cond.matches());
+  }
+
+  // Unsupported if() test function.
+  Ok(false)
+}
+
 fn resolve_variable_reference<'a>(
   name: &str,
   fallback: Option<Cow<'a, str>>,
@@ -815,7 +1560,7 @@ fn resolve_variable_reference<'a>(
                           stack: &mut Vec<String>|
    -> Result<Cow<'a, str>, VarResolutionResult<'a>> {
     // Same fast-path as below for literal fallback tokens.
-    if !contains_ascii_case_insensitive_var_call(fallback_value.as_ref())
+    if !contains_ascii_case_insensitive_substitution_call(fallback_value.as_ref())
       && (!fallback_value.as_ref().as_bytes().contains(&b'\\')
         || !fallback_value.as_ref().as_bytes().contains(&b'('))
     {
@@ -841,7 +1586,7 @@ fn resolve_variable_reference<'a>(
     // Fast path: if the custom property value can't possibly contain var() references (including
     // escape-hiding), we can skip a full cssparser token walk and just substitute the raw tokens.
     let raw = value.value.as_str();
-    if !contains_ascii_case_insensitive_var_call(raw)
+    if !contains_ascii_case_insensitive_substitution_call(raw)
       && (!raw.as_bytes().contains(&b'\\') || !raw.as_bytes().contains(&b'('))
     {
       let resolved = Cow::Borrowed(raw);
@@ -905,7 +1650,7 @@ fn resolve_variable_reference<'a>(
 }
 
 fn parse_value_after_resolution(value: &str, property_name: &str) -> Option<PropertyValue> {
-  if contains_var(value) {
+  if contains_arbitrary_substitution_function(value) {
     return None;
   }
 
@@ -1140,6 +1885,167 @@ pub fn contains_var(value: &str) -> bool {
   }
 
   false
+}
+
+/// Checks if a string contains any "arbitrary substitution functions" that FastRender resolves at
+/// computed-value time.
+///
+/// This is a superset of [`contains_var`] that additionally detects CSS Values 5 `if()` and typed
+/// `attr()` functions. Like `var()`, these functions must not be eagerly parsed at stylesheet parse
+/// time because their substitution result is only knowable at computed-value time.
+///
+/// The detector ignores occurrences inside comments and strings, and has a correctness slow-path
+/// for escaped function names.
+pub fn contains_arbitrary_substitution_function(value: &str) -> bool {
+  let bytes = value.as_bytes();
+  if bytes.len() < 3 {
+    return false;
+  }
+
+  #[inline]
+  fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') || b >= 0x80
+  }
+
+  let mut in_string: Option<u8> = None;
+  let mut in_comment = false;
+  let mut has_backslash = false;
+  let mut has_open_paren = false;
+
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let byte = bytes[i];
+
+    if in_comment {
+      if byte == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if let Some(quote) = in_string {
+      if byte == b'\\' {
+        i = (i + 2).min(bytes.len());
+        continue;
+      }
+      if byte == quote {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    // Not inside a string/comment.
+    if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+
+    if byte == b'"' || byte == b'\'' {
+      in_string = Some(byte);
+      i += 1;
+      continue;
+    }
+
+    if byte == b'\\' {
+      has_backslash = true;
+    } else if byte == b'(' {
+      has_open_paren = true;
+    }
+
+    // Fast path: look for ASCII-case-insensitive function names followed by a literal `(`.
+    //
+    // Function tokens cannot contain whitespace between the name and `(`, so scanning for the
+    // literal substring is sufficient on the non-escape path.
+    let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
+    let prev_is_ident = prev.is_some_and(is_ident_byte);
+
+    // `if(`
+    if !prev_is_ident
+      && i + 2 < bytes.len()
+      && byte.to_ascii_lowercase() == b'i'
+      && bytes[i + 1].to_ascii_lowercase() == b'f'
+      && bytes[i + 2] == b'('
+    {
+      return true;
+    }
+
+    // `var(`
+    if !prev_is_ident
+      && i + 3 < bytes.len()
+      && byte.to_ascii_lowercase() == b'v'
+      && bytes[i + 1].to_ascii_lowercase() == b'a'
+      && bytes[i + 2].to_ascii_lowercase() == b'r'
+      && bytes[i + 3] == b'('
+    {
+      return true;
+    }
+
+    // `attr(`
+    if !prev_is_ident
+      && i + 4 < bytes.len()
+      && byte.to_ascii_lowercase() == b'a'
+      && bytes[i + 1].to_ascii_lowercase() == b't'
+      && bytes[i + 2].to_ascii_lowercase() == b't'
+      && bytes[i + 3].to_ascii_lowercase() == b'r'
+      && bytes[i + 4] == b'('
+    {
+      return true;
+    }
+
+    i += 1;
+  }
+
+  // Escaped function names (e.g. `v\\61 r(`) require a proper tokenizer to interpret escapes.
+  if has_backslash && has_open_paren {
+    return contains_arbitrary_substitution_function_via_cssparser(value);
+  }
+
+  false
+}
+
+pub(crate) fn contains_arbitrary_substitution_function_via_cssparser(value: &str) -> bool {
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+  contains_arbitrary_substitution_function_in_parser(&mut parser)
+}
+
+fn contains_arbitrary_substitution_function_in_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> bool {
+  let mut found = false;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Function(name)
+        if name.eq_ignore_ascii_case("var")
+          || name.eq_ignore_ascii_case("if")
+          || name.eq_ignore_ascii_case("attr") =>
+      {
+        found = true;
+        let _ = parser.parse_nested_block(|nested| {
+          Ok::<_, ParseError<'i, ()>>(contains_arbitrary_substitution_function_in_parser(nested))
+        });
+      }
+      Token::Function(_)
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::CurlyBracketBlock => {
+        if let Ok(nested_found) = parser.parse_nested_block(|nested| {
+          Ok::<_, ParseError<'i, ()>>(contains_arbitrary_substitution_function_in_parser(nested))
+        }) {
+          if nested_found {
+            found = true;
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+
+  found
 }
 
 pub(crate) fn contains_var_via_cssparser(value: &str) -> bool {

@@ -17,6 +17,7 @@ mod block_margin_collapse;
 mod block_nonblock_fc_does_not_inherit_definite_height;
 mod box_shadow_outset_cutout;
 mod br_linebreak;
+mod calc_size_test;
 mod complex_script_wrap_test;
 mod contain_layout;
 mod container_query_border_calc;

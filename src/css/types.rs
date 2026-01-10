@@ -4412,11 +4412,12 @@ pub struct Declaration {
   /// re-parse it later without needing a second owned copy.
   pub raw_value: String,
   pub important: bool,
-  /// Whether the authored value contained a `var()` reference.
+  /// Whether the authored value contained an "arbitrary substitution function" that must be
+  /// resolved at computed-value time (currently: `var()`, `if()`, `attr()`).
   ///
-  /// The cascade hot path needs to know whether var-resolution can be skipped for a declaration.
-  /// Storing this bit on the declaration avoids re-scanning the same token string for every
-  /// element the rule matches.
+  /// The cascade hot path needs to know whether substitution can be skipped for a declaration.
+  /// Storing this bit on the declaration avoids re-scanning the same token string for every element
+  /// the rule matches.
   ///
   /// Placing this boolean next to `important` keeps the `Declaration` size unchanged (it fits
   /// inside the existing padding after `important`), which matters for large rulesets.

@@ -7,7 +7,7 @@ use crate::css::types::ColorStop;
 use crate::css::types::RadialGradientShape;
 use crate::css::types::RadialGradientSize;
 use crate::style::color::Rgba;
-use crate::style::values::Length;
+use crate::style::values::{CalcSizeExprId, Length};
 use cssparser::{Parser, ParserInput, Token};
 pub use crate::text::hyphenation::HyphensMode;
 use std::hash::{Hash, Hasher};
@@ -2262,6 +2262,26 @@ pub enum IntrinsicSizeKeyword {
   FitContent {
     limit: Option<Length>,
   },
+  /// Represents `calc-size(<basis>, <calc-sum>)` (CSS Values 5).
+  CalcSize(CalcSize),
+}
+
+/// The `<basis>` argument to `calc-size()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CalcSizeBasis {
+  Auto,
+  MinContent,
+  MaxContent,
+  FillAvailable,
+  FitContent { limit: Option<Length> },
+  Length(Length),
+}
+
+/// Parsed `calc-size(<basis>, <calc-sum>)` value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalcSize {
+  pub basis: CalcSizeBasis,
+  pub expr: CalcSizeExprId,
 }
 
 impl IntrinsicSizeKeyword {
@@ -2269,6 +2289,14 @@ impl IntrinsicSizeKeyword {
     match self {
       Self::FitContent { limit: Some(limit) } => limit.has_percentage(),
       Self::FillAvailable => false,
+      Self::CalcSize(calc) => {
+        let basis_has_percentage = match calc.basis {
+          CalcSizeBasis::FitContent { limit: Some(limit) } => limit.has_percentage(),
+          CalcSizeBasis::Length(len) => len.has_percentage(),
+          _ => false,
+        };
+        basis_has_percentage || crate::style::values::calc_size_expr_has_percentage(calc.expr)
+      }
       _ => false,
     }
   }
@@ -2294,6 +2322,24 @@ impl Hash for IntrinsicSizeKeyword {
         }
         None => 0u8.hash(state),
       },
+      IntrinsicSizeKeyword::CalcSize(calc) => {
+        std::mem::discriminant(&calc.basis).hash(state);
+        match calc.basis {
+          CalcSizeBasis::FitContent { limit } => match limit {
+            Some(len) => {
+              1u8.hash(state);
+              hash_length_for_intrinsic_size_keyword(&len, state);
+            }
+            None => 0u8.hash(state),
+          },
+          CalcSizeBasis::Length(len) => {
+            2u8.hash(state);
+            hash_length_for_intrinsic_size_keyword(&len, state);
+          }
+          _ => {}
+        }
+        calc.expr.hash(state);
+      }
       IntrinsicSizeKeyword::FillAvailable => {}
       _ => {}
     }

@@ -166,8 +166,18 @@ fn hash_inset_value(value: &crate::style::types::InsetValue, hasher: &mut FxHash
 
 fn hash_intrinsic_size_keyword(keyword: &IntrinsicSizeKeyword, hasher: &mut FxHasher) {
   hash_enum_discriminant(keyword, hasher);
-  if let IntrinsicSizeKeyword::FitContent { limit } = keyword {
-    hash_option_length(limit, hasher);
+  match keyword {
+    IntrinsicSizeKeyword::FitContent { limit } => hash_option_length(limit, hasher),
+    IntrinsicSizeKeyword::CalcSize(calc) => {
+      hash_enum_discriminant(&calc.basis, hasher);
+      match calc.basis {
+        crate::style::types::CalcSizeBasis::FitContent { limit } => hash_option_length(&limit, hasher),
+        crate::style::types::CalcSizeBasis::Length(len) => hash_length(&len, hasher),
+        _ => {}
+      }
+      calc.expr.hash(hasher);
+    }
+    _ => {}
   }
 }
 

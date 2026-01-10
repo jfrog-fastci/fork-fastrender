@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 
 use crate::geometry::Size;
 use crate::style::color::Rgba;
+use cssparser::{ParseError, Parser, ParserInput, ToCss, Token};
 
 /// CSS length units
 ///
@@ -466,6 +467,137 @@ static LENGTH_CALC_EXPR_ARENA: OnceLock<RwLock<LengthCalcExprArena>> = OnceLock:
 
 fn length_calc_expr_arena() -> &'static RwLock<LengthCalcExprArena> {
   LENGTH_CALC_EXPR_ARENA.get_or_init(|| RwLock::new(LengthCalcExprArena::default()))
+}
+
+// ============================================================================
+// calc-size() expression interning (CSS Values 5)
+// ============================================================================
+
+/// Identifier for an interned `calc-size()` `<calc-sum>` expression.
+///
+/// `calc-size()` expressions are stored in a global arena so sizing keywords can stay `Copy` while
+/// supporting arbitrary calc-sums containing the `size` placeholder token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CalcSizeExprId(u32);
+
+#[derive(Debug, Clone)]
+struct CalcSizeExprEntry {
+  css_text: String,
+  has_percentage: bool,
+}
+
+#[derive(Default)]
+struct CalcSizeExprArena {
+  entries: Vec<CalcSizeExprEntry>,
+  index: FxHashMap<String, CalcSizeExprId>,
+}
+
+static CALC_SIZE_EXPR_ARENA: OnceLock<RwLock<CalcSizeExprArena>> = OnceLock::new();
+
+fn calc_size_expr_arena() -> &'static RwLock<CalcSizeExprArena> {
+  CALC_SIZE_EXPR_ARENA.get_or_init(|| RwLock::new(CalcSizeExprArena::default()))
+}
+
+pub(crate) fn intern_calc_size_expr(expr: &str) -> CalcSizeExprId {
+  let arena_lock = calc_size_expr_arena();
+  let mut arena = arena_lock.write();
+  if let Some(id) = arena.index.get(expr) {
+    return *id;
+  }
+  let id = CalcSizeExprId(arena.entries.len() as u32);
+  arena.index.insert(expr.to_string(), id);
+  arena.entries.push(CalcSizeExprEntry {
+    css_text: expr.to_string(),
+    has_percentage: expr.contains('%'),
+  });
+  id
+}
+
+pub(crate) fn calc_size_expr_css_text(id: CalcSizeExprId) -> String {
+  let arena_lock = calc_size_expr_arena();
+  let arena = arena_lock.read();
+  arena
+    .entries
+    .get(id.0 as usize)
+    .map(|e| e.css_text.clone())
+    .unwrap_or_else(|| "size".to_string())
+}
+
+pub(crate) fn calc_size_expr_has_percentage(id: CalcSizeExprId) -> bool {
+  let arena_lock = calc_size_expr_arena();
+  let arena = arena_lock.read();
+  arena
+    .entries
+    .get(id.0 as usize)
+    .map(|e| e.has_percentage)
+    .unwrap_or(false)
+}
+
+fn substitute_calc_size_tokens<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  replacement: &str,
+) -> Result<String, ParseError<'i, ()>> {
+  let mut output = String::new();
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Ident(ident) if ident.eq_ignore_ascii_case("size") => {
+        output.push_str(replacement);
+      }
+      Token::Function(name) => {
+        output.push_str(name.as_ref());
+        output.push('(');
+        let nested = parser.parse_nested_block(|nested| substitute_calc_size_tokens(nested, replacement))?;
+        output.push_str(&nested);
+        output.push(')');
+      }
+      Token::ParenthesisBlock => {
+        output.push('(');
+        let nested = parser.parse_nested_block(|nested| substitute_calc_size_tokens(nested, replacement))?;
+        output.push_str(&nested);
+        output.push(')');
+      }
+      Token::SquareBracketBlock => {
+        output.push('[');
+        let nested = parser.parse_nested_block(|nested| substitute_calc_size_tokens(nested, replacement))?;
+        output.push_str(&nested);
+        output.push(']');
+      }
+      Token::CurlyBracketBlock => {
+        output.push('{');
+        let nested = parser.parse_nested_block(|nested| substitute_calc_size_tokens(nested, replacement))?;
+        output.push_str(&nested);
+        output.push('}');
+      }
+      other => {
+        other
+          .to_css(&mut output)
+          .expect("writing to String should be infallible");
+      }
+    }
+  }
+  Ok(output)
+}
+
+/// Replace all `size` identifier tokens in a `calc-size()` calc-sum.
+///
+/// Returns a raw calc-sum string (not wrapped in `calc(...)`).
+pub(crate) fn substitute_calc_size_expr(expr: &str, size_px: f32) -> Option<String> {
+  if !size_px.is_finite() {
+    return None;
+  }
+  let replacement = Length::px(size_px).to_css();
+  let mut input = ParserInput::new(expr);
+  let mut parser = Parser::new(&mut input);
+  substitute_calc_size_tokens(&mut parser, &replacement).ok()
+}
+
+/// Returns the stored `calc-size()` `<calc-sum>` expression with all `size` identifier tokens
+/// replaced by `<size_px>px`.
+///
+/// The returned string is a raw calc-sum (not wrapped in `calc(...)`).
+pub(crate) fn calc_size_expr_with_size(id: CalcSizeExprId, size_px: f32) -> Option<String> {
+  let expr = calc_size_expr_css_text(id);
+  substitute_calc_size_expr(&expr, size_px)
 }
 
 fn linear_flags(calc: &CalcLength) -> LengthCalcFlags {

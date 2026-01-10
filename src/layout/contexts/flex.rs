@@ -2842,6 +2842,7 @@ impl FormattingContext for FlexFormattingContext {
                               IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
                               IntrinsicSizeKeyword::FillAvailable => None,
                               IntrinsicSizeKeyword::FitContent { .. } => None,
+                              IntrinsicSizeKeyword::CalcSize(_) => None,
                             }
                           };
 
@@ -5685,6 +5686,18 @@ fn hash_intrinsic_size_keyword(value: &IntrinsicSizeKeyword, hasher: &mut Finger
         None => 0u8.hash(hasher),
       }
     }
+    IntrinsicSizeKeyword::CalcSize(calc) => {
+      4u8.hash(hasher);
+      hash_enum_discriminant(&calc.basis, hasher);
+      match calc.basis {
+        crate::style::types::CalcSizeBasis::FitContent { limit } => {
+          hash_option_length(&limit, hasher);
+        }
+        crate::style::types::CalcSizeBasis::Length(len) => hash_length(&len, hasher),
+        _ => {}
+      }
+      calc.expr.hash(hasher);
+    }
   }
 }
 
@@ -6653,6 +6666,7 @@ impl FlexFormattingContext {
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
       IntrinsicSizeKeyword::FillAvailable => None,
       IntrinsicSizeKeyword::FitContent { .. } => None,
+      IntrinsicSizeKeyword::CalcSize(_) => None,
     };
 
     if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
@@ -8629,6 +8643,7 @@ impl FlexFormattingContext {
         IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
         IntrinsicSizeKeyword::FillAvailable => None,
         IntrinsicSizeKeyword::FitContent { .. } => None,
+        IntrinsicSizeKeyword::CalcSize(_) => None,
       }
     };
 
@@ -8746,6 +8761,7 @@ impl FlexFormattingContext {
           );
           Ok(Some(fit.max(0.0)))
         }
+        IntrinsicSizeKeyword::CalcSize(_) => Ok(None),
       }
     };
 

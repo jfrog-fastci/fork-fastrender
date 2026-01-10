@@ -4249,18 +4249,13 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
     return Some(IntrinsicSizeKeyword::FillAvailable);
   }
 
-  // Parse `fit-content(<length-percentage>)` from the raw string. The CSS parser currently stores
-  // the entire value as a keyword token, so we need a permissive string parser here.
-  //
-  // Accept vendor-prefixed names as well (`-webkit-fit-content(...)`, `-moz-fit-content(...)`).
-  let open = trimmed.find('(')?;
-  let head = trim_ascii_whitespace(trimmed.get(..open)?);
-  if !head.eq_ignore_ascii_case("fit-content")
-    && !head.eq_ignore_ascii_case("-webkit-fit-content")
-    && !head.eq_ignore_ascii_case("-moz-fit-content")
-  {
+  // Parse `fit-content(<length-percentage>)` / `calc-size(<basis>, <calc-sum>)` from the raw
+  // string. The CSS parser currently stores the entire value as a keyword token, so we need a
+  // permissive string parser here.
+  let Some(open) = trimmed.find('(') else {
     return None;
-  }
+  };
+  let head = trim_ascii_whitespace(trimmed.get(..open)?);
   let close = trimmed.rfind(')')?;
   if close <= open {
     return None;
@@ -4269,15 +4264,166 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
     return None;
   }
   let inner = trim_ascii_whitespace(trimmed.get(open + 1..close)?);
-  let limit = match crate::css::properties::parse_property_value("", inner)? {
-    PropertyValue::Length(l) => Some(l),
-    PropertyValue::Percentage(p) => Some(Length::percent(p)),
-    PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
-    PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
-    _ => None,
-  };
-  let limit = sanitize_min_length(limit)?;
-  Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) })
+
+  // Accept vendor-prefixed names as well (`-webkit-fit-content(...)`, `-moz-fit-content(...)`).
+  if head.eq_ignore_ascii_case("fit-content")
+    || head.eq_ignore_ascii_case("-webkit-fit-content")
+    || head.eq_ignore_ascii_case("-moz-fit-content")
+  {
+    let limit = match crate::css::properties::parse_property_value("", inner)? {
+      PropertyValue::Length(l) => Some(l),
+      PropertyValue::Percentage(p) => Some(Length::percent(p)),
+      PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
+      PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
+      _ => None,
+    };
+    let limit = sanitize_min_length(limit)?;
+    return Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(limit),
+    });
+  }
+
+  if head.eq_ignore_ascii_case("calc-size") {
+    fn split_calc_size_args(inner: &str) -> Option<(&str, &str)> {
+      let mut depth_paren: usize = 0;
+      let mut depth_square: usize = 0;
+      let mut depth_curly: usize = 0;
+      let mut in_string: Option<char> = None;
+      let mut escape = false;
+      let mut comma: Option<usize> = None;
+
+      for (idx, ch) in inner.char_indices() {
+        if let Some(quote) = in_string {
+          if escape {
+            escape = false;
+            continue;
+          }
+          if ch == '\\' {
+            escape = true;
+          } else if ch == quote {
+            in_string = None;
+          }
+          continue;
+        }
+
+        match ch {
+          '"' | '\'' => in_string = Some(ch),
+          '(' => depth_paren += 1,
+          ')' => depth_paren = depth_paren.saturating_sub(1),
+          '[' => depth_square += 1,
+          ']' => depth_square = depth_square.saturating_sub(1),
+          '{' => depth_curly += 1,
+          '}' => depth_curly = depth_curly.saturating_sub(1),
+          ',' if depth_paren == 0 && depth_square == 0 && depth_curly == 0 => {
+            if comma.is_some() {
+              return None;
+            }
+            comma = Some(idx);
+          }
+          _ => {}
+        }
+      }
+
+      let comma = comma?;
+      let left = trim_ascii_whitespace(inner.get(..comma)?);
+      let right = trim_ascii_whitespace(inner.get(comma + 1..)?);
+      if left.is_empty() || right.is_empty() {
+        return None;
+      }
+      Some((left, right))
+    }
+
+    fn parse_calc_size_basis(basis: &str) -> Option<CalcSizeBasis> {
+      let basis = trim_ascii_whitespace(basis);
+      if basis.is_empty() {
+        return None;
+      }
+
+      if basis.eq_ignore_ascii_case("auto") {
+        return Some(CalcSizeBasis::Auto);
+      }
+
+      if basis.eq_ignore_ascii_case("min-content")
+        || basis.eq_ignore_ascii_case("-webkit-min-content")
+        || basis.eq_ignore_ascii_case("-moz-min-content")
+      {
+        return Some(CalcSizeBasis::MinContent);
+      }
+      if basis.eq_ignore_ascii_case("max-content")
+        || basis.eq_ignore_ascii_case("-webkit-max-content")
+        || basis.eq_ignore_ascii_case("-moz-max-content")
+      {
+        return Some(CalcSizeBasis::MaxContent);
+      }
+
+      if basis.eq_ignore_ascii_case("fit-content")
+        || basis.eq_ignore_ascii_case("-webkit-fit-content")
+        || basis.eq_ignore_ascii_case("-moz-fit-content")
+      {
+        return Some(CalcSizeBasis::FitContent { limit: None });
+      }
+
+      if basis.eq_ignore_ascii_case("stretch")
+        || basis.eq_ignore_ascii_case("fill-available")
+        || basis.eq_ignore_ascii_case("-webkit-fill-available")
+        || basis.eq_ignore_ascii_case("-moz-available")
+        || basis.eq_ignore_ascii_case("-moz-fill-available")
+      {
+        return Some(CalcSizeBasis::FillAvailable);
+      }
+
+      // `fit-content(<length-percentage>)`.
+      if let Some(open) = basis.find('(') {
+        let head = trim_ascii_whitespace(basis.get(..open)?);
+        if head.eq_ignore_ascii_case("fit-content")
+          || head.eq_ignore_ascii_case("-webkit-fit-content")
+          || head.eq_ignore_ascii_case("-moz-fit-content")
+        {
+          let close = basis.rfind(')')?;
+          if close <= open {
+            return None;
+          }
+          if !trim_ascii_whitespace(basis.get(close + 1..)?).is_empty() {
+            return None;
+          }
+          let inner = trim_ascii_whitespace(basis.get(open + 1..close)?);
+          let limit = match crate::css::properties::parse_property_value("", inner)? {
+            PropertyValue::Length(l) => Some(l),
+            PropertyValue::Percentage(p) => Some(Length::percent(p)),
+            PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
+            PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
+            _ => None,
+          };
+          let limit = sanitize_min_length(limit)?;
+          return Some(CalcSizeBasis::FitContent {
+            limit: Some(limit),
+          });
+        }
+      }
+
+      let len = parse_length(basis)?;
+      if len.calc.is_none() && len.value < 0.0 {
+        return None;
+      }
+      Some(CalcSizeBasis::Length(len))
+    }
+
+    let (basis_text, expr_text) = split_calc_size_args(inner)?;
+    let basis = parse_calc_size_basis(basis_text)?;
+
+    // Validate the calc-sum grammar by replacing `size` with `0px` and ensuring the expression
+    // parses as a <length-percentage> calc() expression. We wrap the sum in `calc(...)` so bare
+    // `size + 1px` forms can be accepted.
+    let substituted = crate::style::values::substitute_calc_size_expr(expr_text, 0.0)?;
+    if parse_length(&format!("calc({substituted})")).is_none() {
+      return None;
+    }
+
+    let expr = crate::style::values::intern_calc_size_expr(expr_text);
+    return Some(IntrinsicSizeKeyword::CalcSize(CalcSize { basis, expr }));
+  }
+
+  None
 }
 
 fn extract_sizing_value(

@@ -3102,6 +3102,56 @@ impl InlineFormattingContext {
             Some(limit) => resolve_fit_content_limit(limit)
               .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
           },
+          Keyword::CalcSize(calc) => {
+            use crate::style::types::CalcSizeBasis;
+            let available = if available_for_fit.is_finite() {
+              available_for_fit
+            } else {
+              preferred
+            };
+            let basis = match calc.basis {
+              CalcSizeBasis::Auto => Some(available),
+              CalcSizeBasis::MinContent => Some(preferred_min),
+              CalcSizeBasis::MaxContent => Some(preferred),
+              CalcSizeBasis::FillAvailable => Some(available),
+              CalcSizeBasis::FitContent { limit } => match limit {
+                None => Some(preferred.min(available.max(preferred_min))),
+                Some(limit) => resolve_fit_content_limit(limit)
+                  .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
+              },
+              CalcSizeBasis::Length(len) => {
+                if len.unit.is_percentage() && percentage_base.is_none() {
+                  None
+                } else {
+                  Some(resolve_length_for_width(
+                    len,
+                    percentage_base_px,
+                    style,
+                    &self.font_context,
+                    self.viewport_size,
+                  ))
+                }
+              }
+            }?
+            .max(0.0);
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis)
+              .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+              .and_then(|expr_len| {
+                if expr_len.unit.is_percentage() && percentage_base.is_none() {
+                  None
+                } else {
+                  Some(resolve_length_for_width(
+                    expr_len,
+                    percentage_base_px,
+                    style,
+                    &self.font_context,
+                    self.viewport_size,
+                  ))
+                }
+              })
+              .map(|resolved| resolved.max(0.0))
+              .or(Some(basis))
+          }
         }
       };
 
@@ -10783,6 +10833,56 @@ impl InlineFormattingContext {
             Some(limit) => resolve_fit_content_limit(limit)
               .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
           },
+          Keyword::CalcSize(calc) => {
+            use crate::style::types::CalcSizeBasis;
+            let available = if available_for_fit.is_finite() {
+              available_for_fit
+            } else {
+              preferred
+            };
+            let basis = match calc.basis {
+              CalcSizeBasis::Auto => Some(available),
+              CalcSizeBasis::MinContent => Some(preferred_min),
+              CalcSizeBasis::MaxContent => Some(preferred),
+              CalcSizeBasis::FillAvailable => Some(available),
+              CalcSizeBasis::FitContent { limit } => match limit {
+                None => Some(preferred.min(available.max(preferred_min))),
+                Some(limit) => resolve_fit_content_limit(limit)
+                  .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
+              },
+              CalcSizeBasis::Length(len) => {
+                if len.unit.is_percentage() && percentage_base.is_none() {
+                  None
+                } else {
+                  Some(resolve_length_for_width(
+                    len,
+                    percentage_base_px,
+                    &float_node.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  ))
+                }
+              }
+            }?
+            .max(0.0);
+            crate::style::values::calc_size_expr_with_size(calc.expr, basis)
+              .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
+              .and_then(|expr_len| {
+                if expr_len.unit.is_percentage() && percentage_base.is_none() {
+                  None
+                } else {
+                  Some(resolve_length_for_width(
+                    expr_len,
+                    percentage_base_px,
+                    &float_node.style,
+                    &self.font_context,
+                    self.viewport_size,
+                  ))
+                }
+              })
+              .map(|resolved| resolved.max(0.0))
+              .or(Some(basis))
+          }
         }
       };
 
