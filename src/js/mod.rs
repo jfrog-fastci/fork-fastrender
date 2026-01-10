@@ -119,8 +119,9 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
-// NOTE: `dom_integration` is declared above. It provides HTML "prepare the script element" helpers
-// for dynamically inserted `<script>` elements, and is still referenced by some integration tests.
+// NOTE: `dom_integration` lives under `legacy/` but is declared above to keep the stable
+// `crate::js::dom_integration` path. It provides HTML "prepare the script element" helpers for
+// dynamically inserted `<script>` elements, and is still referenced by some integration tests.
 // Do not re-declare it here.
 
 #[cfg(feature = "quickjs")]
