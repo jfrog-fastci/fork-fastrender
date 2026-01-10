@@ -16082,6 +16082,15 @@ fn normalize_color_stops(
   is_dark: bool,
   forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
+  // CSS Images 3: Gradient color stop “fixup”.
+  //
+  // We implement the algorithm from:
+  // https://www.w3.org/TR/css-images-3/#color-stop-fixup
+  //
+  // Notably:
+  // - Stop positions can be outside the [0%, 100%] range (e.g. -50%, 150%).
+  // - Unspecified stop positions are filled in by evenly spacing them between the nearest
+  //   positioned stops.
   if stops.is_empty() {
     return Vec::new();
   }
@@ -16094,7 +16103,7 @@ fn normalize_color_stops(
 
   let mut positions: Vec<Option<f32>> = stops
     .iter()
-    .map(|s| match s.position {
+    .map(|stop| match stop.position {
       Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
       Some(crate::css::types::ColorStopPosition::Length(len)) => {
         if gradient_length <= 0.0 {
@@ -16114,6 +16123,9 @@ fn normalize_color_stops(
       None => None,
     })
     .collect();
+
+  // If no stops had positions at all, the fixup algorithm reduces to evenly distributing them
+  // from 0%..100%.
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(
@@ -16127,62 +16139,87 @@ fn normalize_color_stops(
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| {
+      .map(|(i, stop)| {
         (
           i as f32 / denom,
-          s.color
+          stop
+            .color
             .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
         )
       })
       .collect();
   }
 
+  // Step 1: If the first stop has no position, set it to 0%.
   if positions.first().and_then(|p| *p).is_none() {
     positions[0] = Some(0.0);
   }
+  // Step 2: If the last stop has no position, set it to 100%.
   if positions.last().and_then(|p| *p).is_none() {
     if let Some(last) = positions.last_mut() {
       *last = Some(1.0);
     }
   }
 
-  let mut last_known: Option<(usize, f32)> = None;
-  for i in 0..positions.len() {
-    if let Some(pos) = positions[i] {
-      if let Some((start_idx, start_pos)) = last_known {
-        if let Some(gap) = i.checked_sub(start_idx + 1) {
-          if gap > 0 {
-            let step = (pos - start_pos) / (gap as f32 + 1.0);
-            for (j, slot) in positions
-              .iter_mut()
-              .enumerate()
-              .take(start_idx + gap + 1)
-              .skip(start_idx + 1)
-            {
-              *slot = Some((start_pos + step * j as f32).max(start_pos));
-            }
-          }
-        }
-      } else if i > 0 {
-        let gap = i;
-        let step = pos / gap as f32;
-        for (j, slot) in positions.iter_mut().take(i).enumerate() {
-          *slot = Some(step * j as f32);
-        }
+  // Step 3: Ensure positioned stops are non-decreasing.
+  let mut max_specified = positions[0].unwrap_or(0.0);
+  for pos in positions.iter_mut().skip(1) {
+    if let Some(value) = *pos {
+      if value < max_specified {
+        *pos = Some(max_specified);
+      } else {
+        max_specified = value;
       }
-      last_known = Some((i, pos));
+    }
+    if let Some(value) = *pos {
+      max_specified = value;
     }
   }
 
+  // Step 4: Distribute runs of missing stops between the nearest positioned stops.
+  let mut idx = 0usize;
+  while idx < positions.len() {
+    if positions[idx].is_some() {
+      idx += 1;
+      continue;
+    }
+
+    // Safe because step 1 guarantees the first entry is positioned.
+    let start_idx = idx.saturating_sub(1);
+    let start_pos = positions[start_idx].unwrap_or(0.0);
+
+    let mut end_idx = idx;
+    while end_idx < positions.len() && positions[end_idx].is_none() {
+      end_idx += 1;
+    }
+
+    // Safe because step 2 guarantees the last entry is positioned.
+    if end_idx >= positions.len() {
+      break;
+    }
+    let end_pos = positions[end_idx].unwrap_or(start_pos);
+
+    let span = (end_idx - start_idx) as f32;
+    for offset in 1..(end_idx - start_idx) {
+      let t = offset as f32 / span;
+      positions[start_idx + offset] = Some(start_pos + (end_pos - start_pos) * t);
+    }
+
+    idx = end_idx + 1;
+  }
+
+  // Pair the resolved stop positions with colors.
+  // (Any remaining `None`s are treated as repeating the previous used position, though the
+  // algorithm above should have resolved them all.)
   let mut output = Vec::with_capacity(stops.len());
-  let mut prev = 0.0;
-  for (idx, pos_opt) in positions.iter().enumerate() {
-    let pos = pos_opt.map_or(prev, |p| p);
-    let clamped = pos.max(prev).clamp(0.0, 1.0);
-    prev = clamped;
+  let mut prev_pos = f32::NEG_INFINITY;
+  for (stop, pos_opt) in stops.iter().zip(positions.iter()) {
+    let pos = pos_opt.unwrap_or(prev_pos);
+    let used_pos = if pos < prev_pos { prev_pos } else { pos };
+    prev_pos = used_pos;
     output.push((
-      clamped,
-      stops[idx]
+      used_pos,
+      stop
         .color
         .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
     ));
@@ -16201,107 +16238,16 @@ fn normalize_color_stops_unclamped(
   is_dark: bool,
   forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
-  if stops.is_empty() {
-    return Vec::new();
-  }
-  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
-    gradient_length
-  } else {
-    0.0
-  };
-  let mut positions: Vec<Option<f32>> = stops
-    .iter()
-    .map(|s| match s.position {
-      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
-      Some(crate::css::types::ColorStopPosition::Length(len)) => {
-        if gradient_length <= 0.0 {
-          None
-        } else {
-          len
-            .resolve_with_context(
-              Some(gradient_length),
-              viewport.0,
-              viewport.1,
-              font_size,
-              root_font_size,
-            )
-            .map(|px| px / gradient_length)
-        }
-      }
-      None => None,
-    })
-    .collect();
-  if positions.iter().all(|p| p.is_none()) {
-    if stops.len() == 1 {
-      return vec![(
-        0.0,
-        stops[0]
-          .color
-          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-      )];
-    }
-    let denom = (stops.len() - 1) as f32;
-    return stops
-      .iter()
-      .enumerate()
-      .map(|(i, s)| {
-        (
-          i as f32 / denom,
-          s.color
-            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-        )
-      })
-      .collect();
-  }
-  if positions.first().and_then(|p| *p).is_none() {
-    positions[0] = Some(0.0);
-  }
-  if positions.last().and_then(|p| *p).is_none() {
-    if let Some(last) = positions.last_mut() {
-      *last = Some(1.0);
-    }
-  }
-  let mut last_known: Option<(usize, f32)> = None;
-  for i in 0..positions.len() {
-    if let Some(pos) = positions[i] {
-      if let Some((start_idx, start_pos)) = last_known {
-        if let Some(gap) = i.checked_sub(start_idx + 1) {
-          if gap > 0 {
-            let step = (pos - start_pos) / (gap as f32 + 1.0);
-            for (j, slot) in positions
-              .iter_mut()
-              .enumerate()
-              .take(start_idx + gap + 1)
-              .skip(start_idx + 1)
-            {
-              *slot = Some(start_pos + step * j as f32);
-            }
-          }
-        }
-      } else if i > 0 {
-        let gap = i;
-        let step = pos / gap as f32;
-        for (j, slot) in positions.iter_mut().take(i).enumerate() {
-          *slot = Some(step * j as f32);
-        }
-      }
-      last_known = Some((i, pos));
-    }
-  }
-  let mut output = Vec::with_capacity(stops.len());
-  let mut prev = 0.0;
-  for (idx, pos_opt) in positions.iter().enumerate() {
-    let pos = pos_opt.map_or(prev, |p| p);
-    let monotonic = pos.max(prev);
-    prev = monotonic;
-    output.push((
-      monotonic,
-      stops[idx]
-        .color
-        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-    ));
-  }
-  output
+  normalize_color_stops(
+    stops,
+    current_color,
+    gradient_length,
+    font_size,
+    root_font_size,
+    viewport,
+    is_dark,
+    forced_colors,
+  )
 }
 
 fn radial_geometry(
@@ -17187,6 +17133,7 @@ fn resolve_border_image_outset(
 mod tests {
   use super::*;
   use crate::css::types::ColorStop;
+  use crate::css::types::ColorStopPosition;
   use crate::css::types::TextShadow;
   use crate::geometry::Rect;
   use crate::image_loader::ImageCache;
@@ -17242,6 +17189,80 @@ mod tests {
     let key = TextCacheKey::new(1, 0.0, "hello");
     let key_neg = TextCacheKey::new(1, -0.0, "hello");
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn normalize_color_stops_preserves_out_of_range_positions() {
+    let stops = vec![
+      ColorStop {
+        color: Color::parse("red").expect("color"),
+        position: Some(ColorStopPosition::Fraction(-0.5)),
+      },
+      ColorStop {
+        color: Color::parse("blue").expect("color"),
+        position: Some(ColorStopPosition::Fraction(1.5)),
+      },
+    ];
+
+    let normalized = normalize_color_stops(
+      &stops,
+      Rgba::BLACK,
+      100.0,
+      16.0,
+      16.0,
+      (100.0, 100.0),
+      false,
+      false,
+    );
+
+    assert_eq!(normalized.len(), 2);
+    assert!((normalized[0].0 + 0.5).abs() < 1e-6);
+    assert!((normalized[1].0 - 1.5).abs() < 1e-6);
+  }
+
+  #[test]
+  fn normalize_color_stops_fills_missing_positions_between_specified_stops() {
+    let stops = vec![
+      ColorStop {
+        color: Color::parse("red").expect("color"),
+        position: Some(ColorStopPosition::Fraction(0.0)),
+      },
+      ColorStop {
+        color: Color::parse("green").expect("color"),
+        position: Some(ColorStopPosition::Fraction(0.5)),
+      },
+      ColorStop {
+        color: Color::parse("blue").expect("color"),
+        position: None,
+      },
+      ColorStop {
+        color: Color::parse("black").expect("color"),
+        position: Some(ColorStopPosition::Fraction(0.75)),
+      },
+      ColorStop {
+        color: Color::parse("white").expect("color"),
+        position: None,
+      },
+    ];
+
+    let normalized = normalize_color_stops(
+      &stops,
+      Rgba::BLACK,
+      100.0,
+      16.0,
+      16.0,
+      (100.0, 100.0),
+      false,
+      false,
+    );
+
+    let positions: Vec<f32> = normalized.iter().map(|(pos, _)| *pos).collect();
+    assert_eq!(positions.len(), 5);
+    assert!((positions[0] - 0.0).abs() < 1e-6);
+    assert!((positions[1] - 0.5).abs() < 1e-6);
+    assert!((positions[2] - 0.625).abs() < 1e-6);
+    assert!((positions[3] - 0.75).abs() < 1e-6);
+    assert!((positions[4] - 1.0).abs() < 1e-6);
   }
 
   #[test]

@@ -4561,20 +4561,18 @@ fn parse_stop_position(
     trim_css_whitespace(&t[..t.len() - 1])
       .parse::<f32>()
       .ok()
-      .map(|p| crate::css::types::ColorStopPosition::Fraction((p / 100.0).clamp(0.0, 1.0)))
+      // CSS Images 3: gradient stop positions are not clamped to the [0%, 100%] range; they can
+      // be specified anywhere on the infinite gradient line.
+      .map(|p| crate::css::types::ColorStopPosition::Fraction(p / 100.0))
   } else if let Some(angle) = parse_stop_angle(t) {
     Some(crate::css::types::ColorStopPosition::Fraction(
       (angle.rem_euclid(360.0)) / 360.0,
     ))
   } else if let Ok(num) = t.parse::<f32>() {
     if num > 1.0 {
-      Some(crate::css::types::ColorStopPosition::Fraction(
-        (num / 100.0).clamp(0.0, 1.0),
-      ))
+      Some(crate::css::types::ColorStopPosition::Fraction(num / 100.0))
     } else {
-      Some(crate::css::types::ColorStopPosition::Fraction(
-        num.clamp(0.0, 1.0),
-      ))
+      Some(crate::css::types::ColorStopPosition::Fraction(num))
     }
   } else if allow_length {
     parse_length_token(t).map(crate::css::types::ColorStopPosition::Length)
@@ -4912,6 +4910,21 @@ mod tests {
     assert_eq!(stops.len(), 2);
     assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
     assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(1.0)));
+  }
+
+  #[test]
+  fn parses_linear_gradient_stop_positions_outside_zero_to_hundred_percent() {
+    // CSS Images 3: gradient stop positions are not restricted to [0%, 100%].
+    let value = "linear-gradient(to bottom, red -50%, blue 150%)";
+    let PropertyValue::LinearGradient { stops, .. } =
+      parse_property_value("background-image", value).expect("gradient")
+    else {
+      panic!("expected linear gradient");
+    };
+
+    assert_eq!(stops.len(), 2);
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(-0.5)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(1.5)));
   }
 
   #[test]

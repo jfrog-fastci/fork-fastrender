@@ -7775,7 +7775,7 @@ impl DisplayListRenderer {
           let mut color = s.color;
           color.a *= opacity;
           let pos = if s.position.is_finite() {
-            s.position.clamp(0.0, 1.0)
+            s.position
           } else {
             0.0
           };
@@ -7798,7 +7798,7 @@ impl DisplayListRenderer {
         .iter()
         .map(|s| {
           let pos = if s.position.is_finite() {
-            s.position.clamp(0.0, 1.0)
+            s.position
           } else {
             0.0
           };
@@ -15236,6 +15236,12 @@ fn normalize_color_stops(
   is_dark: bool,
   forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
+  // CSS Images 3: Gradient color stop “fixup”.
+  //
+  // https://www.w3.org/TR/css-images-3/#color-stop-fixup
+  //
+  // Stop positions are not clamped to the [0%, 100%] range; they may appear anywhere on the
+  // infinite gradient line (e.g. `-50%`, `150%`).
   if stops.is_empty() {
     return Vec::new();
   }
@@ -15249,7 +15255,7 @@ fn normalize_color_stops(
 
   let mut positions: Vec<Option<f32>> = stops
     .iter()
-    .map(|s| match s.position {
+    .map(|stop| match stop.position {
       Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
       Some(crate::css::types::ColorStopPosition::Length(len)) => {
         if gradient_length <= 0.0 {
@@ -15263,6 +15269,8 @@ fn normalize_color_stops(
       None => None,
     })
     .collect();
+
+  // If no stops had positions at all, evenly distribute them from 0%..100%.
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(
@@ -15276,61 +15284,81 @@ fn normalize_color_stops(
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| {
+      .map(|(i, stop)| {
         (
           i as f32 / denom,
-          s.color
+          stop
+            .color
             .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
         )
       })
       .collect();
   }
 
+  // Step 1: If the first stop has no position, set it to 0%.
   if positions.first().and_then(|p| *p).is_none() {
     positions[0] = Some(0.0);
   }
+  // Step 2: If the last stop has no position, set it to 100%.
   if positions.last().and_then(|p| *p).is_none() {
     if let Some(last) = positions.last_mut() {
       *last = Some(1.0);
     }
   }
 
-  let mut last_known: Option<(usize, f32)> = None;
-  for i in 0..positions.len() {
-    if let Some(pos) = positions[i] {
-      if let Some((start_idx, start_pos)) = last_known {
-        let gap = i.saturating_sub(start_idx + 1);
-        if gap > 0 {
-          let step = (pos - start_pos) / (gap as f32 + 1.0);
-          for (j, slot) in positions
-            .iter_mut()
-            .enumerate()
-            .take(start_idx + gap + 1)
-            .skip(start_idx + 1)
-          {
-            *slot = Some((start_pos + step * j as f32).max(start_pos));
-          }
-        }
-      } else if i > 0 {
-        let gap = i;
-        let step = pos / gap as f32;
-        for (j, slot) in positions.iter_mut().take(i).enumerate() {
-          *slot = Some(step * j as f32);
-        }
+  // Step 3: Ensure positioned stops are non-decreasing.
+  let mut max_specified = positions[0].unwrap_or(0.0);
+  for pos in positions.iter_mut().skip(1) {
+    if let Some(value) = *pos {
+      if value < max_specified {
+        *pos = Some(max_specified);
+      } else {
+        max_specified = value;
       }
-      last_known = Some((i, pos));
     }
   }
 
+  // Step 4: Distribute runs of missing stops between the nearest positioned stops.
+  let mut idx = 0usize;
+  while idx < positions.len() {
+    if positions[idx].is_some() {
+      idx += 1;
+      continue;
+    }
+
+    // Safe because step 1 guarantees the first entry is positioned.
+    let start_idx = idx.saturating_sub(1);
+    let start_pos = positions[start_idx].unwrap_or(0.0);
+
+    let mut end_idx = idx;
+    while end_idx < positions.len() && positions[end_idx].is_none() {
+      end_idx += 1;
+    }
+    // Safe because step 2 guarantees the last entry is positioned.
+    if end_idx >= positions.len() {
+      break;
+    }
+    let end_pos = positions[end_idx].unwrap_or(start_pos);
+
+    let span = (end_idx - start_idx) as f32;
+    for offset in 1..(end_idx - start_idx) {
+      let t = offset as f32 / span;
+      positions[start_idx + offset] = Some(start_pos + (end_pos - start_pos) * t);
+    }
+
+    idx = end_idx + 1;
+  }
+
+  // Pair the resolved positions with colors, keeping the result monotonic.
   let mut output = Vec::with_capacity(stops.len());
-  let mut prev = 0.0;
-  for (idx, pos_opt) in positions.into_iter().enumerate() {
+  let mut prev = f32::NEG_INFINITY;
+  for (stop, pos_opt) in stops.iter().zip(positions.iter()) {
     let pos = pos_opt.unwrap_or(prev);
-    let clamped = pos.max(prev).clamp(0.0, 1.0);
-    prev = clamped;
+    let used = if pos < prev { prev } else { pos };
+    prev = used;
     output.push((
-      clamped,
-      stops[idx]
+      used,
+      stop
         .color
         .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
     ));
@@ -15349,103 +15377,16 @@ fn normalize_color_stops_unclamped(
   is_dark: bool,
   forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
-  if stops.is_empty() {
-    return Vec::new();
-  }
-  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
-    gradient_length
-  } else {
-    0.0
-  };
-  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
-  let mut positions: Vec<Option<f32>> = stops
-    .iter()
-    .map(|s| match s.position {
-      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
-      Some(crate::css::types::ColorStopPosition::Length(len)) => {
-        if gradient_length <= 0.0 {
-          None
-        } else {
-          len
-            .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
-            .map(|px| px / gradient_length)
-        }
-      }
-      None => None,
-    })
-    .collect();
-  if positions.iter().all(|p| p.is_none()) {
-    if stops.len() == 1 {
-      return vec![(
-        0.0,
-        stops[0]
-          .color
-          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-      )];
-    }
-    let denom = (stops.len() - 1) as f32;
-    return stops
-      .iter()
-      .enumerate()
-      .map(|(i, s)| {
-        (
-          i as f32 / denom,
-          s.color
-            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-        )
-      })
-      .collect();
-  }
-  if positions.first().and_then(|p| *p).is_none() {
-    positions[0] = Some(0.0);
-  }
-  if positions.last().and_then(|p| *p).is_none() {
-    if let Some(last) = positions.last_mut() {
-      *last = Some(1.0);
-    }
-  }
-  let mut last_known: Option<(usize, f32)> = None;
-  for i in 0..positions.len() {
-    if let Some(pos) = positions[i] {
-      if let Some((start_idx, start_pos)) = last_known {
-        let gap = i.saturating_sub(start_idx + 1);
-        if gap > 0 {
-          let step = (pos - start_pos) / (gap as f32 + 1.0);
-          for (j, slot) in positions
-            .iter_mut()
-            .enumerate()
-            .take(start_idx + gap + 1)
-            .skip(start_idx + 1)
-          {
-            *slot = Some(start_pos + step * j as f32);
-          }
-        }
-      } else if i > 0 {
-        let gap = i;
-        let step = pos / gap as f32;
-        for (j, slot) in positions.iter_mut().take(i).enumerate() {
-          *slot = Some(step * j as f32);
-        }
-      }
-      last_known = Some((i, pos));
-    }
-  }
-
-  let mut output = Vec::with_capacity(stops.len());
-  let mut prev = 0.0;
-  for (idx, pos_opt) in positions.into_iter().enumerate() {
-    let pos = pos_opt.unwrap_or(prev);
-    let unclamped = pos.max(prev);
-    prev = unclamped;
-    output.push((
-      unclamped,
-      stops[idx]
-        .color
-        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-    ));
-  }
-
-  output
+  normalize_color_stops(
+    stops,
+    current_color,
+    gradient_length,
+    font_size,
+    root_font_size,
+    viewport,
+    is_dark,
+    forced_colors,
+  )
 }
 
 fn gradient_stops(stops: &[(f32, Rgba)]) -> Vec<tiny_skia::GradientStop> {
@@ -20980,6 +20921,27 @@ mod tests {
     assert!(second.2 > second.0);
     assert_eq!(first.3, 255);
     assert_eq!(second.3, 255);
+  }
+
+  #[test]
+  fn linear_gradient_stop_positions_outside_zero_to_one_are_not_clamped() {
+    let renderer = DisplayListRenderer::new(1, 1, Rgba::WHITE, FontContext::new()).unwrap();
+    let stops = vec![
+      GradientStop {
+        position: -0.5,
+        color: Rgba::rgb(255, 0, 0),
+      },
+      GradientStop {
+        position: 1.5,
+        color: Rgba::rgb(0, 0, 255),
+      },
+    ];
+
+    let converted = renderer
+      .convert_stops_rgba(&stops)
+      .expect("expected stops");
+    let positions: Vec<f32> = converted.iter().map(|(p, _)| *p).collect();
+    assert_f32_positions_close(&positions, &[-0.5, 1.5]);
   }
 
   #[test]

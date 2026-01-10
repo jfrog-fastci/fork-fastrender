@@ -5212,10 +5212,14 @@ pub struct ColorStop {
 /// stored as a normalized fraction via [`ColorStopPosition::Fraction`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColorStopPosition {
-  /// A normalized fraction in the `[0, 1]` range.
+  /// A fraction along the gradient line where `0.0` corresponds to the gradient start point and
+  /// `1.0` corresponds to the gradient end point.
   ///
-  /// This is used for percentage stops, or stop syntax that is effectively percentage-like (e.g.
-  /// legacy unitless numbers that we treat as percent).
+  /// Per CSS Images, gradient stop positions are not restricted to the `[0, 1]` range; stops may
+  /// be placed anywhere on the infinite gradient line (e.g. `-50%`, `150%`).
+  ///
+  /// This variant is also used for percentage-like stop syntax (e.g. legacy unitless numbers that
+  /// we treat as percent).
   Fraction(f32),
   /// An absolute length that must be resolved relative to the gradient geometry at paint time.
   Length(Length),

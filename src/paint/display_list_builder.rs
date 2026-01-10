@@ -4457,6 +4457,12 @@ impl DisplayListBuilder {
     is_dark: bool,
     forced_colors: bool,
   ) -> Vec<(f32, Rgba)> {
+    // CSS Images 3: Gradient color stop “fixup”.
+    //
+    // https://www.w3.org/TR/css-images-3/#color-stop-fixup
+    //
+    // Notably, stop positions are not clamped to the [0%, 100%] range; they may appear anywhere on
+    // the infinite gradient line (e.g. `-50%`, `150%`).
     if stops.is_empty() {
       return Vec::new();
     }
@@ -4470,7 +4476,7 @@ impl DisplayListBuilder {
 
     let mut positions: Vec<Option<f32>> = stops
       .iter()
-      .map(|s| match s.position {
+      .map(|stop| match stop.position {
         Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
         Some(crate::css::types::ColorStopPosition::Length(len)) => {
           if gradient_length <= 0.0 {
@@ -4484,6 +4490,8 @@ impl DisplayListBuilder {
         None => None,
       })
       .collect();
+
+    // If no stops had positions at all, evenly distribute them from 0%..100%.
     if positions.iter().all(|p| p.is_none()) {
       if stops.len() == 1 {
         return vec![(
@@ -4497,56 +4505,81 @@ impl DisplayListBuilder {
       return stops
         .iter()
         .enumerate()
-        .map(|(i, s)| {
+        .map(|(i, stop)| {
           (
             i as f32 / denom,
-            s.color
+            stop
+              .color
               .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
           )
         })
         .collect();
     }
 
+    // Step 1: If the first stop has no position, set it to 0%.
     if positions.first().and_then(|p| *p).is_none() {
       positions[0] = Some(0.0);
     }
+    // Step 2: If the last stop has no position, set it to 100%.
     if positions.last().and_then(|p| *p).is_none() {
       if let Some(last) = positions.last_mut() {
         *last = Some(1.0);
       }
     }
 
-    let mut last_known: Option<(usize, f32)> = None;
-    for i in 0..positions.len() {
-      if let Some(pos) = positions[i] {
-        if let Some((start_idx, start_pos)) = last_known {
-          let gap = i.saturating_sub(start_idx + 1);
-          if gap > 0 {
-            let step = (pos - start_pos) / (gap as f32 + 1.0);
-            for (offset, slot) in positions[start_idx + 1..i].iter_mut().enumerate() {
-              *slot = Some((start_pos + step * (offset + 1) as f32).max(start_pos));
-            }
-          }
-        } else if i > 0 {
-          let gap = i;
-          let step = pos / gap as f32;
-          for (j, slot) in positions.iter_mut().take(i).enumerate() {
-            *slot = Some(step * j as f32);
-          }
+    // Step 3: Ensure positioned stops are non-decreasing.
+    let mut max_specified = positions[0].unwrap_or(0.0);
+    for pos in positions.iter_mut().skip(1) {
+      if let Some(value) = *pos {
+        if value < max_specified {
+          *pos = Some(max_specified);
+        } else {
+          max_specified = value;
         }
-        last_known = Some((i, pos));
       }
     }
 
+    // Step 4: Distribute runs of missing stops between the nearest positioned stops.
+    let mut idx = 0usize;
+    while idx < positions.len() {
+      if positions[idx].is_some() {
+        idx += 1;
+        continue;
+      }
+
+      // Safe because step 1 guarantees the first entry is positioned.
+      let start_idx = idx.saturating_sub(1);
+      let start_pos = positions[start_idx].unwrap_or(0.0);
+
+      let mut end_idx = idx;
+      while end_idx < positions.len() && positions[end_idx].is_none() {
+        end_idx += 1;
+      }
+      // Safe because step 2 guarantees the last entry is positioned.
+      if end_idx >= positions.len() {
+        break;
+      }
+      let end_pos = positions[end_idx].unwrap_or(start_pos);
+
+      let span = (end_idx - start_idx) as f32;
+      for offset in 1..(end_idx - start_idx) {
+        let t = offset as f32 / span;
+        positions[start_idx + offset] = Some(start_pos + (end_pos - start_pos) * t);
+      }
+
+      idx = end_idx + 1;
+    }
+
+    // Pair the resolved positions with colors, keeping the result monotonic.
     let mut output = Vec::with_capacity(stops.len());
-    let mut prev = 0.0;
-    for (idx, pos_opt) in positions.into_iter().enumerate() {
+    let mut prev = f32::NEG_INFINITY;
+    for (stop, pos_opt) in stops.iter().zip(positions.iter()) {
       let pos = pos_opt.unwrap_or(prev);
-      let clamped = pos.max(prev).clamp(0.0, 1.0);
-      prev = clamped;
+      let used = if pos < prev { prev } else { pos };
+      prev = used;
       output.push((
-        clamped,
-        stops[idx]
+        used,
+        stop
           .color
           .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
       ));
@@ -4565,114 +4598,19 @@ impl DisplayListBuilder {
     is_dark: bool,
     forced_colors: bool,
   ) -> Vec<(f32, Rgba)> {
-    if stops.is_empty() {
-      return Vec::new();
-    }
-
-    let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
-      gradient_length
-    } else {
-      0.0
-    };
-    let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
-
-    let mut positions: Vec<Option<f32>> = stops
-      .iter()
-      .map(|s| match s.position {
-        Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
-        Some(crate::css::types::ColorStopPosition::Length(len)) => {
-          if gradient_length <= 0.0 {
-            None
-          } else {
-            len
-              .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
-              .map(|px| px / gradient_length)
-          }
-        }
-        None => None,
-      })
-      .collect();
-    if positions.iter().all(|p| p.is_none()) {
-      if stops.len() == 1 {
-        return vec![(
-          0.0,
-          stops[0]
-            .color
-            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-        )];
-      }
-      let denom = (stops.len() - 1) as f32;
-      return stops
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-          (
-            i as f32 / denom,
-            s.color
-              .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-          )
-        })
-        .collect();
-    }
-
-    if positions.first().and_then(|p| *p).is_none() {
-      positions[0] = Some(0.0);
-    }
-    if positions.last().and_then(|p| *p).is_none() {
-      if let Some(last) = positions.last_mut() {
-        *last = Some(1.0);
-      }
-    }
-
-    let mut last_known: Option<(usize, f32)> = None;
-    for i in 0..positions.len() {
-      if let Some(pos) = positions[i] {
-        if let Some((start_idx, start_pos)) = last_known {
-          let gap = i.saturating_sub(start_idx + 1);
-          if gap > 0 {
-            let step = (pos - start_pos) / (gap as f32 + 1.0);
-            for (offset, slot) in positions[start_idx + 1..i].iter_mut().enumerate() {
-              *slot = Some(start_pos + step * (offset + 1) as f32);
-            }
-          }
-        } else if i > 0 {
-          let gap = i;
-          let step = pos / gap as f32;
-          for (j, slot) in positions.iter_mut().take(i).enumerate() {
-            *slot = Some(step * j as f32);
-          }
-        }
-        last_known = Some((i, pos));
-      }
-    }
-
-    let mut output = Vec::with_capacity(stops.len());
-    let mut prev = 0.0;
-    for (idx, pos_opt) in positions.into_iter().enumerate() {
-      let pos = pos_opt.unwrap_or(prev);
-      let monotonic = pos.max(prev);
-      prev = monotonic;
-      output.push((
-        monotonic,
-        stops[idx]
-          .color
-          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
-      ));
-    }
-    output
+    Self::normalize_color_stops(
+      stops,
+      current_color,
+      gradient_length,
+      font_size,
+      root_font_size,
+      viewport,
+      is_dark,
+      forced_colors,
+    )
   }
 
   fn gradient_stops(stops: &[(f32, Rgba)]) -> Vec<GradientStop> {
-    stops
-      .iter()
-      .map(|(pos, color)| GradientStop {
-        position: pos.clamp(0.0, 1.0),
-        color: *color,
-      })
-      .collect()
-  }
-
-  fn gradient_stops_unclamped(stops: &[(f32, Rgba)]) -> Vec<GradientStop> {
     stops
       .iter()
       .map(|(pos, color)| GradientStop {
@@ -4680,6 +4618,10 @@ impl DisplayListBuilder {
         color: *color,
       })
       .collect()
+  }
+
+  fn gradient_stops_unclamped(stops: &[(f32, Rgba)]) -> Vec<GradientStop> {
+    Self::gradient_stops(stops)
   }
 
   fn radial_geometry(
@@ -15192,6 +15134,49 @@ mod tests {
     assert!((gradient.stops[1].position - 0.5).abs() < 1e-6);
     assert!((gradient.stops[2].position - 0.5).abs() < 1e-6);
     assert!((gradient.stops[3].position - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn background_linear_gradient_preserves_out_of_range_stop_positions() {
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::LinearGradient {
+        angle: 180.0,
+        stops: vec![
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::RED),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(-0.5)),
+          },
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::BLUE),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.5)),
+          },
+        ],
+      }),
+      repeat: BackgroundRepeat::no_repeat(),
+      ..BackgroundLayer::default()
+    }]);
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 64.0, 10.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::new().build(&fragment);
+    let stops = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::LinearGradient(item) => Some(item.stops.as_slice()),
+        DisplayItem::LinearGradientPattern(item) => Some(item.stops.as_slice()),
+        _ => None,
+      })
+      .expect("expected a linear gradient display item");
+
+    assert_eq!(stops.len(), 2);
+    assert!((stops[0].position - (-0.5)).abs() < 1e-6);
+    assert!((stops[1].position - 1.5).abs() < 1e-6);
   }
 
   #[test]

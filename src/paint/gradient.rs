@@ -533,7 +533,7 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    if t <= 0.0 {
+    if t < 0.0 {
       return self.first;
     }
     if t >= self.period {
@@ -592,7 +592,7 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    if t <= 0.0 {
+    if t < 0.0 {
       return self.first;
     }
     if t >= self.period {

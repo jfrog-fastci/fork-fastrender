@@ -1582,7 +1582,11 @@ pub struct ConicGradientPatternItem {
 /// Gradient color stop
 #[derive(Debug, Clone)]
 pub struct GradientStop {
-  /// Position (0.0 to 1.0)
+  /// Position along the gradient line where `0.0` corresponds to the start point and `1.0`
+  /// corresponds to the end point.
+  ///
+  /// Per CSS Images, stop positions are not restricted to the `[0, 1]` range; stops may be placed
+  /// anywhere on the infinite gradient line (e.g. `-50%`, `150%`).
   pub position: f32,
 
   /// Color at this stop
