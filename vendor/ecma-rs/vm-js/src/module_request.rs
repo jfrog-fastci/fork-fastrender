@@ -74,7 +74,9 @@ impl ModuleRequest {
   ///   constructed via this constructor (or [`ModuleRequest::canonicalize`]).
   #[inline]
   pub fn new(specifier: impl Into<String>, mut attributes: Vec<ImportAttribute>) -> Self {
-    attributes.sort_by(cmp_import_attribute);
+    // Use an in-place unstable sort to avoid heap allocations. Import attributes are treated as a
+    // set by the spec; relative ordering between equal entries is not observable.
+    attributes.sort_unstable_by(cmp_import_attribute);
     Self {
       specifier: specifier.into(),
       attributes,
@@ -84,7 +86,7 @@ impl ModuleRequest {
   /// Canonicalize this request's attribute list in-place.
   #[inline]
   pub fn canonicalize(&mut self) {
-    self.attributes.sort_by(cmp_import_attribute);
+    self.attributes.sort_unstable_by(cmp_import_attribute);
   }
 
   /// Builder helper: append an import attribute and re-canonicalize.
