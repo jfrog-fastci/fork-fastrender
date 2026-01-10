@@ -4881,16 +4881,15 @@ impl BlockFormattingContext {
         let applied_margin = margin_ctx.consume_pending();
         *current_y += applied_margin;
 
-        *content_height = content_height.max(inline_fragment.bounds.max_y());
-        // Inline formatting contexts can contain floats. Floats are out-of-flow and must not
-        // advance the block flow cursor; only the in-flow line boxes do. Still, the parent block's
-        // content height should account for floats (handled above via `inline_fragment.bounds.max_y()`).
-        *current_y += line_boxes_bottom;
+        // Floats are out-of-flow: only in-flow line boxes advance the block cursor/auto height.
+        // BFC roots incorporate floats separately via `float_bottom` once child layout completes.
+        let line_bottom = *current_y + line_boxes_bottom;
+        *content_height = content_height.max(line_bottom);
+        *current_y = line_bottom;
         fragments.push(inline_fragment);
       } else if !inline_fragment.children.is_empty() {
         // Floats, positioned descendants, and other out-of-flow contributions may still need to
         // paint, but should not prevent margin collapsing between in-flow blocks.
-        *content_height = content_height.max(inline_fragment.bounds.max_y());
         fragments.push(inline_fragment);
       }
       *buffer = std::mem::take(&mut inline_container.children);
