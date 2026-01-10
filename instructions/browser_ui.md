@@ -26,6 +26,9 @@ This repo is not just a “PNG renderer” long-term: we want an **interactive d
 
 This document is the starting point for building that cross-platform browser chrome.
 
+Implementation notes for the current in-tree browser UI (architecture, message protocol,
+cancellation/history semantics, env vars, debugging) live in [`docs/browser_ui.md`](../docs/browser_ui.md).
+
 ## Goals
 
 - A cross-platform windowed app (Linux/macOS/Windows).

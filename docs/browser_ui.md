@@ -12,6 +12,9 @@ it), see [browser.md](browser.md).
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**
 enabled by default.
 
+Always use the repo wrappers (see [`AGENTS.md`](../AGENTS.md)) when building/running the browser UI:
+`scripts/cargo_agent.sh` for Cargo invocations and `scripts/run_limited.sh` to apply resource limits.
+
 ```bash
 # Debug build:
 bash scripts/run_limited.sh --as 64G -- \
@@ -201,6 +204,27 @@ job (navigation/tick/etc). Multiple worker threads can render concurrently witho
 other's stage forwarding, but overlapping render jobs on the *same* thread would still require
 per-job routing (e.g. tagging stage messages with a job identifier).
 
+### Worker-owned history semantics
+
+Navigation/history state is **owned by the worker** (per-tab [`TabHistory`](../src/ui/history.rs)):
+
+- The UI **must not** attempt to compute history state client-side (e.g. by pushing its own URL
+  stack or “guessing” the next URL for back/forward).
+- The UI sends history actions (`UiToWorker::{GoBack,GoForward,Reload}`) without providing a URL.
+- The worker sends `WorkerToUi::{NavigationCommitted,NavigationFailed}` including:
+  - the current URL/title,
+  - `can_go_back` / `can_go_forward` affordances.
+- Scroll restoration is also worker-owned: the worker persists scroll offsets in history entries
+  (`HistoryEntry.{scroll_x,scroll_y}`) and restores them on back/forward/reload.
+
+Implementation notes (canonical worker loop in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)):
+
+- When starting a new navigation, the worker may push a **provisional** history entry immediately.
+  If that navigation is superseded before it commits, the entry is typically updated in-place
+  (`TabHistory::replace_current_url`) to avoid leaving cancelled URLs in the back/forward list.
+- Redirects are committed by updating the current entry’s URL in-place
+  (`TabHistory::commit_navigation`) rather than creating a new entry.
+
 ### Cancellation model (generations + cooperative cancel callbacks)
 
 FastRender cancellation is *cooperative*: `RenderDeadline` can carry a `cancel_callback` that is
@@ -210,6 +234,14 @@ The browser UI includes generation-counter cancellation helpers in [`src/ui/canc
 
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
+
+When building a UI front-end, bump gens **before sending** the corresponding `UiToWorker` message so
+in-flight work can be cancelled even while the worker thread is busy:
+
+| UI action | Cancel gen to bump |
+|---|---|
+| `Navigate`, `GoBack`, `GoForward`, `Reload` | `bump_nav()` |
+| `ViewportChanged`, `Scroll`, input events, `RequestRepaint` | `bump_paint()` |
 
 Note: the canonical browser UI worker loop (`spawn_browser_worker` / `spawn_ui_worker*`) uses these
 helpers to cancel stale prepares/paints. The browser integration suite serializes tests that depend
@@ -229,6 +261,40 @@ The typical pattern is:
 
 When wired in, this prevents “old” frames from showing up after the user has moved on, and saves
 CPU by stopping stale work early.
+
+## Debugging tips (UI/worker)
+
+### Stage heartbeat logging
+
+The renderer emits coarse “where are we?” stage heartbeats (`StageHeartbeat` in
+[`src/render_control.rs`](../src/render_control.rs)). The canonical browser worker installs a
+per-thread stage listener and forwards these as `WorkerToUi::Stage { tab_id, stage }`.
+
+Tips:
+
+- The windowed UI already surfaces a condensed stage string in its chrome (e.g. `Loading… layout`).
+- When debugging hangs/blank frames, it’s often useful to **log every stage message** received on
+  the UI thread (including `tab_id`) to see where time is spent.
+- If you implement a custom worker loop, make sure you install a stage listener around both
+  “prepare” and “paint” work; the lightweight wrapper in [`src/ui/worker.rs`](../src/ui/worker.rs)
+  (`RenderWorker`) shows the minimal pattern.
+
+### Built-in `about:test-*` pages
+
+For deterministic, offline repros (no network), the worker supports a few `about:` pages defined in
+[`src/ui/about_pages.rs`](../src/ui/about_pages.rs):
+
+- `about:test-scroll` — a simple tall page for scroll/viewport behavior.
+- `about:test-heavy` — a large DOM intended to make cancellation/timeout behavior observable.
+- `about:test-form` — a minimal form for interaction/input testing.
+
+These are used by the browser UI integration tests, but are also handy for manual debugging in the
+windowed app.
+
+### Worker debug logs
+
+The worker can emit best-effort structured debug lines via `WorkerToUi::DebugLog { tab_id, line }`.
+Front-ends are encouraged to print these to stderr while developing new protocol behavior.
 
 ## Known limitations (as of now)
 
