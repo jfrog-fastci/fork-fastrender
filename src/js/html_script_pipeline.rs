@@ -9,7 +9,31 @@ use super::html_script_scheduler::{
   HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptEventKind,
 };
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+struct JsExecutionGuard {
+  depth: Rc<Cell<usize>>,
+}
+
+impl JsExecutionGuard {
+  fn enter(depth: &Rc<Cell<usize>>) -> Self {
+    let cur = depth.get();
+    depth.set(cur + 1);
+    Self {
+      depth: Rc::clone(depth),
+    }
+  }
+}
+
+impl Drop for JsExecutionGuard {
+  fn drop(&mut self) {
+    let cur = self.depth.get();
+    debug_assert!(cur > 0, "js execution depth underflow");
+    self.depth.set(cur.saturating_sub(1));
+  }
+}
 
 /// Host hook for firing DOM `load` / `error` events at `<script>` elements.
 ///
@@ -69,6 +93,7 @@ pub struct HtmlScriptPipeline<Host: HtmlScriptPipelineHost> {
   registered_import_map_count: usize,
   script_type_by_id: HashMap<HtmlScriptId, ScriptType>,
   external_file_by_id: HashMap<HtmlScriptId, bool>,
+  js_execution_depth: Rc<Cell<usize>>,
 }
 
 impl<Host: HtmlScriptPipelineHost> Default for HtmlScriptPipeline<Host> {
@@ -79,6 +104,7 @@ impl<Host: HtmlScriptPipelineHost> Default for HtmlScriptPipeline<Host> {
       registered_import_map_count: 0,
       script_type_by_id: HashMap::new(),
       external_file_by_id: HashMap::new(),
+      js_execution_depth: Rc::new(Cell::new(0)),
     }
   }
 }
@@ -255,10 +281,17 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
             }
           });
 
-          host.execute_script(node_id, script_type, source_text, &mut self.event_loop)?;
+          {
+            let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+            host.execute_script(node_id, script_type, source_text, &mut self.event_loop)?;
+          }
 
           if let Some(event_kind) = event_kind {
             self.queue_script_event_task(node_id, event_kind)?;
+          }
+
+          if self.js_execution_depth.get() == 0 {
+            self.event_loop.perform_microtask_checkpoint(host)?;
           }
         }
         HtmlScriptSchedulerAction::QueueTask {
@@ -285,7 +318,9 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
             }
           });
 
+          let js_execution_depth = Rc::clone(&self.js_execution_depth);
           self.event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+            let _guard = JsExecutionGuard::enter(&js_execution_depth);
             host.execute_script(node_id, script_type, source_text.as_deref(), event_loop)?;
             if let Some(event_kind) = event_kind {
               let event_name: &'static str = match event_kind {
@@ -372,6 +407,142 @@ mod tests {
     let script = doc.create_element("script", "");
     doc.append_child(doc.root(), script).expect("append_child");
     script
+  }
+
+  #[derive(Default)]
+  struct MicrotaskHost {
+    log: Vec<String>,
+  }
+
+  impl ScriptElementEventHost for MicrotaskHost {
+    fn dispatch_script_element_event(
+      &mut self,
+      _script: NodeId,
+      event_name: &'static str,
+    ) -> Result<()> {
+      self.log.push(format!("event:{event_name}"));
+      Ok(())
+    }
+  }
+
+  impl HtmlScriptPipelineHost for MicrotaskHost {
+    fn start_fetch(
+      &mut self,
+      _script_id: HtmlScriptId,
+      _url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn execute_script(
+      &mut self,
+      _script: NodeId,
+      script_type: ScriptType,
+      source_text: Option<&str>,
+      event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      let prefix = match script_type {
+        ScriptType::Classic => "classic",
+        ScriptType::Module => "module",
+        ScriptType::ImportMap => "importmap",
+        ScriptType::Unknown => "unknown",
+      };
+      let body = source_text.unwrap_or("<null>");
+      self.log.push(format!("exec:{prefix}:{body}"));
+      let micro = format!("micro:{prefix}:{body}");
+      event_loop.queue_microtask(move |host, _| {
+        host.log.push(micro);
+        Ok(())
+      })?;
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn execute_now_flushes_microtasks_when_js_execution_stack_empty() -> Result<()> {
+    let mut host = MicrotaskHost::default();
+    let mut pipeline = HtmlScriptPipeline::<MicrotaskHost>::new();
+    let script = script_node();
+
+    let _id = pipeline.discovered_parser_script(
+      &mut host,
+      script,
+      ScriptElementSpec {
+        base_url: None,
+        src: None,
+        src_attr_present: false,
+        inline_text: "RUN".to_string(),
+        async_attr: false,
+        force_async: false,
+        defer_attr: false,
+        nomodule_attr: false,
+        crossorigin: None,
+        integrity_attr_present: false,
+        integrity: None,
+        referrer_policy: None,
+        parser_inserted: true,
+        node_id: Some(script),
+        script_type: ScriptType::Classic,
+      },
+    )?;
+
+    assert_eq!(
+      host.log,
+      vec![
+        "exec:classic:RUN".to_string(),
+        "micro:classic:RUN".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn execute_now_skips_microtask_checkpoint_when_js_execution_stack_nonempty() -> Result<()> {
+    let mut host = MicrotaskHost::default();
+    let mut pipeline = HtmlScriptPipeline::<MicrotaskHost>::new();
+    let script = script_node();
+
+    pipeline.js_execution_depth.set(1);
+
+    let _id = pipeline.discovered_parser_script(
+      &mut host,
+      script,
+      ScriptElementSpec {
+        base_url: None,
+        src: None,
+        src_attr_present: false,
+        inline_text: "RUN".to_string(),
+        async_attr: false,
+        force_async: false,
+        defer_attr: false,
+        nomodule_attr: false,
+        crossorigin: None,
+        integrity_attr_present: false,
+        integrity: None,
+        referrer_policy: None,
+        parser_inserted: true,
+        node_id: Some(script),
+        script_type: ScriptType::Classic,
+      },
+    )?;
+
+    assert_eq!(host.log, vec!["exec:classic:RUN".to_string()]);
+
+    pipeline.js_execution_depth.set(0);
+    pipeline
+      .event_loop()
+      .perform_microtask_checkpoint(&mut host)?;
+
+    assert_eq!(
+      host.log,
+      vec![
+        "exec:classic:RUN".to_string(),
+        "micro:classic:RUN".to_string()
+      ]
+    );
+    Ok(())
   }
 
   #[test]
