@@ -988,6 +988,53 @@ fn clearance_breaks_margin_collapse() {
 }
 
 #[test]
+fn clear_none_does_not_break_sibling_margin_collapse_in_nested_block() {
+  // When a block formatting context reuses an ancestor float context (i.e., it does not establish a
+  // new BFC), `float_base_y` can be non-zero. Clearance computations must not introduce tiny
+  // positive deltas when `clear: none`, otherwise sibling margins may fail to collapse.
+
+  // Spacer to push the nested block down, ensuring a non-zero `float_base_y`.
+  let spacer = block_with_height_and_margins(50.0, 0.0, 0.0);
+
+  // Two sibling blocks whose margins should collapse to max(6.496, 4.28736) = 6.496.
+  let a = block_with_height_and_margins(56.65985, 0.0, 6.496);
+  let b = block_with_height_and_margins(10.0, 4.28736, 0.0);
+
+  let nested = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![a, b],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![spacer, nested],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let spacer_fragment = &fragment.children[0];
+  let nested_fragment = &fragment.children[1];
+  assert_approx(
+    nested_fragment.bounds.y(),
+    spacer_fragment.bounds.max_y(),
+    "expected nested block to be placed after the spacer",
+  );
+
+  let a_fragment = &nested_fragment.children[0];
+  let b_fragment = &nested_fragment.children[1];
+  assert_approx(
+    b_fragment.bounds.y() - a_fragment.bounds.max_y(),
+    6.496,
+    "expected sibling margins to collapse to max(6.496, 4.28736) = 6.496",
+  );
+}
+
+#[test]
 fn float_does_not_break_sibling_margin_collapse() {
   let a = block_with_height_and_margins(10.0, 0.0, 10.0);
 

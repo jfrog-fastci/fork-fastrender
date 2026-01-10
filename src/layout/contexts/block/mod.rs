@@ -4544,11 +4544,20 @@ impl BlockFormattingContext {
           child_layout_ctx.collapsed_block_margins(child, containing_width, child_margin_mode);
         let pending_margin = margin_ctx.pending_collapsible_margin();
         let margin_edge_y = current_y + pending_margin.resolve();
-        let cleared_margin_edge_y = float_ctx_ref.compute_clearance(
-          float_base_y + margin_edge_y,
-          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
-        ) - float_base_y;
-        let clearance = (cleared_margin_edge_y - margin_edge_y).max(0.0);
+        let clear_side =
+          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction);
+        // `clearance` is a *delta* in the block axis, so it is invariant under the translation
+        // between this formatting context's coordinate space and an ancestor float context.
+        //
+        // When `clear: none`, `FloatContext::compute_clearance` returns the input `y` directly.
+        // Converting that result back into local coordinates via `y - float_base_y` can introduce
+        // tiny positive rounding errors (from catastrophic cancellation) that would incorrectly be
+        // treated as "has clearance", breaking sibling margin collapsing.
+        let clearance = if clear_side.is_clearing() {
+          float_ctx_ref.clearance_amount(float_base_y + margin_edge_y, clear_side)
+        } else {
+          0.0
+        };
 
         let box_y = if clearance > 0.0 {
           // Clearance is added above the top margin edge and breaks margin adjoining.
