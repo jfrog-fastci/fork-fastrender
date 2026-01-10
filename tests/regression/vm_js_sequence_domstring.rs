@@ -6,6 +6,7 @@ use vm_js::{
   PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 struct NoHooks;
 
@@ -302,7 +303,12 @@ fn vmjs_sequence_domstring_via_iterator_protocol_and_limits() -> Result<(), VmEr
     let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
     let func = cx.create_function("takeSequence", 1, take_sequence)?;
     let global = cx.global_object()?;
-    cx.define_data_property_str(global, "takeSequence", func, true)?;
+    cx.define_data_property_str(
+      global,
+      "takeSequence",
+      func,
+      DataPropertyAttributes::new(true, true, true),
+    )?;
   }
 
   let mut host = SeqHost::default();

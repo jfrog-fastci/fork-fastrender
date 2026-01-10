@@ -8,6 +8,7 @@ use vm_js::{
   WeakGcObject,
 };
 use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 struct NoHooks;
 
@@ -50,8 +51,9 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let obj = rt.create_object()?;
-  rt.define_data_property_str(obj, "done", rt.js_bool(done), true)?;
-  rt.define_data_property_str(obj, "value", value, true)?;
+  let attrs = DataPropertyAttributes::new(true, true, true);
+  rt.define_data_property_str(obj, "done", rt.js_bool(done), attrs)?;
+  rt.define_data_property_str(obj, "value", value, attrs)?;
   Ok(obj)
 }
 
@@ -94,10 +96,11 @@ where
     IterItem::Key(s) | IterItem::Value(s) => rt.js_string(s)?,
     IterItem::Pair(k, v) => {
       let pair = rt.create_object()?;
+      let attrs = DataPropertyAttributes::new(true, true, true);
       let key_value = rt.js_string(k)?;
-      rt.define_data_property_str(pair, "0", key_value, true)?;
+      rt.define_data_property_str(pair, "0", key_value, attrs)?;
       let value_value = rt.js_string(v)?;
-      rt.define_data_property_str(pair, "1", value_value, true)?;
+      rt.define_data_property_str(pair, "1", value_value, attrs)?;
       pair
     }
   };
@@ -131,7 +134,7 @@ impl UrlSearchParamsHost {
       0,
       url_search_params_iterator_next::<VmJsWebIdlBindingsCx<'a, UrlSearchParamsHost>>,
     )?;
-    rt.define_data_property_str(iter, "next", next, false)?;
+    rt.define_data_property_str(iter, "next", next, DataPropertyAttributes::METHOD)?;
 
     // Iterator objects should be iterable: %Symbol.iterator% returns the iterator itself.
     let iter_func = rt.create_function(
@@ -140,7 +143,7 @@ impl UrlSearchParamsHost {
       iterator_return_this::<UrlSearchParamsHost, VmJsWebIdlBindingsCx<'a, UrlSearchParamsHost>>,
     )?;
     let iter_key = rt.symbol_iterator()?;
-    rt.define_data_property(iter, iter_key, iter_func, false)?;
+    rt.define_data_property(iter, iter_key, iter_func, DataPropertyAttributes::METHOD)?;
 
     let Value::Object(obj) = iter else {
       return Err(rt.throw_type_error("iterator allocation did not produce an object"));

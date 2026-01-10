@@ -5998,7 +5998,10 @@ impl ImageCache {
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     match self.decode_with_guess(bytes, url) {
       Ok(img) => {
-        let has_alpha = img.color().has_alpha();
+        let has_alpha_hint = format_from_content_type
+          .or(sniffed_format)
+          .and_then(|format| Self::source_has_alpha(bytes, format));
+        let has_alpha = has_alpha_hint.unwrap_or_else(|| img.color().has_alpha());
         self.finish_bitmap_decode(img, url).map(|img| (img, has_alpha))
       }
       Err(err) => Err(match err {
@@ -6109,6 +6112,202 @@ impl ImageCache {
         )),
       ),
     }
+  }
+
+  /// Attempt to determine whether the *source* image contains alpha information without relying on
+  /// the decoded pixel buffer's color type.
+  ///
+  /// Some decoders normalize output to RGBA even when the source container did not include
+  /// transparency. Features like `mask-mode: match-source` need to know whether the source provided
+  /// alpha so they can choose alpha vs luminance masking.
+  fn source_has_alpha(bytes: &[u8], format: ImageFormat) -> Option<bool> {
+    match format {
+      ImageFormat::Gif => Self::gif_has_transparency(bytes),
+      ImageFormat::WebP => Self::webp_has_alpha(bytes),
+      _ => None,
+    }
+  }
+
+  fn gif_has_transparency(bytes: &[u8]) -> Option<bool> {
+    // Minimal GIF parser that scans extension blocks for a Graphics Control Extension with the
+    // transparency flag set (packed field bit 0).
+    //
+    // Format reference: https://www.w3.org/Graphics/GIF/spec-gif89a.txt
+    if bytes.len() < 13 {
+      return None;
+    }
+    let header = bytes.get(0..6)?;
+    if header != b"GIF87a" && header != b"GIF89a" {
+      return None;
+    }
+
+    // Logical Screen Descriptor starts at byte 6.
+    let packed = *bytes.get(10)?;
+    let mut offset = 13usize;
+
+    // Skip global color table if present.
+    if packed & 0x80 != 0 {
+      let table_bits = (packed & 0x07) as usize;
+      let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+      let table_bytes = 3usize.checked_mul(entries)?;
+      offset = offset.checked_add(table_bytes)?;
+      if offset > bytes.len() {
+        return None;
+      }
+    }
+
+    while offset < bytes.len() {
+      match *bytes.get(offset)? {
+        0x3B => return Some(false), // trailer
+        0x21 => {
+          // Extension introducer.
+          let label = *bytes.get(offset + 1)?;
+          offset = offset.checked_add(2)?;
+          if label == 0xF9 {
+            // Graphics Control Extension.
+            let block_size = *bytes.get(offset)? as usize;
+            offset = offset.checked_add(1)?;
+            let end = offset.checked_add(block_size)?;
+            if end > bytes.len() {
+              return None;
+            }
+            let packed = *bytes.get(offset).unwrap_or(&0);
+            if packed & 0x01 != 0 {
+              return Some(true);
+            }
+            offset = end;
+            if *bytes.get(offset)? != 0x00 {
+              return None;
+            }
+            offset = offset.checked_add(1)?;
+          } else {
+            // Skip data sub-blocks.
+            loop {
+              let size = *bytes.get(offset)? as usize;
+              offset = offset.checked_add(1)?;
+              if size == 0 {
+                break;
+              }
+              offset = offset.checked_add(size)?;
+              if offset > bytes.len() {
+                return None;
+              }
+            }
+          }
+        }
+        0x2C => {
+          // Image descriptor.
+          let desc_end = offset.checked_add(10)?;
+          if desc_end > bytes.len() {
+            return None;
+          }
+          let packed = *bytes.get(offset + 9)?;
+          offset = desc_end;
+          if packed & 0x80 != 0 {
+            let table_bits = (packed & 0x07) as usize;
+            let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+            let table_bytes = 3usize.checked_mul(entries)?;
+            offset = offset.checked_add(table_bytes)?;
+            if offset > bytes.len() {
+              return None;
+            }
+          }
+
+          // LZW minimum code size.
+          offset = offset.checked_add(1)?;
+          if offset > bytes.len() {
+            return None;
+          }
+
+          // Image data sub-blocks.
+          loop {
+            let size = *bytes.get(offset)? as usize;
+            offset = offset.checked_add(1)?;
+            if size == 0 {
+              break;
+            }
+            offset = offset.checked_add(size)?;
+            if offset > bytes.len() {
+              return None;
+            }
+          }
+        }
+        _ => return None,
+      }
+    }
+
+    Some(false)
+  }
+
+  fn webp_has_alpha(bytes: &[u8]) -> Option<bool> {
+    // Parse the RIFF container for alpha signalling:
+    // - VP8X feature flags (`ALPHA` bit)
+    // - ALPH chunk
+    // - VP8L lossless header alpha bit
+    if bytes.len() < 12 {
+      return None;
+    }
+    if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WEBP" {
+      return None;
+    }
+
+    let mut offset = 12usize;
+    let mut vp8x_alpha: Option<bool> = None;
+    let mut vp8l_alpha: Option<bool> = None;
+    let mut saw_vp8 = false;
+
+    while offset + 8 <= bytes.len() {
+      let tag = bytes.get(offset..offset + 4)?;
+      let size_bytes: [u8; 4] = bytes.get(offset + 4..offset + 8)?.try_into().ok()?;
+      let size = u32::from_le_bytes(size_bytes) as usize;
+      offset = offset.checked_add(8)?;
+      let end = offset.checked_add(size)?;
+      if end > bytes.len() {
+        return None;
+      }
+
+      let payload = bytes.get(offset..end)?;
+      match tag {
+        b"VP8X" => {
+          if let Some(flags) = payload.first() {
+            vp8x_alpha = Some(flags & 0x10 != 0);
+          }
+        }
+        b"ALPH" => return Some(true),
+        b"VP8L" => {
+          if payload.len() < 5 || payload[0] != 0x2F {
+            return None;
+          }
+          let header: [u8; 4] = payload.get(1..5)?.try_into().ok()?;
+          let bits = u32::from_le_bytes(header);
+          vp8l_alpha = Some(bits & (1 << 28) != 0);
+        }
+        b"VP8 " => {
+          saw_vp8 = true;
+        }
+        _ => {}
+      }
+
+      offset = end;
+      if size % 2 == 1 && offset < bytes.len() {
+        offset = offset.checked_add(1)?;
+      }
+    }
+
+    if vp8x_alpha == Some(true) || vp8l_alpha == Some(true) {
+      return Some(true);
+    }
+    if vp8x_alpha == Some(false) {
+      return Some(false);
+    }
+    if vp8l_alpha == Some(false) {
+      return Some(false);
+    }
+    if saw_vp8 {
+      return Some(false);
+    }
+
+    None
   }
 
   fn decode_with_format(
@@ -6412,7 +6611,8 @@ impl ImageCache {
       ImageReader::with_format(DeadlineCursor::new(bytes), format).decode()
     })) {
       Ok(Ok(img)) => {
-        let has_alpha = img.color().has_alpha();
+        let has_alpha =
+          Self::source_has_alpha(bytes, format).unwrap_or_else(|| img.color().has_alpha());
         Ok((img, has_alpha))
       }
       Ok(Err(err)) => Err(self.decode_error(url, err)),
