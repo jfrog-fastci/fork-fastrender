@@ -2011,11 +2011,11 @@ impl InteractionEngine {
     if self.focused != Some(node_id) {
       return;
     }
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
     if start == end {
       self.set_text_selection_caret(node_id, start);
       return;
     }
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
     self.text_drag = None;
     match self.text_edit.as_mut() {
       Some(edit) if edit.node_id == node_id => {
