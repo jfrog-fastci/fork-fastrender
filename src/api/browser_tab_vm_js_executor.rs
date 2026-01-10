@@ -118,8 +118,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .unwrap_or("source=inline");
     let source = Arc::new(SourceText::new(source_name, script_text));
 
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new();
     let mut host = ();
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host);
     let result = with_event_loop(event_loop, || {
       realm.exec_script_source_with_host_and_hooks(&mut host, &mut hooks, source)
     });
@@ -178,8 +178,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     );
 
     realm.reset_interrupt();
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new();
-    let result = realm.exec_script_with_hooks(&mut hooks, &source);
+    let mut host = ();
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host);
+    let result = realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, &source);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);
     }
