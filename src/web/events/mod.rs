@@ -306,6 +306,7 @@ struct RegisteredListener {
 pub struct EventListenerRegistry {
   next_record_id: Cell<u64>,
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
+  opaque_parents: RefCell<FxHashMap<u64, u64>>,
 }
 
 impl std::fmt::Debug for EventListenerRegistry {
@@ -371,6 +372,26 @@ impl EventListenerRegistry {
     true
   }
 
+  /// Sets the parent EventTarget for an [`EventTargetId::Opaque`] target.
+  ///
+  /// This is used by host environments that support manually-linked `EventTarget` graphs (e.g.
+  /// `new EventTarget(parent)` in the vm-js WPT harness).
+  pub fn set_opaque_parent(&self, child: u64, parent: Option<u64>) {
+    let mut parents = self.opaque_parents.borrow_mut();
+    match parent {
+      Some(parent) => {
+        parents.insert(child, parent);
+      }
+      None => {
+        parents.remove(&child);
+      }
+    }
+  }
+
+  fn opaque_parent(&self, child: u64) -> Option<u64> {
+    self.opaque_parents.borrow().get(&child).copied()
+  }
+
   pub fn remove_event_listener(
     &self,
     target: EventTargetId,
@@ -414,14 +435,24 @@ impl Clone for EventListenerRegistry {
       .try_borrow()
       .map(|map| map.clone())
       .unwrap_or_default();
+    let opaque_parents = self
+      .opaque_parents
+      .try_borrow()
+      .map(|map| map.clone())
+      .unwrap_or_default();
     Self {
       next_record_id: Cell::new(self.next_record_id.get()),
       listeners: RefCell::new(listeners),
+      opaque_parents: RefCell::new(opaque_parents),
     }
   }
 }
 
-fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPathEntry> {
+fn build_event_path(
+  target: EventTargetId,
+  dom: &dom2::Document,
+  registry: &EventListenerRegistry,
+) -> Vec<EventPathEntry> {
   let target = target.normalize();
   let mut path: Vec<EventTargetId> = Vec::new();
   match target {
@@ -455,8 +486,19 @@ fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPat
       path.extend(rev);
     }
     EventTargetId::Opaque(id) => {
-      // Non-DOM targets do not participate in the DOM event path; dispatch is at-target only.
-      path.push(EventTargetId::Opaque(id));
+      let mut rev: Vec<EventTargetId> = vec![EventTargetId::Opaque(id)];
+      let mut current = id;
+      let mut visited: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
+      visited.insert(current);
+      while let Some(parent) = registry.opaque_parent(current) {
+        if !visited.insert(parent) {
+          break;
+        }
+        rev.push(EventTargetId::Opaque(parent));
+        current = parent;
+      }
+      rev.reverse();
+      path.extend(rev);
     }
   }
 
@@ -524,7 +566,7 @@ pub fn dispatch_event(
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
 
-  event.path = build_event_path(target, dom);
+  event.path = build_event_path(target, dom, registry);
   if event.path.is_empty() {
     return Ok(!event.default_prevented);
   }

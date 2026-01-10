@@ -108,23 +108,26 @@ fn removing_last_class_removes_attribute() {
 }
 
 #[test]
-fn invalid_tokens_throw_syntax_error_and_do_not_mutate() {
+fn invalid_tokens_throw_and_do_not_mutate() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let el = make_element(&mut doc);
 
   doc.set_attribute(el, "class", "a").unwrap();
 
   assert_eq!(doc.class_list_contains(el, ""), Err(DomError::SyntaxError));
-  assert_eq!(doc.class_list_contains(el, "a b"), Err(DomError::SyntaxError));
+  assert_eq!(
+    doc.class_list_contains(el, "a b"),
+    Err(DomError::InvalidCharacterError)
+  );
   assert_eq!(
     doc.class_list_toggle(el, "a\tb", None),
-    Err(DomError::SyntaxError)
+    Err(DomError::InvalidCharacterError)
   );
 
   // Batch validation: any invalid token aborts the whole operation.
   assert_eq!(
     doc.class_list_add(el, &["b", "c d"]),
-    Err(DomError::SyntaxError)
+    Err(DomError::InvalidCharacterError)
   );
   assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a"));
 }

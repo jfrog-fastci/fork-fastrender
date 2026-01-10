@@ -20,7 +20,7 @@ fn validate_token(token: &str) -> Result<(), DomError> {
     return Err(DomError::SyntaxError);
   }
   if token_contains_dom_ascii_whitespace(token) {
-    return Err(DomError::SyntaxError);
+    return Err(DomError::InvalidCharacterError);
   }
   Ok(())
 }

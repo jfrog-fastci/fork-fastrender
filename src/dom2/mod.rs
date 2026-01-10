@@ -904,9 +904,13 @@ impl Document {
           quirks_mode: *quirks_mode,
           scripting_enabled,
         },
-        NodeKind::DocumentFragment => DomNodeType::Document {
-          quirks_mode: QuirksMode::NoQuirks,
-          scripting_enabled,
+        NodeKind::DocumentFragment => DomNodeType::Element {
+          // `DomNodeType` has no first-class DocumentFragment representation. For subtree selector
+          // queries we snapshot fragments as synthetic elements so `:scope` can anchor on the
+          // fragment root, but we ensure selector mappings never return the synthetic root node.
+          tag_name: "#document-fragment".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
         },
         NodeKind::ShadowRoot {
           mode,
@@ -1121,8 +1125,18 @@ impl Document {
             continue;
           }
 
-          preorder_to_node_id.push(Some(id));
-          node_id_to_preorder[id.index()] = preorder_id;
+          let mapped_node_id = match &node.kind {
+            // Selector queries on DocumentFragment should never return the fragment itself, but we
+            // still need a root entry so preorder ids stay aligned with the renderer snapshot used
+            // for selector matching.
+            NodeKind::DocumentFragment => None,
+            _ => Some(id),
+          };
+
+          preorder_to_node_id.push(mapped_node_id);
+          if mapped_node_id.is_some() {
+            node_id_to_preorder[id.index()] = preorder_id;
+          }
 
           if self.should_inject_wbr_zwsp(id) {
             stack.push(StackItem::SyntheticWbrZwsp(id));
