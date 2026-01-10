@@ -1862,13 +1862,16 @@ impl<'a> Evaluator<'a> {
     //
     // This is also the central stack capture point for implicit throws (TDZ errors, TypeErrors,
     // etc) that are surfaced as `Err(VmError::Throw(..))` from lower-level helpers.
-    let thrown_at_stmt = |value: Value| {
-      let source = self.env.source();
-      let rel_start = stmt.loc.start_u32().saturating_sub(self.env.prefix_len());
-      let abs_offset = self.env.base_offset().saturating_add(rel_start);
-      let (line, col) = source.line_col(abs_offset);
+    //
+    // Note: some callers (e.g. `Vm::call` after `coerce_error_to_throw`) can surface a
+    // `VmError::ThrowWithStack` before we reach this point; in that case we still want the top
+    // frame to point at the statement location, not at the internal/native frame boundary.
+    let source = self.env.source();
+    let rel_start = stmt.loc.start_u32().saturating_sub(self.env.prefix_len());
+    let abs_offset = self.env.base_offset().saturating_add(rel_start);
+    let (line, col) = source.line_col(abs_offset);
 
-      let mut stack = self.vm.capture_stack();
+    let update_top_frame = |stack: &mut Vec<StackFrame>| {
       if let Some(top) = stack.first_mut() {
         top.source = source.name.clone();
         top.line = line;
@@ -1881,13 +1884,20 @@ impl<'a> Evaluator<'a> {
           col,
         });
       }
+    };
 
+    let thrown_at_stmt = |value: Value| {
+      let mut stack = self.vm.capture_stack();
+      update_top_frame(&mut stack);
       Thrown { value, stack }
     };
 
     match res {
       Err(VmError::Throw(value)) => Ok(Completion::Throw(thrown_at_stmt(value))),
-      Err(VmError::ThrowWithStack { value, stack }) => Ok(Completion::Throw(Thrown { value, stack })),
+      Err(VmError::ThrowWithStack { value, mut stack }) => {
+        update_top_frame(&mut stack);
+        Ok(Completion::Throw(Thrown { value, stack }))
+      }
       Err(VmError::TypeError(message)) => {
         let intr = self
           .vm
