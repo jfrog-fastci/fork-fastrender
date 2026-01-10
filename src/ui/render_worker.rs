@@ -374,6 +374,20 @@ enum SnapshotKind {
   Paint,
 }
 
+fn combine_cancel_callbacks(
+  primary: Arc<crate::render_control::CancelCallback>,
+  secondary: Option<Arc<crate::render_control::CancelCallback>>,
+) -> Arc<crate::render_control::CancelCallback> {
+  match secondary {
+    Some(secondary) => {
+      let primary = Arc::clone(&primary);
+      let secondary = Arc::clone(&secondary);
+      Arc::new(move || primary() || secondary())
+    }
+    None => primary,
+  }
+}
+
 struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
   ui_tx: Sender<WorkerToUi>,
@@ -409,6 +423,19 @@ impl BrowserRuntime {
       return Some(msg);
     }
     self.ui_rx.try_recv().ok()
+  }
+
+  fn preempt_cancel_callback_for_job(
+    &self,
+    job_tab_id: TabId,
+  ) -> Option<Arc<crate::render_control::CancelCallback>> {
+    let active_tab = self.active_tab?;
+    if active_tab == job_tab_id {
+      return None;
+    }
+    let active = self.tabs.get(&active_tab)?;
+    let snapshot = active.cancel.snapshot_paint();
+    Some(snapshot.cancel_callback_for_paint(&active.cancel))
   }
 
   fn run(&mut self) {
@@ -1450,7 +1477,6 @@ impl BrowserRuntime {
   }
 
   fn next_job(&mut self) -> Option<Job> {
-    // Navigation takes priority over repaint.
     if let Some(active) = self.active_tab {
       if let Some(tab) = self.tabs.get_mut(&active) {
         if let Some(req) = tab.pending_navigation.take() {
@@ -1461,16 +1487,6 @@ impl BrowserRuntime {
         }
       }
     }
-    // Any pending navigation.
-    if let Some((tab_id, req)) = self
-      .tabs
-      .iter_mut()
-      .find_map(|(id, tab)| tab.pending_navigation.take().map(|req| (*id, req)))
-    {
-      return Some(Job::Navigate { tab_id, request: req });
-    }
-
-    // Paint active tab first.
     if let Some(active) = self.active_tab {
       if self.tabs.get(&active).is_some_and(|t| t.needs_repaint) {
         if let Some(tab) = self.tabs.get_mut(&active) {
@@ -1483,6 +1499,15 @@ impl BrowserRuntime {
           });
         }
       }
+    }
+
+    // Any pending navigation.
+    if let Some((tab_id, req)) = self
+      .tabs
+      .iter_mut()
+      .find_map(|(id, tab)| tab.pending_navigation.take().map(|req| (*id, req)))
+    {
+      return Some(Job::Navigate { tab_id, request: req });
     }
 
     // Paint any tab.
@@ -1520,6 +1545,9 @@ impl BrowserRuntime {
   }
 
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
+    let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
+    let request_for_retry = request.clone();
+
     // Pull what we need out of `TabState` so we can release the borrow while running the expensive
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
     let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, apply_fragment_scroll, cancel, doc) =
@@ -1536,7 +1564,7 @@ impl BrowserRuntime {
           tab.document.take(),
         )
       };
-
+ 
     // Capture the original URL before any redirects/mutations for history bookkeeping.
     let original_url = request.url.clone();
 
@@ -1573,7 +1601,10 @@ impl BrowserRuntime {
       },
     };
 
-    let prepare_cancel_callback = snapshot.cancel_callback_for_prepare(&cancel);
+    let prepare_cancel_callback = combine_cancel_callbacks(
+      snapshot.cancel_callback_for_prepare(&cancel),
+      preempt_cancel_callback.clone(),
+    );
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
@@ -1598,17 +1629,28 @@ impl BrowserRuntime {
         )
       };
 
-      match result {
-        Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
-        Err(err) => {
-          let _ = self.reinsert_document(tab_id, doc);
-          // Treat cancelled prepares as silent drops.
-          if !snapshot.is_still_current_for_prepare(&cancel) {
-            return None;
-          }
-          return self.run_navigation_error(
-            tab_id,
-            &original_url,
+        match result {
+          Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
+          Err(err) => {
+            let _ = self.reinsert_document(tab_id, doc);
+            // Treat cancelled/preempted prepares as silent drops.
+            if prepare_cancel_callback() {
+              // New navigation superseded this attempt.
+              if !snapshot.is_still_current_for_prepare(&cancel) {
+                return None;
+              }
+              // Preempted by active-tab work: re-queue the navigation so it can resume later.
+              if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                tab.pending_navigation = Some(request_for_retry);
+              }
+              return None;
+            }
+            if !snapshot.is_still_current_for_prepare(&cancel) {
+              return None;
+            }
+            return self.run_navigation_error(
+              tab_id,
+              &original_url,
             &format!("about page prepare failed: {err}"),
             snapshot,
           );
@@ -1627,7 +1669,16 @@ impl BrowserRuntime {
               // Restore the document before delegating to the navigation-error renderer.
               let _ = self.reinsert_document(tab_id, doc);
 
-              // If the navigation was cancelled via nav bump, treat it as a silent drop.
+              // If the navigation was cancelled/preempted, treat it as a silent drop.
+              if prepare_cancel_callback() {
+                if !snapshot.is_still_current_for_prepare(&cancel) {
+                  return None;
+                }
+                if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                  tab.pending_navigation = Some(request_for_retry);
+                }
+                return None;
+              }
               if !snapshot.is_still_current_for_prepare(&cancel) {
                 return None;
               }
@@ -1716,7 +1767,10 @@ impl BrowserRuntime {
     // -----------------------------
     // Initial paint stage
     // -----------------------------
-    let paint_cancel_callback = paint_snapshot.cancel_callback_for_paint(&cancel);
+    let paint_cancel_callback = combine_cancel_callbacks(
+      paint_snapshot.cancel_callback_for_paint(&cancel),
+      preempt_cancel_callback.clone(),
+    );
     let paint_deadline = deadline_for(paint_cancel_callback.clone(), None);
 
     let painted = {
@@ -1742,7 +1796,7 @@ impl BrowserRuntime {
 
         // If only paint was bumped (e.g. scroll/viewport change) while the initial paint was
         // in-flight, treat this as a cancelled paint rather than a navigation failure.
-        if !paint_snapshot.is_still_current_for_paint(&cancel) {
+        if paint_cancel_callback() || !paint_snapshot.is_still_current_for_paint(&cancel) {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return None;
           };
@@ -2130,6 +2184,7 @@ impl BrowserRuntime {
   }
 
   fn run_paint(&mut self, tab_id: TabId, force: bool) -> Option<JobOutput> {
+    let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
@@ -2138,7 +2193,10 @@ impl BrowserRuntime {
     };
 
     let snapshot = tab.cancel.snapshot_paint();
-    let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
+    let cancel_callback = combine_cancel_callbacks(
+      snapshot.cancel_callback_for_paint(&tab.cancel),
+      preempt_cancel_callback.clone(),
+    );
     doc.set_cancel_callback(Some(cancel_callback.clone()));
 
     // Forward render pipeline stage heartbeats during paint jobs (including scroll/hover repaints)
@@ -2155,11 +2213,14 @@ impl BrowserRuntime {
 
     let mut msgs = Vec::new();
 
+    let mut should_retry = false;
     let painted = match painted {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
       Err(err) => {
-        if !cancel_callback() {
+        if cancel_callback() {
+          should_retry = true;
+        } else {
           msgs.push(WorkerToUi::DebugLog {
             tab_id,
             line: format!("paint error: {err}"),
@@ -2168,6 +2229,13 @@ impl BrowserRuntime {
         None
       }
     };
+
+    if should_retry {
+      tab.needs_repaint = true;
+      if force {
+        tab.force_repaint = true;
+      }
+    }
 
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();

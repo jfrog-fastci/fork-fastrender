@@ -111,6 +111,7 @@ mod ui_worker_tabs;
 mod ui_worker_title;
 mod ui_worker_about_pages;
 mod ui_worker_viewport_changed;
+mod ui_worker_prioritization_preemption;
 mod worker_harness;
 mod browser_thread_worker;
 mod ui_worker_protocol_smoke;
