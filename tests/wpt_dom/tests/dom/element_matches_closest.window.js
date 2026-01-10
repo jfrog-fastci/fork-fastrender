@@ -85,16 +85,12 @@ test(() => {
   const el = document.createElement("div");
   body.appendChild(el);
 
-  let threw = false;
-  let name = "";
   try {
     el.matches("div[");
+    assert_unreached("expected matches() to throw for invalid selectors");
   } catch (e) {
-    threw = true;
-    name = e.name;
+    assert_equals(e.name, "SyntaxError", "expected a SyntaxError from matches()");
   }
-  assert_true(threw, "expected matches() to throw for invalid selectors");
-  assert_equals(name, "SyntaxError", "expected a SyntaxError from matches()");
 }, "Element.matches throws SyntaxError on invalid selectors");
 
 test(() => {
@@ -104,14 +100,10 @@ test(() => {
   const el = document.createElement("div");
   body.appendChild(el);
 
-  let threw = false;
-  let name = "";
   try {
     el.closest("div[");
+    assert_unreached("expected closest() to throw for invalid selectors");
   } catch (e) {
-    threw = true;
-    name = e.name;
+    assert_equals(e.name, "SyntaxError", "expected a SyntaxError from closest()");
   }
-  assert_true(threw, "expected closest() to throw for invalid selectors");
-  assert_equals(name, "SyntaxError", "expected a SyntaxError from closest()");
 }, "Element.closest throws SyntaxError on invalid selectors");

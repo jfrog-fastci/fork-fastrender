@@ -47,16 +47,12 @@ test(() => {
   a.id = "a";
   body.appendChild(a);
 
-  let threw = false;
-  let name = "";
   try {
     a.querySelector("div[");
+    assert_unreached("expected invalid selector to throw");
   } catch (e) {
-    threw = true;
-    name = e.name;
+    assert_equals(e.name, "SyntaxError", "expected a SyntaxError");
   }
-  assert_true(threw, "expected invalid selector to throw");
-  assert_equals(name, "SyntaxError", "expected a SyntaxError");
 }, "Element.querySelector throws SyntaxError on invalid selectors");
 
 test(() => {

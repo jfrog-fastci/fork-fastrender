@@ -8,7 +8,7 @@ test(() => {
   try {
     err = new Error("boom");
   } catch (_e) {
-    assert_true(false, "new Error(...) should not throw");
+    assert_unreached("new Error(...) should not throw");
   }
 
   assert_true(err !== null, "new Error(...) should return an object");
