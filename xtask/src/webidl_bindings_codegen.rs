@@ -4802,16 +4802,28 @@ fn write_constructor_wrapper_vmjs(
 
   let construct_fn_name = ctor_construct_fn_name(interface);
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  args: &[Value],\n  _new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
+    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  args: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str("  let slots = rt.scope.heap().get_function_native_slots(callee)?;\n");
   out.push_str("  let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);\n");
-  out.push_str("  let Value::Object(proto) = proto_slot else {\n");
+  out.push_str("  let Value::Object(default_proto) = proto_slot else {\n");
   out.push_str(&format!(
     "    return Err(VmError::InvariantViolation({msg_lit}));\n",
     msg_lit = rust_string_literal(&format!("{interface} constructor missing prototype slot"))
   ));
+  out.push_str("  };\n");
+  out.push_str("  rt.scope.push_root(Value::Object(default_proto))?;\n");
+  out.push_str("  rt.scope.push_root(new_target)?;\n");
+  out.push_str("  let proto = match new_target {\n");
+  out.push_str("    Value::Object(new_target_obj) => {\n");
+  out.push_str("      let key = rt.property_key(\"prototype\")?;\n");
+  out.push_str("      match rt.vm.get(&mut rt.scope, new_target_obj, key)? {\n");
+  out.push_str("        Value::Object(proto) => proto,\n");
+  out.push_str("        _ => default_proto,\n");
+  out.push_str("      }\n");
+  out.push_str("    }\n");
+  out.push_str("    _ => default_proto,\n");
   out.push_str("  };\n");
   out.push_str("  rt.scope.push_root(Value::Object(proto))?;\n");
   out.push_str("  let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;\n");

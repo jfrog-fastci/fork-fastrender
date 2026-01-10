@@ -329,15 +329,27 @@ pub mod window {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "EventTarget constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
@@ -503,15 +515,27 @@ pub mod window {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "URL constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
@@ -963,15 +987,27 @@ pub mod window {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "URLSearchParams constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
@@ -1842,15 +1878,27 @@ pub mod worker {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "EventTarget constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
@@ -2016,15 +2064,27 @@ pub mod worker {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "URL constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
@@ -2476,15 +2536,27 @@ pub mod worker {
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     args: &[Value],
-    _new_target: Value,
+    new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(proto) = proto_slot else {
+    let Value::Object(default_proto) = proto_slot else {
       return Err(VmError::InvariantViolation(
         "URLSearchParams constructor missing prototype slot",
       ));
+    };
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
+          Value::Object(proto) => proto,
+          _ => default_proto,
+        }
+      }
+      _ => default_proto,
     };
     rt.scope.push_root(Value::Object(proto))?;
     let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
