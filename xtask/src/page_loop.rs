@@ -143,7 +143,12 @@ pub struct PageLoopArgs {
   pub inspect_dump_custom_properties: bool,
 
   /// Only include custom properties whose name starts with this prefix (repeatable).
-  #[arg(long, value_name = "PREFIX", requires = "inspect_dump_custom_properties")]
+  #[arg(
+    long,
+    value_name = "PREFIX",
+    requires = "inspect_dump_custom_properties",
+    allow_hyphen_values = true
+  )]
   pub inspect_custom_property_prefix: Vec<String>,
 
   /// Maximum number of custom properties to dump (after filtering/sorting).
@@ -746,7 +751,10 @@ fn build_inspect_frag_command(
   if args.inspect_dump_custom_properties {
     cmd.arg("--dump-custom-properties");
     for prefix in &args.inspect_custom_property_prefix {
-      cmd.arg("--custom-property-prefix").arg(prefix);
+      // `--custom-property-prefix` values often start with `--` (since CSS custom properties do).
+      // `inspect_frag` (clap) treats bare `--foo` tokens as flags unless passed in `--flag=value`
+      // form, so use the equals-sign style to avoid requiring callers to do the same.
+      cmd.arg(format!("--custom-property-prefix={prefix}"));
     }
     if let Some(limit) = args.inspect_custom_properties_limit {
       cmd

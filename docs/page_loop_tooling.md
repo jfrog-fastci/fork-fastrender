@@ -72,6 +72,7 @@ bash scripts/cargo_agent.sh xtask page-loop \
   --viewport 1200x800 \
   --dpr 1.0 \
   --overlay \
+  --inspect-dump-json \
   --write-snapshot \
   --chrome
 ```
@@ -79,7 +80,7 @@ bash scripts/cargo_agent.sh xtask page-loop \
 Alternative: if you’re starting from a pageset URL/stem and don’t want to think about fixture naming (including stem collisions), use `--pageset`:
 
 ```bash
-bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.com --overlay --write-snapshot --chrome
+bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.com --overlay --inspect-dump-json --write-snapshot --chrome
 ```
 
 Tip: add `--dry-run` to print the resolved paths and commands without executing.
@@ -97,6 +98,8 @@ Key artifacts:
   - `target/page_loop/<stem>/fastrender/<stem>/snapshot.json`
 - Overlay image (when `--overlay`):
   - `target/page_loop/<stem>/overlay/<stem>.png`
+- Pipeline stage dumps (when `--inspect-dump-json`):
+  - `target/page_loop/<stem>/inspect/dom.json` (plus `styled.json`, `box_tree.json`, `fragment_tree.json`, `display_list.json`, etc.)
 - Chrome render (when `--chrome`):
   - `target/page_loop/<stem>/chrome/<stem>.png`
 - Chrome-vs-FastRender diff report (when `--chrome`):

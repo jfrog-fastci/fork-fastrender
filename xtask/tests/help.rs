@@ -324,6 +324,8 @@ fn page_loop_help_mentions_flags() {
       && stdout.contains("--inspect-filter-selector")
       && stdout.contains("--inspect-filter-id")
       && stdout.contains("--inspect-dump-custom-properties")
+      && stdout.contains("--inspect-custom-property-prefix")
+      && stdout.contains("--inspect-custom-properties-limit")
       && stdout.contains("--chrome")
       && stdout.contains("--no-chrome")
       && stdout.contains("--dry-run"),

@@ -205,6 +205,50 @@ fn dry_run_forwards_inspect_filters() {
 }
 
 #[test]
+fn dry_run_forwards_inspect_custom_property_dump_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--inspect-dump-json",
+      "--inspect-dump-custom-properties",
+      "--inspect-custom-property-prefix",
+      "--tw-",
+      "--inspect-custom-property-prefix",
+      "--brand-",
+      "--inspect-custom-properties-limit",
+      "42",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run cargo xtask page-loop --inspect-dump-custom-properties --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--dump-custom-properties"),
+    "expected inspect_frag custom property dump flag to be forwarded; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--custom-property-prefix=--tw-")
+      && stdout.contains("--custom-property-prefix=--brand-"),
+    "expected inspect custom-property-prefix filters to be forwarded; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--custom-properties-limit 42"),
+    "expected inspect custom-properties-limit to be forwarded; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn from_progress_top_worst_accuracy_prefers_existing_fixtures_and_tiebreaks_perceptual() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
