@@ -102,13 +102,13 @@ impl ModuleGraph {
     }
 
     // exportedNames = module.GetExportedNames()
-    let exported_names = self.modules[idx].get_exported_names(self, module);
+    let exported_names = self.modules[idx].get_exported_names_with_vm(vm, self, module)?;
 
     // unambiguousNames = [ name | name in exportedNames, module.ResolveExport(name) is ResolvedBinding ]
     let mut unambiguous_names = Vec::<String>::new();
     for name in exported_names {
       if matches!(
-        self.modules[idx].resolve_export(self, module, &name),
+        self.modules[idx].resolve_export_with_vm(vm, self, module, &name)?,
         ResolveExportResult::Resolved(_)
       ) {
         unambiguous_names.push(name);
@@ -235,7 +235,7 @@ impl ModuleGraph {
     // the export properties using ordinary accessor properties whose getters read from module
     // environments (live bindings).
     for export_name in &sorted_exports {
-      let resolution = match self.modules[module_index(module)].resolve_export(self, module, export_name) {
+      let resolution = match self.modules[module_index(module)].resolve_export_with_vm(vm, self, module, export_name)? {
         ResolveExportResult::Resolved(res) => res,
         // `GetModuleNamespace` filters out missing/ambiguous names; treat any mismatch as an
         // internal invariant violation.
@@ -356,6 +356,11 @@ impl ModuleGraph {
       ModuleStatus::New | ModuleStatus::Unlinked => {}
     }
 
+    // Ensure module linking work observes VM fuel/deadline/interrupt state, even when modules have
+    // no executable statements (and therefore do not run through the evaluator's statement-level
+    // tick loop during instantiation).
+    vm.tick()?;
+
     // Mark linking in progress (cycle-safe).
     self.modules[idx].status = ModuleStatus::Linking;
 
@@ -381,7 +386,11 @@ impl ModuleGraph {
       .ok_or(VmError::Unimplemented("module AST missing"))?;
 
     // Link dependencies first.
-    for request in requested_modules {
+    const LINK_TICK_EVERY: usize = 32;
+    for (i, request) in requested_modules.into_iter().enumerate() {
+      if i % LINK_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       let imported = self
         .get_imported_module(module, &request)
         .ok_or(VmError::Unimplemented("unlinked module request"))?;
@@ -397,7 +406,10 @@ impl ModuleGraph {
       .ok_or_else(|| VmError::invalid_handle())?;
 
     // Create import bindings.
-    for entry in import_entries {
+    for (i, entry) in import_entries.into_iter().enumerate() {
+      if i % LINK_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       let imported_module = self
         .get_imported_module(module, &entry.module_request)
         .ok_or(VmError::Unimplemented("unlinked module request"))?;
@@ -413,11 +425,8 @@ impl ModuleGraph {
             .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
         }
         crate::module_record::ImportName::Name(import_name) => {
-          let resolution = self.modules[module_index(imported_module)].resolve_export(
-            self,
-            imported_module,
-            &import_name,
-          );
+          let resolution = self.modules[module_index(imported_module)]
+            .resolve_export_with_vm(vm, self, imported_module, &import_name)?;
           let ResolveExportResult::Resolved(resolution) = resolution else {
             return Err(VmError::Unimplemented("imported binding resolution failure"));
           };
@@ -604,10 +613,18 @@ impl ModuleGraph {
       _ => return Err(VmError::Unimplemented("module is not linked")),
     }
 
+    // Ensure module evaluation observes budgets even when the module body is empty (no statement
+    // ticks).
+    vm.tick()?;
+
     self.modules[idx].status = ModuleStatus::Evaluating;
 
     let requested_modules = self.modules[idx].requested_modules.clone();
-    for request in requested_modules {
+    const EVAL_TICK_EVERY: usize = 32;
+    for (i, request) in requested_modules.into_iter().enumerate() {
+      if i % EVAL_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       let imported = self
         .get_imported_module(module, &request)
         .ok_or(VmError::Unimplemented("unlinked module request"))?;

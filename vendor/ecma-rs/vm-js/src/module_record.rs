@@ -196,6 +196,23 @@ impl SourceTextModuleRecord {
     self.get_exported_names_with_star_set(graph, module, &mut Vec::new())
   }
 
+  /// Budget-aware variant of [`SourceTextModuleRecord::get_exported_names`].
+  ///
+  /// This mirrors [`Vm::parse_top_level_with_budget`] and other VM entrypoints by periodically
+  /// calling `vm.tick()` while traversing module exports. Large export lists and `export *` graphs
+  /// must still observe fuel/deadline/interrupt budgets even when modules contain little-to-no code.
+  pub fn get_exported_names_with_vm(
+    &self,
+    vm: &mut Vm,
+    graph: &ModuleGraph,
+    module: ModuleId,
+  ) -> Result<Vec<String>, VmError> {
+    let mut cancel = || vm.tick();
+    let mut ctx = ModuleRecordParseCtx::new(&mut cancel);
+    ctx.cancel_now()?;
+    self.get_exported_names_with_star_set_budgeted(graph, module, &mut Vec::new(), &mut ctx)
+  }
+
   pub fn get_exported_names_with_star_set(
     &self,
     graph: &ModuleGraph,
@@ -256,6 +273,75 @@ impl SourceTextModuleRecord {
     exported_names
   }
 
+  fn get_exported_names_with_star_set_budgeted(
+    &self,
+    graph: &ModuleGraph,
+    module: ModuleId,
+    export_star_set: &mut Vec<ModuleId>,
+    ctx: &mut ModuleRecordParseCtx<'_>,
+  ) -> Result<Vec<String>, VmError> {
+    ctx.budget_tick()?;
+
+    // 1. If exportStarSet contains module, then
+    for existing in export_star_set.iter() {
+      ctx.budget_tick()?;
+      if *existing == module {
+        // a. Return a new empty List.
+        return Ok(Vec::new());
+      }
+    }
+
+    // 2. Append module to exportStarSet.
+    export_star_set.push(module);
+
+    // 3. Let exportedNames be a new empty List.
+    let mut exported_names = Vec::<String>::new();
+
+    // 4. For each ExportEntry Record e of module.[[LocalExportEntries]], do
+    for entry in &self.local_export_entries {
+      ctx.budget_tick()?;
+      // a. Append e.[[ExportName]] to exportedNames.
+      exported_names.push(entry.export_name.clone());
+    }
+
+    // 5. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
+    for entry in &self.indirect_export_entries {
+      ctx.budget_tick()?;
+      // a. Append e.[[ExportName]] to exportedNames.
+      exported_names.push(entry.export_name.clone());
+    }
+
+    // 6. For each ExportEntry Record e of module.[[StarExportEntries]], do
+    for entry in &self.star_export_entries {
+      ctx.budget_tick()?;
+      // a. Let requestedModule be GetImportedModule(module, e.[[ModuleRequest]]).
+      let Some(requested_module) = graph.get_imported_module(module, &entry.module_request) else {
+        continue;
+      };
+      // b. Let starNames be requestedModule.GetExportedNames(exportStarSet).
+      let star_names = graph
+        .module(requested_module)
+        .get_exported_names_with_star_set_budgeted(graph, requested_module, export_star_set, ctx)?;
+
+      // c. For each element n of starNames, do
+      for name in star_names {
+        ctx.budget_tick()?;
+        // i. If SameValue(n, "default") is false, then
+        if name == "default" {
+          continue;
+        }
+        // 1. If exportedNames does not contain n, then
+        if !vec_contains_string_with_budget(&exported_names, &name, ctx)? {
+          // a. Append n to exportedNames.
+          exported_names.push(name);
+        }
+      }
+    }
+
+    // 7. Return exportedNames.
+    Ok(exported_names)
+  }
+
   /// Implements ECMA-262 `ResolveExport(exportName[, resolveSet])`.
   pub fn resolve_export(
     &self,
@@ -264,6 +350,25 @@ impl SourceTextModuleRecord {
     export_name: &str,
   ) -> ResolveExportResult {
     self.resolve_export_with_set(graph, module, export_name, &mut Vec::new())
+  }
+
+  /// Budget-aware variant of [`SourceTextModuleRecord::resolve_export`].
+  ///
+  /// `ResolveExport` can recurse through `export * from ...` graphs. In pathological cases (large
+  /// graphs with many star exports), the spec algorithm can do substantial work without executing
+  /// any user code. Periodically ticking the VM ensures those graphs still observe fuel/deadline
+  /// budgets.
+  pub fn resolve_export_with_vm(
+    &self,
+    vm: &mut Vm,
+    graph: &ModuleGraph,
+    module: ModuleId,
+    export_name: &str,
+  ) -> Result<ResolveExportResult, VmError> {
+    let mut cancel = || vm.tick();
+    let mut ctx = ModuleRecordParseCtx::new(&mut cancel);
+    ctx.cancel_now()?;
+    self.resolve_export_with_set_budgeted(graph, module, export_name, &mut Vec::new(), &mut ctx)
   }
 
   pub fn resolve_export_with_set(
@@ -383,6 +488,144 @@ impl SourceTextModuleRecord {
       None => ResolveExportResult::NotFound,
     }
   }
+
+  fn resolve_export_with_set_budgeted(
+    &self,
+    graph: &ModuleGraph,
+    module: ModuleId,
+    export_name: &str,
+    resolve_set: &mut Vec<(ModuleId, String)>,
+    ctx: &mut ModuleRecordParseCtx<'_>,
+  ) -> Result<ResolveExportResult, VmError> {
+    ctx.budget_tick()?;
+
+    // 1. For each Record { [[Module]], [[ExportName]] } r of resolveSet, do
+    //    a. If module and r.[[Module]] are the same Module Record and SameValue(exportName, r.[[ExportName]]) is true, then
+    //       i. Return null.
+    for (m, name) in resolve_set.iter() {
+      ctx.budget_tick()?;
+      if *m == module && name == export_name {
+        return Ok(ResolveExportResult::NotFound);
+      }
+    }
+
+    // 2. Append the Record { [[Module]]: module, [[ExportName]]: exportName } to resolveSet.
+    resolve_set.push((module, export_name.to_string()));
+
+    // 3. For each ExportEntry Record e of module.[[LocalExportEntries]], do
+    for entry in &self.local_export_entries {
+      ctx.budget_tick()?;
+      // a. If SameValue(exportName, e.[[ExportName]]) is true, then
+      if entry.export_name == export_name {
+        // i. Assert: module provides the direct binding for this export.
+        // ii. Return ResolvedBinding Record { [[Module]]: module, [[BindingName]]: e.[[LocalName]] }.
+        return Ok(ResolveExportResult::Resolved(ResolvedBinding {
+          module,
+          binding_name: BindingName::Name(entry.local_name.clone()),
+        }));
+      }
+    }
+
+    // 4. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
+    for entry in &self.indirect_export_entries {
+      ctx.budget_tick()?;
+      // a. If SameValue(exportName, e.[[ExportName]]) is true, then
+      if entry.export_name == export_name {
+        // i. Let importedModule be GetImportedModule(module, e.[[ModuleRequest]]).
+        let Some(imported_module) = graph.get_imported_module(module, &entry.module_request) else {
+          return Ok(ResolveExportResult::NotFound);
+        };
+        // ii. If e.[[ImportName]] is all, then
+        if entry.import_name == ImportName::All {
+          // 1. Return ResolvedBinding Record { [[Module]]: importedModule, [[BindingName]]: namespace }.
+          return Ok(ResolveExportResult::Resolved(ResolvedBinding {
+            module: imported_module,
+            binding_name: BindingName::Namespace,
+          }));
+        }
+
+        // iii. Else,
+        // 1. Assert: e.[[ImportName]] is a String.
+        // 2. Return importedModule.ResolveExport(e.[[ImportName]], resolveSet).
+        let import_name = match &entry.import_name {
+          ImportName::Name(name) => name,
+          ImportName::All => {
+            debug_assert!(false, "ImportName::All handled above");
+            return Ok(ResolveExportResult::NotFound);
+          }
+        };
+        return graph
+          .module(imported_module)
+          .resolve_export_with_set_budgeted(graph, imported_module, import_name, resolve_set, ctx);
+      }
+    }
+
+    // 5. If SameValue(exportName, "default") is true, then
+    if export_name == "default" {
+      // a. Return null.
+      return Ok(ResolveExportResult::NotFound);
+    }
+
+    // 6. Let starResolution be null.
+    let mut star_resolution: Option<ResolvedBinding> = None;
+
+    // 7. For each ExportEntry Record e of module.[[StarExportEntries]], do
+    for entry in &self.star_export_entries {
+      ctx.budget_tick()?;
+      // a. Let importedModule be GetImportedModule(module, e.[[ModuleRequest]]).
+      let Some(imported_module) = graph.get_imported_module(module, &entry.module_request) else {
+        continue;
+      };
+      // b. Let resolution be importedModule.ResolveExport(exportName, resolveSet).
+      let resolution = graph
+        .module(imported_module)
+        .resolve_export_with_set_budgeted(graph, imported_module, export_name, resolve_set, ctx)?;
+
+      // c. If resolution is ambiguous, return ambiguous.
+      if resolution == ResolveExportResult::Ambiguous {
+        return Ok(ResolveExportResult::Ambiguous);
+      }
+
+      // d. If resolution is not null, then
+      let ResolveExportResult::Resolved(resolution) = resolution else {
+        continue;
+      };
+
+      // i. If starResolution is null, then
+      let Some(existing) = &star_resolution else {
+        // 1. Set starResolution to resolution.
+        star_resolution = Some(resolution);
+        continue;
+      };
+
+      // ii. Else,
+      // 1. If resolution.[[Module]] and starResolution.[[Module]] are not the same Module Record, return ambiguous.
+      // 2. If resolution.[[BindingName]] is not the same as starResolution.[[BindingName]], return ambiguous.
+      if existing != &resolution {
+        return Ok(ResolveExportResult::Ambiguous);
+      }
+    }
+
+    // 8. Return starResolution.
+    Ok(match star_resolution {
+      Some(binding) => ResolveExportResult::Resolved(binding),
+      None => ResolveExportResult::NotFound,
+    })
+  }
+}
+
+fn vec_contains_string_with_budget(
+  list: &[String],
+  needle: &str,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<bool, VmError> {
+  for item in list {
+    ctx.budget_tick()?;
+    if item == needle {
+      return Ok(true);
+    }
+  }
+  Ok(false)
 }
 
 const MODULE_RECORD_TICK_EVERY: u64 = 256;
