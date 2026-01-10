@@ -1,6 +1,7 @@
 /fetches/
 target/
 target_pages/
+/tmp/
 /tests/ref/fixtures/**/failures/
 .venv/
 __pycache__/
