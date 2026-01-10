@@ -125,7 +125,6 @@ pub struct Node {
   /// distinct from fragment parsing (e.g. `innerHTML`), which does **not** mark scripts as parser
   /// inserted.
   pub script_parser_document: bool,
-  pub script_force_async: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
 

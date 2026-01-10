@@ -443,6 +443,14 @@ fn inner_html_marks_script_elements_as_already_started() {
     doc.node(script).script_already_started,
     "scripts inserted via innerHTML should be marked already started"
   );
+  assert!(
+    !doc.node(script).script_force_async,
+    "scripts created by innerHTML fragment parsing must have script_force_async=false"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "scripts created by innerHTML fragment parsing must not be parser-inserted (script_parser_document=false)"
+  );
 }
 
 #[test]
