@@ -133,6 +133,7 @@ mod stacking_context_descendant_shadow_bounds;
 mod stacking_context_text_shadow_bounds;
 mod stacking_context_layer_bounds_paint_overflow;
 mod stacking_context_transform_viewport_culling;
+mod positioned_auto_tree_order;
 mod svg_context_paint_font;
 mod svg_background_intrinsic_ratio_test;
 mod svg_foreign_object_external;

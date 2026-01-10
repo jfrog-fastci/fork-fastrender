@@ -1584,7 +1584,6 @@ impl DisplayListBuilder {
         }
       }
     }
-
     self.estimate_from_tree(tree);
     let svg_roots: Vec<&FragmentNode> = std::iter::once(&tree.root)
       .chain(tree.additional_fragments.iter())
@@ -1828,6 +1827,9 @@ impl DisplayListBuilder {
     root: &FragmentNode,
     clips: &HashSet<Option<usize>>,
   ) -> Result<DisplayList> {
+    if self.viewport.is_none() {
+      self.viewport = Some((root.bounds.width(), root.bounds.height()));
+    }
     self.estimate_from_roots(std::iter::once(root));
     self.build_fragment_with_clips(root, Point::ZERO, clips, self.root_visibility());
     self.finish()

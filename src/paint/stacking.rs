@@ -1151,8 +1151,15 @@ fn build_stacking_tree_internal(
   tree_order: &mut usize,
   offset_from_parent_context: Point,
 ) -> StackingContext {
-  let current_order = *tree_order;
+  // Tree order for stacking must follow the element/box tree order (CSS2.1 "tree order"),
+  // not layout's fragment emission order. Layout often processes out-of-flow positioned boxes
+  // (e.g. `position: absolute`) after in-flow content, which can reorder siblings in the
+  // fragment tree and produce incorrect layer-6 paint ordering.
+  //
+  // `BoxTree` assigns `box_id` in DOM pre-order, so prefer that when available.
+  let fallback_order = *tree_order;
   *tree_order += 1;
+  let current_order = fragment.box_id().unwrap_or(fallback_order);
 
   // Check if this fragment creates a stacking context
   let forced_z_index = fragment.stacking_context.forced_z_index();
@@ -1534,8 +1541,10 @@ where
   check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
     .map_err(Error::Render)?;
 
-  let current_order = *tree_order;
+  // See `build_stacking_tree_internal` for rationale.
+  let fallback_order = *tree_order;
   *tree_order += 1;
+  let current_order = fragment.box_id().unwrap_or(fallback_order);
 
   let forced_z_index = fragment.stacking_context.forced_z_index();
   let creates_context = forced_z_index.is_some()
@@ -1860,8 +1869,10 @@ fn build_stacking_tree_with_styles_internal<F>(
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
 {
-  let current_order = *tree_order;
+  // See `build_stacking_tree_internal` for rationale.
+  let fallback_order = *tree_order;
   *tree_order += 1;
+  let current_order = fragment.box_id().unwrap_or(fallback_order);
 
   let forced_z_index = fragment.stacking_context.forced_z_index();
   let creates_context = forced_z_index.is_some()

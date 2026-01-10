@@ -6814,10 +6814,16 @@ pub(crate) fn apply_property_from_source(
       styles.rebuild_background_layers();
     }
     "background-repeat" => {
-      styles.background_repeats = source.background_repeats.clone();
-      styles.rebuild_background_layers();
+      if order >= styles.logical.background_repeat_order {
+        styles.background_repeats = source.background_repeats.clone();
+        styles.logical.background_repeat_order = order;
+        styles.rebuild_background_layers();
+      }
     }
     "background-repeat-x" => {
+      if order < styles.logical.background_repeat_order {
+        return true;
+      }
       let xs: Vec<_> = source.background_repeats.iter().map(|rep| rep.x).collect();
       let fallback_x = xs
         .last()
@@ -6840,9 +6846,13 @@ pub(crate) fn apply_property_from_source(
         });
       }
       styles.background_repeats = repeats.into();
+      styles.logical.background_repeat_order = order;
       styles.rebuild_background_layers();
     }
     "background-repeat-y" => {
+      if order < styles.logical.background_repeat_order {
+        return true;
+      }
       let ys: Vec<_> = source.background_repeats.iter().map(|rep| rep.y).collect();
       let fallback_y = ys
         .last()
@@ -6865,9 +6875,13 @@ pub(crate) fn apply_property_from_source(
         });
       }
       styles.background_repeats = repeats.into();
+      styles.logical.background_repeat_order = order;
       styles.rebuild_background_layers();
     }
     "background-repeat-inline" => {
+      if order < styles.logical.background_repeat_order {
+        return true;
+      }
       let source_inline_horizontal = inline_axis_is_horizontal(source.writing_mode);
       let inline_values: Vec<_> = source
         .background_repeats
@@ -6903,9 +6917,13 @@ pub(crate) fn apply_property_from_source(
         repeats.push(rep);
       }
       styles.background_repeats = repeats.into();
+      styles.logical.background_repeat_order = order;
       styles.rebuild_background_layers();
     }
     "background-repeat-block" => {
+      if order < styles.logical.background_repeat_order {
+        return true;
+      }
       let source_block_horizontal = block_axis_is_horizontal(source.writing_mode);
       let block_values: Vec<_> = source
         .background_repeats
@@ -6938,6 +6956,7 @@ pub(crate) fn apply_property_from_source(
         repeats.push(rep);
       }
       styles.background_repeats = repeats.into();
+      styles.logical.background_repeat_order = order;
       styles.rebuild_background_layers();
     }
     "image-resolution" => styles.image_resolution = source.image_resolution,
@@ -7034,7 +7053,10 @@ pub(crate) fn apply_property_from_source(
       styles.background_images = source.background_images.clone();
       styles.background_positions = source.background_positions.clone();
       styles.background_sizes = source.background_sizes.clone();
-      styles.background_repeats = source.background_repeats.clone();
+      if order >= styles.logical.background_repeat_order {
+        styles.background_repeats = source.background_repeats.clone();
+        styles.logical.background_repeat_order = order;
+      }
       styles.background_attachments = source.background_attachments.clone();
       styles.background_origins = source.background_origins.clone();
       styles.background_clips = source.background_clips.clone();
@@ -14555,15 +14577,22 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "background-repeat" => {
+      if order < styles.logical.background_repeat_order {
+        return;
+      }
       let writing_mode = styles.writing_mode;
       if let Some(repeats) = parse_layer_list(resolved_value, |value| {
         parse_background_repeat(value, writing_mode)
       }) {
         styles.background_repeats = repeats.into();
+        styles.logical.background_repeat_order = order;
         styles.rebuild_background_layers();
       }
     }
     "background-repeat-x" => {
+      if order < styles.logical.background_repeat_order {
+        return;
+      }
       let parse = |value: &PropertyValue| match value {
         PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
         _ => None,
@@ -14587,10 +14616,14 @@ fn apply_declaration_with_base_internal_with_order(
           repeats.push(BackgroundRepeat { x: x_kw, y: source.y });
         }
         styles.background_repeats = repeats.into();
+        styles.logical.background_repeat_order = order;
         styles.rebuild_background_layers();
       }
     }
     "background-repeat-y" => {
+      if order < styles.logical.background_repeat_order {
+        return;
+      }
       let parse = |value: &PropertyValue| match value {
         PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
         _ => None,
@@ -14614,10 +14647,14 @@ fn apply_declaration_with_base_internal_with_order(
           repeats.push(BackgroundRepeat { x: source.x, y: y_kw });
         }
         styles.background_repeats = repeats.into();
+        styles.logical.background_repeat_order = order;
         styles.rebuild_background_layers();
       }
     }
     "background-repeat-inline" => {
+      if order < styles.logical.background_repeat_order {
+        return;
+      }
       let parse = |value: &PropertyValue| match value {
         PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
         _ => None,
@@ -14647,10 +14684,14 @@ fn apply_declaration_with_base_internal_with_order(
           repeats.push(rep);
         }
         styles.background_repeats = repeats.into();
+        styles.logical.background_repeat_order = order;
         styles.rebuild_background_layers();
       }
     }
     "background-repeat-block" => {
+      if order < styles.logical.background_repeat_order {
+        return;
+      }
       let parse = |value: &PropertyValue| match value {
         PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
         _ => None,
@@ -14680,6 +14721,7 @@ fn apply_declaration_with_base_internal_with_order(
           repeats.push(rep);
         }
         styles.background_repeats = repeats.into();
+        styles.logical.background_repeat_order = order;
         styles.rebuild_background_layers();
       }
     }
@@ -15256,6 +15298,10 @@ fn apply_declaration_with_base_internal_with_order(
 
     // Shorthand: background
     "background" => {
+      let prev_repeats = styles.background_repeats.clone();
+      let prev_repeat_order = styles.logical.background_repeat_order;
+      let apply_repeat = order >= prev_repeat_order;
+
       let tokens: Vec<PropertyValue> = match resolved_value {
         PropertyValue::Multiple(parts) => parts.clone(),
         _ => vec![resolved_value.to_owned()],
@@ -15319,6 +15365,12 @@ fn apply_declaration_with_base_internal_with_order(
         layers.push(layer);
       }
       styles.set_background_layers(layers);
+      if apply_repeat {
+        styles.logical.background_repeat_order = order;
+      } else {
+        styles.background_repeats = prev_repeats;
+        styles.logical.background_repeat_order = prev_repeat_order;
+      }
       styles.rebuild_background_layers();
     }
 

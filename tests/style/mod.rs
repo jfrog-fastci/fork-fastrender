@@ -9,6 +9,7 @@ mod background_layer_list_strict_test;
 mod background_position_logical_test;
 mod background_repeat_logical_test;
 mod background_repeat_shorthand_override_test;
+mod background_repeat_shorthand_order_test;
 mod background_size_strict_test;
 mod border_image_properties_test;
 mod cascade_explain_test;

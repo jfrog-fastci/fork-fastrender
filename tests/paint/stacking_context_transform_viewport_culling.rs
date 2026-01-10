@@ -1,8 +1,14 @@
+use super::util::create_stacking_context_bounds_renderer;
 use super::util::create_stacking_context_bounds_renderer_legacy;
 use tiny_skia::Pixmap;
 
-fn render(html: &str, width: u32, height: u32) -> Pixmap {
+fn render_legacy(html: &str, width: u32, height: u32) -> Pixmap {
   let mut renderer = create_stacking_context_bounds_renderer_legacy();
+  renderer.render_html(html, width, height).expect("render")
+}
+
+fn render_display_list(html: &str, width: u32, height: u32) -> Pixmap {
+  let mut renderer = create_stacking_context_bounds_renderer();
   renderer.render_html(html, width, height).expect("render")
 }
 
@@ -36,7 +42,7 @@ fn stacking_context_viewport_culling_uses_inverse_transform() {
     <div id="target"></div>
   "#;
 
-  let pixmap = render(html, 100, 100);
+  let pixmap = render_legacy(html, 100, 100);
 
   for (x, y) in [(0, 0), (10, 10), (50, 50), (99, 99)] {
     let (r, g, b, a) = rgba_at(&pixmap, x, y);
@@ -68,7 +74,45 @@ fn stacking_context_background_image_culling_accounts_for_layer_origin() {
     <div id="target"></div>
   "#;
 
-  let pixmap = render(html, 100, 100);
+  let pixmap = render_legacy(html, 100, 100);
+
+  let (lr, lg, lb, la) = rgba_at(&pixmap, 10, 50);
+  let (rr, rg, rb, ra) = rgba_at(&pixmap, 90, 50);
+
+  assert!(la == 255 && ra == 255, "expected opaque pixels");
+  assert!(
+    lr > lb,
+    "expected left side of gradient to be redder than blue (got rgba=({lr},{lg},{lb},{la}))"
+  );
+  assert!(
+    rb > rr,
+    "expected right side of gradient to be bluer than red (got rgba=({rr},{rg},{rb},{ra}))"
+  );
+}
+
+#[test]
+fn display_list_background_image_culling_uses_inverse_transform() {
+  // Regression for background tile emission culling in the display-list backend: the visible
+  // region for a transformed stacking context must be computed in pre-transform coordinates via
+  // the inverse transform. Otherwise, background tiles can be clipped against the *untransformed*
+  // viewport and the transformed element will render partially empty.
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(255, 255, 255); }
+      #target {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        width: 300px;
+        height: 100px;
+        transform: translateX(-50%);
+        background-image: linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255));
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render_display_list(html, 100, 100);
 
   let (lr, lg, lb, la) = rgba_at(&pixmap, 10, 50);
   let (rr, rg, rb, ra) = rgba_at(&pixmap, 90, 50);

@@ -16,6 +16,7 @@ mod fixture_determinism;
 mod freeze_page_fixture_cmd;
 mod generate_emoji_tables;
 mod import_page_fixture;
+mod js;
 mod lint_no_panics;
 mod lint_no_openssl;
 mod page_loop;
