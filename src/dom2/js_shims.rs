@@ -147,8 +147,19 @@ impl Document {
 
     let value = value.trim();
     if value.is_empty() {
+      // Setting an empty value removes the property. Treat removing a missing property as a no-op
+      // so host invalidation can be skipped.
+      if !decls.contains_key(&prop) {
+        return Ok(false);
+      }
       decls.remove(&prop);
     } else {
+      // Avoid rewriting the `style` attribute (and triggering host invalidation) when the semantic
+      // value is unchanged. This is particularly important because our serializer normalizes
+      // whitespace/trailing semicolons.
+      if decls.get(&prop).is_some_and(|existing| existing == value) {
+        return Ok(false);
+      }
       decls.insert(prop, value.to_string());
     }
 

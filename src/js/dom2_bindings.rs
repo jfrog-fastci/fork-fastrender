@@ -12,12 +12,12 @@ use crate::js::DomHost;
 use crate::web::dom::DomException;
 
 /// `Document.documentElement` (returns the `<html>` element for HTML documents).
-pub fn document_element<Host: DomHost>(host: &Host) -> Option<NodeId> {
+pub fn document_element<Host: DomHost + ?Sized>(host: &Host) -> Option<NodeId> {
   host.with_dom(|dom| dom.document_element())
 }
 
 /// `Document.getElementById(id)`.
-pub fn get_element_by_id<Host: DomHost>(host: &Host, id: &str) -> Option<NodeId> {
+pub fn get_element_by_id<Host: DomHost + ?Sized>(host: &Host, id: &str) -> Option<NodeId> {
   host.with_dom(|dom| dom.get_element_by_id(id))
 }
 
@@ -28,7 +28,7 @@ pub fn get_element_by_id<Host: DomHost>(host: &Host, id: &str) -> Option<NodeId>
 /// Note: `dom2::Document::query_selector` requires `&mut self` (it snapshots into renderer DOM
 /// structures for selector matching), so this is routed through [`DomHost::mutate_dom`] but always
 /// reports `changed=false`.
-pub fn query_selector<Host: DomHost>(
+pub fn query_selector<Host: DomHost + ?Sized>(
   host: &mut Host,
   selectors: &str,
   scope: Option<NodeId>,
@@ -39,7 +39,7 @@ pub fn query_selector<Host: DomHost>(
 /// `ParentNode.querySelectorAll(selectors)` for a `dom2` document.
 ///
 /// See [`query_selector`] for notes on DOM mutation tracking.
-pub fn query_selector_all<Host: DomHost>(
+pub fn query_selector_all<Host: DomHost + ?Sized>(
   host: &mut Host,
   selectors: &str,
   scope: Option<NodeId>,
@@ -50,7 +50,7 @@ pub fn query_selector_all<Host: DomHost>(
 /// `Element.classList.add(token)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying `class` attribute changes.
-pub fn class_list_add<Host: DomHost>(
+pub fn class_list_add<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   token: &str,
@@ -66,7 +66,7 @@ pub fn class_list_add<Host: DomHost>(
 /// `Element.classList.remove(token)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying `class` attribute changes.
-pub fn class_list_remove<Host: DomHost>(
+pub fn class_list_remove<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   token: &str,
@@ -81,7 +81,7 @@ pub fn class_list_remove<Host: DomHost>(
 ///
 /// Returns whether `token` is present after the operation. The host invalidation flag is derived by
 /// comparing whether the token's presence changed.
-pub fn class_list_toggle<Host: DomHost>(
+pub fn class_list_toggle<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   token: &str,
@@ -106,7 +106,7 @@ pub fn class_list_toggle<Host: DomHost>(
 ///
 /// Returns whether `token` existed. The host invalidation flag is derived by comparing the `class`
 /// attribute before/after the operation.
-pub fn class_list_replace<Host: DomHost>(
+pub fn class_list_replace<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   token: &str,
@@ -135,7 +135,7 @@ pub fn class_list_replace<Host: DomHost>(
 /// `Element.setAttribute(name, value)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying attribute list changes.
-pub fn set_attribute<Host: DomHost>(
+pub fn set_attribute<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   name: &str,
@@ -150,12 +150,72 @@ pub fn set_attribute<Host: DomHost>(
 /// `Element.removeAttribute(name)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying attribute list changes.
-pub fn remove_attribute<Host: DomHost>(
+pub fn remove_attribute<Host: DomHost + ?Sized>(
   host: &mut Host,
   element: NodeId,
   name: &str,
 ) -> std::result::Result<bool, DomError> {
   host.mutate_dom(|dom| match dom.remove_attribute(element, name) {
+    Ok(changed) => (Ok(changed), changed),
+    Err(err) => (Err(err), false),
+  })
+}
+
+/// `Element.dataset.<prop>` getter for a `dom2` element.
+///
+/// Invalid property names yield `None`.
+pub fn dataset_get<Host: DomHost + ?Sized>(host: &Host, element: NodeId, prop: &str) -> Option<String> {
+  host.with_dom(|dom| dom.dataset_get(element, prop).map(str::to_string))
+}
+
+/// `Element.dataset.<prop> = value` for a `dom2` element.
+///
+/// Returns `Ok(true)` only when the underlying `data-*` attribute changes.
+pub fn dataset_set<Host: DomHost + ?Sized>(
+  host: &mut Host,
+  element: NodeId,
+  prop: &str,
+  value: &str,
+) -> std::result::Result<bool, DomError> {
+  host.mutate_dom(|dom| match dom.dataset_set(element, prop, value) {
+    Ok(changed) => (Ok(changed), changed),
+    Err(err) => (Err(err), false),
+  })
+}
+
+/// `delete Element.dataset.<prop>` for a `dom2` element.
+///
+/// Returns `Ok(true)` only when the underlying `data-*` attribute changes.
+pub fn dataset_delete<Host: DomHost + ?Sized>(
+  host: &mut Host,
+  element: NodeId,
+  prop: &str,
+) -> std::result::Result<bool, DomError> {
+  host.mutate_dom(|dom| match dom.dataset_delete(element, prop) {
+    Ok(changed) => (Ok(changed), changed),
+    Err(err) => (Err(err), false),
+  })
+}
+
+/// `CSSStyleDeclaration.getPropertyValue(name)` for a `dom2` element.
+pub fn style_get_property_value<Host: DomHost + ?Sized>(
+  host: &Host,
+  element: NodeId,
+  name: &str,
+) -> String {
+  host.with_dom(|dom| dom.style_get_property_value(element, name))
+}
+
+/// `CSSStyleDeclaration.setProperty(name, value)` for a `dom2` element.
+///
+/// Returns `Ok(true)` only when the underlying `style` attribute changes.
+pub fn style_set_property<Host: DomHost + ?Sized>(
+  host: &mut Host,
+  element: NodeId,
+  name: &str,
+  value: &str,
+) -> std::result::Result<bool, DomError> {
+  host.mutate_dom(|dom| match dom.style_set_property(element, name, value) {
     Ok(changed) => (Ok(changed), changed),
     Err(err) => (Err(err), false),
   })

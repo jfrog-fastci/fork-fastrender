@@ -144,7 +144,7 @@ pub mod ecma_embed;
 pub mod ecma_vm_runtime;
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
-pub use dom_host::DomHost;
+pub use dom_host::{DomHost, DomHostVmJs};
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
 pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost, LoadBlockerKind};

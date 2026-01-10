@@ -12,6 +12,7 @@ use crate::js::window_env::{
 };
 use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState};
 use crate::js::CurrentScriptStateHandle;
+use crate::js::DomHostVmJs;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
 use crate::resource::{ensure_script_mime_sane, CorsMode, FetchDestination, FetchRequest, ResourceFetcher};
@@ -394,7 +395,7 @@ impl WindowRealm {
 
   /// Execute a classic script in this window realm.
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
-    self.with_vm_budget(|rt| rt.exec_script(source))
+    self.exec_script_with_name("<inline>", source)
   }
 
   /// Execute a classic script in this window realm with an explicit embedder host context and host
@@ -454,8 +455,114 @@ impl WindowRealm {
     source_name: impl Into<Arc<str>>,
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
-    self.with_vm_budget(|rt| {
-      rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+    // The `vm-js` default `exec_script` path uses the VM-owned microtask queue as the active
+    // `VmHostHooks` implementation. That queue does not provide FastRender's DOM shims (like
+    // `Element.dataset`), which rely on `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}`.
+    //
+    // Install a lightweight host hook wrapper for the duration of the run, while still preserving
+    // the VM-owned microtask queue for Promise jobs.
+
+    struct MicrotaskQueueRestoreGuard {
+      vm: *mut Vm,
+      queue: vm_js::MicrotaskQueue,
+    }
+
+    impl MicrotaskQueueRestoreGuard {
+      fn new(vm: &mut Vm) -> Self {
+        let queue = std::mem::take(vm.microtask_queue_mut());
+        Self {
+          vm: vm as *mut Vm,
+          queue,
+        }
+      }
+    }
+
+    impl Drop for MicrotaskQueueRestoreGuard {
+      fn drop(&mut self) {
+        // SAFETY: the guard is only constructed from a live `&mut Vm` owned by the current realm.
+        // It is dropped before the realm (and its VM) can be dropped.
+        let vm = unsafe { &mut *self.vm };
+        *vm.microtask_queue_mut() = std::mem::take(&mut self.queue);
+      }
+    }
+
+    struct WindowRealmDomShimHooks<'a> {
+      microtasks: &'a mut vm_js::MicrotaskQueue,
+    }
+
+    impl vm_js::VmHostHooks for WindowRealmDomShimHooks<'_> {
+      fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
+        self.microtasks.enqueue_promise_job(job, realm);
+      }
+
+      fn host_exotic_get(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+        receiver: Value,
+      ) -> Result<Option<Value>, VmError> {
+        let _ = receiver;
+        dataset_exotic_get(scope, obj, key)
+      }
+
+      fn host_exotic_set(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+        value: Value,
+        receiver: Value,
+      ) -> Result<Option<bool>, VmError> {
+        let _ = receiver;
+        dataset_exotic_set(scope, obj, key, value)
+      }
+
+      fn host_exotic_delete(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+      ) -> Result<Option<bool>, VmError> {
+        dataset_exotic_delete(scope, obj, key)
+      }
+
+      fn host_call_job_callback(
+        &mut self,
+        ctx: &mut dyn vm_js::VmJobContext,
+        callback: &vm_js::JobCallback,
+        this_argument: Value,
+        arguments: &[Value],
+      ) -> Result<Value, VmError> {
+        // Mirror `vm-js`'s built-in `MicrotaskQueue` implementation, but pass `self` so queued jobs
+        // see the same DOM shim host hooks as the originating script.
+        ctx.call(
+          self,
+          Value::Object(callback.callback_object()),
+          this_argument,
+          arguments,
+        )
+      }
+
+      fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        // Preserve the existing behaviour of exposing the microtask queue for downcasting.
+        Some(self.microtasks)
+      }
+    }
+
+    let source = Arc::new(SourceText::new(source_name, source_text));
+
+    self.with_vm_budget(move |rt| {
+      // Temporarily move the VM-owned microtask queue out so we can both:
+      // - expose DOM shim exotic hooks to the evaluator, and
+      // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
+      let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
+      let mut hooks = WindowRealmDomShimHooks {
+        microtasks: &mut guard.queue,
+      };
+
+      let mut dummy_host = ();
+      rt.exec_script_source_with_host_and_hooks(&mut dummy_host, &mut hooks, source)
     })
   }
 
@@ -1094,6 +1201,8 @@ thread_local! {
     RefCell::new(HashMap::new());
   static DOM_SOURCES: RefCell<HashMap<u64, NonNull<dom2::Document>>> =
     RefCell::new(HashMap::new());
+  static DOM_HOST_SOURCES: RefCell<HashMap<u64, NonNull<dyn DomHostVmJs>>> =
+    RefCell::new(HashMap::new());
   static ACTIVE_EVENTS: RefCell<HashMap<u64, NonNull<web_events::Event>>> =
     RefCell::new(HashMap::new());
 }
@@ -1116,8 +1225,17 @@ pub(crate) fn register_dom_source(dom: NonNull<dom2::Document>) -> u64 {
   id
 }
 
+pub(crate) fn register_dom_host_source(id: u64, host: NonNull<dyn DomHostVmJs>) {
+  DOM_HOST_SOURCES.with(|sources| {
+    sources.borrow_mut().insert(id, host);
+  });
+}
+
 pub(crate) fn unregister_dom_source(id: u64) {
   DOM_SOURCES.with(|sources| {
+    sources.borrow_mut().remove(&id);
+  });
+  DOM_HOST_SOURCES.with(|sources| {
     sources.borrow_mut().remove(&id);
   });
 }
@@ -1126,9 +1244,18 @@ fn dom_for_source(id: u64) -> Option<NonNull<dom2::Document>> {
   DOM_SOURCES.with(|sources| sources.borrow().get(&id).copied())
 }
 
+fn dom_host_for_source(id: u64) -> Option<NonNull<dyn DomHostVmJs>> {
+  DOM_HOST_SOURCES.with(|sources| sources.borrow().get(&id).copied())
+}
+
 #[cfg(test)]
 pub(crate) fn is_dom_source_registered(id: u64) -> bool {
   DOM_SOURCES.with(|sources| sources.borrow().contains_key(&id))
+}
+
+#[cfg(test)]
+pub(crate) fn is_dom_host_source_registered(id: u64) -> bool {
+  DOM_HOST_SOURCES.with(|sources| sources.borrow().contains_key(&id))
 }
 
 fn event_active_event_id(scope: &mut Scope<'_>, event_obj: GcObject) -> Result<Option<u64>, VmError> {
@@ -1184,20 +1311,35 @@ pub(crate) fn dataset_exotic_get(
   let Some(dom_ptr) = dom_for_source(source_id) else {
     return Ok(None);
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_ref() };
-
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
     Err(_) => return Ok(None),
   };
+  let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+
+  if let Some(host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_ref() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    let Some(value) = host.dataset_get(node_id, &prop) else {
+      return Ok(None);
+    };
+    return Ok(Some(Value::String(scope.alloc_string(&value)?)));
+  }
+
+  // Fall back to direct `dom2::Document` access when the embedder did not register a `DomHost`
+  // handle for this dom source.
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
   let node_id = match dom.node_id_from_index(node_index) {
     Ok(id) => id,
     Err(_) => return Ok(None),
   };
-
-  let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
   let Some(value) = dom.dataset_get(node_id, &prop) else {
     return Ok(None);
   };
@@ -1238,16 +1380,8 @@ pub(crate) fn dataset_exotic_set(
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Ok(None);
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
-    Err(_) => return Ok(None),
-  };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
     Err(_) => return Ok(None),
   };
 
@@ -1259,9 +1393,32 @@ pub(crate) fn dataset_exotic_set(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  dom
-    .dataset_set(node_id, &prop, &value)
-    .map_err(|_| VmError::TypeError("failed to set dataset property"))?;
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    if let Err(err) = host.dataset_set(node_id, &prop, &value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Some(true));
+  }
+
+  // Fall back to direct `dom2::Document` access when the embedder did not register a `DomHost`
+  // handle for this dom source.
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+  if let Err(err) = dom.dataset_set(node_id, &prop, &value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
 
   Ok(Some(true))
 }
@@ -1299,24 +1456,39 @@ pub(crate) fn dataset_exotic_delete(
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Ok(None);
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-
   let node_index = match usize::try_from(slots.a) {
     Ok(v) => v,
-    Err(_) => return Ok(None),
-  };
-  let node_id = match dom.node_id_from_index(node_index) {
-    Ok(id) => id,
     Err(_) => return Ok(None),
   };
 
   let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
 
-  dom
-    .dataset_delete(node_id, &prop)
-    .map_err(|_| VmError::TypeError("failed to delete dataset property"))?;
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(None),
+    };
+    if let Err(err) = host.dataset_delete(node_id, &prop) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Some(true));
+  }
+
+  // Fall back to direct `dom2::Document` access when the embedder did not register a `DomHost`
+  // handle for this dom source.
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+  if let Err(err) = dom.dataset_delete(node_id, &prop) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
 
   Ok(Some(true))
 }
@@ -7809,6 +7981,20 @@ fn element_class_name_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return Ok(Value::Undefined),
+    };
+    host
+      .set_element_class_name(node_id, &new_value)
+      .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
+    return Ok(Value::Undefined);
+  }
+
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Ok(Value::Undefined);
   };
@@ -8501,6 +8687,14 @@ fn css_style_set_property_native(
       "CSSStyleDeclaration.setProperty must be called on a style object",
     ));
   };
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
   let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
     return Ok(Value::Undefined);
   };
@@ -8520,6 +8714,16 @@ fn css_style_set_property_native(
     .get_string(value_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    if let Err(err) = host.style_set_property(node_id, &name, &value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Value::Undefined);
+  }
 
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -8545,6 +8749,14 @@ fn css_style_remove_property_native(
       "CSSStyleDeclaration.removeProperty must be called on a style object",
     ));
   };
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::String(scope.alloc_string("")?)),
+  };
   let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
     return Ok(Value::String(scope.alloc_string("")?));
   };
@@ -8556,6 +8768,17 @@ fn css_style_remove_property_native(
     .get_string(name_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let prev = host.style_get_property_value(node_id, &name);
+    if let Err(err) = host.style_set_property(node_id, &name, "") {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Value::String(scope.alloc_string(&prev)?));
+  }
 
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -8609,6 +8832,14 @@ fn css_style_named_set_native(
     ));
   };
   let prop = native_slot_string(scope, callee)?;
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
   let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
     return Ok(Value::Undefined);
   };
@@ -8620,6 +8851,16 @@ fn css_style_named_set_native(
     .get_string(value_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    if let Err(err) = host.style_set_property(node_id, &prop, &value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Value::Undefined);
+  }
 
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -8687,6 +8928,24 @@ fn element_class_list_add_native(
     tokens.push(token);
   }
   let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => {
+        return Err(VmError::TypeError(
+          "DOMTokenList.add must be called on a classList object",
+        ));
+      }
+    };
+    return match host.class_list_add(node_id, &token_refs) {
+      Ok(_changed) => Ok(Value::Undefined),
+      Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+  }
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Err(VmError::TypeError(
@@ -8762,6 +9021,24 @@ fn element_class_list_remove_native(
     tokens.push(token);
   }
   let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => {
+        return Err(VmError::TypeError(
+          "DOMTokenList.remove must be called on a classList object",
+        ));
+      }
+    };
+    return match host.class_list_remove(node_id, &token_refs) {
+      Ok(_changed) => Ok(Value::Undefined),
+      Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+  }
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Err(VmError::TypeError(
@@ -8902,6 +9179,24 @@ fn element_class_list_toggle_native(
     other => Some(scope.heap().to_boolean(other)?),
   };
 
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => {
+        return Err(VmError::TypeError(
+          "DOMTokenList.toggle must be called on a classList object",
+        ));
+      }
+    };
+    match host.class_list_toggle(node_id, &token, force) {
+      Ok(result) => return Ok(Value::Bool(result)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    }
+  }
+
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Err(VmError::TypeError(
       "DOMTokenList.toggle requires a DOM-backed document",
@@ -8976,6 +9271,24 @@ fn element_class_list_replace_native(
     .get_string(new_token_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Some(mut host_ptr) = dom_host_for_source(source_id) {
+    // SAFETY: DOM host sources are registered/unregistered by the Rust host; the pointer is valid
+    // for the lifetime of the associated host document.
+    let host = unsafe { host_ptr.as_mut() };
+    let node_id = match host.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => {
+        return Err(VmError::TypeError(
+          "DOMTokenList.replace must be called on a classList object",
+        ));
+      }
+    };
+    match host.class_list_replace(node_id, &token, &new_token) {
+      Ok(result) => return Ok(Value::Bool(result)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    }
+  }
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Err(VmError::TypeError(
@@ -13863,6 +14176,43 @@ mod tests {
 
     let target = dom.get_element_by_id("target").expect("missing #target");
     assert_eq!(dom.element_class_name(target), "f c d e");
+    Ok(())
+  }
+
+  #[test]
+  fn element_dataset_shim_mutates_dom2_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target data-foo-bar=\"baz\"></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const el = document.getElementById('target');\n\
+        if (!el) return false;\n\
+        if (el.dataset.fooBar !== 'baz') return false;\n\
+        el.dataset.fooBar = 'qux';\n\
+        if (el.getAttribute('data-foo-bar') !== 'qux') return false;\n\
+        if (el.dataset.fooBar !== 'qux') return false;\n\
+        delete el.dataset.fooBar;\n\
+        if (el.getAttribute('data-foo-bar') !== null) return false;\n\
+        // Invalid property names should not throw and should not create attributes.\n\
+        try { el.dataset.Foo = 'x'; } catch (e) { return false; }\n\
+        try { el.dataset['foo-bar'] = 'y'; } catch (e) { return false; }\n\
+        return el.getAttribute('data-foo') === null;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    assert_eq!(dom.get_attribute(target, "data-foo-bar").unwrap(), None);
     Ok(())
   }
 

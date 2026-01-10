@@ -5257,12 +5257,14 @@ html, body { margin: 0; padding: 0; }
   }
 
   fn exec_vm_js_dom_script(tab: &mut BrowserTab, source: &str) {
-    // The vm-js DOM shims store a raw pointer to the host DOM in a thread-local registry keyed by an
-    // integer "dom source id". Register the tab's live DOM for the duration of this script call so
-    // JS can mutate it directly via raw pointers (bypassing BrowserDocumentDom2's `dom_mut()` /
-    // `mutate_dom()` invalidation hooks).
-    let dom_source_id = register_dom_source(tab.host.document.dom_ptr());
-    let _guard = DomSourceGuard { id: dom_source_id };
+    // The vm-js DOM shims store a `dom_source_id` that resolves to a pointer in a thread-local
+    // registry. Use BrowserDocumentDom2's registration helper so DOM mutations route through its
+    // `DomHost::mutate_dom` implementation (which coalesces invalidation and skips no-op renders).
+    let dom_source_id = tab.host.document.ensure_dom_source_registered();
+    assert!(
+      crate::js::window_realm::is_dom_host_source_registered(dom_source_id),
+      "expected BrowserDocumentDom2 to register a DomHost source for vm-js DOM shims"
+    );
 
     let mut realm = WindowRealm::new(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
@@ -5274,7 +5276,7 @@ html, body { margin: 0; padding: 0; }
   #[test]
   fn vm_js_dom_shim_mutations_invalidate_browser_document_dom2() -> Result<()> {
     let mut tab = BrowserTab::from_html(
-      "<!doctype html><html><body><div>hello</div></body></html>",
+      "<!doctype html><html><body><div id=target class=a data-foo=1 style=\"display: block\">hello</div></body></html>",
       RenderOptions::new().with_viewport(64, 64),
       NoopExecutor::default(),
     )?;
@@ -5282,6 +5284,21 @@ html, body { margin: 0; padding: 0; }
     // Initial render clears dirty flags and records the current DOM mutation generation.
     assert!(tab.render_if_needed()?.is_some());
     assert!(tab.render_if_needed()?.is_none());
+
+    // No-op mutations should not invalidate rendering.
+    exec_vm_js_dom_script(
+      &mut tab,
+      "(() => {\n\
+        const el = document.getElementById('target');\n\
+        el.classList.add('a');\n\
+        el.dataset.foo = '1';\n\
+        el.style.display = 'block';\n\
+      })();",
+    );
+    assert!(
+      tab.render_if_needed()?.is_none(),
+      "expected no-op reflected attribute writes to avoid invalidation"
+    );
 
     exec_vm_js_dom_script(&mut tab, "document.documentElement.className = 'x';");
 
@@ -5300,6 +5317,10 @@ html, body { margin: 0; padding: 0; }
       }
       other => panic!("expected Stable after rendering, got {other:?}"),
     }
+    // Drain any buffered frame produced by `run_until_stable` so later assertions only observe
+    // renders triggered by subsequent mutations.
+    assert!(tab.render_if_needed()?.is_some());
+    assert!(tab.render_if_needed()?.is_none());
 
     exec_vm_js_dom_script(
       &mut tab,

@@ -5,7 +5,8 @@ use crate::js::import_maps::ImportMapState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{
-  register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  register_dom_host_source, register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
+  WindowRealmHost,
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -309,6 +310,10 @@ impl WindowHostState {
     // `DocumentHostState` on the heap.
     let mut document = Box::new(DocumentHostState::new(dom));
     let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
+    register_dom_host_source(
+      dom_source_id,
+      NonNull::from(document.as_mut() as &mut dyn crate::js::DomHostVmJs),
+    );
     let mut window = match WindowRealm::new_with_js_execution_options(
       WindowRealmConfig::new(document_url.clone())
         .with_dom_source_id(dom_source_id)

@@ -197,6 +197,10 @@ impl BrowserDocumentDom2 {
       return id;
     }
     let id = crate::js::window_realm::register_dom_source(self.dom_non_null());
+    crate::js::window_realm::register_dom_host_source(
+      id,
+      NonNull::from(self as &mut dyn crate::js::DomHostVmJs),
+    );
     self.dom_source_id = Some(id);
     id
   }
