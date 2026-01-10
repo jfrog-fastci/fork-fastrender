@@ -15,6 +15,8 @@ fn text_control(kind: TextControlKind, appearance: Appearance, value: &str) -> F
       placeholder_style: None,
       size_attr: None,
       kind,
+      caret: value.chars().count(),
+      selection: None,
     },
     appearance,
     disabled: false,

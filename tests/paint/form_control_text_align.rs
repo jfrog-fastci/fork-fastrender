@@ -15,6 +15,8 @@ fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> Frag
       placeholder_style: None,
       size_attr: None,
       kind: TextControlKind::Plain,
+      caret: value.chars().count(),
+      selection: None,
     },
     appearance: Appearance::Auto,
     disabled: false,

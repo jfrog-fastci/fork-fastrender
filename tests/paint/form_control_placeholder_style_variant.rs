@@ -26,6 +26,8 @@ fn placeholder_style_from_form_control_kind_is_used() {
       placeholder_style: Some(Arc::new(placeholder)),
       size_attr: None,
       kind: TextControlKind::Plain,
+      caret: 0,
+      selection: None,
     },
     appearance: Appearance::Auto,
     disabled: false,
