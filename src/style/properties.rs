@@ -20137,18 +20137,18 @@ fn parse_line_height_token(token: &Token) -> Option<LineHeight> {
 }
 
 fn parse_font_size_keyword(keyword: &str, parent_font_size: f32) -> Option<f32> {
+  // Absolute-size font keywords are UA-defined; match the de-facto mapping used by Chrome (and add
+  // regressions to keep it stable). Relative-size keywords keep the CSS2.1 suggested scale factor.
   let scale: f32 = 1.2;
-  let medium = 16.0;
-
   match keyword {
-    "xx-small" => Some(medium / scale.powi(3)),
-    "x-small" => Some(medium / scale.powi(2)),
-    "small" => Some(medium / scale),
-    "medium" => Some(medium),
-    "large" => Some(medium * scale),
-    "x-large" => Some(medium * scale.powi(2)),
-    "xx-large" => Some(medium * scale.powi(3)),
-    "xxx-large" => Some(medium * scale.powi(4)),
+    "xx-small" => Some(9.0),
+    "x-small" => Some(10.0),
+    "small" => Some(13.0),
+    "medium" => Some(16.0),
+    "large" => Some(18.0),
+    "x-large" => Some(24.0),
+    "xx-large" => Some(32.0),
+    "xxx-large" => Some(48.0),
     "larger" => Some(parent_font_size * scale),
     "smaller" => Some(parent_font_size / scale),
     _ => None,
