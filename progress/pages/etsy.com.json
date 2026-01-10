@@ -14,7 +14,7 @@
     "layout": 5.359728242208649,
     "paint": 59.06754282692259
   },
-  "notes": "",
+  "notes": "Etsy is behind DataDome bot protection (403 in CI); fixture is the interstitial page. Chrome diff is limited to minor text antialiasing.",
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
