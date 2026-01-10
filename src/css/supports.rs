@@ -157,6 +157,17 @@ mod tests {
   }
 
   #[test]
+  fn supports_opacity_percentage_values() {
+    assert!(supports_declaration("opacity", "0%"));
+    assert!(supports_declaration("opacity", "50%"));
+    assert!(supports_declaration("opacity", "100%"));
+    assert!(supports_declaration("opacity", "150%"));
+    assert!(supports_declaration("opacity", "-10%"));
+
+    assert!(!supports_declaration("opacity", "50px"));
+  }
+
+  #[test]
   fn supports_animation_duration_accepts_auto_and_rejects_invalid_values() {
     assert!(supports_declaration("animation-duration", "auto"));
     assert!(supports_declaration("animation-duration", "1s"));

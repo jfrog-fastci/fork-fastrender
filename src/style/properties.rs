@@ -15324,8 +15324,15 @@ fn apply_declaration_with_base_internal_with_order(
 
     // Visual effects
     "opacity" => {
-      if let PropertyValue::Number(n) = resolved_value {
-        styles.opacity = n.clamp(0.0, 1.0);
+      match resolved_value {
+        PropertyValue::Number(n) => styles.opacity = n.clamp(0.0, 1.0),
+        PropertyValue::Percentage(p) => styles.opacity = (*p / 100.0).clamp(0.0, 1.0),
+        PropertyValue::Length(len)
+          if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent) =>
+        {
+          styles.opacity = (len.value / 100.0).clamp(0.0, 1.0)
+        }
+        _ => {}
       }
     }
     "box-shadow" => match resolved_value {

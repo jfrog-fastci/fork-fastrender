@@ -3055,7 +3055,18 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         ],
       )
     }
-    "opacity" => return matches!(parsed, PropertyValue::Number(_)),
+    // https://drafts.csswg.org/css-color/#typedef-alpha-value
+    // <alpha-value> = <number> | <percentage>
+    //
+    // Our property-value parser currently represents raw `50%` tokens as `Length { unit: Percent }`,
+    // so accept that shape as well.
+    "opacity" => {
+      return matches!(parsed, PropertyValue::Number(_) | PropertyValue::Percentage(_))
+        || matches!(
+          parsed,
+          PropertyValue::Length(len) if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent)
+        );
+    }
     "z-index" => {
       return matches!(parsed, PropertyValue::Number(_)) || keyword_in_list(parsed, &["auto"])
     }

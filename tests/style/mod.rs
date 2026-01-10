@@ -76,6 +76,7 @@ mod nth_child_of_selector_index_test;
 mod nth_child_of_specificity_test;
 mod nth_child_of_test;
 mod order_property_test;
+mod opacity_percentage_test;
 mod overflow_clip_margin_calc_percentage_ignored_test;
 mod radio_group_required_invalid_test;
 mod relative_color_syntax_test;
