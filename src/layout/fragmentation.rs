@@ -495,10 +495,6 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
       if let Some(grid_info) = node.grid_fragmentation.clone() {
         let in_flow_count = grid_info.items.len().min(node.children.len());
         for idx in 0..in_flow_count {
-          let placement = &grid_info.items[idx];
-          if !grid_item_spans_single_track(placement, axis) {
-            continue;
-          }
           let Some(child) = node.children_mut().get_mut(idx) else {
             continue;
           };
@@ -539,7 +535,8 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
             .filter(|o| matches!(o.strength, BreakStrength::Forced))
             .map(|o| o.pos)
             .collect();
-          positions.retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
+          positions
+            .retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
           let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
           else {
             continue;
@@ -1989,10 +1986,10 @@ fn fragment_tree_impl(
     FragmentationContext::Page
   };
 
-  // Model forced breaks inside single-track grid items (parallel fragmentation flow) as inserting
-  // blank space up to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout). This
-  // ensures the continuation content appears on later pages without forcing sibling grid items onto
-  // the next page.
+  // Model forced breaks inside grid items (parallel fragmentation flow) as inserting blank space up
+  // to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout). This ensures the
+  // continuation content appears on later pages/columns without forcing sibling grid items onto the
+  // next fragmentainer, even when the item spans multiple tracks.
   let mut root = root.clone();
   apply_grid_parallel_flow_forced_break_shifts(
     &mut root,
@@ -3720,6 +3717,13 @@ fn collect_break_opportunities(
     // for the main flow.
     let skip_descendants = parallel_grid_item;
     if !skip_descendants {
+      // CSS Grid 2 §Fragmenting Grid Layout: A forced break inside a grid item effectively
+      // increases the size of its contents; it must not become a global forced break that affects
+      // sibling items. Suppress forced breaks while recursing into in-flow grid items (including
+      // those spanning multiple tracks), but still collect non-forced opportunities.
+      let child_suppress_forced_breaks = suppress_forced_breaks
+        || (is_row_flex_container_in_context && child_style.position.is_in_flow())
+        || (idx < grid_item_count && child_style.position.is_in_flow());
       collect_break_opportunities(
         child,
         child_abs_start,
@@ -3730,8 +3734,7 @@ fn collect_break_opportunities(
         axis,
         node_writing_mode,
         suppress_parallel_flow_descendants,
-        suppress_forced_breaks
-          || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
+        child_suppress_forced_breaks,
       );
     }
 
@@ -5098,6 +5101,115 @@ mod tests {
     assert!(
       (first_break - 15.0).abs() < BREAK_EPSILON,
       "expected break before the grid row band, got {first_break} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn forced_break_inside_spanning_grid_item_does_not_split_row_band() {
+    let fragmentainer_size = 100.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_after = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    // Item A spans both row tracks and contains a forced page break inside the first row band.
+    let mut a_part1 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 30.0), vec![], break_style);
+    a_part1.content = FragmentContent::Block { box_id: Some(10) };
+    let mut a_part2 = FragmentNode::new_block(Rect::from_xywh(0.0, 30.0, 100.0, 90.0), vec![]);
+    a_part2.content = FragmentContent::Block { box_id: Some(11) };
+
+    let mut item_a = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![a_part1, a_part2],
+      Arc::clone(&item_style),
+    );
+    item_a.content = FragmentContent::Block { box_id: Some(1) };
+
+    // Item B is a normal sibling in the first row track.
+    let mut item_b = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      vec![],
+      item_style,
+    );
+    item_b.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![item_a, item_b],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+
+    assert!(
+      boundaries
+        .iter()
+        .all(|b| (*b - 30.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
+      "forced breaks inside spanning grid items must not become global forced boundaries: {boundaries:?}"
+    );
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_break - 60.0).abs() < BREAK_EPSILON,
+      "expected row band atomicity to force the first break to the 60px track boundary, got {first_break} (boundaries={boundaries:?})"
+    );
+
+    // After applying the grid forced-break shift pass, the continuation content after the internal
+    // forced break should be translated forward (blank space insertion).
+    let mut shifted = grid.clone();
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut shifted,
+      default_axes(),
+      fragmentainer_size,
+      FragmentationContext::Page,
+    );
+    let shifted_part2_start = shifted.children[0].children[1].bounds.y();
+    assert!(
+      (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
+      "expected the continuation content to be shifted to the next fragmentainer boundary (y≈100), got y={shifted_part2_start}"
     );
   }
 
