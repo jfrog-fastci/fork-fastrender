@@ -34,6 +34,36 @@ fn assert_green(pixel: image::Rgba<u8>, msg: &str) {
 }
 
 #[test]
+fn supports_percent_encoded_file_urls() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let spaced_dir = tmp.path().join("dir with spaces");
+  fs::create_dir_all(&spaced_dir).expect("create fixture dir");
+  let html_path = spaced_dir.join("page.html");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; background: rgb(255, 0, 0); }
+</style></head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  assert!(
+    url.contains("%20"),
+    "expected file:// URL to include percent encoding for spaces: {url}"
+  );
+
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(no_js_pixel, "no-JS run should render the HTML fixture successfully");
+  assert_red(js_pixel, "JS run should render the HTML fixture successfully");
+}
+
+#[test]
 fn js_flag_executes_inline_script_and_mutates_dom() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let html_path = tmp.path().join("page.html");

@@ -39,6 +39,7 @@ use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
 use fastrender::OutputFormat;
 use fastrender::Result;
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
@@ -46,11 +47,62 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use url::Url;
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_JS_MAX_TASKS: usize = 1024;
 const DEFAULT_JS_MAX_MICROTASKS: usize = 4096;
 const DEFAULT_JS_MAX_WALL_MS: u64 = 500;
 const DEFAULT_JS_MAX_SCRIPT_BYTES: usize = 256 * 1024;
+
+fn file_url_path_candidates(url: &str) -> Vec<PathBuf> {
+  let mut candidates = Vec::new();
+
+  if let Ok(parsed) = Url::parse(url) {
+    if parsed.scheme() == "file" {
+      if let Ok(path) = parsed.to_file_path() {
+        candidates.push(path);
+      }
+    }
+  }
+
+  let stripped = url.strip_prefix("file://").unwrap_or(url);
+  let without_fragment = stripped
+    .split_once('#')
+    .map(|(before, _)| before)
+    .unwrap_or(stripped);
+  let without_query = without_fragment
+    .split_once('?')
+    .map(|(before, _)| before)
+    .unwrap_or(without_fragment);
+
+  candidates.push(PathBuf::from(without_query));
+  candidates.push(PathBuf::from(stripped));
+
+  let mut seen = HashSet::new();
+  candidates.retain(|candidate| seen.insert(candidate.clone()));
+  candidates
+}
+
+fn read_cached_document_from_file_url(
+  url: &str,
+) -> Result<common::render_pipeline::CachedDocument> {
+  let candidates = file_url_path_candidates(url);
+  let mut last_not_found = None;
+  for candidate in candidates {
+    match read_cached_document(&candidate) {
+      Ok(cached) => return Ok(cached),
+      Err(err) => match &err {
+        fastrender::Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {
+          last_not_found = Some(err);
+        }
+        _ => return Err(err),
+      },
+    }
+  }
+  Err(last_not_found.unwrap_or_else(|| {
+    fastrender::Error::Other(format!("Failed to resolve file URL to a readable path: {url}"))
+  }))
+}
 
 /// Fetch a single page and render it to an image
 #[derive(Parser, Debug)]
@@ -194,8 +246,7 @@ fn render_page(
 
   let render_result = if !js_enabled {
     let (resource, requested_url) = if url.starts_with("file://") {
-      let path = url.strip_prefix("file://").unwrap_or(url);
-      let cached = read_cached_document(Path::new(path))?;
+      let cached = read_cached_document_from_file_url(url)?;
       (cached.resource, cached.document.base_hint)
     } else {
       println!("Fetching HTML from: {url}");
@@ -240,8 +291,7 @@ fn render_page(
     let cached_file_document = url
       .starts_with("file://")
       .then(|| {
-        let path = url.strip_prefix("file://").unwrap_or(url);
-        read_cached_document(Path::new(path))
+        read_cached_document_from_file_url(url)
       })
       .transpose()?;
 
