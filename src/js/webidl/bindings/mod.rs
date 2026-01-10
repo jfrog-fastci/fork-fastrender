@@ -1411,6 +1411,77 @@ mod tests {
   }
 
   #[test]
+  fn generated_bindings_url_origin_getter_dispatches_to_host() -> Result<(), VmError> {
+    #[derive(Default)]
+    struct UrlOriginHost {
+      calls: usize,
+      last_interface: Option<&'static str>,
+      last_name: Option<&'static str>,
+    }
+
+    impl WebHostBindings<webidl_js_runtime::VmJsRuntime> for UrlOriginHost {
+      fn call_operation(
+        &mut self,
+        _rt: &mut webidl_js_runtime::VmJsRuntime,
+        _receiver: Option<Value>,
+        _interface: &'static str,
+        _operation: &'static str,
+        _overload: usize,
+        _args: Vec<BindingValue<Value>>,
+      ) -> Result<BindingValue<Value>, VmError> {
+        Ok(BindingValue::Undefined)
+      }
+
+      fn get_attribute(
+        &mut self,
+        _rt: &mut webidl_js_runtime::VmJsRuntime,
+        receiver: Option<Value>,
+        interface: &'static str,
+        name: &'static str,
+      ) -> Result<BindingValue<Value>, VmError> {
+        let _ = receiver;
+        self.calls += 1;
+        self.last_interface = Some(interface);
+        self.last_name = Some(name);
+        Ok(BindingValue::String("https://example.com".to_string()))
+      }
+    }
+
+    let mut rt = webidl_js_runtime::VmJsRuntime::new();
+    let mut host = UrlOriginHost::default();
+    install_window_bindings(&mut rt, &mut host)?;
+
+    let global = <webidl_js_runtime::VmJsRuntime as crate::js::webidl_runtime_vmjs::WebIdlBindingsRuntime<
+      UrlOriginHost,
+    >>::global_object(&mut rt)?;
+    let origin = webidl_js_runtime::JsRuntime::with_stack_roots(&mut rt, &[global], |rt| {
+      // globalThis.URL.prototype.origin
+      let ctor_key = rt.property_key_from_str("URL")?;
+      let ctor = webidl_js_runtime::JsRuntime::get(rt, global, ctor_key)?;
+      webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[ctor], |rt| {
+        let proto_key = rt.property_key_from_str("prototype")?;
+        let proto = webidl_js_runtime::JsRuntime::get(rt, ctor, proto_key)?;
+        webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[proto], |rt| {
+          let origin_key = rt.property_key_from_str("origin")?;
+          let origin_value = rt.with_host_context(&mut host, |rt| {
+            webidl_js_runtime::JsRuntime::get(rt, proto, origin_key)
+          })?;
+          webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[origin_value], |rt| {
+            let s = webidl_js_runtime::JsRuntime::to_string(rt, origin_value)?;
+            rt.string_to_utf8_lossy(s)
+          })
+        })
+      })
+    })?;
+
+    assert_eq!(origin, "https://example.com");
+    assert_eq!(host.calls, 1);
+    assert_eq!(host.last_interface, Some("URL"));
+    assert_eq!(host.last_name, Some("origin"));
+    Ok(())
+  }
+
+  #[test]
   fn generated_bindings_dispatch_window_alert_overloads() -> Result<(), VmError> {
     let limits = HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024);
     let mut heap = Heap::new(limits);
