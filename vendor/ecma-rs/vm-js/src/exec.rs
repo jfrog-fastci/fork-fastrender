@@ -1228,6 +1228,10 @@ impl<'a> Evaluator<'a> {
     }
 
     for (name, loc) in &lexical_bindings {
+      // Budget the lexical-vs-var collision check: a statement list can contain very large numbers
+      // of lexical bindings (e.g. `let a0,a1,...`) and we must still observe budgets/interrupts
+      // while checking each name against the var-scoped set.
+      self.tick()?;
       if var_names.contains(name) {
         return Err(syntax_error(*loc, format!("Identifier '{name}' has already been declared")));
       }

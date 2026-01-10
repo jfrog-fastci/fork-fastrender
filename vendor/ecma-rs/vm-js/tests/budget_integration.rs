@@ -267,7 +267,7 @@ fn block_function_decl_list_instantiation_consumes_fuel() {
     // Intentionally high enough that hoisting/statement evaluation can make progress, but low
     // enough that block-entry instantiation of thousands of function declarations must be
     // budgeted.
-    fuel: Some(6_000),
+    fuel: Some(3_500),
     deadline: None,
     check_time_every: 1,
   });
@@ -280,6 +280,39 @@ fn block_function_decl_list_instantiation_consumes_fuel() {
     write!(src, "function f{i}(){{}}").unwrap();
   }
   src.push('}');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn lexical_var_collision_check_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  // `instantiate_stmt_list` checks that lexical declarations do not collide with var-scoped names
+  // (`var` + function declarations). The collision check loops all lexical binding names, so it
+  // must be budgeted even when the only observable outcome is an early syntax error.
+  //
+  // Choose a budget that is sufficient for parsing + lexical name collection, but leaves no fuel
+  // for the collision scan itself.
+  let n = 100;
+  rt.vm.set_budget(Budget {
+    fuel: Some(n as u64 + 11),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // The final `x` collides with the var declaration, but is placed at the end so the collision
+  // scan must iterate the entire lexical binding list.
+  let mut src = String::from("let ");
+  for i in 0..n {
+    if i != 0 {
+      src.push(',');
+    }
+    write!(src, "a{i}").unwrap();
+  }
+  src.push_str(",x; var x;");
 
   let err = rt.exec_script(&src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
