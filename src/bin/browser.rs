@@ -2975,10 +2975,13 @@ hint: if you're running in a headless environment, try `browser --headless-smoke
             (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css)
           })
           .unwrap_or(viewport_css);
-        // Draw the page image at the *logical* viewport size, even when the worker clamps the
-        // underlying DPR/viewport for safety. The input mapping (points→CSS) uses
-        // `viewport_css_for_mapping`, so scaling here stays coherent for hit-testing.
-        let size_points = egui::vec2(viewport_css.0 as f32, viewport_css.1 as f32);
+        // Draw the page image to fill the available panel size (egui points), even when:
+        // - the worker clamps DPR/viewport for safety (pixmap may be smaller than panel in points),
+        // - the per-tab zoom mapping changes `viewport_css` (we keep physical size constant).
+        //
+        // The input mapping (points→CSS) uses `viewport_css_for_mapping`, so scaling here stays
+        // coherent for hit-testing.
+        let size_points = logical_viewport_points.max(egui::Vec2::ZERO);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
