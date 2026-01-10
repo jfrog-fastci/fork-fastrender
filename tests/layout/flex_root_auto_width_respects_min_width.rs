@@ -1,16 +1,19 @@
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::style::display::Display;
-use fastrender::style::types::{FlexDirection, JustifyContent};
+use fastrender::style::types::{BoxSizing, FlexDirection, JustifyContent};
 use fastrender::style::values::Length;
 use fastrender::{BoxNode, ComputedStyle, FormattingContext, FormattingContextType};
 use std::sync::Arc;
 
-#[test]
-fn flex_root_auto_width_respects_min_width() {
+fn assert_flex_root_min_width_case(
+  mut container_style: ComputedStyle,
+  expected_root_border_box_width: f32,
+  expected_child_1_x: f32,
+  expected_child_2_x: f32,
+) {
   let fc = FlexFormattingContext::new();
 
-  let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
   container_style.flex_direction = FlexDirection::Row;
   container_style.justify_content = JustifyContent::FlexEnd;
@@ -49,8 +52,8 @@ fn flex_root_auto_width_respects_min_width() {
 
   let eps = 1e-3;
   assert!(
-    (fragment.bounds.width() - 400.0).abs() < eps,
-    "expected flex container to clamp up to min-width, got {}",
+    (fragment.bounds.width() - expected_root_border_box_width).abs() < eps,
+    "expected flex container to clamp up to min-width {expected_root_border_box_width}, got {}",
     fragment.bounds.width()
   );
   assert_eq!(
@@ -60,14 +63,54 @@ fn flex_root_auto_width_respects_min_width() {
   );
 
   assert!(
-    (fragment.children[0].bounds.x() - 300.0).abs() < eps,
-    "expected first child to be placed at the end of the 400px container, got x={}",
+    (fragment.children[0].bounds.x() - expected_child_1_x).abs() < eps,
+    "expected first child to be placed at x={expected_child_1_x}, got x={}",
     fragment.children[0].bounds.x()
   );
   assert!(
-    (fragment.children[1].bounds.x() - 350.0).abs() < eps,
-    "expected second child to be placed after the first, got x={}",
+    (fragment.children[1].bounds.x() - expected_child_2_x).abs() < eps,
+    "expected second child to be placed after the first at x={expected_child_2_x}, got x={}",
     fragment.children[1].bounds.x()
   );
 }
 
+#[test]
+fn flex_root_auto_width_respects_min_width() {
+  let style = ComputedStyle::default();
+  assert_flex_root_min_width_case(
+    style,
+    /* expected_root_border_box_width */ 400.0,
+    /* expected_child_1_x */ 300.0,
+    /* expected_child_2_x */ 350.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_respects_min_width_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  // Default is `box-sizing: content-box`.
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 400px constrains the *content* width, so padding expands the border-box width.
+  assert_flex_root_min_width_case(
+    style,
+    /* expected_root_border_box_width */ 420.0,
+    /* expected_child_1_x */ 310.0,
+    /* expected_child_2_x */ 360.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_respects_min_width_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 400px constrains the border box, so the content box shrinks by padding.
+  assert_flex_root_min_width_case(
+    style,
+    /* expected_root_border_box_width */ 400.0,
+    /* expected_child_1_x */ 290.0,
+    /* expected_child_2_x */ 340.0,
+  );
+}
