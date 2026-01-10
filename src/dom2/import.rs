@@ -290,6 +290,18 @@ mod tests {
   }
 
   #[test]
+  fn import_preserves_script_force_async_false_for_parser_inserted_scripts() {
+    let html = "<!doctype html><html><body><script id=s></script></body></html>";
+    let root = crate::dom::parse_html(html).unwrap();
+    let doc = Document::from_renderer_dom(&root);
+    let script = doc.get_element_by_id("s").expect("script element not found");
+    assert!(
+      !doc.node(script).script_force_async,
+      "scripts parsed from HTML should have force_async=false when imported into dom2"
+    );
+  }
+
+  #[test]
   fn import_handles_deep_trees_without_recursion_overflow() {
     // A depth that would almost certainly overflow recursive import on typical test stacks.
     const DEPTH: usize = 50_000;

@@ -52,6 +52,23 @@ fn create_element_marks_template_inert_and_slot_kind() {
 }
 
 #[test]
+fn create_element_sets_script_force_async_for_html_scripts() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  let script = doc.create_element("script", "");
+  assert!(
+    doc.node(script).script_force_async,
+    "createElement('script') should default HTMLScriptElement.async to true via force_async"
+  );
+
+  let svg_script = doc.create_element("script", crate::dom::SVG_NAMESPACE);
+  assert!(
+    !doc.node(svg_script).script_force_async,
+    "non-HTML <script> elements must not set force_async"
+  );
+}
+
+#[test]
 fn create_comment_is_a_leaf_node_and_can_be_inserted() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
