@@ -171,6 +171,31 @@ fn decode_external_classic_script_bytes(
   UTF_8.decode_with_bom_removal(bytes).0.into_owned()
 }
 
+fn fetch_script_source(
+  fetcher: &dyn ResourceFetcher,
+  document_url: &str,
+  url: &str,
+  destination: FetchDestination,
+  max_script_bytes: usize,
+) -> Result<fastrender::resource::FetchedResource> {
+  debug_assert!(
+    matches!(
+      destination,
+      FetchDestination::Script | FetchDestination::ScriptCors
+    ),
+    "fetch_script_source should only be used for classic <script src> fetches"
+  );
+  let mut req = FetchRequest::new(url, destination);
+  req = req.with_referrer_url(document_url);
+  if max_script_bytes == usize::MAX {
+    fetcher.fetch_with_request(req)
+  } else {
+    // Fetch at most `max_script_bytes + 1` so we can deterministically decide whether
+    // the script exceeds the configured budget without downloading arbitrary amounts.
+    fetcher.fetch_partial_with_request(req, max_script_bytes.saturating_add(1))
+  }
+}
+
 /// Fetch a single page and render it to an image
 #[derive(Parser, Debug)]
 #[command(name = "fetch_and_render", version, about)]
@@ -398,22 +423,6 @@ fn render_page(
       ScriptScheduler::<fastrender::dom2::NodeId>::new(),
     ));
 
-    fn fetch_script_source(
-      fetcher: &dyn ResourceFetcher,
-      document_url: &str,
-      url: &str,
-      max_script_bytes: usize,
-    ) -> Result<fastrender::resource::FetchedResource> {
-      let mut req = FetchRequest::new(url, FetchDestination::Other);
-      req = req.with_referrer_url(document_url);
-      if max_script_bytes == usize::MAX {
-        fetcher.fetch_with_request(req)
-      } else {
-        // Fetch at most `max_script_bytes + 1` so we can deterministically decide whether
-        // the script exceeds the configured budget without downloading arbitrary amounts.
-        fetcher.fetch_partial_with_request(req, max_script_bytes.saturating_add(1))
-      }
-    }
     let mut scripts_queued = 0usize;
     let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
 
@@ -678,7 +687,12 @@ fn render_page(
               // Apply scheduler actions produced by discovery.
               let mut actions = discovered.actions;
               'apply_actions: loop {
-                let mut start_fetches: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+                let mut start_fetches: Vec<(
+                  ScriptId,
+                  fastrender::dom2::NodeId,
+                  String,
+                  FetchDestination,
+                )> = Vec::new();
                 let mut blocking: std::collections::HashSet<ScriptId> =
                   std::collections::HashSet::new();
 
@@ -688,9 +702,9 @@ fn render_page(
                       script_id,
                       node_id,
                       url,
-                      ..
+                      destination,
                     } => {
-                      start_fetches.push((script_id, node_id, url));
+                      start_fetches.push((script_id, node_id, url, destination));
                     }
                     ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
                       blocking.insert(script_id);
@@ -877,7 +891,7 @@ fn render_page(
                   }
                 }
 
-                for (script_id, node_id, url) in start_fetches.drain(..) {
+                for (script_id, node_id, url, destination) in start_fetches.drain(..) {
                   if blocking.contains(&script_id) {
                     let charset_attr =
                       host.dom().get_attribute(node_id, "charset").ok().flatten();
@@ -885,6 +899,7 @@ fn render_page(
                       fetcher.as_ref(),
                       &base_hint,
                       &url,
+                      destination,
                       max_script_bytes,
                     ) {
                       Ok(fetched) => fetched,
@@ -942,6 +957,7 @@ fn render_page(
                   let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
                   let node_id_for_task = node_id;
                   let url_for_task = url.clone();
+                  let destination_for_task = destination;
                   let fetcher = fetcher.clone();
                   if let Err(err) = event_loop.queue_task(
                     TaskSource::Networking,
@@ -955,6 +971,7 @@ fn render_page(
                         fetcher.as_ref(),
                         &host.document_url,
                         &url_for_task,
+                        destination_for_task,
                         max_script_bytes,
                       );
                       let actions = match fetched {
@@ -1446,13 +1463,23 @@ fn render_page(
 
             let mut actions = discovered.actions;
             'apply_actions: loop {
-              let mut start_fetches: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+              let mut start_fetches: Vec<(
+                ScriptId,
+                fastrender::dom2::NodeId,
+                String,
+                FetchDestination,
+              )> = Vec::new();
               let mut blocking: std::collections::HashSet<ScriptId> = std::collections::HashSet::new();
 
               for action in actions.drain(..) {
                 match action {
-                  ScriptSchedulerAction::StartFetch { script_id, node_id, url, .. } => {
-                    start_fetches.push((script_id, node_id, url));
+                  ScriptSchedulerAction::StartFetch {
+                    script_id,
+                    node_id,
+                    url,
+                    destination,
+                  } => {
+                    start_fetches.push((script_id, node_id, url, destination));
                   }
                   ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
                     blocking.insert(script_id);
@@ -1618,13 +1645,14 @@ fn render_page(
                 }
               }
 
-              for (script_id, node_id, url) in start_fetches.drain(..) {
+              for (script_id, node_id, url, destination) in start_fetches.drain(..) {
                 if blocking.contains(&script_id) {
                   let charset_attr = host.dom().get_attribute(node_id, "charset").ok().flatten();
                   let fetched = match fetch_script_source(
                     fetcher.as_ref(),
                     &base_hint,
                     &url,
+                    destination,
                     max_script_bytes,
                   ) {
                     Ok(fetched) => fetched,
@@ -1661,6 +1689,7 @@ fn render_page(
                 let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
                 let node_id_for_task = node_id;
                 let url_for_task = url.clone();
+                let destination_for_task = destination;
                 let fetcher = fetcher.clone();
                 if let Err(err) = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
                   let charset_attr = host
@@ -1672,6 +1701,7 @@ fn render_page(
                     fetcher.as_ref(),
                     &host.document_url,
                     &url_for_task,
+                    destination_for_task,
                     max_script_bytes,
                   );
                   let actions = match fetched {
@@ -2324,5 +2354,57 @@ fn main() {
       eprintln!("note: re-run with --verbose to see full error context");
     }
     std::process::exit(1);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use fastrender::resource::FetchedResource;
+  use std::sync::Mutex;
+
+  #[derive(Default)]
+  struct DestRecordingFetcher {
+    destinations: Mutex<Vec<FetchDestination>>,
+  }
+
+  impl ResourceFetcher for DestRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Ok(FetchedResource::with_final_url(
+        b"console.log(1)".to_vec(),
+        Some("text/javascript".to_string()),
+        Some(url.to_string()),
+      ))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self.destinations.lock().unwrap().push(req.destination);
+      self.fetch(req.url)
+    }
+  }
+
+  #[test]
+  fn fetch_script_source_uses_script_destinations() {
+    let fetcher = DestRecordingFetcher::default();
+    let _ = fetch_script_source(
+      &fetcher,
+      "https://example.com/index.html",
+      "https://example.com/a.js",
+      FetchDestination::Script,
+      1024,
+    )
+    .unwrap();
+    let _ = fetch_script_source(
+      &fetcher,
+      "https://example.com/index.html",
+      "https://example.com/b.js",
+      FetchDestination::ScriptCors,
+      1024,
+    )
+    .unwrap();
+    assert_eq!(
+      *fetcher.destinations.lock().unwrap(),
+      vec![FetchDestination::Script, FetchDestination::ScriptCors]
+    );
   }
 }
