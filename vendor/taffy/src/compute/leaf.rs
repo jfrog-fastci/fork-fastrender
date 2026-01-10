@@ -159,7 +159,7 @@ where
 
   // Measure node
   check_layout_abort();
-  let measured_output = measure_function(
+  let mut measured_output = measure_function(
     match run_mode {
       RunMode::ComputeSize => known_dimensions,
       RunMode::PerformLayout => Size::NONE,
@@ -167,6 +167,17 @@ where
     },
     available_space,
   );
+  // Guard against misbehaving measure functions returning NaN/∞ sizes or baselines. Taffy's layout
+  // algorithms assume node sizes and baselines are finite; propagating non-finite values quickly
+  // turns subsequent computations into NaN/∞ (e.g. alignment offsets, positions).
+  if !measured_output.size.width.is_finite() {
+    measured_output.size.width = 0.0;
+  }
+  if !measured_output.size.height.is_finite() {
+    measured_output.size.height = 0.0;
+  }
+  measured_output.first_baselines.x = measured_output.first_baselines.x.filter(|b| b.is_finite());
+  measured_output.first_baselines.y = measured_output.first_baselines.y.filter(|b| b.is_finite());
   let measured_size = measured_output.size;
   let clamped_size = known_dimensions
     .or(node_size)
@@ -193,5 +204,49 @@ where
     margins_can_collapse_through: !has_styles_preventing_being_collapsed_through
       && size.height == 0.0
       && measured_size.height == 0.0,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::geometry::Line;
+  use crate::style::Style;
+  use crate::style_helpers::TaffyMaxContent;
+  use crate::sys::DefaultCheapStr;
+  use crate::tree::RequestedAxis;
+
+  #[test]
+  fn leaf_measure_output_is_sanitized_to_finite_values() {
+    let style = Style::<DefaultCheapStr>::default();
+    let output = compute_leaf_layout(
+      LayoutInput {
+        run_mode: RunMode::PerformLayout,
+        sizing_mode: SizingMode::InherentSize,
+        axis: RequestedAxis::Both,
+        known_dimensions: Size::NONE,
+        parent_size: Size::NONE,
+        available_space: Size::MAX_CONTENT,
+        vertical_margins_are_collapsible: Line::FALSE,
+      },
+      &style,
+      |_, _| 0.0,
+      |_, _| MeasureOutput {
+        size: Size {
+          width: f32::NAN,
+          height: f32::INFINITY,
+        },
+        first_baselines: Point {
+          x: Some(f32::NAN),
+          y: Some(f32::INFINITY),
+        },
+      },
+    );
+
+    assert!(output.size.width.is_finite());
+    assert!(output.size.height.is_finite());
+    assert_eq!(output.size.width, 0.0);
+    assert_eq!(output.size.height, 0.0);
+    assert_eq!(output.first_baselines, Point::NONE);
   }
 }
