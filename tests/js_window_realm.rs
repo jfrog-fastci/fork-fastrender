@@ -1277,6 +1277,48 @@ c.abort();
 }
 
 #[test]
+fn add_event_listener_signal_option_removes_listener_after_abort() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__count = 0;
+const c = new AbortController();
+document.body.addEventListener('x', () => { globalThis.__count++; }, { signal: c.signal });
+document.body.dispatchEvent(new Event('x'));
+c.abort();
+document.body.dispatchEvent(new Event('x'));
+
+// Already-aborted signals should prevent registration.
+globalThis.__count2 = 0;
+const c2 = new AbortController();
+c2.abort();
+document.body.addEventListener('y', () => { globalThis.__count2++; }, { signal: c2.signal });
+document.body.dispatchEvent(new Event('y'));
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (count, count2) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let count = get_data_prop(&mut scope, global, "__count");
+    let count2 = get_data_prop(&mut scope, global, "__count2");
+    (count, count2)
+  };
+  assert_eq!(count, Value::Number(1.0));
+  assert_eq!(count2, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new(dom, "https://example.com/")?;

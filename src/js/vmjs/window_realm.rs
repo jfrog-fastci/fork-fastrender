@@ -1159,7 +1159,9 @@ const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
+const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
@@ -6094,6 +6096,23 @@ fn event_target_context_global_from_callee(
   }
 }
 
+fn event_target_abort_cleanup_call_id_from_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<vm_js::NativeFunctionId, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots
+    .get(EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(vm_js::NativeFunctionId(n as u32)),
+    _ => Err(VmError::InvariantViolation(
+      "EventTarget method missing required abort cleanup call id slot",
+    )),
+  }
+}
+
 fn event_target_resolve_this(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -6208,6 +6227,22 @@ fn is_branded_event_target(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool,
   let key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
   Ok(matches!(
     scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(true))
+  ))
+}
+
+fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let key = alloc_key(scope, ABORT_SIGNAL_BRAND_KEY)?;
+  Ok(matches!(
+    scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(true))
+  ))
+}
+
+fn abort_signal_is_aborted(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let aborted_key = alloc_key(scope, "aborted")?;
+  Ok(matches!(
+    scope.heap().object_get_own_data_property_value(obj, &aborted_key)?,
     Some(Value::Bool(true))
   ))
 }
@@ -7090,6 +7125,151 @@ fn rust_event_from_js_event(
   Ok(event)
 }
 
+const ABORT_SIGNAL_CLEANUP_TARGET_KIND_SLOT: usize = 0;
+const ABORT_SIGNAL_CLEANUP_TARGET_ID_SLOT: usize = 1;
+const ABORT_SIGNAL_CLEANUP_TYPE_SLOT: usize = 2;
+const ABORT_SIGNAL_CLEANUP_LISTENER_ID_SLOT: usize = 3;
+const ABORT_SIGNAL_CLEANUP_CAPTURE_SLOT: usize = 4;
+
+fn abort_signal_listener_cleanup_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+
+  let target_kind = match slots
+    .get(ABORT_SIGNAL_CLEANUP_TARGET_KIND_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as u8,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal cleanup missing target kind slot",
+      ))
+    }
+  };
+
+  let target_id = match target_kind {
+    0 => web_events::EventTargetId::Window,
+    1 => web_events::EventTargetId::Document,
+    2 => match slots
+      .get(ABORT_SIGNAL_CLEANUP_TARGET_ID_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Number(n) if n.is_finite() && n >= 0.0 => {
+        web_events::EventTargetId::Node(dom2::NodeId::from_index(n as usize))
+      }
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "AbortSignal cleanup missing node id slot",
+        ))
+      }
+    },
+    3 => match slots
+      .get(ABORT_SIGNAL_CLEANUP_TARGET_ID_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::String(s) => {
+        let raw = scope.heap().get_string(s)?.to_utf8_lossy();
+        let id = raw.parse::<u64>().map_err(|_| {
+          VmError::InvariantViolation("AbortSignal cleanup has invalid opaque target id")
+        })?;
+        web_events::EventTargetId::Opaque(id)
+      }
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "AbortSignal cleanup missing opaque target id slot",
+        ))
+      }
+    },
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal cleanup has unknown target kind",
+      ))
+    }
+  };
+
+  let type_s = match slots
+    .get(ABORT_SIGNAL_CLEANUP_TYPE_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal cleanup missing type slot",
+      ))
+    }
+  };
+  let type_name = scope.heap().get_string(type_s)?.to_utf8_lossy();
+
+  let listener_id_s = match slots
+    .get(ABORT_SIGNAL_CLEANUP_LISTENER_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AbortSignal cleanup missing listener id slot",
+      ))
+    }
+  };
+  let listener_raw = scope.heap().get_string(listener_id_s)?.to_utf8_lossy();
+  let listener_id = web_events::ListenerId::new(listener_raw.parse::<u64>().map_err(|_| {
+    VmError::InvariantViolation("AbortSignal cleanup has invalid listener id")
+  })?);
+
+  let capture = match slots
+    .get(ABORT_SIGNAL_CLEANUP_CAPTURE_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Bool(b) => b,
+    _ => false,
+  };
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "AbortSignal cleanup missing WindowRealm user data",
+    ));
+  };
+  let Some(document_obj) = data.document_obj else {
+    return Err(VmError::InvariantViolation(
+      "AbortSignal cleanup missing document object",
+    ));
+  };
+
+  let mut dom_ptr = if let Some(platform) = data.dom_platform.as_ref() {
+    let dom_source_id = platform.dom_source_id();
+    dom_for_source(dom_source_id).ok_or_else(|| {
+      VmError::InvariantViolation("AbortSignal cleanup missing DOM for source id")
+    })?
+  } else {
+    NonNull::from(&mut data.events_dom_fallback)
+  };
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let removed = dom
+    .events_mut()
+    .remove_event_listener(target_id, &type_name, listener_id, capture);
+  if removed {
+    remove_listener_root_if_unused(scope, document_obj, dom.events(), listener_id, None)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn event_target_add_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7110,6 +7290,7 @@ fn event_target_add_event_listener_native(
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
+  scope.push_root(Value::String(type_string))?;
   let type_name = scope
     .heap()
     .get_string(type_string)
@@ -7123,13 +7304,42 @@ fn event_target_add_event_listener_native(
   };
 
   let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let mut signal_obj: Option<GcObject> = None;
+  if let Value::Object(options_obj) = options_value {
+    let signal_key = alloc_key(scope, "signal")?;
+    if let Some(signal_value) = scope
+      .heap()
+      .object_get_own_data_property_value(options_obj, &signal_key)?
+    {
+      match signal_value {
+        Value::Undefined | Value::Null => {}
+        Value::Object(obj) => {
+          if !is_branded_abort_signal(scope, obj)? {
+            return Err(VmError::TypeError(
+              "EventTarget.addEventListener: options.signal must be an AbortSignal",
+            ));
+          }
+          if abort_signal_is_aborted(scope, obj)? {
+            // Per spec, listeners added with an already-aborted signal are ignored.
+            return Ok(Value::Undefined);
+          }
+          signal_obj = Some(obj);
+        }
+        _ => {
+          return Err(VmError::TypeError(
+            "EventTarget.addEventListener: options.signal must be an AbortSignal",
+          ))
+        }
+      }
+    }
+  }
   let options = parse_add_event_listener_options(scope, options_value)?;
   let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_mut() };
-  dom
+  let added = dom
     .events_mut()
     .add_event_listener(resolved.target_id, &type_name, listener_id, options);
 
@@ -7138,6 +7348,83 @@ fn event_target_add_event_listener_native(
   let listener_key = listener_id_property_key(scope, listener_id)?;
   scope.push_root(callback)?;
   scope.define_property(roots, listener_key, data_desc(callback))?;
+
+  if added {
+    if let Some(signal_obj) = signal_obj {
+      // Attach an abort algorithm that removes this listener when the signal is aborted.
+      //
+      // We approximate the DOM abort-algorithm list by registering an internal `{ once: true }`
+      // capture listener on the signal's `abort` event. Capture ensures the cleanup runs before
+      // bubble listeners, closer to the spec's "run abort algorithms, then dispatch" ordering.
+      let abort_cleanup_call_id = event_target_abort_cleanup_call_id_from_callee(scope, callee)?;
+
+      // Resolve the AbortSignal as an EventTarget so we register in the correct listener registry.
+      scope.push_root(Value::Object(signal_obj))?;
+      let signal_target = resolve_event_target(vm, scope, callee, signal_obj)?;
+      let ResolvedEventTarget {
+        resolved: signal_resolved,
+        dom_ptr: mut signal_dom_ptr,
+        listener_roots_owner: signal_roots_owner,
+        ..
+      } = signal_target;
+
+      let (target_kind_slot, target_id_slot) = match resolved.target_id {
+        web_events::EventTargetId::Window => (Value::Number(0.0), Value::Undefined),
+        web_events::EventTargetId::Document => (Value::Number(1.0), Value::Undefined),
+        web_events::EventTargetId::Node(node_id) => {
+          (Value::Number(2.0), Value::Number(node_id.index() as f64))
+        }
+        web_events::EventTargetId::Opaque(id) => {
+          let id_s = scope.alloc_string(&id.to_string())?;
+          scope.push_root(Value::String(id_s))?;
+          (Value::Number(3.0), Value::String(id_s))
+        }
+      };
+
+      let listener_id_s = scope.alloc_string(&listener_id.get().to_string())?;
+      scope.push_root(Value::String(listener_id_s))?;
+
+      let abort_func_name = scope.alloc_string("__fastrender_abort_signal_listener_cleanup")?;
+      scope.push_root(Value::String(abort_func_name))?;
+
+      let abort_slots = [
+        target_kind_slot,
+        target_id_slot,
+        Value::String(type_string),
+        Value::String(listener_id_s),
+        Value::Bool(options.capture),
+      ];
+      let abort_func = scope.alloc_native_function_with_slots(
+        abort_cleanup_call_id,
+        None,
+        abort_func_name,
+        0,
+        &abort_slots,
+      )?;
+
+      // Register the abort cleanup listener.
+      let abort_listener_id = web_events::ListenerId::from_gc_object(abort_func);
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+      // lifetime of the associated host document.
+      let signal_dom = unsafe { signal_dom_ptr.as_mut() };
+      signal_dom.events_mut().add_event_listener(
+        signal_resolved.target_id,
+        "abort",
+        abort_listener_id,
+        web_events::AddEventListenerOptions {
+          capture: true,
+          once: true,
+          passive: false,
+        },
+      );
+
+      // Root the abort cleanup callback while it's registered.
+      let roots = get_or_create_event_listener_roots(scope, signal_roots_owner)?;
+      let key = listener_id_property_key(scope, abort_listener_id)?;
+      scope.push_root(Value::Object(abort_func))?;
+      scope.define_property(roots, key, data_desc(Value::Object(abort_func)))?;
+    }
+  }
 
   Ok(Value::Undefined)
 }
@@ -13043,14 +13330,25 @@ fn init_window_globals(
   // the rest of the engine.
   let add_event_listener_call_id =
     vm.register_native_call(event_target_add_event_listener_native)?;
+  let abort_cleanup_call_id = vm.register_native_call(abort_signal_listener_cleanup_native)?;
   let add_event_listener_name = scope.alloc_string("addEventListener")?;
   scope.push_root(Value::String(add_event_listener_name))?;
   // EventTarget method native slots:
   // - slot 0: default `this` for global functions (see `event_target_resolve_this`)
   // - slot 1: the realm's global object (used to find `document` for non-DOM EventTargets like
   //   `AbortSignal` / `new EventTarget()`).
-  let event_target_global_slots = [Value::Object(global), Value::Object(global)];
-  let event_target_method_slots = [Value::Undefined, Value::Object(global)];
+  // - slot 2: native call id for the internal AbortSignal cleanup callback used by
+  //   `addEventListener(..., { signal })`.
+  let event_target_global_slots = [
+    Value::Object(global),
+    Value::Object(global),
+    Value::Number(abort_cleanup_call_id.0 as f64),
+  ];
+  let event_target_method_slots = [
+    Value::Undefined,
+    Value::Object(global),
+    Value::Number(abort_cleanup_call_id.0 as f64),
+  ];
   let add_event_listener_global_func = scope.alloc_native_function_with_slots(
     add_event_listener_call_id,
     None,
