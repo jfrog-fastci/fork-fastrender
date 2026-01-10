@@ -273,6 +273,26 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "values",
+    1,
+    builtins::object_values,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "entries",
+    1,
+    builtins::object_entries,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "assign",
     2,
     builtins::object_assign,

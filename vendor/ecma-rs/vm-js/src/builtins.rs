@@ -530,6 +530,171 @@ pub fn object_keys(
   Ok(Value::Object(array))
 }
 
+pub fn object_values(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  // Snapshot enumerable own string keys.
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut keys: Vec<crate::GcString> = Vec::new();
+  keys
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let PropertyKey::String(key_str) = key else {
+      continue;
+    };
+    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+      continue;
+    };
+    if desc.enumerable {
+      keys.push(key_str);
+    }
+  }
+
+  let len_u32 = u32::try_from(keys.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, len_u32)?;
+  scope.push_root(Value::Object(array))?;
+
+  for (i, key_str) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(obj))?;
+    iter_scope.push_root(Value::Object(array))?;
+    iter_scope.push_root(Value::String(key_str))?;
+
+    // Allocate the target index key before calling `Get` so any GC triggered by the `Get`/getter
+    // sees the index key as rooted.
+    let idx_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+
+    let value = iter_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      PropertyKey::from_string(key_str),
+      Value::Object(obj),
+    )?;
+
+    iter_scope.define_property(array, idx_key, data_desc(value, true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
+pub fn object_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  scope.push_root(Value::Object(obj))?;
+
+  // Snapshot enumerable own string keys.
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+  let mut keys: Vec<crate::GcString> = Vec::new();
+  keys
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let PropertyKey::String(key_str) = key else {
+      continue;
+    };
+    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
+      continue;
+    };
+    if desc.enumerable {
+      keys.push(key_str);
+    }
+  }
+
+  let len_u32 = u32::try_from(keys.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, len_u32)?;
+  scope.push_root(Value::Object(array))?;
+
+  for (i, key_str) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(obj))?;
+    iter_scope.push_root(Value::Object(array))?;
+    iter_scope.push_root(Value::String(key_str))?;
+
+    let pair = create_array_object(vm, &mut iter_scope, 2)?;
+    iter_scope.push_root(Value::Object(pair))?;
+
+    let zero_s = iter_scope.alloc_string("0")?;
+    iter_scope.push_root(Value::String(zero_s))?;
+    let one_s = iter_scope.alloc_string("1")?;
+    iter_scope.push_root(Value::String(one_s))?;
+
+    // Allocate the destination index key before calling `Get` so any GC triggered by the
+    // `Get`/getter sees it as rooted.
+    let idx_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+
+    let value = iter_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      PropertyKey::from_string(key_str),
+      Value::Object(obj),
+    )?;
+
+    iter_scope.define_property(
+      pair,
+      PropertyKey::from_string(zero_s),
+      data_desc(Value::String(key_str), true, true, true),
+    )?;
+    iter_scope.define_property(
+      pair,
+      PropertyKey::from_string(one_s),
+      data_desc(value, true, true, true),
+    )?;
+
+    iter_scope.define_property(
+      array,
+      idx_key,
+      data_desc(Value::Object(pair), true, true, true),
+    )?;
+  }
+
+  Ok(Value::Object(array))
+}
+
 pub fn object_assign(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

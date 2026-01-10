@@ -70,6 +70,24 @@ fn object_prototype_has_own_property_supports_symbol_keys() {
 }
 
 #[test]
+fn object_entries_and_values_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={a:1,b:2}; var v=Object.values(o); var e=Object.entries(o);
+         var ok = v.length===2 && v[0]===1 && v[1]===2
+           && e.length===2 && e[0][0]==="a" && e[0][1]===1 && e[1][0]==="b" && e[1][1]===2
+           && Object.entries("ab")[1][1]==="b";
+         var s=Symbol("x"); var p={}; p[s]=1;
+         ok = ok && Object.entries(p).length===0 && Object.values(p).length===0;
+         var threw=false; try { Object.values(null); } catch(e) { threw = e.name === "TypeError"; }
+         ok && threw"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_has_own_property_works_on_typed_arrays() {
   let mut rt = new_runtime();
   let value = rt
