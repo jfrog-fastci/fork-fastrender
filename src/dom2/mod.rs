@@ -23,6 +23,7 @@ mod html_parse;
 pub mod import;
 mod js_shims;
 mod mutation;
+mod mutation_observer;
 mod scripting_parser;
 mod serialization;
 mod shadow_dom;
@@ -32,6 +33,9 @@ pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
 
 pub use scripting_parser::parse_html_with_scripting_dom2;
+pub use mutation_observer::{
+  MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord, MutationRecordType,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -163,6 +167,7 @@ pub struct Document {
   scripting_enabled: bool,
   mutations: MutationLog,
   mutation_generation: u64,
+  mutation_observers: mutation_observer::MutationObserverRegistry,
 }
 
 impl Clone for Document {
@@ -178,6 +183,7 @@ impl Clone for Document {
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
+      mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
     }
   }
 }
@@ -325,6 +331,7 @@ impl Document {
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
+      mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
     }
   }
 
@@ -389,6 +396,7 @@ impl Document {
       scripting_enabled,
       mutations: MutationLog::default(),
       mutation_generation: 0,
+      mutation_observers: mutation_observer::MutationObserverRegistry::new(0),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -733,6 +741,7 @@ impl Document {
       script_already_started: false,
       mathml_annotation_xml_integration_point: false,
     });
+    self.mutation_observers.on_node_added();
     if let Some(parent_id) = parent {
       self.nodes[parent_id.0].children.push(id);
     }

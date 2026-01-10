@@ -93,7 +93,7 @@ impl Document {
     value: &str,
   ) -> Result<bool, DomError> {
     let node_id = node;
-    let changed = {
+    let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;
       let is_script = is_html_script_element(&node.kind);
       let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
@@ -107,22 +107,24 @@ impl Document {
         if existing == value {
           return Ok(false);
         }
+        let old_value = Some(existing.clone());
         existing.clear();
         existing.push_str(value);
-        true
+        (true, old_value)
       } else {
         attrs.push((name.to_string(), value.to_string()));
         // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
         if is_script && name.eq_ignore_ascii_case("async") {
           node.script_force_async = false;
         }
-        true
+        (true, None)
       }
     };
 
     if changed {
       self.record_attribute_mutation(node_id);
       self.bump_mutation_generation();
+      let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
     }
 
     Ok(changed)
@@ -130,7 +132,7 @@ impl Document {
 
   pub fn remove_attribute(&mut self, node: NodeId, name: &str) -> Result<bool, DomError> {
     let node_id = node;
-    let changed = {
+    let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;
       let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
         return Err(DomError::InvalidNodeType);
@@ -140,16 +142,18 @@ impl Document {
         .iter()
         .position(|(k, _)| name_matches(k.as_str(), name, is_html))
       {
+        let old_value = Some(attrs[idx].1.clone());
         attrs.remove(idx);
-        true
+        (true, old_value)
       } else {
-        false
+        (false, None)
       }
     };
 
     if changed {
       self.record_attribute_mutation(node_id);
       self.bump_mutation_generation();
+      let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
     }
 
     Ok(changed)
@@ -165,14 +169,7 @@ impl Document {
       let node_id = node;
       let changed = {
         let node = self.node_checked_mut(node_id)?;
-        let is_html_script = match &node.kind {
-          NodeKind::Element {
-            tag_name,
-            namespace,
-            ..
-          } => tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace),
-          _ => false,
-        };
+        let is_script = is_html_script_element(&node.kind);
         let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
           return Err(DomError::InvalidNodeType);
         };
@@ -183,22 +180,17 @@ impl Document {
           false
         } else {
           attrs.push((name.to_string(), String::new()));
-          if is_html_script && name.eq_ignore_ascii_case("async") {
+          // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
+          if is_script && name.eq_ignore_ascii_case("async") {
             node.script_force_async = false;
           }
           true
         }
       };
       if changed {
-        // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
-        if name.eq_ignore_ascii_case("async") {
-          let node = self.node_checked_mut(node_id).expect("node must exist");
-          if is_html_script_element(&node.kind) {
-            node.script_force_async = false;
-          }
-        }
         self.record_attribute_mutation(node_id);
         self.bump_mutation_generation();
+        let _ = self.queue_mutation_record_attributes(node_id, name, None);
       }
 
       Ok(changed)

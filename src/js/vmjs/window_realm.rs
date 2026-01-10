@@ -1137,6 +1137,7 @@ const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
@@ -1219,10 +1220,25 @@ const ELEMENT_QUERY_SELECTOR_ALL_KEY: &str = "__fastrender_element_query_selecto
 const ELEMENT_MATCHES_KEY: &str = "__fastrender_element_matches";
 const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
 
+// Must match `window_timers::INTERNAL_QUEUE_MICROTASK_KEY`, but duplicated here to avoid a module
+// dependency cycle (`window_timers` depends on `window_realm`).
+const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
+
+const MUTATION_OBSERVER_ID_KEY: &str = "__fastrender_mutation_observer_id";
+const MUTATION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_mutation_observer_callback";
+const MUTATION_OBSERVER_SOURCE_ID_KEY: &str = "__fastrender_mutation_observer_source_id";
+const MUTATION_OBSERVER_DOCUMENT_KEY: &str = "__fastrender_mutation_observer_document";
+const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_registry";
+const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
+
+const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
+
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 static NEXT_DOM_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACTIVE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
+
+static NEXT_MUTATION_OBSERVER_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
   static CURRENT_SCRIPT_SOURCES: RefCell<HashMap<u64, CurrentScriptStateHandle>> =
@@ -2975,6 +2991,20 @@ fn get_or_create_node_wrapper(
       let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
       scope.define_property(class_list, source_id_key, data_desc(dom_source_id_value))?;
 
+      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        class_list,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            writable: false,
+          },
+        },
+      )?;
+
       let add_key = alloc_key(scope, "add")?;
       scope.define_property(class_list, add_key, data_desc(Value::Object(add)))?;
       let remove_key = alloc_key(scope, "remove")?;
@@ -3063,6 +3093,20 @@ fn get_or_create_node_wrapper(
 
       let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
       scope.define_property(style, source_id_key, data_desc(dom_source_id_value))?;
+
+      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        style,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            writable: false,
+          },
+        },
+      )?;
 
       let get_property_value_key = alloc_key(scope, "getPropertyValue")?;
       scope.define_property(
@@ -3473,6 +3517,88 @@ fn sync_cached_child_nodes_for_node_id(
     return Ok(());
   };
   sync_cached_child_nodes_for_wrapper(vm, scope, dom_source_id, document_obj, wrapper_obj, node_id)
+}
+
+fn document_window_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+      .and_then(|v| match v {
+        Value::Object(obj) => Some(obj),
+        _ => None,
+      }),
+  )
+}
+
+fn queue_mutation_observer_microtask(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+) -> Result<(), VmError> {
+  if !crate::js::runtime::has_current_event_loop() {
+    return Ok(());
+  }
+
+  let Some(global) = document_window_from_document(scope, document_obj)? else {
+    return Ok(());
+  };
+
+  // Find the internal queueMicrotask implementation (preferred) or fall back to the user-visible
+  // `queueMicrotask` binding.
+  let queue_microtask = {
+    scope.push_root(Value::Object(global))?;
+    let key = alloc_key(scope, INTERNAL_QUEUE_MICROTASK_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)?
+      .or_else(|| {
+        let key = alloc_key(scope, "queueMicrotask").ok()?;
+        scope.heap().object_get_own_data_property_value(global, &key).ok().flatten()
+      })
+      .unwrap_or(Value::Undefined)
+  };
+
+  if !matches!(queue_microtask, Value::Object(_)) || !scope.heap().is_callable(queue_microtask)? {
+    return Ok(());
+  }
+
+  let notify = {
+    scope.push_root(Value::Object(document_obj))?;
+    let notify_key = alloc_key(scope, MUTATION_OBSERVER_NOTIFY_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &notify_key)?
+      .unwrap_or(Value::Undefined)
+  };
+
+  if !matches!(notify, Value::Object(_)) || !scope.heap().is_callable(notify)? {
+    return Ok(());
+  }
+
+  // This is an internal scheduling primitive; don't let failures (missing queueMicrotask binding,
+  // full microtask queue, etc) perturb DOM mutations.
+  let _ = vm.call_with_host(scope, hooks, queue_microtask, Value::Undefined, &[notify]);
+  Ok(())
+}
+
+fn maybe_queue_mutation_observer_microtask(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+  dom: &mut dom2::Document,
+) -> Result<(), VmError> {
+  if dom.take_mutation_observer_microtask_needed() {
+    queue_mutation_observer_microtask(vm, scope, hooks, document_obj)?;
+  }
+  Ok(())
 }
 
 fn document_document_element_get_native(
@@ -4996,6 +5122,676 @@ fn event_target_constructor_construct_native(
   Ok(Value::Object(obj))
 }
 
+fn mutation_observer_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "MutationObserver constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn mutation_observer_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "MutationObserver constructor requires a callable callback",
+    ));
+  }
+
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let id = NEXT_MUTATION_OBSERVER_ID.fetch_add(1, Ordering::Relaxed);
+
+  let id_key = alloc_key(scope, MUTATION_OBSERVER_ID_KEY)?;
+  scope.define_property(
+    obj,
+    id_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(id as f64),
+        writable: false,
+      },
+    },
+  )?;
+
+  let callback_key = alloc_key(scope, MUTATION_OBSERVER_CALLBACK_KEY)?;
+  scope.define_property(
+    obj,
+    callback_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: callback,
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn mutation_observer_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<u64, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let id_key = alloc_key(scope, MUTATION_OBSERVER_ID_KEY)?;
+  match scope.heap().object_get_own_data_property_value(obj, &id_key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Ok(n as u64),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn mutation_observer_source_id_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<u64>, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, MUTATION_OBSERVER_SOURCE_ID_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(obj, &key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => Some(n as u64),
+    _ => None,
+  })
+}
+
+fn mutation_observer_document_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(obj))?;
+  let key = alloc_key(scope, MUTATION_OBSERVER_DOCUMENT_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(obj, &key)? {
+    Some(Value::Object(doc)) => Some(doc),
+    _ => None,
+  })
+}
+
+fn mutation_observer_parse_options(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  options_value: Value,
+) -> Result<dom2::MutationObserverInit, VmError> {
+  let options_obj = match options_value {
+    Value::Undefined => None,
+    Value::Object(obj) => Some(obj),
+    _ => {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe: options must be an object",
+      ));
+    }
+  };
+
+  let mut options = dom2::MutationObserverInit::default();
+
+  if let Some(obj) = options_obj {
+    scope.push_root(Value::Object(obj))?;
+
+    let get_bool_opt = |vm: &mut Vm,
+                        scope: &mut Scope<'_>,
+                        obj: GcObject,
+                        name: &str|
+     -> Result<Option<bool>, VmError> {
+      let key = alloc_key(scope, name)?;
+      let v = vm.get(scope, obj, key)?;
+      if matches!(v, Value::Undefined) {
+        return Ok(None);
+      }
+      Ok(Some(scope.heap().to_boolean(v)?))
+    };
+
+    options.child_list = get_bool_opt(vm, scope, obj, "childList")?.unwrap_or(false);
+    let mut attributes = get_bool_opt(vm, scope, obj, "attributes")?;
+    let mut character_data = get_bool_opt(vm, scope, obj, "characterData")?;
+    options.subtree = get_bool_opt(vm, scope, obj, "subtree")?.unwrap_or(false);
+    let attribute_old_value = get_bool_opt(vm, scope, obj, "attributeOldValue")?;
+    let character_data_old_value = get_bool_opt(vm, scope, obj, "characterDataOldValue")?;
+
+    let attr_filter_key = alloc_key(scope, "attributeFilter")?;
+    let filter_value = vm.get(scope, obj, attr_filter_key)?;
+    let mut attribute_filter: Option<Vec<String>> = None;
+    if !matches!(filter_value, Value::Undefined) {
+      let Value::Object(filter_obj) = filter_value else {
+        return Err(VmError::TypeError(
+          "MutationObserver.observe: attributeFilter must be an array",
+        ));
+      };
+      scope.push_root(Value::Object(filter_obj))?;
+
+      let length_key = alloc_key(scope, "length")?;
+      let length_value = vm.get(scope, filter_obj, length_key)?;
+      let len = match length_value {
+        Value::Number(n) if n.is_finite() && n >= 0.0 => (n.trunc() as usize).min(1024),
+        _ => 0,
+      };
+
+      let mut out: Vec<String> = Vec::with_capacity(len.min(32));
+      for idx in 0..len {
+        let idx_key = alloc_key(scope, &idx.to_string())?;
+        let v = vm.get(scope, filter_obj, idx_key)?;
+        let s = scope.heap_mut().to_string(v)?;
+        let text = scope
+          .heap()
+          .get_string(s)
+          .map(|s| s.to_utf8_lossy())
+          .unwrap_or_default();
+        out.push(text);
+      }
+      attribute_filter = Some(out);
+    }
+
+    // DOM: attributeOldValue / attributeFilter imply `attributes` when the `attributes` member is
+    // absent. Similarly, `characterDataOldValue` implies `characterData` when absent.
+    if (attribute_old_value.is_some() || attribute_filter.is_some()) && attributes.is_none() {
+      attributes = Some(true);
+    }
+    if character_data_old_value.is_some() && character_data.is_none() {
+      character_data = Some(true);
+    }
+
+    options.attributes = attributes.unwrap_or(false);
+    options.character_data = character_data.unwrap_or(false);
+    options.attribute_old_value = attribute_old_value.unwrap_or(false);
+    options.character_data_old_value = character_data_old_value.unwrap_or(false);
+    options.attribute_filter = attribute_filter;
+  }
+
+  if !options.child_list && !options.attributes && !options.character_data {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe: at least one of childList, attributes, or characterData must be true",
+    ));
+  }
+  if options.attribute_old_value && !options.attributes {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe: attributeOldValue requires attributes",
+    ));
+  }
+  if options.attribute_filter.is_some() && !options.attributes {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe: attributeFilter requires attributes",
+    ));
+  }
+  if options.character_data_old_value && !options.character_data {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe: characterDataOldValue requires characterData",
+    ));
+  }
+
+  Ok(options)
+}
+
+fn mutation_observer_registry_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, MUTATION_OBSERVER_REGISTRY_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => {
+      let registry = scope.alloc_object()?;
+      scope.push_root(Value::Object(registry))?;
+      scope.define_property(
+        document_obj,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(registry),
+            writable: false,
+          },
+        },
+      )?;
+      Ok(registry)
+    }
+  }
+}
+
+fn alloc_node_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  nodes: &[NodeId],
+) -> Result<GcObject, VmError> {
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, node_id) in nodes.iter().copied().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(nodes.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(array)
+}
+
+fn alloc_mutation_record_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  record: &dom2::MutationRecord,
+) -> Result<GcObject, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let type_key = alloc_key(scope, "type")?;
+  let type_s = scope.alloc_string(record.type_.as_str())?;
+  scope.push_root(Value::String(type_s))?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_s)))?;
+
+  let target_key = alloc_key(scope, "target")?;
+  let target_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, record.target)?;
+  scope.define_property(obj, target_key, data_desc(target_wrapper))?;
+
+  let added_key = alloc_key(scope, "addedNodes")?;
+  let added = alloc_node_array(vm, scope, document_obj, &record.added_nodes)?;
+  scope.define_property(obj, added_key, data_desc(Value::Object(added)))?;
+
+  let removed_key = alloc_key(scope, "removedNodes")?;
+  let removed = alloc_node_array(vm, scope, document_obj, &record.removed_nodes)?;
+  scope.define_property(obj, removed_key, data_desc(Value::Object(removed)))?;
+
+  let prev_key = alloc_key(scope, "previousSibling")?;
+  let prev = match record.previous_sibling {
+    Some(id) => get_or_create_node_wrapper(vm, scope, document_obj, id)?,
+    None => Value::Null,
+  };
+  scope.define_property(obj, prev_key, data_desc(prev))?;
+
+  let next_key = alloc_key(scope, "nextSibling")?;
+  let next = match record.next_sibling {
+    Some(id) => get_or_create_node_wrapper(vm, scope, document_obj, id)?,
+    None => Value::Null,
+  };
+  scope.define_property(obj, next_key, data_desc(next))?;
+
+  let attr_name_key = alloc_key(scope, "attributeName")?;
+  let attr_name = match record.attribute_name.as_deref() {
+    Some(name) => {
+      let s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    }
+    None => Value::Null,
+  };
+  scope.define_property(obj, attr_name_key, data_desc(attr_name))?;
+
+  let attr_ns_key = alloc_key(scope, "attributeNamespace")?;
+  scope.define_property(obj, attr_ns_key, data_desc(Value::Null))?;
+
+  let old_value_key = alloc_key(scope, "oldValue")?;
+  let old_value = match record.old_value.as_deref() {
+    Some(value) => {
+      let s = scope.alloc_string(value)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    }
+    None => Value::Null,
+  };
+  scope.define_property(obj, old_value_key, data_desc(old_value))?;
+
+  Ok(obj)
+}
+
+fn alloc_mutation_records_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  records: &[dom2::MutationRecord],
+) -> Result<GcObject, VmError> {
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, record) in records.iter().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let obj = alloc_mutation_record_object(vm, scope, document_obj, record)?;
+    scope.define_property(array, key, data_desc(Value::Object(obj)))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(records.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(array)
+}
+
+fn mutation_observer_observe_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = mutation_observer_id_from_obj(scope, observer_obj)?;
+
+  let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(target_obj) = target_value else {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe: target must be a Node",
+    ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe: target must be a Node",
+      ));
+    }
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe requires a DOM-backed node",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "MutationObserver.observe: target must be a Node",
+      ));
+    }
+  };
+
+  let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let options = mutation_observer_parse_options(vm, scope, options_value)?;
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "MutationObserver.observe requires a DOM-backed node",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let target_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("MutationObserver.observe requires a DOM-backed node")
+  })?;
+
+  if let Err(err) = dom.mutation_observer_observe(observer_id, target_id, options) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  // Ensure the observer stays alive while it is observing.
+  let registry = mutation_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+  scope.push_root(Value::Object(observer_obj))?;
+  let key = alloc_key(scope, &observer_id.to_string())?;
+  scope.define_property(registry, key, data_desc(Value::Object(observer_obj)))?;
+
+  // Remember which document this observer is associated with so `disconnect()`/`takeRecords()` can
+  // find the right `dom2::Document`.
+  let source_id_key = alloc_key(scope, MUTATION_OBSERVER_SOURCE_ID_KEY)?;
+  scope.define_property(
+    observer_obj,
+    source_id_key,
+    data_desc(Value::Number(source_id as f64)),
+  )?;
+  let doc_key = alloc_key(scope, MUTATION_OBSERVER_DOCUMENT_KEY)?;
+  scope.define_property(observer_obj, doc_key, data_desc(Value::Object(document_obj)))?;
+
+  Ok(Value::Undefined)
+}
+
+fn mutation_observer_disconnect_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = mutation_observer_id_from_obj(scope, observer_obj)?;
+
+  let Some(source_id) = mutation_observer_source_id_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  let Some(document_obj) = mutation_observer_document_from_obj(scope, observer_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  if let Some(mut dom_ptr) = dom_for_source(source_id) {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom.mutation_observer_disconnect(observer_id);
+  }
+
+  if let Ok(registry) = mutation_observer_registry_from_document(scope, document_obj) {
+    scope.push_root(Value::Object(registry))?;
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    scope.define_property(registry, key, data_desc(Value::Undefined))?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn mutation_observer_take_records_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(observer_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let observer_id = mutation_observer_id_from_obj(scope, observer_obj)?;
+
+  let alloc_empty_array = |vm: &mut Vm, scope: &mut Scope<'_>| -> Result<GcObject, VmError> {
+    let array = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(array))?;
+    if let Some(intrinsics) = vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+    }
+    let length_key = alloc_key(scope, "length")?;
+    scope.define_property(
+      array,
+      length_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      },
+    )?;
+    Ok(array)
+  };
+
+  let Some(source_id) = mutation_observer_source_id_from_obj(scope, observer_obj)? else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+  let Some(document_obj) = mutation_observer_document_from_obj(scope, observer_obj)? else {
+    let empty = alloc_empty_array(vm, scope)?;
+    return Ok(Value::Object(empty));
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    let empty = alloc_mutation_records_array(vm, scope, document_obj, &[])?;
+    return Ok(Value::Object(empty));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let records = dom.mutation_observer_take_records(observer_id);
+  let array = alloc_mutation_records_array(vm, scope, document_obj, &records)?;
+  Ok(Value::Object(array))
+}
+
+fn mutation_observer_notify_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let document_obj = match slots
+    .get(MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let deliveries = dom.mutation_observer_take_deliveries();
+  if deliveries.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let registry = mutation_observer_registry_from_document(scope, document_obj)?;
+  scope.push_root(Value::Object(registry))?;
+
+  for (observer_id, records) in deliveries {
+    if records.is_empty() {
+      continue;
+    }
+
+    let key = alloc_key(scope, &observer_id.to_string())?;
+    let observer_value = scope
+      .heap()
+      .object_get_own_data_property_value(registry, &key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(observer_obj) = observer_value else {
+      continue;
+    };
+
+    let callback_key = alloc_key(scope, MUTATION_OBSERVER_CALLBACK_KEY)?;
+    let callback = scope
+      .heap()
+      .object_get_own_data_property_value(observer_obj, &callback_key)?
+      .unwrap_or(Value::Undefined);
+    if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
+      continue;
+    }
+
+    let records_array = alloc_mutation_records_array(vm, scope, document_obj, &records)?;
+    let args = [
+      Value::Object(records_array),
+      Value::Object(observer_obj),
+    ];
+    // Per web platform behavior, exceptions from mutation observer callbacks should not abort the
+    // checkpoint.
+    let _ = vm.call_with_host(scope, hooks, callback, Value::Object(observer_obj), &args);
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn event_target_default_this_from_callee(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -6355,7 +7151,7 @@ fn node_append_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6365,6 +7161,19 @@ fn node_append_child_native(
     return Err(VmError::TypeError(
       "Node.appendChild must be called on a node object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.appendChild must be called on a node object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -6500,6 +7309,8 @@ fn node_append_child_native(
     if is_html_script_element(dom, parent_node_id) {
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
+
+    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -6509,7 +7320,7 @@ fn node_insert_before_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6519,6 +7330,19 @@ fn node_insert_before_native(
     return Err(VmError::TypeError(
       "Node.insertBefore must be called on a node object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.insertBefore must be called on a node object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -6702,6 +7526,8 @@ fn node_insert_before_native(
     if is_html_script_element(dom, parent_node_id) {
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
+
+    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
   }
 
   Ok(new_child_value)
@@ -6711,7 +7537,7 @@ fn node_remove_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6721,6 +7547,19 @@ fn node_remove_child_native(
     return Err(VmError::TypeError(
       "Node.removeChild must be called on a node object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.removeChild must be called on a node object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -6821,6 +7660,8 @@ fn node_remove_child_native(
     if is_html_script_element(dom, parent_node_id) {
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
+
+    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -6830,7 +7671,7 @@ fn node_replace_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6840,6 +7681,19 @@ fn node_replace_child_native(
     return Err(VmError::TypeError(
       "Node.replaceChild must be called on a node object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.replaceChild must be called on a node object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -7014,6 +7868,8 @@ fn node_replace_child_native(
     if is_html_script_element(dom, parent_node_id) {
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
+
+    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
   }
 
   Ok(old_child_value)
@@ -7530,7 +8386,7 @@ fn node_remove_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -7539,6 +8395,15 @@ fn node_remove_native(
     return Err(VmError::TypeError(
       "Node.remove must be called on a node object",
     ));
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -7582,8 +8447,8 @@ fn node_remove_native(
   }
 
   // Keep cached `childNodes` live NodeLists updated.
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
   sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, parent)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -8037,16 +8902,25 @@ fn element_class_name_get_native(
 }
 
 fn element_class_name_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(wrapper_obj) = this else {
     return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -8104,6 +8978,8 @@ fn element_class_name_set_native(
     .set_element_class_name(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::Undefined)
 }
 
@@ -8155,16 +9031,25 @@ fn element_id_get_native(
 }
 
 fn element_id_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(wrapper_obj) = this else {
     return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -8207,6 +9092,8 @@ fn element_id_set_native(
   dom
     .set_element_id(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -8286,13 +9173,22 @@ fn element_reflected_string_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
     return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
   };
 
   let attr = native_slot_string(scope, callee)?;
@@ -8319,6 +9215,7 @@ fn element_reflected_string_set_native(
     let base_url = current_base_url_for_dynamic_scripts(vm);
     prepare_dynamic_script(dom, node_id, &base_url)?;
   }
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -8353,16 +9250,25 @@ fn element_reflected_bool_get_native(
 }
 
 fn element_reflected_bool_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
     return Ok(Value::Undefined);
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
   };
 
   let attr = native_slot_string(scope, callee)?;
@@ -8397,6 +9303,8 @@ fn element_reflected_bool_set_native(
   if let Err(err) = dom.set_bool_attribute(node_id, &attr, present) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -8788,10 +9696,10 @@ fn css_style_get_property_value_native(
 }
 
 fn css_style_set_property_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8807,6 +9715,15 @@ fn css_style_set_property_native(
     .object_get_own_data_property_value(style_obj, &source_id_key)?
   {
     Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
     _ => return Ok(Value::Undefined),
   };
   let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
@@ -8846,14 +9763,16 @@ fn css_style_set_property_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::Undefined)
 }
 
 fn css_style_remove_property_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8869,6 +9788,15 @@ fn css_style_remove_property_native(
     .object_get_own_data_property_value(style_obj, &source_id_key)?
   {
     Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::String(scope.alloc_string("")?)),
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
     _ => return Ok(Value::String(scope.alloc_string("")?)),
   };
   let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
@@ -8902,6 +9830,8 @@ fn css_style_remove_property_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::String(scope.alloc_string(&prev)?))
 }
 
@@ -8932,10 +9862,10 @@ fn css_style_named_get_native(
 }
 
 fn css_style_named_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
@@ -8945,6 +9875,16 @@ fn css_style_named_set_native(
       "CSSStyleDeclaration property setter must be called on a style object",
     ));
   };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
   let prop = native_slot_string(scope, callee)?;
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let source_id = match scope
@@ -8983,14 +9923,16 @@ fn css_style_named_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::Undefined)
 }
 
 fn element_class_list_add_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9004,6 +9946,19 @@ fn element_class_list_add_native(
   if args.is_empty() {
     return Ok(Value::Undefined);
   }
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.add must be called on a classList object",
+      ));
+    }
+  };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let source_id = match scope
@@ -9074,16 +10029,19 @@ fn element_class_list_add_native(
     .map_err(|_| VmError::TypeError("DOMTokenList.add must be called on a classList object"))?;
 
   match dom.class_list_add(node_id, &token_refs) {
-    Ok(_) => Ok(Value::Undefined),
+    Ok(_) => {
+      maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+      Ok(Value::Undefined)
+    }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   }
 }
 
 fn element_class_list_remove_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9097,6 +10055,19 @@ fn element_class_list_remove_native(
   if args.is_empty() {
     return Ok(Value::Undefined);
   }
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.remove must be called on a classList object",
+      ));
+    }
+  };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let source_id = match scope
@@ -9167,7 +10138,10 @@ fn element_class_list_remove_native(
     .map_err(|_| VmError::TypeError("DOMTokenList.remove must be called on a classList object"))?;
 
   match dom.class_list_remove(node_id, &token_refs) {
-    Ok(_) => Ok(Value::Undefined),
+    Ok(_) => {
+      maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+      Ok(Value::Undefined)
+    }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   }
 }
@@ -9240,10 +10214,10 @@ fn element_class_list_contains_native(
 }
 
 fn element_class_list_toggle_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9252,6 +10226,19 @@ fn element_class_list_toggle_native(
     return Err(VmError::TypeError(
       "DOMTokenList.toggle must be called on a classList object",
     ));
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.toggle must be called on a classList object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9323,17 +10310,21 @@ fn element_class_list_toggle_native(
     .node_id_from_index(node_index)
     .map_err(|_| VmError::TypeError("DOMTokenList.toggle must be called on a classList object"))?;
 
-  match dom.class_list_toggle(node_id, &token, force) {
-    Ok(result) => Ok(Value::Bool(result)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-  }
+  let result = match dom.class_list_toggle(node_id, &token, force) {
+    Ok(result) => result,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
+  Ok(Value::Bool(result))
 }
 
 fn element_class_list_replace_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9342,6 +10333,19 @@ fn element_class_list_replace_native(
     return Err(VmError::TypeError(
       "DOMTokenList.replace must be called on a classList object",
     ));
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.replace must be called on a classList object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9416,10 +10420,14 @@ fn element_class_list_replace_native(
     .node_id_from_index(node_index)
     .map_err(|_| VmError::TypeError("DOMTokenList.replace must be called on a classList object"))?;
 
-  match dom.class_list_replace(node_id, &token, &new_token) {
-    Ok(result) => Ok(Value::Bool(result)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-  }
+  let result = match dom.class_list_replace(node_id, &token, &new_token) {
+    Ok(result) => result,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
+  Ok(Value::Bool(result))
 }
 
 fn element_get_attribute_native(
@@ -9494,7 +10502,7 @@ fn element_set_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9503,6 +10511,19 @@ fn element_set_attribute_native(
     return Err(VmError::TypeError(
       "Element.setAttribute must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.setAttribute must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9567,6 +10588,7 @@ fn element_set_attribute_native(
     let base_url = current_base_url_for_dynamic_scripts(vm);
     prepare_dynamic_script(dom, node_id, &base_url)?;
   }
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9704,10 +10726,10 @@ fn element_inner_html_get_native(
 }
 
 fn element_inner_html_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9716,6 +10738,19 @@ fn element_inner_html_set_native(
     return Err(VmError::TypeError(
       "Element.innerHTML must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.innerHTML must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9767,6 +10802,8 @@ fn element_inner_html_set_native(
   if let Err(err) = dom.set_inner_html(node_id, &html) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9831,10 +10868,10 @@ fn element_outer_html_get_native(
 }
 
 fn element_outer_html_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9843,6 +10880,19 @@ fn element_outer_html_set_native(
     return Err(VmError::TypeError(
       "Element.outerHTML must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.outerHTML must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9895,14 +10945,16 @@ fn element_outer_html_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::Undefined)
 }
 
 fn element_insert_adjacent_html_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9911,6 +10963,19 @@ fn element_insert_adjacent_html_native(
     return Err(VmError::TypeError(
       "Element.insertAdjacentHTML must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentHTML must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -9971,14 +11036,16 @@ fn element_insert_adjacent_html_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
   Ok(Value::Undefined)
 }
 
 fn element_insert_adjacent_element_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -9987,6 +11054,19 @@ fn element_insert_adjacent_element_native(
     return Err(VmError::TypeError(
       "Element.insertAdjacentElement must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentElement must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -10074,18 +11154,22 @@ fn element_insert_adjacent_element_native(
     VmError::TypeError("Element.insertAdjacentElement requires an element argument")
   })?;
 
-  match dom.insert_adjacent_element(node_id, &position, child_node_id) {
-    Ok(Some(_)) => Ok(element_value),
-    Ok(None) => Ok(Value::Null),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
-  }
+  let result = match dom.insert_adjacent_element(node_id, &position, child_node_id) {
+    Ok(Some(_)) => element_value,
+    Ok(None) => Value::Null,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+
+  Ok(result)
 }
 
 fn element_insert_adjacent_text_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -10094,6 +11178,19 @@ fn element_insert_adjacent_text_native(
     return Err(VmError::TypeError(
       "Element.insertAdjacentText must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentText must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -10153,6 +11250,8 @@ fn element_insert_adjacent_text_native(
   if let Err(err) = dom.insert_adjacent_text(node_id, &position, &text) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
+
+  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -10818,6 +11917,66 @@ fn init_window_globals(
     },
   )?;
 
+  // Backreference to the realm's `window` global. This is used by internal helpers (for example
+  // mutation observer microtask scheduling) that need to reach the window from the document.
+  let document_window_key = alloc_key(&mut scope, DOCUMENT_WINDOW_KEY)?;
+  scope.define_property(
+    document_obj,
+    document_window_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(global),
+        writable: false,
+      },
+    },
+  )?;
+
+  let mutation_observer_registry = scope.alloc_object()?;
+  scope.push_root(Value::Object(mutation_observer_registry))?;
+  let mutation_observer_registry_key = alloc_key(&mut scope, MUTATION_OBSERVER_REGISTRY_KEY)?;
+  scope.define_property(
+    document_obj,
+    mutation_observer_registry_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(mutation_observer_registry),
+        writable: false,
+      },
+    },
+  )?;
+
+  let mutation_observer_notify_call_id = vm.register_native_call(mutation_observer_notify_native)?;
+  let mutation_observer_notify_name = scope.alloc_string("notify mutation observers")?;
+  scope.push_root(Value::String(mutation_observer_notify_name))?;
+  let mutation_observer_notify_func = scope.alloc_native_function_with_slots(
+    mutation_observer_notify_call_id,
+    None,
+    mutation_observer_notify_name,
+    0,
+    &[Value::Object(document_obj)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mutation_observer_notify_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mutation_observer_notify_func))?;
+  let mutation_observer_notify_key = alloc_key(&mut scope, MUTATION_OBSERVER_NOTIFY_KEY)?;
+  scope.define_property(
+    document_obj,
+    mutation_observer_notify_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(mutation_observer_notify_func),
+        writable: false,
+      },
+    },
+  )?;
   // `Document.referrer`.
   //
   // Many real-world scripts assume this is a string (even if empty) and call string methods on it.
@@ -12110,6 +13269,108 @@ fn init_window_globals(
       },
     )?;
   }
+
+  // MutationObserver constructor + prototype.
+  let mutation_observer_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(mutation_observer_proto))?;
+
+  let mutation_observer_observe_call_id = vm.register_native_call(mutation_observer_observe_native)?;
+  let mutation_observer_observe_name = scope.alloc_string("observe")?;
+  scope.push_root(Value::String(mutation_observer_observe_name))?;
+  let mutation_observer_observe_func = scope.alloc_native_function(
+    mutation_observer_observe_call_id,
+    None,
+    mutation_observer_observe_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mutation_observer_observe_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mutation_observer_observe_func))?;
+  let mutation_observer_observe_key = alloc_key(&mut scope, "observe")?;
+  scope.define_property(
+    mutation_observer_proto,
+    mutation_observer_observe_key,
+    data_desc(Value::Object(mutation_observer_observe_func)),
+  )?;
+
+  let mutation_observer_disconnect_call_id =
+    vm.register_native_call(mutation_observer_disconnect_native)?;
+  let mutation_observer_disconnect_name = scope.alloc_string("disconnect")?;
+  scope.push_root(Value::String(mutation_observer_disconnect_name))?;
+  let mutation_observer_disconnect_func = scope.alloc_native_function(
+    mutation_observer_disconnect_call_id,
+    None,
+    mutation_observer_disconnect_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mutation_observer_disconnect_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mutation_observer_disconnect_func))?;
+  let mutation_observer_disconnect_key = alloc_key(&mut scope, "disconnect")?;
+  scope.define_property(
+    mutation_observer_proto,
+    mutation_observer_disconnect_key,
+    data_desc(Value::Object(mutation_observer_disconnect_func)),
+  )?;
+
+  let mutation_observer_take_records_call_id =
+    vm.register_native_call(mutation_observer_take_records_native)?;
+  let mutation_observer_take_records_name = scope.alloc_string("takeRecords")?;
+  scope.push_root(Value::String(mutation_observer_take_records_name))?;
+  let mutation_observer_take_records_func = scope.alloc_native_function(
+    mutation_observer_take_records_call_id,
+    None,
+    mutation_observer_take_records_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mutation_observer_take_records_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mutation_observer_take_records_func))?;
+  let mutation_observer_take_records_key = alloc_key(&mut scope, "takeRecords")?;
+  scope.define_property(
+    mutation_observer_proto,
+    mutation_observer_take_records_key,
+    data_desc(Value::Object(mutation_observer_take_records_func)),
+  )?;
+
+  let mutation_observer_ctor_call_id = vm.register_native_call(mutation_observer_constructor_native)?;
+  let mutation_observer_ctor_construct_id =
+    vm.register_native_construct(mutation_observer_constructor_construct_native)?;
+  let mutation_observer_ctor_name = scope.alloc_string("MutationObserver")?;
+  scope.push_root(Value::String(mutation_observer_ctor_name))?;
+  let mutation_observer_ctor_func = scope.alloc_native_function(
+    mutation_observer_ctor_call_id,
+    Some(mutation_observer_ctor_construct_id),
+    mutation_observer_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    mutation_observer_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(mutation_observer_ctor_func))?;
+  scope.define_property(
+    mutation_observer_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(mutation_observer_proto)),
+  )?;
+  scope.define_property(
+    mutation_observer_proto,
+    constructor_key,
+    data_desc(Value::Object(mutation_observer_ctor_func)),
+  )?;
+  let mutation_observer_key = alloc_key(&mut scope, "MutationObserver")?;
+  scope.define_property(
+    global,
+    mutation_observer_key,
+    data_desc(Value::Object(mutation_observer_ctor_func)),
+  )?;
 
   // Store shared function objects on document so wrappers can reuse them.
   let add_event_listener_internal_key = alloc_key(&mut scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;

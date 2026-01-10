@@ -33,6 +33,9 @@ pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str =
   "queueMicrotask callback is not callable";
 
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
+// Internal copy of `queueMicrotask` used by host shims that need to schedule microtasks without
+// being affected by user scripts overwriting `globalThis.queueMicrotask`.
+pub(crate) const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
 const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
 
@@ -1291,6 +1294,22 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
     global,
     queue_microtask_key,
     data_desc(Value::Object(queue_microtask)),
+  )?;
+
+  // Keep an internal, non-configurable reference so other host-side shims can safely schedule
+  // microtasks even if the page overwrites `queueMicrotask`.
+  let internal_queue_microtask_key = alloc_key(&mut scope, INTERNAL_QUEUE_MICROTASK_KEY)?;
+  scope.define_property(
+    global,
+    internal_queue_microtask_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(queue_microtask),
+        writable: false,
+      },
+    },
   )?;
 
   Ok(())

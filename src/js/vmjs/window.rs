@@ -1274,6 +1274,273 @@ mod tests {
   }
 
   #[test]
+  fn mutation_observer_delivers_attribute_records_via_microtask_checkpoint() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__len = 0;\n\
+       g.__type0 = null;\n\
+       g.__attr0 = null;\n\
+       g.__old0_is_null = false;\n\
+       g.__old1 = null;\n\
+       g.__target_eq = false;\n\
+       g.__observer_eq = false;\n\
+       g.__this_eq = false;\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function (records, observer) {\n\
+         g.__calls++;\n\
+         g.__len = records.length;\n\
+         g.__type0 = records[0].type;\n\
+         g.__attr0 = records[0].attributeName;\n\
+         g.__old0_is_null = (records[0].oldValue === null);\n\
+         g.__old1 = records[1].oldValue;\n\
+         g.__target_eq = (records[0].target === target);\n\
+         g.__observer_eq = (observer === obs);\n\
+         g.__this_eq = (this === obs);\n\
+       });\n\
+       obs.observe(target, { attributes: true, attributeOldValue: true });\n\
+       target.setAttribute('DATA-X', 'a');\n\
+       target.setAttribute('DATA-X', 'b');\n",
+    )?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
+    host.perform_microtask_checkpoint()?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__len"), Value::Number(n) if n == 2.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__type0").as_deref(),
+      Some("attributes")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr0").as_deref(),
+      Some("data-x")
+    );
+    assert_eq!(get_global_prop(&mut host, "__old0_is_null"), Value::Bool(true));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__old1").as_deref(),
+      Some("a")
+    );
+    assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__observer_eq"), Value::Bool(true));
+    assert_eq!(get_global_prop(&mut host, "__this_eq"), Value::Bool(true));
+ 
+    Ok(())
+  }
+
+  #[test]
+  fn mutation_observer_attribute_old_value_implies_attributes_option() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+
+    // Per the DOM Standard, specifying `attributeOldValue` without an explicit `attributes` member
+    // implies `attributes: true`.
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__len = 0;\n\
+       g.__type0 = null;\n\
+       g.__attr0 = null;\n\
+       g.__old0_is_null = false;\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function (records) {\n\
+         g.__calls++;\n\
+         g.__len = records.length;\n\
+         g.__type0 = records[0].type;\n\
+         g.__attr0 = records[0].attributeName;\n\
+         g.__old0_is_null = (records[0].oldValue === null);\n\
+       });\n\
+       obs.observe(target, { attributeOldValue: true });\n\
+       target.setAttribute('data-q', '1');\n",
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__len"), Value::Number(n) if n == 1.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__type0").as_deref(),
+      Some("attributes")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__attr0").as_deref(),
+      Some("data-q")
+    );
+    assert_eq!(get_global_prop(&mut host, "__old0_is_null"), Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn mutation_observer_delivers_child_list_records_via_microtask_checkpoint() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__type0 = null;\n\
+       g.__added_len = 0;\n\
+       g.__removed_len = 0;\n\
+       g.__target_eq = false;\n\
+       const target = document.getElementById('target');\n\
+       const child = document.createElement('span');\n\
+       const obs = new MutationObserver(function (records) {\n\
+         g.__calls++;\n\
+         g.__type0 = records[0].type;\n\
+         g.__added_len = records[0].addedNodes.length;\n\
+         g.__removed_len = records[0].removedNodes.length;\n\
+         g.__target_eq = (records[0].target === target);\n\
+       });\n\
+       obs.observe(target, { childList: true });\n\
+       target.appendChild(child);\n",
+    )?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
+    host.perform_microtask_checkpoint()?;
+ 
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__type0").as_deref(),
+      Some("childList")
+    );
+    assert!(matches!(get_global_prop(&mut host, "__added_len"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__removed_len"), Value::Number(n) if n == 0.0));
+    assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
+ 
+    Ok(())
+  }
+
+  #[test]
+  fn mutation_observer_move_within_parent_queues_separate_remove_and_add_records() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__len = 0;\n\
+       g.__added0 = 0;\n\
+       g.__removed0 = 0;\n\
+       g.__added1 = 0;\n\
+       g.__removed1 = 0;\n\
+       const target = document.getElementById('target');\n\
+       const a = document.createElement('span');\n\
+       const b = document.createElement('span');\n\
+       target.appendChild(a);\n\
+       target.appendChild(b);\n\
+       const obs = new MutationObserver(function (records) {\n\
+         g.__calls++;\n\
+         g.__len = records.length;\n\
+         if (records.length >= 2) {\n\
+           g.__added0 = records[0].addedNodes.length;\n\
+           g.__removed0 = records[0].removedNodes.length;\n\
+           g.__added1 = records[1].addedNodes.length;\n\
+           g.__removed1 = records[1].removedNodes.length;\n\
+         }\n\
+       });\n\
+       obs.observe(target, { childList: true });\n\
+       target.appendChild(a);\n",
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__len"), Value::Number(n) if n == 2.0));
+    assert!(matches!(get_global_prop(&mut host, "__added0"), Value::Number(n) if n == 0.0));
+    assert!(matches!(get_global_prop(&mut host, "__removed0"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__added1"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__removed1"), Value::Number(n) if n == 0.0));
+    Ok(())
+  }
+  
+  #[test]
+  fn mutation_observer_subtree_option_observes_descendant_attributes() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><div id=target></div></div></body></html>",
+    )
+    .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__target_eq = false;\n\
+       const root = document.getElementById('root');\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function (records) {\n\
+         g.__calls++;\n\
+         g.__target_eq = (records[0].target === target);\n\
+       });\n\
+       obs.observe(root, { attributes: true, subtree: true });\n\
+       target.setAttribute('data-y', '1');\n",
+    )?;
+ 
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert_eq!(get_global_prop(&mut host, "__target_eq"), Value::Bool(true));
+    Ok(())
+  }
+ 
+  #[test]
+  fn mutation_observer_take_records_drains_queue() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       g.__taken_len = 0;\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function () { g.__calls++; });\n\
+       obs.observe(target, { attributes: true });\n\
+       target.setAttribute('data-z', '1');\n\
+       g.__taken_len = obs.takeRecords().length;\n",
+    )?;
+ 
+    assert!(matches!(
+      get_global_prop(&mut host, "__taken_len"),
+      Value::Number(n) if n == 1.0
+    ));
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(
+      get_global_prop(&mut host, "__calls"),
+      Value::Number(n) if n == 0.0
+    ));
+    Ok(())
+  }
+ 
+  #[test]
+  fn mutation_observer_disconnect_stops_future_records() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+ 
+    host.exec_script(
+      "var g = this;\n\
+       g.__calls = 0;\n\
+       const target = document.getElementById('target');\n\
+       const obs = new MutationObserver(function () { g.__calls++; });\n\
+       obs.observe(target, { attributes: true });\n\
+       obs.disconnect();\n\
+       target.setAttribute('data-a', '1');\n",
+    )?;
+ 
+    host.perform_microtask_checkpoint()?;
+    assert!(matches!(
+      get_global_prop(&mut host, "__calls"),
+      Value::Number(n) if n == 0.0
+    ));
+    Ok(())
+  }
+ 
+  #[test]
   fn document_cookie_round_trip_is_deterministic() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

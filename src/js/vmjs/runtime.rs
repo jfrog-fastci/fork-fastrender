@@ -130,6 +130,10 @@ pub(crate) fn current_event_loop_mut<Host: 'static>() -> Option<&'static mut Eve
   Some(unsafe { &mut *(entry.ptr as *mut EventLoop<Host>) })
 }
 
+pub(crate) fn has_current_event_loop() -> bool {
+  EVENT_LOOP_STACK.with(|stack| !stack.borrow().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

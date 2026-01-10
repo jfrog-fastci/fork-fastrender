@@ -240,13 +240,20 @@ impl Document {
     }
 
     let children = self.node_checked(parent)?.children.as_slice();
+    let moving_existing_child = self.nodes[new_child.index()].parent == Some(parent);
     let has_element_child = children.iter().any(|&id| {
+      if moving_existing_child && id == new_child {
+        return false;
+      }
       self
         .nodes
         .get(id.index())
         .is_some_and(|node| is_element_child(&node.kind))
     });
     let has_doctype_child = children.iter().any(|&id| {
+      if moving_existing_child && id == new_child {
+        return false;
+      }
       self
         .nodes
         .get(id.index())
@@ -484,9 +491,24 @@ impl Document {
       .iter()
       .position(|&c| c == child)
       .ok_or(DomError::NotFoundError)?;
+
+    let (previous_sibling, next_sibling) = {
+      let siblings = self.nodes[old_parent.index()].children.as_slice();
+      let prev = pos.checked_sub(1).and_then(|idx| siblings.get(idx)).copied();
+      let next = siblings.get(pos + 1).copied();
+      (prev, next)
+    };
+
     self.nodes[old_parent.index()].children.remove(pos);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(old_parent);
+    let _ = self.queue_mutation_record_child_list(
+      old_parent,
+      Vec::new(),
+      vec![child],
+      previous_sibling,
+      next_sibling,
+    );
     Ok(Some(old_parent))
   }
 
@@ -560,16 +582,17 @@ impl Document {
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
-    let changed = {
+    let (changed, old_value) = {
       let node = self.node_checked_mut(node_id)?;
       match &mut node.kind {
         NodeKind::Text { content } => {
           if content == data {
             return Ok(false);
           }
+          let old = Some(content.clone());
           content.clear();
           content.push_str(data);
-          true
+          (true, old)
         }
         _ => return Err(DomError::InvalidNodeType),
       }
@@ -578,6 +601,7 @@ impl Document {
     if changed {
       self.record_text_mutation(node_id);
       self.bump_mutation_generation();
+      let _ = self.queue_mutation_record_character_data(node_id, old_value);
     }
 
     Ok(changed)
@@ -624,6 +648,22 @@ impl Document {
       None => self.nodes[parent.index()].children.len(),
     };
 
+    // Sibling pointers for the insertion-side mutation record. These are computed before any
+    // potential removal of `new_child` (mirroring the DOM Standard's insertion algorithm, which
+    // determines the insertion siblings before adopting/removing the node from its old parent).
+    let record_next_sibling = reference;
+    let record_previous_sibling = {
+      let siblings = self.nodes[parent.index()].children.as_slice();
+      if record_next_sibling.is_some() {
+        insertion_idx
+          .checked_sub(1)
+          .and_then(|idx| siblings.get(idx))
+          .copied()
+      } else {
+        siblings.last().copied()
+      }
+    };
+
     if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
       // DocumentFragment insertion is transparent: insert its children in order, then empty it.
       // Pre-validate all children before mutating to ensure atomicity.
@@ -645,8 +685,19 @@ impl Document {
       )?;
 
       let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
+      let moved_children = children_to_move.clone();
       // Fragments are always detached.
       self.nodes[new_child.index()].parent = None;
+
+      // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
+      // the removal of its children.
+      let _ = self.queue_mutation_record_child_list(
+        new_child,
+        Vec::new(),
+        moved_children.clone(),
+        None,
+        None,
+      );
 
       for &child in &children_to_move {
         self.nodes[child.index()].parent = Some(parent);
@@ -657,6 +708,25 @@ impl Document {
         .splice(insertion_idx..insertion_idx, children_to_move);
       self.record_child_list_mutation(parent);
       self.bump_mutation_generation();
+
+      let inserted_len = moved_children.len();
+      let (previous_sibling, next_sibling) = {
+        let siblings = self.nodes[parent.index()].children.as_slice();
+        let prev = insertion_idx
+          .checked_sub(1)
+          .and_then(|idx| siblings.get(idx))
+          .copied();
+        let next = siblings.get(insertion_idx + inserted_len).copied();
+        (prev, next)
+      };
+
+      let _ = self.queue_mutation_record_child_list(
+        parent,
+        moved_children,
+        Vec::new(),
+        previous_sibling,
+        next_sibling,
+      );
       return Ok(true);
     }
 
@@ -679,12 +749,6 @@ impl Document {
       if current_idx == insertion_idx {
         return Ok(false);
       }
-
-      self.nodes[parent.index()].children.remove(current_idx);
-      self.nodes[parent.index()].children.insert(insertion_idx, new_child);
-      self.record_child_list_mutation(parent);
-      self.bump_mutation_generation();
-      return Ok(true);
     }
 
     if current_parent.is_some() {
@@ -697,6 +761,13 @@ impl Document {
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation();
+    let _ = self.queue_mutation_record_child_list(
+      parent,
+      vec![new_child],
+      Vec::new(),
+      record_previous_sibling,
+      record_next_sibling,
+    );
     Ok(true)
   }
 
@@ -710,10 +781,25 @@ impl Document {
     let idx = self
       .index_of_child_internal(parent, child)?
       .ok_or(DomError::NotFoundError)?;
+
+    let (previous_sibling, next_sibling) = {
+      let siblings = self.nodes[parent.index()].children.as_slice();
+      let prev = idx.checked_sub(1).and_then(|i| siblings.get(i)).copied();
+      let next = siblings.get(idx + 1).copied();
+      (prev, next)
+    };
+
     self.nodes[parent.index()].children.remove(idx);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation();
+    let _ = self.queue_mutation_record_child_list(
+      parent,
+      Vec::new(),
+      vec![child],
+      previous_sibling,
+      next_sibling,
+    );
     Ok(true)
   }
 
@@ -742,6 +828,21 @@ impl Document {
       .index_of_child_internal(parent, old_child)?
       .ok_or(DomError::NotFoundError)?;
 
+    // Sibling pointers for the replacement-side mutation record, computed before any removals or
+    // insertions (mirrors the DOM Standard's `replace` algorithm).
+    let (record_previous_sibling, record_next_sibling) = {
+      let siblings = self.nodes[parent.index()].children.as_slice();
+      let prev = old_child_idx
+        .checked_sub(1)
+        .and_then(|idx| siblings.get(idx))
+        .copied();
+      let mut next = siblings.get(old_child_idx + 1).copied();
+      if next == Some(new_child) {
+        next = siblings.get(old_child_idx + 2).copied();
+      }
+      (prev, next)
+    };
+
     if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
       // DocumentFragment insertion is transparent: insert its children before `old_child`, then
       // remove `old_child`.
@@ -761,7 +862,20 @@ impl Document {
       )?;
 
       let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
+      let moved_children = children_to_move.clone();
       self.nodes[new_child.index()].parent = None;
+
+      // Per DOM: inserting a DocumentFragment queues a childList record on the fragment itself for
+      // the removal of its children.
+      if !moved_children.is_empty() {
+        let _ = self.queue_mutation_record_child_list(
+          new_child,
+          Vec::new(),
+          moved_children.clone(),
+          None,
+          None,
+        );
+      }
 
       for &child in &children_to_move {
         self.nodes[child.index()].parent = Some(parent);
@@ -778,6 +892,13 @@ impl Document {
 
       self.record_child_list_mutation(parent);
       self.bump_mutation_generation();
+      let _ = self.queue_mutation_record_child_list(
+        parent,
+        moved_children,
+        vec![old_child],
+        record_previous_sibling,
+        record_next_sibling,
+      );
       return Ok(true);
     }
 
@@ -789,10 +910,10 @@ impl Document {
       let idx = self
         .index_of_child_internal(parent, new_child)?
         .ok_or(DomError::NotFoundError)?;
-      self.nodes[parent.index()].children.remove(idx);
       if idx < old_child_idx {
         old_child_idx -= 1;
       }
+      self.detach_from_parent(new_child)?;
     } else if current_parent.is_some() {
       self.detach_from_parent(new_child)?;
     }
@@ -806,6 +927,13 @@ impl Document {
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation();
+    let _ = self.queue_mutation_record_child_list(
+      parent,
+      vec![new_child],
+      vec![old_child],
+      record_previous_sibling,
+      record_next_sibling,
+    );
     Ok(true)
   }
 }
