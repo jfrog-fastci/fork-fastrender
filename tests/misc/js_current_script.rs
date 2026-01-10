@@ -374,6 +374,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
             host.run_script_element(node_id, ScriptType::Classic)
           })?;
         }
+        ScriptSchedulerAction::QueueScriptEventTask { .. } => {}
       }
     }
     Ok(())

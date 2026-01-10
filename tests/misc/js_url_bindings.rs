@@ -1,5 +1,5 @@
 use fastrender::js::{
-  install_url_bindings, install_url_bindings_with_limits, webidl::VmJsRuntime, UrlLimits,
+  install_url_bindings, install_url_bindings_with_limits, webidl::legacy::VmJsRuntime, UrlLimits,
   WindowRealm, WindowRealmConfig,
 };
 use vm_js::{PropertyKey, Value, VmError};

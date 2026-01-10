@@ -1,7 +1,7 @@
 use fastrender::dom::parse_html;
 use fastrender::dom2::Document;
 use fastrender::js::bindings::{install_document_query_selector_bindings, DomExceptionClass};
-use fastrender::js::webidl::VmJsRuntime;
+use fastrender::js::webidl::legacy::VmJsRuntime;
 use fastrender::web::dom::DomException;
 use std::cell::RefCell;
 use std::rc::Rc;

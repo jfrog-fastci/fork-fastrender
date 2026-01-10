@@ -2,9 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use fastrender::js::bindings::{BindingValue, WebHostBindings};
-use fastrender::js::webidl::{VmJsRuntime, WebIdlBindingsRuntime, WebIdlLimits};
+use fastrender::js::webidl::WebIdlLimits;
 use vm_js::{HeapLimits, PropertyKey, Value, VmError};
-use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlBindingsRuntime as _, WebIdlJsRuntime as _};
 
 struct SeqHost {
   called: Rc<Cell<bool>>,
@@ -95,17 +95,13 @@ fn make_numeric_iterable(rt: &mut VmJsRuntime, values: Vec<Value>) -> Result<Val
   })
 }
 
-fn takes_sequence_wrapper<Host, R>(
-  rt: &mut R,
-  host: &mut Host,
-  _this: R::JsValue,
-  args: &[R::JsValue],
-) -> Result<R::JsValue, R::Error>
-where
-  R: WebIdlBindingsRuntime<Host>,
-  Host: WebHostBindings<R>,
-{
-  let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+fn takes_sequence_wrapper(
+  rt: &mut VmJsRuntime,
+  host: &mut SeqHost,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut converted_args: Vec<BindingValue<Value>> = Vec::new();
   let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
 
   // This is the shape emitted by the bindings codegen for `sequence<long>`.
@@ -120,7 +116,7 @@ where
       };
       let mut iterator_record = rt.get_iterator_from_method(v0, method)?;
       rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
-        let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+        let mut values: Vec<BindingValue<Value>> = Vec::new();
         while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
           if values.len() >= rt.limits().max_sequence_length {
             return Err(rt.throw_range_error("sequence exceeds maximum length"));
@@ -158,8 +154,7 @@ fn generated_bindings_convert_sequence_long_from_iterable() -> Result<(), VmErro
   let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
   let mut host = SeqHost::new();
 
-  let func =
-    rt.create_function(takes_sequence_wrapper::<SeqHost, VmJsRuntime>)?;
+  let func = rt.create_function(takes_sequence_wrapper)?;
   // Keep the wrapper function alive across the allocations performed while constructing the test
   // iterable below.
   let _func_root = rt.heap_mut().add_root(func)?;
@@ -189,8 +184,7 @@ fn generated_bindings_enforce_max_sequence_length() -> Result<(), VmError> {
   });
   let mut host = SeqHost::new();
 
-  let func =
-    rt.create_function(takes_sequence_wrapper::<SeqHost, VmJsRuntime>)?;
+  let func = rt.create_function(takes_sequence_wrapper)?;
   let _func_root = rt.heap_mut().add_root(func)?;
 
   let iterable = make_numeric_iterable(&mut rt, vec![Value::Number(1.0), Value::Number(2.0)])?;

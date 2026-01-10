@@ -1,5 +1,6 @@
 use fastrender::dom2;
 use fastrender::js::JsDomEvents;
+use fastrender::js::webidl::legacy::VmJsRuntime;
 use fastrender::web::events::{AddEventListenerOptions, Event, EventInit, EventTargetId};
 use fastrender::Result;
 use std::cell::RefCell;
@@ -15,7 +16,7 @@ enum Action {
   PreventDefault,
 }
 
-fn key(rt: &mut fastrender::js::webidl::VmJsRuntime, name: &str) -> PropertyKey {
+fn key(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
   let v = rt.alloc_string_value(name).expect("alloc string");
   let Value::String(s) = v else {
     panic!("expected string");
@@ -23,14 +24,14 @@ fn key(rt: &mut fastrender::js::webidl::VmJsRuntime, name: &str) -> PropertyKey 
   PropertyKey::String(s)
 }
 
-fn as_utf8_lossy(rt: &fastrender::js::webidl::VmJsRuntime, v: Value) -> String {
+fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
   let Value::String(s) = v else {
     panic!("expected string");
   };
   rt.heap().get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn assert_js_value_eq(rt: &fastrender::js::webidl::VmJsRuntime, got: Value, expected: Value) {
+fn assert_js_value_eq(rt: &VmJsRuntime, got: Value, expected: Value) {
   match (got, expected) {
     (Value::String(_), Value::String(_)) => {
       assert_eq!(as_utf8_lossy(rt, got), as_utf8_lossy(rt, expected));
@@ -40,7 +41,7 @@ fn assert_js_value_eq(rt: &fastrender::js::webidl::VmJsRuntime, got: Value, expe
 }
 
 fn event_accessor_setter(
-  rt: &mut fastrender::js::webidl::VmJsRuntime,
+  rt: &mut VmJsRuntime,
   event: Value,
   key: PropertyKey,
 ) -> std::result::Result<Value, VmError> {
