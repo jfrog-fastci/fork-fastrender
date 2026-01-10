@@ -51,12 +51,16 @@ pub trait BrowserTabJsExecutor {
 
   fn execute_module_script(
     &mut self,
-    script_text: &str,
-    spec: &ScriptElementSpec,
-    current_script: Option<NodeId>,
-    document: &mut BrowserDocumentDom2,
-    event_loop: &mut EventLoop<BrowserTabHost>,
-  ) -> Result<()>;
+    _script_text: &str,
+    _spec: &ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    Err(Error::Other(
+      "module script execution is not supported by this BrowserTabJsExecutor".to_string(),
+    ))
+  }
 
   /// Returns and clears any navigation request emitted by the JS embedding (for example via
   /// `window.location.href = ...`).
