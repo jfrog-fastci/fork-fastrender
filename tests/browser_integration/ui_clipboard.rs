@@ -37,6 +37,19 @@ fn next_frame_ready_with_probe_color(
   expected: [u8; 4],
   context: &'static str,
 ) -> RenderedFrame {
+  next_frame_ready_with_probe_predicate(rx, tab_id, probe, context, |got| got == expected)
+}
+
+fn next_frame_ready_with_probe_predicate<F>(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  probe: (u32, u32),
+  context: &'static str,
+  mut pred: F,
+) -> RenderedFrame
+where
+  F: FnMut([u8; 4]) -> bool,
+{
   let start = Instant::now();
   let mut last_probe = None;
   loop {
@@ -55,7 +68,7 @@ fn next_frame_ready_with_probe_color(
     };
     let got = support::rgba_at(&frame.pixmap, probe.0, probe.1);
     last_probe = Some(got);
-    if got == expected {
+    if pred(got) {
       return frame;
     }
   }
@@ -832,6 +845,115 @@ fn ui_select_all_sets_selection_attributes_and_repaints() {
     tab_id,
     (20, 60),
     [0, 255, 0, 255],
+    "after clearing selection",
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
+
+#[test]
+fn ui_select_all_renders_selection_highlight() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255, 255, 255); }
+
+      #t {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 60px;
+        padding: 0;
+        border: none;
+        outline: none;
+        /* Avoid the browser-UI focus tint affecting our selection-highlight probe pixels. */
+        accent-color: rgb(0, 0, 0);
+        background: rgb(0, 0, 0);
+        /* Use spaces so the selection highlight is visible without glyphs affecting pixels. */
+        font: 24px/1 sans-serif;
+        color: rgb(0, 0, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <input id="t" type="text" value="                    ">
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-select-all-selection-highlight").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url.clone()),
+      cancel: Default::default(),
+    })
+    .expect("create tab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (220, 80),
+      dpr: 1.0,
+    })
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  // Initial paint: sample inside the input background (black).
+  let _frame0 =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 30), [0, 0, 0, 255], "initial paint");
+
+  // Focus the input using keyboard Tab traversal so this test doesn't depend on hit-testing.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::Tab,
+    })
+    .expect("tab focus");
+  // Wait for the focus change to repaint so that `SelectAll` is guaranteed to run with a focused
+  // text control (and not be dropped as a no-op).
+  let _ = next_frame_ready(&ui_rx, tab_id);
+
+  // SelectAll should render a selection highlight over the text area. The highlight is drawn with
+  // a fixed semi-transparent blue, so expect the sampled pixel to become non-black with stable
+  // green/blue components.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all");
+  let _frame_selected = next_frame_ready_with_probe_predicate(
+    &ui_rx,
+    tab_id,
+    (20, 30),
+    "after select all highlight",
+    |rgba| rgba[3] == 255 && rgba[0] <= 2 && (40..=45).contains(&rgba[1]) && (73..=78).contains(&rgba[2]),
+  );
+
+  // Clearing the selection should remove the highlight.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::ArrowLeft,
+    })
+    .expect("arrow left");
+  let _frame_cleared = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 30),
+    [0, 0, 0, 255],
     "after clearing selection",
   );
 
