@@ -93,8 +93,9 @@ fn generic_fallback_uses_text_font_when_emoji_bundled() {
 
   let font = db.load_font(primary).expect("load primary font");
   assert!(
-    font.family.to_lowercase().contains("noto sans"),
-    "text generic should continue using the bundled text face"
+    font.family == "Roboto Flex",
+    "text generic should continue using the bundled text face; got {}",
+    font.family
   );
   assert!(db.has_glyph(primary, 'A'));
 }

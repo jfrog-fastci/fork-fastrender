@@ -101,8 +101,8 @@ fn bundled_sans_serif_normal_line_height_is_reasonable() {
     font.family
   );
   assert!(
-    line_height <= 20.0,
-    "expected bundled sans-serif normal line-height <= 20px at 16px font-size; got {line_height} for {}",
+    (line_height - 18.0).abs() <= 0.2,
+    "expected bundled sans-serif normal line-height to snap near Chrome output (~18px at 16px); got {line_height} for {}",
     font.family
   );
 }

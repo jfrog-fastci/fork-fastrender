@@ -1152,7 +1152,9 @@ pub(crate) fn named_family_aliases(name: &str) -> &'static [&'static str] {
   {
     // `fc-match -s Helvetica` on typical Linux environments prefers Liberation Sans first, then
     // falls back through common sans-serif faces.
-    &["Liberation Sans", "Noto Sans", "DejaVu Sans"]
+    // In bundled-only mode we don't ship Liberation Sans, so prefer Roboto Flex next: its metrics
+    // are closer to common browser Linux fallbacks than the wider Noto Sans.
+    &["Liberation Sans", "Roboto Flex", "Noto Sans", "DejaVu Sans"]
   } else if name.eq_ignore_ascii_case("Times New Roman") || name.eq_ignore_ascii_case("Times") {
     &["Liberation Serif", "Noto Serif", "DejaVu Serif"]
   } else if name.eq_ignore_ascii_case("Courier New") || name.eq_ignore_ascii_case("Courier") {
@@ -1751,7 +1753,9 @@ impl FontDatabase {
   fn bundled_family_aliases(family: &str) -> Option<&'static [&'static str]> {
     let family = family.trim();
 
-    const SANS: &[&str] = &["Noto Sans", "Roboto Flex"];
+    // Prefer Roboto Flex first: its metrics are closer to typical Linux browser sans-serif
+    // fallbacks, reducing wrap-driven layout drift when system fonts are disabled.
+    const SANS: &[&str] = &["Roboto Flex", "Noto Sans"];
     const SERIF: &[&str] = &["Noto Serif"];
     const MONO: &[&str] = &["Noto Sans Mono"];
 
@@ -1852,6 +1856,19 @@ impl FontDatabase {
     let mut face_metrics_overrides = FontFaceMetricsOverrides::default();
     if Arc::ptr_eq(&self.db, &shared_bundled_fontdb()) {
       match family.as_str() {
+        "Roboto Flex" => {
+          // Roboto Flex is our bundled Latin sans fallback, but its default line metrics are a bit
+          // taller than the typical Linux browser sans-serif fallback (Liberation Sans). When
+          // offline fixtures omit webfonts (common for text-heavy pages), that difference in
+          // `line-height: normal` accumulates into noticeable vertical drift and large Chrome diffs.
+          //
+          // Apply a small set of metric overrides approximating Liberation Sans `hhea` ratios so
+          // normal line heights stay closer to Chrome without affecting shaping advances/wrapping.
+          // (Overrides are percentages of the used font size; see CSS Fonts 4 §5.2.)
+          face_metrics_overrides.ascent_override = Some(0.9053);
+          face_metrics_overrides.descent_override = Some(0.2119);
+          face_metrics_overrides.line_gap_override = Some(0.0327);
+        }
         "Noto Sans" | "Noto Serif" | "Noto Sans Mono" => {
           face_metrics_overrides.ascent_override = Some(0.875);
           face_metrics_overrides.descent_override = Some(0.25);
@@ -2410,14 +2427,32 @@ impl FontMetrics {
   /// Converts font units to pixels for a given font size.
   pub fn scale(&self, font_size: f32) -> ScaledMetrics {
     let scale = font_size / (self.units_per_em as f32);
+    let ascent = (self.ascent as f32) * scale;
+    let descent = -(self.descent as f32) * scale; // Make positive
+    let line_gap = (self.line_gap as f32) * scale;
+    let raw_line_height = (self.line_height as f32) * scale;
+    // Headless Chrome's layout ends up with stable, whole-pixel line spacing for common system
+    // fonts (e.g. Liberation Sans at 16px). Our exact font-unit scaling produces fractional
+    // `line-height: normal` values (18.3984px for Liberation Sans), which accumulate into large
+    // vertical drift on text-heavy pages as many lines stack.
+    //
+    // Snap the "normal" line height metric to whole CSS pixels to better match browser output and
+    // avoid this drift. Keep the per-face ascent/descent values un-snapped so baselines and glyph
+    // alignment remain driven by the font metrics; only the overall line box height is snapped.
+    let mut line_height = raw_line_height.round();
+    // Avoid snapping below the font's ascent+descent (in case rounding would underflow).
+    let min_line_height = (ascent + descent).ceil();
+    if line_height < min_line_height {
+      line_height = min_line_height;
+    }
 
     ScaledMetrics {
       font_size,
       scale,
-      ascent: (self.ascent as f32) * scale,
-      descent: -(self.descent as f32) * scale, // Make positive
-      line_gap: (self.line_gap as f32) * scale,
-      line_height: (self.line_height as f32) * scale,
+      ascent,
+      descent,
+      line_gap,
+      line_height,
       x_height: self.x_height.map(|h| (h as f32) * scale),
       cap_height: self.cap_height.map(|h| (h as f32) * scale),
       underline_position: (self.underline_position as f32) * scale,
@@ -2430,7 +2465,7 @@ impl FontMetrics {
   /// CSS 'line-height: normal' uses font metrics.
   #[inline]
   pub fn normal_line_height(&self, font_size: f32) -> f32 {
-    (self.line_height as f32) * font_size / (self.units_per_em as f32)
+    self.scale(font_size).line_height
   }
 
   /// Returns the aspect ratio (x-height / em).
@@ -2632,13 +2667,13 @@ mod tests {
       .query("Helvetica", FontWeight::NORMAL, FontStyle::Normal)
       .expect("expected Helvetica to alias to a bundled sans-serif");
     let font = db.load_font(id).expect("expected aliased font to load");
-    assert_eq!(font.family, "Noto Sans");
+    assert_eq!(font.family, "Roboto Flex");
 
     let id = db
       .query("Arial", FontWeight::NORMAL, FontStyle::Normal)
       .expect("expected Arial to alias to a bundled sans-serif");
     let font = db.load_font(id).expect("expected aliased font to load");
-    assert_eq!(font.family, "Noto Sans");
+    assert_eq!(font.family, "Roboto Flex");
 
     let id = db
       .query("Times New Roman", FontWeight::NORMAL, FontStyle::Normal)

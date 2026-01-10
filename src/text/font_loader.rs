@@ -2469,8 +2469,16 @@ impl FontContext {
         scaled.line_gap = multiplier * effective_font_size;
       }
 
-      // `line-height: normal` is based on the sum of ascent, descent, and line-gap.
-      scaled.line_height = scaled.ascent + scaled.descent + scaled.line_gap;
+      // `line-height: normal` is based on the sum of ascent, descent, and line-gap, but our
+      // renderer snaps the resulting line box height to whole CSS pixels to avoid accumulated
+      // vertical drift in text-heavy pages (matching headless Chrome baselines more closely).
+      let raw_line_height = scaled.ascent + scaled.descent + scaled.line_gap;
+      let mut snapped = raw_line_height.round();
+      let min_line_height = (scaled.ascent + scaled.descent).ceil();
+      if snapped < min_line_height {
+        snapped = min_line_height;
+      }
+      scaled.line_height = snapped;
     }
 
     self.scaled_metrics_cache.lock().put(key, scaled.clone());

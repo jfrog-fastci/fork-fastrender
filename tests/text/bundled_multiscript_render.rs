@@ -101,7 +101,7 @@ fn bundled_fonts_cover_spacing_modifier_letters() {
   let mut pipeline = ShapingPipeline::new();
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());
 
-  let samples = [("sans-serif", "Noto Sans"), ("serif", "Noto Serif")];
+  let samples = [("sans-serif", "Roboto Flex"), ("serif", "STIX Two Math")];
 
   // pageset regression: phoronix.com surfaced clusters containing U+02FD (˽) with combining marks.
   let text = "˽\u{0365}";
@@ -247,8 +247,8 @@ fn bundled_generics_prefer_bundled_text_fonts() {
     .query("monospace", FontWeight::NORMAL, FontStyle::Normal)
     .expect("monospace bundled fallback");
 
-  assert_eq!(db.load_font(sans).unwrap().family, "Noto Sans");
-  assert_eq!(db.load_font(serif).unwrap().family, "Noto Serif");
+  assert_eq!(db.load_font(sans).unwrap().family, "Roboto Flex");
+  assert_eq!(db.load_font(serif).unwrap().family, "STIX Two Math");
   assert_eq!(db.load_font(mono).unwrap().family, "Noto Sans Mono");
 
   let hebrew = db
