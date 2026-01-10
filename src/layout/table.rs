@@ -7850,34 +7850,39 @@ impl FormattingContext for TableFormattingContext {
     }
 
     for (start, end, row_group_id, style, effective_display) in row_groups {
-      // Table fragmentation repeats `thead`/`tfoot` by scanning for table header/footer group
-      // fragments (see `fragmentation::inject_table_headers_and_footers`). Emit marker fragments for
-      // these row groups even when they don't paint a background/border so the fragmentation pass can
-      // identify the regions to repeat.
+      // Always emit row-group fragments for fragmentation.
+      //
+      // The fragmentation engine treats table row(-group) fragments as atomic range candidates and
+      // uses `display: table-header-group` / `table-footer-group` fragments to repeat headers/footers
+      // across pages/columns (`fragmentation::inject_table_headers_and_footers`). If a row group does
+      // not paint, table layout still needs to emit a zero-paint marker fragment so `break-*` rules
+      // on `<tbody>/<thead>/<tfoot>` (and any elements styled as row groups) are honoured.
       let paints = style_paints_background_or_border(&style, false);
-      let is_header_or_footer =
-        matches!(effective_display, Display::TableHeaderGroup | Display::TableFooterGroup);
-      if !paints && !is_header_or_footer {
-        continue;
-      }
-      let mut style = if paints {
-        strip_borders_cached(&style, &mut stripped_border_cache)
+      let style = if paints {
+        let mut style = strip_borders_cached(&style, &mut stripped_border_cache);
+        if style.display != effective_display {
+          let mut overridden = (*style).clone();
+          overridden.display = effective_display;
+          style = Arc::new(overridden);
+        }
+        style
       } else {
-        // Fragmentation repeats `<thead>`/`<tfoot>` groups by cloning fragments tagged with
-        // `display: table-header-group` / `table-footer-group` (see `inject_table_headers_and_footers`).
-        // The table layout engine only emits row-group fragments when they paint a background/border,
-        // so create a zero-paint marker fragment for header/footer groups to keep fragmentation working.
-        let mut marker_style = crate::style::ComputedStyle::default();
+        // Preserve non-paint properties (break hints, writing-mode, direction, etc.) while ensuring
+        // the marker fragment cannot paint.
+        let mut marker_style = (*style).clone();
+        marker_style.reset_background_to_initial();
+        marker_style.box_shadow.clear();
+        marker_style.border_top_width = Length::px(0.0);
+        marker_style.border_right_width = Length::px(0.0);
+        marker_style.border_bottom_width = Length::px(0.0);
+        marker_style.border_left_width = Length::px(0.0);
+        marker_style.border_top_style = BorderStyle::None;
+        marker_style.border_right_style = BorderStyle::None;
+        marker_style.border_bottom_style = BorderStyle::None;
+        marker_style.border_left_style = BorderStyle::None;
         marker_style.display = effective_display;
-        marker_style.writing_mode = style.writing_mode;
-        marker_style.direction = style.direction;
         Arc::new(marker_style)
       };
-      if style.display != effective_display {
-        let mut overridden = (*style).clone();
-        overridden.display = effective_display;
-        style = Arc::new(overridden);
-      }
       if start >= row_offsets.len() {
         break;
       }

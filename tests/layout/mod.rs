@@ -244,6 +244,7 @@ mod table_fixup_box_generation;
 mod table_fixup_integration;
 mod table_fixup_wrapper;
 mod table_fragmentation;
+mod table_row_group_breaks;
 mod table_large_layout;
 mod table_percentage_padding;
 mod table_row_group_reorder_rowspan;
