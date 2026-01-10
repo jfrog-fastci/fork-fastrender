@@ -53,9 +53,12 @@ What exists today:
 * **Implemented:** the core matching helper (`resolve_imports_match`) for "resolve an imports match"
   (returns `Err(ImportMapError::TypeError(...))` for blocked cases like null entries/backtracking).
 
-What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline and
-the module graph loader. This document describes the intended integration surface for those
-subsystems (also see [`docs/html_script_processing.md`](html_script_processing.md)).
+What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline
+(discovering/executing `<script type="importmap">` and `<script type="module">` at parse time).
+Import maps *are* wired into the standalone module bundler (`ModuleGraphLoader` in
+`src/js/module_scripts.rs`) via `build_bundle_for_*_with_import_maps`, but `BrowserTab` does not yet
+use that for real page execution. This document describes the intended integration surface for the
+HTML/script subsystems (also see [`docs/html_script_processing.md`](html_script_processing.md)).
 
 ### How to run tests
 
@@ -661,3 +664,13 @@ Module script graph loading is separate from import maps, but must:
 * resolve every module specifier through `resolve_module_specifier(&mut state, specifier, base_url)`
 
 In other words: module graph code should not “roll its own” import map parsing/normalization.
+
+If you are using FastRender’s current host-side module bundler (`ModuleGraphLoader` in
+`src/js/module_scripts.rs`), prefer:
+
+* `ModuleGraphLoader::build_bundle_for_url_with_import_maps(&mut ImportMapState, ...)`
+* `ModuleGraphLoader::build_bundle_for_inline_with_import_maps(&mut ImportMapState, ...)`
+
+These use `resolve_module_specifier(...)` internally, ensuring bare specifiers are rejected unless
+they are mapped by the active import map, and ensuring the resolved module set is updated as modules
+are discovered.

@@ -81,8 +81,11 @@ What `BrowserTab` does today:
 What it does **not** do yet (important gaps):
 
 - fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- module scripts / import maps (import map merge/register/resolve algorithms exist in `src/js/import_maps/`, but are
-  not yet wired into module graph loading; see [`docs/import_maps.md`](import_maps.md)),
+- module scripts / import maps in the streaming `<script>` pipeline (`BrowserTab` currently executes
+  classic scripts only). Import map merge/register/resolve algorithms live in `src/js/import_maps/`,
+  and the standalone module bundler (`ModuleGraphLoader` in `src/js/module_scripts.rs`) can resolve
+  specifiers through `ImportMapState` via `build_bundle_for_*_with_import_maps`; see
+  [`docs/import_maps.md`](import_maps.md).
 - a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
@@ -394,8 +397,11 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- no spec-correct module scripts (`type="module"`), no import maps (`type="importmap"`; import map
-  merge/register/resolve algorithms exist but are not yet integrated; see [`docs/import_maps.md`](import_maps.md)),
+- no spec-correct module scripts (`type="module"`) or import maps (`type="importmap"`) in the
+  streaming execution pipeline yet. Import map algorithms exist in `src/js/import_maps/`, and the
+  `ModuleGraphLoader` helper (`src/js/module_scripts.rs`) can resolve module graphs using
+  `ImportMapState`, but that loader is not yet wired into `BrowserTab`’s streaming parser pipeline;
+  see [`docs/import_maps.md`](import_maps.md),
   no dynamic `import()`
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
