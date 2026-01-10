@@ -1401,6 +1401,20 @@ mod tests {
         window,
       }
     }
+
+    fn new_with_js_execution_options(js_execution_options: JsExecutionOptions) -> Self {
+      let window = WindowRealm::new_with_js_execution_options(
+        WindowRealmConfig::new("https://example.invalid/"),
+        js_execution_options,
+      )
+      .unwrap();
+      Self {
+        host_ctx: HostCtx {
+          hook_downcast_count: 0,
+        },
+        window,
+      }
+    }
   }
 
   impl WindowRealmHost for Host {
@@ -2086,6 +2100,66 @@ mod tests {
       }
     };
     assert!(microtask_this_is_undefined);
+    Ok(())
+  }
+
+  #[test]
+  fn scheduled_microtask_respects_max_instruction_count() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut opts = JsExecutionOptions::default();
+    // Give the scheduling task enough fuel to enqueue the callback, while still ensuring the
+    // callback itself will terminate once it enters the infinite loop.
+    opts.max_instruction_count = Some(10_000);
+    // Keep wall-time generous so we deterministically hit OutOfFuel first.
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+    let mut host = Host::new_with_js_execution_options(opts);
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      set_prop(&mut scope, global, "__ran", Value::Bool(false));
+    }
+
+    // Schedule a microtask that would set `__ran = true` if it were executed.
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        host
+          .window
+          .exec_script(
+            "queueMicrotask(() => {\n\
+               while (true) {}\n\
+               globalThis.__ran = true;\n\
+             });",
+          )
+          .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected microtask to terminate due to instruction budget");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("out of fuel"),
+      "expected OutOfFuel termination, got: {msg}"
+    );
+
+    let ran = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      match get_prop(&mut scope, global, "__ran") {
+        Value::Bool(b) => b,
+        other => panic!("expected bool, got {other:?}"),
+      }
+    };
+    assert!(!ran, "microtask callback ran despite fuel=0");
+
     Ok(())
   }
 

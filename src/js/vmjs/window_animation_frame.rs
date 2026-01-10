@@ -343,6 +343,7 @@ mod tests {
   use crate::error::{Error, Result as RenderResult};
   use crate::js::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::JsExecutionOptions;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use std::sync::Arc;
   use std::time::Duration;
@@ -359,6 +360,18 @@ mod tests {
   impl Host {
     fn new() -> Self {
       let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+      Self {
+        host_ctx: (),
+        window,
+      }
+    }
+
+    fn new_with_js_execution_options(js_execution_options: JsExecutionOptions) -> Self {
+      let window = WindowRealm::new_with_js_execution_options(
+        WindowRealmConfig::new("https://example.invalid/"),
+        js_execution_options,
+      )
+      .unwrap();
       Self {
         host_ctx: (),
         window,
@@ -625,6 +638,70 @@ mod tests {
     assert_eq!(log, vec!["sync", "raf"]);
     assert_eq!(raf_ts, Value::Number(10.0));
     assert_eq!(raf_this_is_global, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn scheduled_animation_frame_respects_max_instruction_count() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut opts = JsExecutionOptions::default();
+    // Give the scheduling task enough fuel to successfully enqueue the callback, while still
+    // ensuring the callback itself will terminate once it enters the infinite loop.
+    opts.max_instruction_count = Some(10_000);
+    // Keep wall-time generous so we deterministically hit OutOfFuel first.
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+    let mut host = Host::new_with_js_execution_options(opts);
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      set_prop(&mut scope, global, "__ran", Value::Bool(false));
+    }
+
+    // Schedule an animation frame callback that would set `__ran = true` if it ran.
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> RenderResult<()> {
+        host
+          .window
+          .exec_script(
+            "requestAnimationFrame(() => {\n\
+               while (true) {}\n\
+               globalThis.__ran = true;\n\
+             });",
+          )
+          .map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let err = event_loop
+      .run_animation_frame(&mut host)
+      .expect_err("expected rAF callback to terminate due to instruction budget");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("out of fuel"),
+      "expected OutOfFuel termination, got: {msg}"
+    );
+
+    let ran = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      get_prop(&mut scope, global, "__ran")
+    };
+    assert_eq!(ran, Value::Bool(false), "rAF callback ran despite fuel=0");
+
     Ok(())
   }
 
