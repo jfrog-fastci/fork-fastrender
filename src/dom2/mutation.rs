@@ -442,6 +442,7 @@ impl Document {
       .ok_or(DomError::NotFoundError)?;
     self.nodes[old_parent.index()].children.remove(pos);
     self.nodes[child.index()].parent = None;
+    self.record_child_list_mutation(old_parent);
     Ok(Some(old_parent))
   }
 
@@ -509,18 +510,26 @@ impl Document {
   }
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
-    let node = self.node_checked_mut(node)?;
-    match &mut node.kind {
-      NodeKind::Text { content } => {
-        if content == data {
-          return Ok(false);
+    let node_id = node;
+    let changed = {
+      let node = self.node_checked_mut(node_id)?;
+      match &mut node.kind {
+        NodeKind::Text { content } => {
+          if content == data {
+            return Ok(false);
+          }
+          content.clear();
+          content.push_str(data);
+          true
         }
-        content.clear();
-        content.push_str(data);
-        Ok(true)
+        _ => return Err(DomError::InvalidNodeType),
       }
-      _ => Err(DomError::InvalidNodeType),
+    };
+
+    if changed {
+      self.record_text_mutation(node_id);
     }
+    Ok(changed)
   }
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
     Ok(self.node_checked(node)?.parent)
@@ -595,6 +604,7 @@ impl Document {
       self.nodes[parent.index()]
         .children
         .splice(insertion_idx..insertion_idx, children_to_move);
+      self.record_child_list_mutation(parent);
       return Ok(true);
     }
 
@@ -620,6 +630,7 @@ impl Document {
 
       self.nodes[parent.index()].children.remove(current_idx);
       self.nodes[parent.index()].children.insert(insertion_idx, new_child);
+      self.record_child_list_mutation(parent);
       return Ok(true);
     }
 
@@ -631,6 +642,7 @@ impl Document {
       .children
       .insert(insertion_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
+    self.record_child_list_mutation(parent);
     Ok(true)
   }
 
@@ -646,6 +658,7 @@ impl Document {
       .ok_or(DomError::NotFoundError)?;
     self.nodes[parent.index()].children.remove(idx);
     self.nodes[child.index()].parent = None;
+    self.record_child_list_mutation(parent);
     Ok(true)
   }
 
@@ -708,6 +721,7 @@ impl Document {
       self.nodes[parent.index()].children.remove(old_child_idx + inserted_len);
       self.nodes[old_child.index()].parent = None;
 
+      self.record_child_list_mutation(parent);
       return Ok(true);
     }
 
@@ -734,6 +748,7 @@ impl Document {
       .children
       .insert(old_child_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
+    self.record_child_list_mutation(parent);
     Ok(true)
   }
 }

@@ -5,6 +5,7 @@ use crate::web::dom::DocumentReadyState;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
+use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
@@ -113,12 +114,39 @@ pub struct Node {
   pub mathml_annotation_xml_integration_point: bool,
 }
 
+/// Summary of DOM mutations recorded since the last call to [`Document::take_mutations`].
+///
+/// This is used by `BrowserDocumentDom2` (and other hosts) to implement incremental invalidation
+/// without requiring callers to manually classify changes.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct MutationLog {
+  pub(crate) attribute_changed: FxHashSet<NodeId>,
+  pub(crate) text_changed: FxHashSet<NodeId>,
+  /// Parent nodes whose child list changed (insert/remove/reorder).
+  pub(crate) child_list_changed: FxHashSet<NodeId>,
+}
+
+impl MutationLog {
+  pub(crate) fn is_empty(&self) -> bool {
+    self.attribute_changed.is_empty()
+      && self.text_changed.is_empty()
+      && self.child_list_changed.is_empty()
+  }
+
+  pub(crate) fn clear(&mut self) {
+    self.attribute_changed.clear();
+    self.text_changed.clear();
+    self.child_list_changed.clear();
+  }
+}
+
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
   ready_state: DocumentReadyState,
   events: web_events::EventListenerRegistry,
   scripting_enabled: bool,
+  mutations: MutationLog,
 }
 
 impl Clone for Document {
@@ -131,6 +159,8 @@ impl Clone for Document {
       // registry so callers can snapshot structure without inheriting the old event graph.
       events: web_events::EventListenerRegistry::new(),
       scripting_enabled: self.scripting_enabled,
+      // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
+      mutations: MutationLog::default(),
     }
   }
 }
@@ -263,6 +293,8 @@ impl Document {
       ready_state: self.ready_state,
       events: self.events.clone(),
       scripting_enabled: self.scripting_enabled,
+      // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
+      mutations: MutationLog::default(),
     }
   }
 
@@ -325,6 +357,7 @@ impl Document {
       ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
       scripting_enabled,
+      mutations: MutationLog::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -373,6 +406,31 @@ impl Document {
 
   pub fn nodes_len(&self) -> usize {
     self.nodes.len()
+  }
+
+  /// Take (and clear) the accumulated mutation log.
+  pub(crate) fn take_mutations(&mut self) -> MutationLog {
+    std::mem::take(&mut self.mutations)
+  }
+
+  /// Clear any accumulated mutation records.
+  pub(crate) fn clear_mutations(&mut self) {
+    self.mutations.clear();
+  }
+
+  #[inline]
+  fn record_attribute_mutation(&mut self, node: NodeId) {
+    self.mutations.attribute_changed.insert(node);
+  }
+
+  #[inline]
+  fn record_text_mutation(&mut self, node: NodeId) {
+    self.mutations.text_changed.insert(node);
+  }
+
+  #[inline]
+  fn record_child_list_mutation(&mut self, parent: NodeId) {
+    self.mutations.child_list_changed.insert(parent);
   }
 
   fn node_checked(&self, id: NodeId) -> Result<&Node, DomError> {

@@ -80,42 +80,58 @@ impl Document {
     name: &str,
     value: &str,
   ) -> Result<bool, DomError> {
-    let node = self.node_checked_mut(node)?;
-    let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-      return Err(DomError::InvalidNodeType);
+    let node_id = node;
+    let changed = {
+      let node = self.node_checked_mut(node_id)?;
+      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
+        return Err(DomError::InvalidNodeType);
+      };
+
+      if let Some((_, existing)) = attrs
+        .iter_mut()
+        .find(|(k, _)| name_matches(k.as_str(), name, is_html))
+      {
+        if existing == value {
+          return Ok(false);
+        }
+        existing.clear();
+        existing.push_str(value);
+        true
+      } else {
+        attrs.push((name.to_string(), value.to_string()));
+        true
+      }
     };
 
-    if let Some((_, existing)) = attrs
-      .iter_mut()
-      .find(|(k, _)| name_matches(k.as_str(), name, is_html))
-    {
-      if existing == value {
-        return Ok(false);
-      }
-      existing.clear();
-      existing.push_str(value);
-      return Ok(true);
+    if changed {
+      self.record_attribute_mutation(node_id);
     }
-
-    attrs.push((name.to_string(), value.to_string()));
-    Ok(true)
+    Ok(changed)
   }
 
   pub fn remove_attribute(&mut self, node: NodeId, name: &str) -> Result<bool, DomError> {
-    let node = self.node_checked_mut(node)?;
-    let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-      return Err(DomError::InvalidNodeType);
+    let node_id = node;
+    let changed = {
+      let node = self.node_checked_mut(node_id)?;
+      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
+        return Err(DomError::InvalidNodeType);
+      };
+
+      if let Some(idx) = attrs
+        .iter()
+        .position(|(k, _)| name_matches(k.as_str(), name, is_html))
+      {
+        attrs.remove(idx);
+        true
+      } else {
+        false
+      }
     };
 
-    if let Some(idx) = attrs
-      .iter()
-      .position(|(k, _)| name_matches(k.as_str(), name, is_html))
-    {
-      attrs.remove(idx);
-      return Ok(true);
+    if changed {
+      self.record_attribute_mutation(node_id);
     }
-
-    Ok(false)
+    Ok(changed)
   }
 
   pub fn set_bool_attribute(
@@ -125,18 +141,26 @@ impl Document {
     present: bool,
   ) -> Result<bool, DomError> {
     if present {
-      let node = self.node_checked_mut(node)?;
-      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
-        return Err(DomError::InvalidNodeType);
+      let node_id = node;
+      let changed = {
+        let node = self.node_checked_mut(node_id)?;
+        let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
+          return Err(DomError::InvalidNodeType);
+        };
+        if attrs
+          .iter()
+          .any(|(k, _)| name_matches(k.as_str(), name, is_html))
+        {
+          false
+        } else {
+          attrs.push((name.to_string(), String::new()));
+          true
+        }
       };
-      if attrs
-        .iter()
-        .any(|(k, _)| name_matches(k.as_str(), name, is_html))
-      {
-        return Ok(false);
+      if changed {
+        self.record_attribute_mutation(node_id);
       }
-      attrs.push((name.to_string(), String::new()));
-      Ok(true)
+      Ok(changed)
     } else {
       self.remove_attribute(node, name)
     }

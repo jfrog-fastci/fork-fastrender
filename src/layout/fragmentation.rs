@@ -2157,7 +2157,7 @@ fn clip_grid_item_parallel_for_page(
     return Ok(None);
   }
 
-  let Some(clipped_root) = clip_node(
+  let Some(mut clipped_root) = clip_node(
     &flow_root,
     axis,
     start,
@@ -2180,7 +2180,9 @@ fn clip_grid_item_parallel_for_page(
     return Ok(Some(clipped_root));
   }
 
-  let mut iter = clipped_root.children.into_iter();
+  // `FragmentNode` implements a custom `Drop` to avoid recursive destruction, so we must not move
+  // fields out directly. Take the children list out and leave an empty placeholder instead.
+  let mut iter = std::mem::take(&mut clipped_root.children).into_iter();
   let Some(mut item_fragment) = iter.next() else {
     return Ok(None);
   };

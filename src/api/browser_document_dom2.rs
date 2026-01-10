@@ -4,12 +4,31 @@ use crate::geometry::Point;
 use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use crate::tree::box_tree::{BoxNode, BoxType};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
+
+/// Counters describing how `BrowserDocumentDom2` satisfied invalidations over time.
+///
+/// These are intended for tests and performance diagnostics; they are conservative and prioritize
+/// correctness over minimality (i.e. a fall back to a full pipeline run is counted as "full" even if
+/// only a small part of the document changed).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserDocumentDom2InvalidationCounters {
+  /// Full style recomputations (cascade + layout).
+  pub full_restyles: u64,
+  /// Incremental style recomputations (not yet implemented; reserved for future work).
+  pub incremental_restyles: u64,
+  /// Full layout recomputations that included a restyle.
+  pub full_relayouts: u64,
+  /// Layout recomputations performed without rerunning cascade.
+  pub incremental_relayouts: u64,
+}
 
 /// Mutable, multi-frame renderer backed by a live `dom2` document.
 ///
@@ -27,6 +46,10 @@ pub struct BrowserDocumentDom2 {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  dirty_style_nodes: FxHashSet<crate::dom2::NodeId>,
+  dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
+  dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
+  invalidation_counters: BrowserDocumentDom2InvalidationCounters,
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
@@ -63,6 +86,10 @@ impl BrowserDocumentDom2 {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      dirty_style_nodes: FxHashSet::default(),
+      dirty_text_nodes: FxHashSet::default(),
+      dirty_structure_nodes: FxHashSet::default(),
+      invalidation_counters: BrowserDocumentDom2InvalidationCounters::default(),
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
@@ -167,6 +194,9 @@ impl BrowserDocumentDom2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
     self.animation_timeline_origin = None;
   }
 
@@ -204,23 +234,37 @@ impl BrowserDocumentDom2 {
 
   /// Returns a mutable reference to the live `dom2` document, marking the document dirty.
   ///
-  /// MVP invalidation: any mutation to the DOM is treated as a full structural/style change.
+  /// Note: `dom_mut()` is intentionally conservative. Callers that want incremental invalidation
+  /// should prefer [`BrowserDocumentDom2::mutate_dom`] or JS bindings that route mutations through
+  /// `DomHost::mutate_dom`.
   pub fn dom_mut(&mut self) -> &mut crate::dom2::Document {
     self.invalidate_all();
+    self.dom.clear_mutations();
     self.dom.as_mut()
   }
 
   /// Mutates the DOM tree, marking the document dirty only when `f` reports that it changed
   /// something.
   ///
-  /// MVP invalidation: any mutation to the DOM is treated as a full structural/style change.
+  /// When possible, mutations are classified to avoid re-running expensive pipeline stages (e.g.
+  /// text updates can often skip cascade).
   pub fn mutate_dom<F>(&mut self, f: F) -> bool
   where
     F: FnOnce(&mut crate::dom2::Document) -> bool,
   {
     let changed = f(self.dom.as_mut());
     if changed {
-      self.invalidate_all();
+      let mutations = self.dom.take_mutations();
+      if mutations.is_empty() {
+        // The caller reported changes but we have no structured mutation data (e.g. direct `node_mut`
+        // edits). Fall back to a full invalidation to preserve correctness.
+        self.invalidate_all();
+      } else {
+        self.apply_mutation_log(mutations);
+      }
+    } else {
+      // Ensure no stale mutation records linger across no-op closures.
+      self.dom.clear_mutations();
     }
     changed
   }
@@ -232,6 +276,8 @@ impl BrowserDocumentDom2 {
   /// Updates the viewport size (in CSS px), marking layout+paint dirty.
   pub fn set_viewport(&mut self, width: u32, height: u32) {
     self.options.viewport = Some((width, height));
+    // Viewport changes can affect media queries and thus cascade.
+    self.style_dirty = true;
     self.layout_dirty = true;
     self.paint_dirty = true;
   }
@@ -244,6 +290,8 @@ impl BrowserDocumentDom2 {
     let sanitized = super::sanitize_scale(Some(dpr));
     if sanitized != self.options.device_pixel_ratio {
       self.options.device_pixel_ratio = sanitized;
+      // DPR affects media queries (`resolution`) and resource selection (`image-set`).
+      self.style_dirty = true;
       self.layout_dirty = true;
       self.paint_dirty = true;
     }
@@ -281,6 +329,12 @@ impl BrowserDocumentDom2 {
   /// available.
   pub fn last_dom_mapping(&self) -> Option<&crate::dom2::RendererDomMapping> {
     self.last_dom_mapping.as_ref()
+  }
+
+  /// Returns counters describing how invalidations have been satisfied over this document's
+  /// lifetime.
+  pub fn invalidation_counters(&self) -> BrowserDocumentDom2InvalidationCounters {
+    self.invalidation_counters
   }
 
   /// Translate a renderer/cascade 1-based preorder id (see `crate::dom::enumerate_dom_ids`) back to
@@ -347,42 +401,88 @@ impl BrowserDocumentDom2 {
 
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
-      let prev_prepared = self.prepared.take();
-      let mut prepared = match self.prepare_dom_with_options() {
-        Ok(prepared) => prepared,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          return Err(err);
-        }
-      };
+      // Layout without style changes can often avoid a full cascade by patching the existing box tree
+      // and rerunning only layout (e.g. text content changes).
+      let can_incremental_relayout = !self.style_dirty
+        && self.layout_dirty
+        && !self.dirty_text_nodes.is_empty()
+        && self.dirty_style_nodes.is_empty()
+        && self.dirty_structure_nodes.is_empty()
+        && self.prepared.is_some()
+        && self.last_dom_mapping.is_some();
 
-      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
-      match now_ms {
-        None => {
-          prepared.fragment_tree.transition_state = None;
-        }
-        Some(now_ms) => {
-          let prev_state = prev_prepared
-            .as_ref()
-            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
-          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
-          let mut transition_state = TransitionState::update_for_style_change(
-            prev_state,
-            prev_box_tree,
-            prepared.box_tree(),
-            now_ms,
-          );
-          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
-          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
+      let mut did_incremental_layout = false;
+      if can_incremental_relayout {
+        let mut prepared = self
+          .prepared
+          .take()
+          .expect("prepared exists when can_incremental_relayout=true");
+        match self.incremental_relayout_for_text_changes(&mut prepared) {
+          Ok(true) => {
+            self.invalidation_counters.incremental_relayouts =
+              self.invalidation_counters.incremental_relayouts.saturating_add(1);
+            self.prepared = Some(prepared);
+            did_incremental_layout = true;
+          }
+          Ok(false) => {
+            // Could not safely apply incremental relayout; fall back to a full pipeline run.
+            self.prepared = Some(prepared);
+          }
+          Err(err) => {
+            // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
+            self.prepared = Some(prepared);
+            return Err(err);
+          }
         }
       }
 
-      self.prepared = Some(prepared);
+      if !did_incremental_layout {
+        let prev_prepared = self.prepared.take();
+        let mut prepared = match self.prepare_dom_with_options() {
+          Ok(prepared) => prepared,
+          Err(err) => {
+            self.prepared = prev_prepared;
+            return Err(err);
+          }
+        };
+
+        self.invalidation_counters.full_restyles =
+          self.invalidation_counters.full_restyles.saturating_add(1);
+        self.invalidation_counters.full_relayouts =
+          self.invalidation_counters.full_relayouts.saturating_add(1);
+
+        let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+        match now_ms {
+          None => {
+            prepared.fragment_tree.transition_state = None;
+          }
+          Some(now_ms) => {
+            let prev_state = prev_prepared
+              .as_ref()
+              .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+            let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+            let mut transition_state = TransitionState::update_for_style_change(
+              prev_state,
+              prev_box_tree,
+              prepared.box_tree(),
+              now_ms,
+            );
+            transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+            prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
+          }
+        }
+
+        self.prepared = Some(prepared);
+      }
+
       // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent
       // paint step is cancelled or fails. Clear the layout dirtiness so callers can retry paint
       // from cache without re-running cascade/layout.
       self.style_dirty = false;
       self.layout_dirty = false;
+      self.dirty_style_nodes.clear();
+      self.dirty_text_nodes.clear();
+      self.dirty_structure_nodes.clear();
       // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
       // can be retried.
       self.paint_dirty = true;
@@ -531,6 +631,9 @@ impl BrowserDocumentDom2 {
     self.style_dirty = true;
     self.layout_dirty = true;
     self.paint_dirty = true;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
   }
 
   #[inline]
@@ -538,11 +641,201 @@ impl BrowserDocumentDom2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = false;
+    self.dirty_style_nodes.clear();
+    self.dirty_text_nodes.clear();
+    self.dirty_structure_nodes.clear();
   }
 
   #[inline]
   pub fn is_dirty(&self) -> bool {
     self.style_dirty || self.layout_dirty || self.paint_dirty
+  }
+
+  fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) {
+    // Treat changes in disconnected/inert subtrees as non-render-affecting.
+    for node in mutations.attribute_changed {
+      if self.dom.is_connected_for_scripting(node) {
+        self.dirty_style_nodes.insert(node);
+      }
+    }
+
+    for node in mutations.text_changed {
+      if !self.dom.is_connected_for_scripting(node) {
+        continue;
+      }
+      // Text changes inside <style> elements affect the stylesheet and require a full restyle.
+      if self.text_node_affects_stylesheet(node) {
+        self.dirty_style_nodes.insert(node);
+      } else {
+        self.dirty_text_nodes.insert(node);
+      }
+    }
+
+    for parent in mutations.child_list_changed {
+      if self.dom.is_connected_for_scripting(parent) {
+        self.dirty_structure_nodes.insert(parent);
+      }
+    }
+
+    // Upgrade to the minimal set of coarse invalidation flags we can currently satisfy.
+    if !self.dirty_structure_nodes.is_empty() || !self.dirty_style_nodes.is_empty() {
+      self.style_dirty = true;
+      self.layout_dirty = true;
+      self.paint_dirty = true;
+      return;
+    }
+
+    if !self.dirty_text_nodes.is_empty() {
+      self.layout_dirty = true;
+      self.paint_dirty = true;
+    }
+  }
+
+  fn text_node_affects_stylesheet(&self, node: crate::dom2::NodeId) -> bool {
+    let parent = self.dom.parent_node(node);
+    let Some(parent) = parent else {
+      return false;
+    };
+    let parent_node = self.dom.node(parent);
+    match &parent_node.kind {
+      crate::dom2::NodeKind::Element {
+        tag_name, namespace, ..
+      } => namespace.is_empty() && tag_name.eq_ignore_ascii_case("style"),
+      _ => false,
+    }
+  }
+
+  fn incremental_relayout_for_text_changes(&mut self, prepared: &mut PreparedDocument) -> Result<bool> {
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      // Missing mapping implies we can't reliably map dom2 nodes to box-tree styled ids.
+      return Ok(false);
+    };
+
+    // Map dom2 text node ids to renderer preorder ids (styled_node_id) for box lookup.
+    let mut updates: FxHashMap<usize, String> = FxHashMap::default();
+    for &node in &self.dirty_text_nodes {
+      let Some(preorder) = mapping.preorder_for_node_id(node) else {
+        // Mapping mismatch: fall back to a full pipeline run.
+        return Ok(false);
+      };
+      let text = match &self.dom.node(node).kind {
+        crate::dom2::NodeKind::Text { content } => content.clone(),
+        _ => return Ok(false),
+      };
+      updates.insert(preorder, text);
+    }
+
+    if !updates.is_empty() {
+      apply_text_updates_to_box_tree(&mut prepared.box_tree.root, &updates);
+    }
+
+    // Snapshot animation timing once so the layout/transition update is consistent within the call.
+    let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+
+    let options = self.options.clone();
+    let toggles = self.renderer.resolve_runtime_toggles(&options);
+    let _toggles_guard =
+      super::RuntimeTogglesSwap::new(&mut self.renderer.runtime_toggles, toggles.clone());
+
+    crate::debug::runtime::with_runtime_toggles(toggles, || {
+      let trace = super::TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span = trace_handle.span("browser_document_dom2_incremental_relayout", "pipeline");
+
+      let shared_diagnostics = self
+        .renderer
+        .diagnostics
+        .as_ref()
+        .map(|diag| super::SharedRenderDiagnostics {
+          inner: std::sync::Arc::clone(diag),
+        });
+      let context = Some(self.renderer.build_resource_context(
+        self.renderer.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.renderer.push_resource_context(context);
+
+      let result = (|| -> Result<()> {
+        let deadline =
+          crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+        let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+        crate::render_control::check_active(RenderStage::Layout).map_err(Error::Render)?;
+
+        let memory_sampling_enabled = options.stage_mem_budget_bytes.is_some();
+        let layout_rss_start = memory_sampling_enabled
+          .then(crate::memory::current_rss_bytes)
+          .flatten();
+        super::check_stage_mem_budget(
+          RenderStage::Layout,
+          layout_rss_start,
+          options.stage_mem_budget_bytes,
+        )?;
+
+        crate::render_control::record_stage(crate::render_control::StageHeartbeat::Layout);
+        let _layout_span = trace_handle.span("layout_tree", "layout");
+        let mut fragment_tree = self
+          .renderer
+          .layout_engine
+          .layout_tree_with_trace(&prepared.box_tree, trace_handle)
+          .map_err(super::map_formatting_layout_error)?;
+        drop(_layout_span);
+
+        // Preserve (and refresh) transition state across incremental relayouts.
+        match now_ms {
+          None => {
+            fragment_tree.transition_state = None;
+          }
+          Some(_now_ms) => {
+            if let Some(prev) = prepared.fragment_tree.transition_state.as_deref() {
+              let mut next = prev.clone();
+              next.capture_layout_from_fragment_tree(&fragment_tree);
+              fragment_tree.transition_state = Some(Arc::new(next));
+            } else {
+              fragment_tree.transition_state = None;
+            }
+          }
+        }
+
+        prepared.fragment_tree = fragment_tree;
+        Ok(())
+      })();
+
+      self
+        .renderer
+        .pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      drop(_root_span);
+      trace.finalize(result)
+    })?;
+
+    Ok(true)
+  }
+}
+
+fn apply_text_updates_to_box_tree(root: &mut BoxNode, updates: &FxHashMap<usize, String>) {
+  let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
+  while let Some(node_ptr) = stack.pop() {
+    // Safety: stack contains pointers to nodes owned by `root` and we never move nodes during the
+    // traversal.
+    unsafe {
+      let node = &mut *node_ptr;
+      if let Some(styled_id) = node.styled_node_id {
+        if let Some(new_text) = updates.get(&styled_id) {
+          if let BoxType::Text(text_box) = &mut node.box_type {
+            text_box.text.clear();
+            text_box.text.push_str(new_text);
+          }
+        }
+      }
+
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut _);
+      }
+      for child in node.children.iter_mut().rev() {
+        stack.push(child as *mut _);
+      }
+    }
   }
 }
 
@@ -560,7 +853,14 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   {
     let (result, changed) = f(self.dom.as_mut());
     if changed {
-      self.invalidate_all();
+      let mutations = self.dom.take_mutations();
+      if mutations.is_empty() {
+        self.invalidate_all();
+      } else {
+        self.apply_mutation_log(mutations);
+      }
+    } else {
+      self.dom.clear_mutations();
     }
     result
   }

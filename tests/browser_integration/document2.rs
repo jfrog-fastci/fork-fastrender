@@ -1,10 +1,29 @@
 use fastrender::{
   BrowserDocument2, BrowserDocumentDom2, FastRender, FontConfig, RenderOptions, Result,
 };
+use fastrender::render_control::{push_stage_listener, StageHeartbeat};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::support;
+
+fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat>> {
+  let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+  let stages_for_listener = Arc::clone(&stages);
+  let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+    stages_for_listener
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .push(stage);
+  })));
+  let _ = f()?;
+  let captured = stages
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+  Ok(captured)
+}
 
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
@@ -217,6 +236,218 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
     .expect("removeAttribute should succeed");
   assert!(!changed);
   assert!(doc.render_if_needed()?.is_none());
+
+  Ok(())
+}
+
+#[test]
+fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let options = RenderOptions::new().with_viewport(64, 32);
+
+  let html_a = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; color: black; }
+          #box { font-size: 16px; font-family: "Noto Sans"; }
+        </style>
+      </head>
+      <body>
+        <div id="box">Hello</div>
+      </body>
+    </html>
+  "#;
+  let html_b = html_a.replace(">Hello<", ">Goodbye<");
+
+  let mut renderer = support::deterministic_renderer();
+  let baseline_a = renderer.render_html_with_options(html_a, options.clone())?;
+  let baseline_b = renderer.render_html_with_options(&html_b, options.clone())?;
+
+  let mut doc = BrowserDocumentDom2::new(support::deterministic_renderer(), html_a, options)?;
+  let frame0 = doc.render_frame()?;
+  assert_eq!(frame0.data(), baseline_a.data());
+
+  let before = doc.invalidation_counters();
+
+  let changed = doc.mutate_dom(|dom| {
+    let box_id = dom.get_element_by_id("box").expect("#box element");
+    let text_id = dom
+      .children(box_id)
+      .expect("#box children")
+      .first()
+      .copied()
+      .expect("#box text child");
+    dom.set_text_data(text_id, "Goodbye").expect("set_text_data")
+  });
+  assert!(changed);
+
+  let mut frame1: Option<fastrender::Pixmap> = None;
+  let stages = capture_stages(|| {
+    frame1 = doc.render_if_needed()?;
+    Ok(())
+  })?;
+  let frame1 = frame1.expect("expected rerender after text mutation");
+  assert_eq!(frame1.data(), baseline_b.data());
+
+  assert!(
+    stages.contains(&StageHeartbeat::Layout),
+    "expected layout stage after text mutation; got {stages:?}"
+  );
+  assert!(
+    !stages.contains(&StageHeartbeat::Cascade),
+    "expected no cascade stage after text mutation; got {stages:?}"
+  );
+  assert!(
+    !stages.contains(&StageHeartbeat::DomParse),
+    "expected no dom_parse stage after text mutation; got {stages:?}"
+  );
+
+  let after = doc.invalidation_counters();
+  assert_eq!(after.full_restyles, before.full_restyles);
+  assert_eq!(after.full_relayouts, before.full_relayouts);
+  assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+  Ok(())
+}
+
+#[test]
+fn browser_document_dom2_attribute_mutation_triggers_restyle() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let options = RenderOptions::new().with_viewport(64, 64);
+
+  let html_a = r#"
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; }
+          .a { background: rgb(255, 0, 0); }
+          .b { background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body>
+        <div id="box" class="a"></div>
+      </body>
+    </html>
+  "#;
+  let html_b = html_a.replace("class=\"a\"", "class=\"b\"");
+
+  let mut renderer = support::deterministic_renderer();
+  let baseline_a = renderer.render_html_with_options(html_a, options.clone())?;
+  let baseline_b = renderer.render_html_with_options(&html_b, options.clone())?;
+
+  let mut doc = BrowserDocumentDom2::new(support::deterministic_renderer(), html_a, options)?;
+  let frame0 = doc.render_frame()?;
+  assert_eq!(frame0.data(), baseline_a.data());
+
+  let before = doc.invalidation_counters();
+
+  let changed = doc.mutate_dom(|dom| {
+    let box_id = dom.get_element_by_id("box").expect("#box element");
+    dom
+      .set_attribute(box_id, "class", "b")
+      .expect("set_attribute")
+  });
+  assert!(changed);
+
+  let mut frame1: Option<fastrender::Pixmap> = None;
+  let stages = capture_stages(|| {
+    frame1 = doc.render_if_needed()?;
+    Ok(())
+  })?;
+  let frame1 = frame1.expect("expected rerender after attribute mutation");
+  assert_eq!(frame1.data(), baseline_b.data());
+
+  assert!(
+    stages.contains(&StageHeartbeat::Cascade),
+    "expected cascade stage after attribute mutation; got {stages:?}"
+  );
+
+  let after = doc.invalidation_counters();
+  assert_eq!(after.full_restyles, before.full_restyles + 1);
+  assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+  assert_eq!(after.incremental_relayouts, before.incremental_relayouts);
+
+  Ok(())
+}
+
+#[test]
+fn browser_document_dom2_insert_remove_triggers_recompute() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let options = RenderOptions::new().with_viewport(64, 64);
+
+  let html_empty = r#"
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+  let html_with_box = r#"
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body><div id="box"></div></body>
+    </html>
+  "#;
+
+  let mut renderer = support::deterministic_renderer();
+  let baseline_empty = renderer.render_html_with_options(html_empty, options.clone())?;
+  let baseline_with_box = renderer.render_html_with_options(html_with_box, options.clone())?;
+
+  let mut doc = BrowserDocumentDom2::new(support::deterministic_renderer(), html_empty, options)?;
+  let frame0 = doc.render_frame()?;
+  assert_eq!(frame0.data(), baseline_empty.data());
+
+  let body = doc.dom().body().expect("body element");
+  let box_node = doc.dom_mut().create_element("div", "");
+  doc.render_frame()?; // clear unconditional invalidation from dom_mut() above
+
+  doc
+    .mutate_dom(|dom| {
+      dom
+        .set_attribute(box_node, "id", "box")
+        .expect("set_attribute");
+      dom.append_child(body, box_node).expect("append_child")
+    });
+
+  let mut inserted: Option<fastrender::Pixmap> = None;
+  let stages_insert = capture_stages(|| {
+    inserted = doc.render_if_needed()?;
+    Ok(())
+  })?;
+  let inserted = inserted.expect("expected rerender after insertion");
+  assert_eq!(inserted.data(), baseline_with_box.data());
+  assert!(
+    stages_insert.contains(&StageHeartbeat::Cascade),
+    "expected cascade stage after insertion; got {stages_insert:?}"
+  );
+
+  doc
+    .mutate_dom(|dom| dom.remove_child(body, box_node).expect("remove_child"));
+  let mut removed: Option<fastrender::Pixmap> = None;
+  let stages_remove = capture_stages(|| {
+    removed = doc.render_if_needed()?;
+    Ok(())
+  })?;
+  let removed = removed.expect("expected rerender after removal");
+  assert_eq!(removed.data(), baseline_empty.data());
+  assert!(
+    stages_remove.contains(&StageHeartbeat::Cascade),
+    "expected cascade stage after removal; got {stages_remove:?}"
+  );
 
   Ok(())
 }
