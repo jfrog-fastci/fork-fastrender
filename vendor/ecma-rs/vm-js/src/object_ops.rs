@@ -28,7 +28,19 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
-    if let Some(desc) = self.heap().object_get_own_property(obj, &key)? {
+    self.ordinary_get_own_property_with_tick(obj, key, || Ok(()))
+  }
+
+  pub fn ordinary_get_own_property_with_tick(
+    &self,
+    obj: GcObject,
+    key: PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    if let Some(desc) = self
+      .heap()
+      .object_get_own_property_with_tick(obj, &key, &mut tick)?
+    {
       return Ok(Some(desc));
     }
 
@@ -179,13 +191,37 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    if self.heap().object_get_own_property(obj, &key)?.is_none() {
-      if let Some(value) = self.string_object_get_index_value(obj, &key)? {
-        return Ok(value);
-      }
+    if let Some(desc) = self
+      .heap()
+      .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+    {
+      return match desc.kind {
+        PropertyKind::Data { value, .. } => Ok(value),
+        PropertyKind::Accessor { get, .. } => {
+          if matches!(get, Value::Undefined) {
+            Ok(Value::Undefined)
+          } else {
+            if !self.heap().is_callable(get)? {
+              return Err(VmError::TypeError("accessor getter is not callable"));
+            }
+            // Use `Vm::call` (with a dummy host context) so an embedder-provided
+            // `Vm::with_host_hooks_override` is respected. `call_without_host` always forces the
+            // VM-owned microtask queue, bypassing any active host hooks override.
+            let mut dummy_host = ();
+            vm.call(&mut dummy_host, self, get, receiver, &[])
+          }
+        }
+      };
     }
 
-    let Some(desc) = self.heap().get_property(obj, &key)? else {
+    if let Some(value) = self.string_object_get_index_value(obj, &key)? {
+      return Ok(value);
+    }
+
+    let Some(desc) = self
+      .heap()
+      .get_property_from_prototype_with_tick(obj, &key, || vm.tick())?
+    else {
       return Ok(Value::Undefined);
     };
 
@@ -198,9 +234,6 @@ impl<'a> Scope<'a> {
           if !self.heap().is_callable(get)? {
             return Err(VmError::TypeError("accessor getter is not callable"));
           }
-          // Use `Vm::call` (with a dummy host context) so an embedder-provided
-          // `Vm::with_host_hooks_override` is respected. `call_without_host` always forces the
-          // VM-owned microtask queue, bypassing any active host hooks override.
           let mut dummy_host = ();
           vm.call(&mut dummy_host, self, get, receiver, &[])
         }
@@ -235,7 +268,10 @@ impl<'a> Scope<'a> {
     scope.push_roots(&roots)?;
 
     // Fast path: own property.
-    if let Some(desc) = scope.heap().object_get_own_property(obj, &key)? {
+    if let Some(desc) = scope
+      .heap()
+      .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+    {
       return match desc.kind {
         PropertyKind::Data { value, .. } => Ok(value),
         PropertyKind::Accessor { get, .. } => {
@@ -262,7 +298,10 @@ impl<'a> Scope<'a> {
     }
 
     // Fall back to prototype chain lookup.
-    let Some(desc) = scope.heap().get_property(obj, &key)? else {
+    let Some(desc) = scope
+      .heap()
+      .get_property_from_prototype_with_tick(obj, &key, || vm.tick())?
+    else {
       return Ok(Value::Undefined);
     };
 
@@ -294,7 +333,10 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    let Some(desc) = self.heap().get_property(obj, &key)? else {
+    let Some(desc) = self
+      .heap()
+      .get_property_with_tick(obj, &key, || vm.tick())?
+    else {
       return Ok(Value::Undefined);
     };
     match desc.kind {
@@ -335,7 +377,9 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
-    let mut desc = self.heap().get_property(obj, &key)?;
+    let mut desc = self
+      .heap()
+      .get_property_with_tick(obj, &key, || vm.tick())?;
     if desc.is_none() {
       desc = Some(PropertyDescriptor {
         enumerable: true,
@@ -362,7 +406,7 @@ impl<'a> Scope<'a> {
           return Ok(false);
         };
 
-        let existing_desc = self.ordinary_get_own_property(receiver_obj, key)?;
+        let existing_desc = self.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
         if let Some(existing_desc) = existing_desc {
           if existing_desc.is_accessor_descriptor() {
             return Ok(false);
@@ -434,7 +478,9 @@ impl<'a> Scope<'a> {
       return Ok(result);
     }
 
-    let mut desc = self.heap().get_property(obj, &key)?;
+    let mut desc = self
+      .heap()
+      .get_property_with_tick(obj, &key, || vm.tick())?;
     if desc.is_none() {
       desc = Some(PropertyDescriptor {
         enumerable: true,
@@ -461,7 +507,7 @@ impl<'a> Scope<'a> {
           return Ok(false);
         };
 
-        let existing_desc = self.ordinary_get_own_property(receiver_obj, key)?;
+        let existing_desc = self.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
         if let Some(existing_desc) = existing_desc {
           if existing_desc.is_accessor_descriptor() {
             return Ok(false);

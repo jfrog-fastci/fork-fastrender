@@ -871,8 +871,8 @@ fn build_gradient_lut(
   let span = span.max(1e-6);
   let mut colors = Vec::with_capacity(step_count);
   let mut segments = Vec::with_capacity(step_count);
-  // Store stop positions relative to the first stop so callers can subtract `offset` once and
-  // treat the gradient as spanning [0, span] regardless of where the stop range begins.
+  // Store stop positions relative to the first stop so callers can normalize `t` by subtracting
+  // `offset` once. This supports stop ranges outside `[0, 1]`, including negative stop positions.
   let stop_positions: Vec<f32> = stops.iter().map(|(pos, _)| *pos - offset).collect();
   let stop_colors: Vec<[f32; 4]> = stops
     .iter()

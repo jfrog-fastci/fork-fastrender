@@ -175,7 +175,9 @@ fn get_array_like_args(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Res
   // - read indices 0..length-1 as data properties
   let length_key_s = scope.alloc_string("length")?;
   let length_key = PropertyKey::from_string(length_key_s);
-  let length_desc = scope.heap().get_property(obj, &length_key)?;
+  let length_desc = scope
+    .heap()
+    .get_property_with_tick(obj, &length_key, || vm.tick())?;
   let length_val = match length_desc.map(|d| d.kind) {
     Some(PropertyKind::Data { value, .. }) => value,
     Some(PropertyKind::Accessor { .. }) => {
@@ -207,7 +209,7 @@ fn get_array_like_args(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Res
     }
     let idx_s = scope.alloc_string(&idx.to_string())?;
     let key = PropertyKey::from_string(idx_s);
-    let desc = scope.heap().get_property(obj, &key)?;
+    let desc = scope.heap().get_property_with_tick(obj, &key, || vm.tick())?;
     let value = match desc.map(|d| d.kind) {
       Some(PropertyKind::Data { value, .. }) => value,
       Some(PropertyKind::Accessor { .. }) => {
@@ -502,7 +504,7 @@ pub fn object_keys(
     let PropertyKey::String(key_str) = key else {
       continue;
     };
-    let Some(desc) = scope.ordinary_get_own_property(obj, key)? else {
+    let Some(desc) = scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())? else {
       continue;
     };
     if desc.enumerable {
@@ -559,7 +561,7 @@ pub fn object_assign(
       if j % 1024 == 0 {
         vm.tick()?;
       }
-      let Some(desc) = scope.ordinary_get_own_property(source, key)? else {
+      let Some(desc) = scope.ordinary_get_own_property_with_tick(source, key, || vm.tick())? else {
         continue;
       };
       if !desc.enumerable {
@@ -1374,7 +1376,7 @@ fn get_property_value_with_host(
   key: PropertyKey,
   receiver: Value,
 ) -> Result<Value, VmError> {
-  let Some(desc) = scope.heap().get_property(obj, &key)? else {
+  let Some(desc) = scope.heap().get_property_with_tick(obj, &key, || vm.tick())? else {
     return Ok(Value::Undefined);
   };
 
@@ -1722,7 +1724,10 @@ fn resolve_promise(
     key_scope.push_root(Value::String(then_key_s))?;
     let then_key = PropertyKey::from_string(then_key_s);
 
-    match key_scope.heap().get_property(thenable_obj, &then_key)? {
+    match key_scope
+      .heap()
+      .get_property_with_tick(thenable_obj, &then_key, || vm.tick())?
+    {
       None => Ok(Value::Undefined),
       Some(desc) => match desc.kind {
         PropertyKind::Data { value, .. } => Ok(value),
@@ -3595,11 +3600,12 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
 }
 
 fn get_data_property_value(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   obj: GcObject,
   key: &PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  let Some(desc) = scope.heap().get_property(obj, key)? else {
+  let Some(desc) = scope.heap().get_property_with_tick(obj, key, || vm.tick())? else {
     return Ok(None);
   };
   match desc.kind {
@@ -3792,13 +3798,15 @@ pub fn object_prototype_has_own_property(
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
-  let has = scope.ordinary_get_own_property(obj, key)?.is_some();
+  let has = scope
+    .ordinary_get_own_property_with_tick(obj, key, || vm.tick())?
+    .is_some();
   Ok(Value::Bool(has))
 }
 
-fn get_array_length(scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
+fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
   let length_key = string_key(scope, "length")?;
-  Ok(match get_data_property_value(scope, obj, &length_key)? {
+  Ok(match get_data_property_value(vm, scope, obj, &length_key)? {
     Some(v) => to_length(v),
     None => 0,
   })
@@ -3828,7 +3836,7 @@ pub fn array_prototype_map(
     _ => return Err(VmError::Unimplemented("Array.prototype.map on non-object")),
   };
 
-  let len = get_array_length(scope, this_obj)?;
+  let len = get_array_length(vm, scope, this_obj)?;
 
   let callback = args.first().copied().unwrap_or(Value::Undefined);
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -3844,7 +3852,7 @@ pub fn array_prototype_map(
   for i in 0..len {
     vm.tick()?;
     let key = PropertyKey::from_string(scope.alloc_string(&i.to_string())?);
-    let Some(value) = get_data_property_value(scope, this_obj, &key)? else {
+    let Some(value) = get_data_property_value(vm, scope, this_obj, &key)? else {
       continue;
     };
 
@@ -4695,7 +4703,7 @@ pub fn array_prototype_join(
     _ => return Err(VmError::Unimplemented("Array.prototype.join on non-object")),
   };
 
-  let len = get_array_length(scope, this_obj)?;
+  let len = get_array_length(vm, scope, this_obj)?;
 
   let sep = match args.first().copied() {
     None | Some(Value::Undefined) => scope.alloc_string(",")?,
@@ -4728,7 +4736,7 @@ pub fn array_prototype_join(
     }
 
     let key = PropertyKey::from_string(scope.alloc_string(&i.to_string())?);
-    let value = get_data_property_value(scope, this_obj, &key)?.unwrap_or(Value::Undefined);
+    let value = get_data_property_value(vm, scope, this_obj, &key)?.unwrap_or(Value::Undefined);
     let part = match value {
       Value::Undefined | Value::Null => empty,
       other => scope.to_string(vm, host, hooks, other)?,
@@ -7174,9 +7182,10 @@ pub fn error_prototype_to_string(
   let name_key = string_key(scope, "name")?;
   let message_key = string_key(scope, "message")?;
 
-  let name_value = get_data_property_value(scope, this_obj, &name_key)?.unwrap_or(Value::Undefined);
+  let name_value =
+    get_data_property_value(vm, scope, this_obj, &name_key)?.unwrap_or(Value::Undefined);
   let message_value =
-    get_data_property_value(scope, this_obj, &message_key)?.unwrap_or(Value::Undefined);
+    get_data_property_value(vm, scope, this_obj, &message_key)?.unwrap_or(Value::Undefined);
 
   let name = match name_value {
     Value::Undefined => scope.alloc_string("Error")?,

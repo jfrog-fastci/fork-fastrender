@@ -285,7 +285,7 @@ impl RuntimeEnv {
     Ok(None)
   }
 
-  fn declare_var(&mut self, scope: &mut Scope<'_>, name: &str) -> Result<(), VmError> {
+  fn declare_var(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, name: &str) -> Result<(), VmError> {
     match self.var_env {
       VarEnv::GlobalObject => {
         let global_object = self.global_object;
@@ -297,7 +297,7 @@ impl RuntimeEnv {
         let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
         if key_scope
           .heap()
-          .object_get_own_property(global_object, &key)?
+          .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
           .is_some()
         {
           return Ok(());
@@ -349,7 +349,11 @@ impl RuntimeEnv {
 
     // Distinguish between a missing property (unbound identifier) and a present property whose
     // value is actually `undefined`.
-    if !key_scope.ordinary_has_property(global_object, key)? {
+    if key_scope
+      .heap()
+      .get_property_with_tick(global_object, &key, || vm.tick())?
+      .is_none()
+    {
       return Ok(None);
     }
 
@@ -392,7 +396,10 @@ impl RuntimeEnv {
     key_scope.push_root(value)?;
     let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
-    let has_binding = key_scope.ordinary_has_property(global_object, key)?;
+    let has_binding = key_scope
+      .heap()
+      .get_property_with_tick(global_object, &key, || vm.tick())?
+      .is_some();
     if !has_binding {
       if strict {
         let msg = format!("{name} is not defined");
@@ -406,7 +413,7 @@ impl RuntimeEnv {
 
     if let Some(desc) = key_scope
       .heap()
-      .object_get_own_property(global_object, &key)?
+      .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
     {
       match desc.kind {
         PropertyKind::Data { writable: true, .. } => {
@@ -454,7 +461,7 @@ impl RuntimeEnv {
     // Root the initializer value across var-env binding creation/assignment in case it triggers GC.
     let mut outer_scope = scope.reborrow();
     outer_scope.push_root(value)?;
-    self.declare_var(&mut outer_scope, name)?;
+    self.declare_var(vm, &mut outer_scope, name)?;
 
     match self.var_env {
       VarEnv::GlobalObject => {
@@ -466,7 +473,7 @@ impl RuntimeEnv {
 
         if let Some(desc) = key_scope
           .heap()
-          .object_get_own_property(global_object, &key)?
+          .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
         {
           match desc.kind {
             PropertyKind::Data { writable: true, .. } => {
@@ -1255,7 +1262,7 @@ impl<'a> Evaluator<'a> {
     }
     for name in names {
       self.tick()?;
-      self.env.declare_var(scope, &name)?;
+      self.env.declare_var(self.vm, scope, &name)?;
     }
     Ok(())
   }
@@ -4272,7 +4279,11 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if !key_scope.ordinary_has_property(global_object, key)? {
+          if key_scope
+            .heap()
+            .get_property_with_tick(global_object, &key, || self.tick())?
+            .is_none()
+          {
             return Ok(Value::Bool(true));
           }
 
@@ -4308,7 +4319,11 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if !key_scope.ordinary_has_property(global_object, key)? {
+          if key_scope
+            .heap()
+            .get_property_with_tick(global_object, &key, || self.tick())?
+            .is_none()
+          {
             return Ok(Value::Bool(true));
           }
 
@@ -4861,7 +4876,12 @@ impl<'a> Evaluator<'a> {
         // Root the RHS object across `ToPropertyKey`, which may allocate and trigger GC.
         rhs_scope.push_root(Value::Object(obj))?;
         let key = self.to_property_key_operator(&mut rhs_scope, left)?;
-        Ok(Value::Bool(rhs_scope.ordinary_has_property(obj, key)?))
+        Ok(Value::Bool(
+          rhs_scope
+            .heap()
+            .get_property_with_tick(obj, &key, || self.tick())?
+            .is_some(),
+        ))
       }
       OperatorName::Instanceof => {
         let left = self.eval_expr(scope, &expr.left)?;

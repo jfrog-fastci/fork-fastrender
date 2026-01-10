@@ -982,6 +982,56 @@ fn own_property_keys_collection_consumes_fuel() {
 }
 
 #[test]
+fn property_lookup_consumes_fuel() {
+  fn enumerable_data_desc(value: Value) -> PropertyDescriptor {
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    }
+  }
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+
+  let mut scope = heap.scope();
+  let obj = scope.alloc_object().unwrap();
+  scope.push_root(Value::Object(obj)).unwrap();
+
+  // Construct a large property table *outside* the budgeted region so this test isolates the cost
+  // of `Get(O, P)` for a missing property key (which must linearly scan the property table).
+  let n = 2000;
+  for i in 0..n {
+    let key_s = scope.alloc_string(&format!("p{i}")).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .define_property(obj, key, enumerable_data_desc(Value::Number(i as f64)))
+      .unwrap();
+  }
+
+  let missing_s = scope.alloc_string("missing").unwrap();
+  scope.push_root(Value::String(missing_s)).unwrap();
+  let missing_key = PropertyKey::from_string(missing_s);
+
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // `Get(O, P)` is normally invoked from expression evaluation, which consumes one tick before the
+  // property lookup begins. `Vm::get` is a low-level helper and does not tick at entry, so simulate
+  // an expression tick here.
+  vm.tick().unwrap();
+
+  let err = vm.get(&mut scope, obj, missing_key).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn array_length_shrink_consumes_fuel() {
   fn enumerable_data_desc(value: Value) -> PropertyDescriptor {
     PropertyDescriptor {

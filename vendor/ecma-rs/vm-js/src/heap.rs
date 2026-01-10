@@ -1025,6 +1025,15 @@ impl Heap {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
+    self.object_get_own_property_with_tick(obj, key, || Ok(()))
+  }
+
+  pub fn object_get_own_property_with_tick(
+    &self,
+    obj: GcObject,
+    key: &PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
     // Integer-indexed exotic behaviour for typed arrays.
     //
     // We implement only `Uint8Array` for now: numeric index properties are not stored in the
@@ -1050,9 +1059,19 @@ impl Heap {
         }
       }
     }
-
+ 
     let obj = self.get_object_base(obj)?;
-    for prop in obj.properties.iter() {
+    // Property lookups can scan very large property tables (especially for missing keys). Budget
+    // the scan so deadline/interrupt checks can be observed inside a single `Get(O, P)` operation.
+    //
+    // Note: avoid ticking on the first iteration (`i == 0`) so small property tables do not
+    // effectively double-charge fuel (property access expressions are already charged via the
+    // enclosing expression/statement tick).
+    const TICK_EVERY: usize = 1024;
+    for (i, prop) in obj.properties.iter().enumerate() {
+      if i != 0 && i % TICK_EVERY == 0 {
+        tick()?;
+      }
       if self.property_key_eq(&prop.key, key) {
         return Ok(Some(prop.desc));
       }
@@ -1499,27 +1518,68 @@ impl Heap {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
-    let mut current = Some(obj);
+    self.get_property_with_tick(obj, key, || Ok(()))
+  }
+
+  pub fn get_property_with_tick(
+    &self,
+    obj: GcObject,
+    key: &PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    self.get_property_from_prototype_with_tick_impl(Some(obj), None, key, &mut tick)
+  }
+
+  pub(crate) fn get_property_from_prototype_with_tick(
+    &self,
+    obj: GcObject,
+    key: &PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    self.get_property_from_prototype_with_tick_impl(
+      self.object_prototype(obj)?,
+      Some(obj),
+      key,
+      &mut tick,
+    )
+  }
+
+  fn get_property_from_prototype_with_tick_impl(
+    &self,
+    mut current: Option<GcObject>,
+    initial_visited: Option<GcObject>,
+    key: &PropertyKey,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
     let mut steps = 0usize;
     let mut visited: HashSet<GcObject> = HashSet::new();
-
+    if let Some(obj) = initial_visited {
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      visited.insert(obj);
+    }
+ 
     while let Some(obj) = current {
       if steps >= MAX_PROTOTYPE_CHAIN {
         return Err(VmError::PrototypeChainTooDeep);
       }
       steps += 1;
-
+ 
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
       if !visited.insert(obj) {
         return Err(VmError::PrototypeCycle);
       }
-
-      if let Some(desc) = self.object_get_own_property(obj, key)? {
+ 
+      if let Some(desc) = self.object_get_own_property_with_tick(obj, key, &mut *tick)? {
         return Ok(Some(desc));
       }
-
+ 
       current = self.object_prototype(obj)?;
     }
-
+ 
     Ok(None)
   }
 
