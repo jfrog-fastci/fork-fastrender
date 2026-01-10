@@ -72,8 +72,8 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
   let cases = [
     ("no meta", None, (800, 600)),
     ("device width", Some("width=device-width"), (800, 600)),
-    ("explicit width", Some("width=320"), (320, 600)),
-    ("height only", Some("height=400"), (800, 400)),
+    ("explicit width", Some("width=320"), (320, 240)),
+    ("height only", Some("height=400"), (533, 400)),
     (
       "width and height",
       Some("width=300, height=400"),
@@ -88,7 +88,7 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
     (
       "height derived scale",
       Some("height=400, maximum-scale=2"),
-      (800, 400),
+      (533, 400),
     ),
   ];
 
@@ -116,7 +116,7 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
 fn meta_viewport_drives_vw_vh_and_media_queries() {
   let _lock = super::global_test_lock();
   let cases = [
-    ("narrow red", "width=320", (160, 300), (255, 0, 0, 255)),
+    ("narrow red", "width=320", (160, 120), (255, 0, 0, 255)),
     (
       "zoomed green",
       "width=device-width, initial-scale=2",
@@ -126,7 +126,7 @@ fn meta_viewport_drives_vw_vh_and_media_queries() {
     (
       "height derived green",
       "height=400",
-      (480, 240),
+      (320, 240),
       (0, 200, 0, 255),
     ),
     (

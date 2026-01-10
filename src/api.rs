@@ -4403,14 +4403,18 @@ fn resolve_viewport(
 
   // Apply explicit width/height requests first; these drive the layout viewport directly.
   let requested_visual = resolved.visual_viewport;
+  let mut applied_width = false;
   if let Some(width) = meta.width {
     if let Some(value) = viewport_length_value(width, requested_visual.width) {
       resolved.layout_viewport.width = value.max(1.0);
+      applied_width = true;
     }
   }
+  let mut applied_height = false;
   if let Some(height) = meta.height {
     if let Some(value) = viewport_length_value(height, requested_visual.height) {
       resolved.layout_viewport.height = value.max(1.0);
+      applied_height = true;
     }
   }
 
@@ -4425,20 +4429,29 @@ fn resolve_viewport(
     }
   }
 
-  let mut scale = meta
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum ScaleSource {
+    Default,
+    InitialScale,
+    Width,
+    Height,
+  }
+  let mut scale_source = ScaleSource::Default;
+  let mut scale = if let Some(initial) = meta
     .initial_scale
     .and_then(|value| sanitize_scale(Some(value)))
-    .or_else(|| {
-      meta.width.and_then(|_| {
-        Some((requested_visual.width / resolved.layout_viewport.width).max(f32::EPSILON))
-      })
-    })
-    .or_else(|| {
-      meta.height.and_then(|_| {
-        Some((requested_visual.height / resolved.layout_viewport.height).max(f32::EPSILON))
-      })
-    })
-    .unwrap_or(1.0);
+  {
+    scale_source = ScaleSource::InitialScale;
+    initial
+  } else if meta.width.is_some() {
+    scale_source = ScaleSource::Width;
+    (requested_visual.width / resolved.layout_viewport.width).max(f32::EPSILON)
+  } else if meta.height.is_some() {
+    scale_source = ScaleSource::Height;
+    (requested_visual.height / resolved.layout_viewport.height).max(f32::EPSILON)
+  } else {
+    1.0
+  };
 
   if let Some(min) = min_scale {
     scale = scale.max(min);
@@ -4448,6 +4461,18 @@ fn resolve_viewport(
   }
   scale = sanitize_scale(Some(scale)).unwrap_or(1.0);
   resolved.zoom = scale;
+
+  // When we derive an implicit zoom scale from a single axis (width or height), treat the other
+  // axis as scaled as well unless the author provided an explicit directive.
+  //
+  // This ensures the resolved layout viewport represents the effective CSS viewport size at the
+  // chosen scale, keeping the output pixel dimensions stable when painting at the resulting
+  // device pixel ratio.
+  if scale_source == ScaleSource::Width && !applied_height {
+    resolved.layout_viewport.height = (requested_visual.height / scale).max(1.0);
+  } else if scale_source == ScaleSource::Height && !applied_width {
+    resolved.layout_viewport.width = (requested_visual.width / scale).max(1.0);
+  }
 
   resolved.visual_viewport = Size::new(
     (requested_visual.width / scale).max(1.0),
@@ -4530,7 +4555,7 @@ mod viewport_resolution_tests {
       (
         "narrow width default scale",
         Some("width=320"),
-        (320.0, 600.0),
+        (320.0, 240.0),
         (320.0, 240.0),
         5.0,
       ),
@@ -4551,7 +4576,7 @@ mod viewport_resolution_tests {
       (
         "width with min scale clamp",
         Some("width=320, minimum-scale=3"),
-        (320.0, 600.0),
+        (320.0, 200.0),
         (266.67, 200.0),
         6.0,
       ),
@@ -4565,7 +4590,7 @@ mod viewport_resolution_tests {
       (
         "height only derives scale",
         Some("height=400"),
-        (800.0, 400.0),
+        (533.33, 400.0),
         (533.33, 400.0),
         3.0,
       ),
