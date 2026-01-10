@@ -6364,11 +6364,21 @@ impl GridFormattingContext {
 
     let mut row_offsets: Option<Vec<f32>> = None;
     let mut col_offsets: Option<Vec<f32>> = None;
+    let mut row_alignment: Option<TaffyAlignContent> = None;
+    let mut col_alignment: Option<TaffyAlignContent> = None;
     let mut row_subgrid_ctx: Option<SubgridAxisContext> = None;
     let mut col_subgrid_ctx: Option<SubgridAxisContext> = None;
 
     if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
       if let Ok(container_style) = taffy.style(node_id) {
+        let row_align = container_style
+          .align_content
+          .unwrap_or(taffy::style::AlignContent::Stretch);
+        let col_align = container_style
+          .justify_content
+          .unwrap_or(taffy::style::AlignContent::Stretch);
+        row_alignment = Some(row_align);
+        col_alignment = Some(col_align);
         row_offsets = Some(compute_track_offsets(
           &info.rows,
           bounds.height(),
@@ -6376,9 +6386,7 @@ impl GridFormattingContext {
           padding_bottom,
           border_top,
           border_bottom,
-          container_style
-            .align_content
-            .unwrap_or(taffy::style::AlignContent::Stretch),
+          row_align,
         ));
         col_offsets = Some(compute_track_offsets(
           &info.columns,
@@ -6387,9 +6395,7 @@ impl GridFormattingContext {
           padding_right,
           border_left,
           border_right,
-          container_style
-            .justify_content
-            .unwrap_or(taffy::style::AlignContent::Stretch),
+          col_align,
         ));
       }
     } else {
@@ -6649,8 +6655,14 @@ impl GridFormattingContext {
           {
             let mut start = area_start;
             if mirror_x {
-              if let Some((&span_start, span_end)) = col_offsets.get(1).zip(col_offsets.last()) {
-                start = span_start + (span_end - area_end);
+              if let Some(&span_start) = col_offsets.get(1) {
+                if let Some(mut span_end) = col_offsets.last().copied() {
+                  if col_alignment == Some(TaffyAlignContent::Stretch) {
+                    let content_end = bounds.width() - padding_right - border_right;
+                    span_end = content_end.max(span_end);
+                  }
+                  start = span_start + (span_end - area_end);
+                }
               }
             }
             pos.x = start - padding_origin.x;
@@ -6658,10 +6670,19 @@ impl GridFormattingContext {
         } else if let Some(ctx) = x_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
-          if let Some((start, _)) =
+          if let Some((area_start, area_end)) =
             grid_area_for_positioned_item(&ctx.offsets, mapped_start, mapped_end)
           {
-            pos.x = (start - ctx.node_offset) - padding_origin.x;
+            let area_start = area_start - ctx.node_offset;
+            let area_end = area_end - ctx.node_offset;
+            let mut start = area_start;
+            if mirror_x {
+              if let Some((&span_start, span_end)) = ctx.offsets.get(1).zip(ctx.offsets.last()) {
+                start = span_start + (span_end - (area_end + ctx.node_offset));
+                start -= ctx.node_offset;
+              }
+            }
+            pos.x = start - padding_origin.x;
           }
         }
       }
@@ -6719,8 +6740,14 @@ impl GridFormattingContext {
           {
             let mut start = area_start;
             if mirror_y {
-              if let Some((&span_start, span_end)) = row_offsets.get(1).zip(row_offsets.last()) {
-                start = span_start + (span_end - area_end);
+              if let Some(&span_start) = row_offsets.get(1) {
+                if let Some(mut span_end) = row_offsets.last().copied() {
+                  if row_alignment == Some(TaffyAlignContent::Stretch) {
+                    let content_end = bounds.height() - padding_bottom - border_bottom;
+                    span_end = content_end.max(span_end);
+                  }
+                  start = span_start + (span_end - area_end);
+                }
               }
             }
             pos.y = start - padding_origin.y;
@@ -6728,10 +6755,19 @@ impl GridFormattingContext {
         } else if let Some(ctx) = y_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
-          if let Some((start, _)) =
+          if let Some((area_start, area_end)) =
             grid_area_for_positioned_item(&ctx.offsets, mapped_start, mapped_end)
           {
-            pos.y = (start - ctx.node_offset) - padding_origin.y;
+            let area_start = area_start - ctx.node_offset;
+            let area_end = area_end - ctx.node_offset;
+            let mut start = area_start;
+            if mirror_y {
+              if let Some((&span_start, span_end)) = ctx.offsets.get(1).zip(ctx.offsets.last()) {
+                start = span_start + (span_end - (area_end + ctx.node_offset));
+                start -= ctx.node_offset;
+              }
+            }
+            pos.y = start - padding_origin.y;
           }
         }
       }
@@ -7389,33 +7425,48 @@ impl GridFormattingContext {
 
     let compute_region = |axis: Axis, children: &[FragmentNode]| -> Option<(f32, f32)> {
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
-        let offsets = match axis {
-          Axis::Horizontal => compute_track_offsets(
-            &info.columns,
-            layout.size.width,
-            layout.padding.left,
-            layout.padding.right,
-            layout.border.left,
-            layout.border.right,
+        let (offsets, alignment, content_end) = match axis {
+          Axis::Horizontal => (
+            compute_track_offsets(
+              &info.columns,
+              layout.size.width,
+              layout.padding.left,
+              layout.padding.right,
+              layout.border.left,
+              layout.border.right,
+              container_style
+                .justify_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            ),
             container_style
               .justify_content
               .unwrap_or(TaffyAlignContent::Stretch),
+            layout.size.width - layout.padding.right - layout.border.right,
           ),
-          Axis::Vertical => compute_track_offsets(
-            &info.rows,
-            layout.size.height,
-            layout.padding.top,
-            layout.padding.bottom,
-            layout.border.top,
-            layout.border.bottom,
+          Axis::Vertical => (
+            compute_track_offsets(
+              &info.rows,
+              layout.size.height,
+              layout.padding.top,
+              layout.padding.bottom,
+              layout.border.top,
+              layout.border.bottom,
+              container_style
+                .align_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            ),
             container_style
               .align_content
               .unwrap_or(TaffyAlignContent::Stretch),
+            layout.size.height - layout.padding.bottom - layout.border.bottom,
           ),
         };
         if offsets.len() >= 2 {
           let start = *offsets.get(1)?;
-          let end = *offsets.last()?;
+          let mut end = *offsets.last()?;
+          if alignment == TaffyAlignContent::Stretch {
+            end = content_end.max(end);
+          }
           return Some((start, end));
         }
       }
@@ -7537,6 +7588,15 @@ impl GridFormattingContext {
           if let Some((span_start, span_end)) =
             grid_area_for_item(&col_offsets, 1, track_count.saturating_add(1))
           {
+            let mut span_end = span_end;
+            if container_style
+              .justify_content
+              .unwrap_or(TaffyAlignContent::Stretch)
+              == TaffyAlignContent::Stretch
+            {
+              let content_end = layout.size.width - layout.padding.right - layout.border.right;
+              span_end = content_end.max(span_end);
+            }
             let children = fragment.children_mut();
             for idx in 0..children.len() {
               check_layout_deadline(deadline_counter)?;
@@ -11579,8 +11639,38 @@ impl FormattingContext for GridFormattingContext {
 
           let col_line_count = grid_line_count_from_offsets(&col_offsets);
           let row_line_count = grid_line_count_from_offsets(&row_offsets);
-          let col_span = mirror_x.then(|| col_offsets.get(1).copied().zip(col_offsets.last().copied())).flatten();
-          let row_span = mirror_y.then(|| row_offsets.get(1).copied().zip(row_offsets.last().copied())).flatten();
+          let row_alignment = container_style
+            .align_content
+            .unwrap_or(taffy::style::AlignContent::Stretch);
+          let col_alignment = container_style
+            .justify_content
+            .unwrap_or(taffy::style::AlignContent::Stretch);
+          let col_span = mirror_x
+            .then(|| {
+              let span_start = col_offsets.get(1).copied()?;
+              let grid_end = col_offsets.last().copied()?;
+              let span_end = if col_alignment == taffy::style::AlignContent::Stretch {
+                let content_end = fragment.bounds.width() - padding_right - border_right;
+                content_end.max(grid_end)
+              } else {
+                grid_end
+              };
+              Some((span_start, span_end))
+            })
+            .flatten();
+          let row_span = mirror_y
+            .then(|| {
+              let span_start = row_offsets.get(1).copied()?;
+              let grid_end = row_offsets.last().copied()?;
+              let span_end = if row_alignment == taffy::style::AlignContent::Stretch {
+                let content_end = fragment.bounds.height() - padding_bottom - border_bottom;
+                content_end.max(grid_end)
+              } else {
+                grid_end
+              };
+              Some((span_start, span_end))
+            })
+            .flatten();
 
           for child in &positioned_children {
             let mut pos = Point::ZERO;

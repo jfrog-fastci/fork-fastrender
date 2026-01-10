@@ -6,6 +6,7 @@ use fastrender::style::types::AlignItems;
 use fastrender::style::types::AspectRatio;
 use fastrender::style::types::Direction;
 use fastrender::style::types::GridTrack;
+use fastrender::style::types::JustifyContent;
 use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
@@ -166,6 +167,10 @@ fn subgrid_contributes_to_parent_column_track_sizing() {
   parent_style.grid_template_columns = vec![GridTrack::Auto, GridTrack::Auto];
   parent_style.grid_template_rows = vec![GridTrack::Auto];
   parent_style.width = Some(Length::px(200.0));
+  // Prevent `justify-content: normal` (the default) from stretching auto tracks, which would make
+  // the expected track offsets dependent on the remaining free space rather than the intrinsic
+  // contributions we want to assert here.
+  parent_style.justify_content = JustifyContent::Start;
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
@@ -647,6 +652,9 @@ fn nested_subgrid_gap_difference_accumulates() {
   parent_style.height = Some(Length::px(50.0));
   parent_style.align_items = AlignItems::Stretch;
   parent_style.justify_items = AlignItems::Stretch;
+  // Avoid the `justify-content: normal` used value of `stretch` distributing extra space into the
+  // auto tracks, which would obscure the virtual-item margin contribution we're testing.
+  parent_style.justify_content = JustifyContent::Start;
 
   // Outer subgrid spans all columns and requests a smaller gap than the parent.
   let mut outer_style = ComputedStyle::default();
@@ -1475,6 +1483,9 @@ fn subgrid_children_shape_parent_tracks_and_gaps() {
   parent_style.grid_column_gap = Length::px(5.0);
   parent_style.grid_row_gap = Length::px(6.0);
   parent_style.width = Some(Length::px(300.0));
+  // Keep auto track sizes determined by their content contributions so we can assert the inherited
+  // offsets and gaps precisely.
+  parent_style.justify_content = JustifyContent::Start;
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
