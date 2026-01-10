@@ -89,13 +89,25 @@ fn suite_smoke_report_classifies_expected_failures() {
     .iter()
     .find(|r| r.id == "smoke/infinite_loop_timeout.window.js")
     .expect("missing infinite_loop_timeout.window.js");
-  assert!(
-    matches!(
-      infinite_loop_timeout.outcome,
-      TestOutcome::TimedOut | TestOutcome::Errored
-    ),
-    "infinite_loop_timeout.window.js should time out (or error): {infinite_loop_timeout:#?}"
-  );
+  match backend {
+    BackendSelection::VmJs => {
+      assert_eq!(
+        infinite_loop_timeout.outcome,
+        TestOutcome::TimedOut,
+        "infinite_loop_timeout.window.js should time out under vmjs: {infinite_loop_timeout:#?}"
+      );
+    }
+    BackendSelection::QuickJs => {
+      assert!(
+        matches!(
+          infinite_loop_timeout.outcome,
+          TestOutcome::TimedOut | TestOutcome::Errored
+        ),
+        "infinite_loop_timeout.window.js should time out (or error) under quickjs: {infinite_loop_timeout:#?}"
+      );
+    }
+    BackendSelection::Auto => unreachable!("suite_smoke selects an explicit backend"),
+  }
   assert!(
     infinite_loop_timeout.expected_mismatch,
     "expected xfail should be marked expected_mismatch: {infinite_loop_timeout:#?}"
