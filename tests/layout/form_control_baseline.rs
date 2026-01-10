@@ -159,6 +159,8 @@ fn inline_text_like_form_controls_use_text_baseline() {
         placeholder_style: None,
         size_attr: None,
         kind: TextControlKind::Plain,
+        caret: 0,
+        selection: None,
       },
     ),
     (
@@ -169,6 +171,8 @@ fn inline_text_like_form_controls_use_text_baseline() {
         placeholder_style: None,
         rows: None,
         cols: None,
+        caret: 0,
+        selection: None,
       },
     ),
     (
@@ -255,6 +259,8 @@ fn inline_baseline_accounts_for_centered_form_control_text() {
         placeholder_style: None,
         size_attr: None,
         kind: TextControlKind::Plain,
+        caret: 0,
+        selection: None,
       },
     ),
     ("input-button", FormControlKind::Button { label: "Ok".to_string() }),
@@ -284,6 +290,8 @@ fn inline_baseline_accounts_for_centered_form_control_text() {
       placeholder_style: None,
       rows: None,
       cols: None,
+      caret: 0,
+      selection: None,
     },
   )];
 

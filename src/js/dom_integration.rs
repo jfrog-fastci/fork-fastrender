@@ -157,7 +157,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     .ok()
     .flatten()
     .map(|value| {
-      let value = trim_ascii_whitespace(value);
+      let value = super::trim_ascii_whitespace(value);
       if value.eq_ignore_ascii_case("use-credentials") {
         crate::resource::CorsMode::UseCredentials
       } else {

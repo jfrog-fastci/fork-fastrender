@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 fn assert_flex_root_min_width_case(
   mut container_style: ComputedStyle,
+  min_width: Length,
   expected_root_border_box_width: f32,
   expected_child_1_x: f32,
   expected_child_2_x: f32,
@@ -19,7 +20,7 @@ fn assert_flex_root_min_width_case(
   container_style.justify_content = JustifyContent::FlexEnd;
   container_style.width = None;
   container_style.width_keyword = None;
-  container_style.min_width = Some(Length::px(400.0));
+  container_style.min_width = Some(min_width);
   container_style.min_width_keyword = None;
 
   let mut child_style = ComputedStyle::default();
@@ -79,6 +80,7 @@ fn flex_root_auto_width_respects_min_width() {
   let style = ComputedStyle::default();
   assert_flex_root_min_width_case(
     style,
+    Length::px(400.0),
     /* expected_root_border_box_width */ 400.0,
     /* expected_child_1_x */ 300.0,
     /* expected_child_2_x */ 350.0,
@@ -94,6 +96,7 @@ fn flex_root_auto_width_respects_min_width_with_padding_content_box() {
   // min-width: 400px constrains the *content* width, so padding expands the border-box width.
   assert_flex_root_min_width_case(
     style,
+    Length::px(400.0),
     /* expected_root_border_box_width */ 420.0,
     /* expected_child_1_x */ 310.0,
     /* expected_child_2_x */ 360.0,
@@ -109,8 +112,54 @@ fn flex_root_auto_width_respects_min_width_with_padding_border_box() {
   // min-width: 400px constrains the border box, so the content box shrinks by padding.
   assert_flex_root_min_width_case(
     style,
+    Length::px(400.0),
     /* expected_root_border_box_width */ 400.0,
     /* expected_child_1_x */ 290.0,
     /* expected_child_2_x */ 340.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_respects_min_width_percent() {
+  let style = ComputedStyle::default();
+  // Percentage min-width resolves against the available width (200px).
+  assert_flex_root_min_width_case(
+    style,
+    Length::percent(150.0),
+    /* expected_root_border_box_width */ 300.0,
+    /* expected_child_1_x */ 200.0,
+    /* expected_child_2_x */ 250.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_respects_min_width_percent_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  // Default is `box-sizing: content-box`.
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 150% constrains the *content* width, so padding expands the border box.
+  assert_flex_root_min_width_case(
+    style,
+    Length::percent(150.0),
+    /* expected_root_border_box_width */ 320.0,
+    /* expected_child_1_x */ 210.0,
+    /* expected_child_2_x */ 260.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_respects_min_width_percent_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 150% constrains the border box, so the content box shrinks by padding.
+  assert_flex_root_min_width_case(
+    style,
+    Length::percent(150.0),
+    /* expected_root_border_box_width */ 300.0,
+    /* expected_child_1_x */ 190.0,
+    /* expected_child_2_x */ 240.0,
   );
 }
