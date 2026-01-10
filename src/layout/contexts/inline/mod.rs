@@ -6697,10 +6697,14 @@ impl InlineFormattingContext {
         };
 
         if inline_vertical {
+          let (baseline, _height, child_offsets) =
+            compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
           let mut child_inline = box_item.start_edge;
-          let child_block = box_item.content_offset_y;
           let mut children = Vec::with_capacity(box_item.children.len());
-          for child in &box_item.children {
+          for (idx, child) in box_item.children.iter().enumerate() {
+            let child_block =
+              box_item.content_offset_y + baseline + child_offsets[idx]
+                - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment_oriented(
               child,
               child_block,
@@ -6737,10 +6741,13 @@ impl InlineFormattingContext {
             box_item.paint_style(),
           )
         } else {
+          let (baseline, _height, child_offsets) =
+            compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
           let mut child_x = box_item.start_edge;
-          let child_y = box_item.content_offset_y;
           let mut children = Vec::with_capacity(box_item.children.len());
-          for child in &box_item.children {
+          for (idx, child) in box_item.children.iter().enumerate() {
+            let child_y = box_item.content_offset_y + baseline + child_offsets[idx]
+              - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment_oriented(
               child,
               child_y,
@@ -7079,12 +7086,16 @@ impl InlineFormattingContext {
       }
       InlineItem::InlineBox(box_item) => {
         // Recursively create children with horizontal and vertical offsets
+        let (baseline, _height, child_offsets) =
+          compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
         let mut child_x = box_item.start_edge;
-        let child_y = box_item.content_offset_y;
         let children: Vec<_> = box_item
           .children
           .iter()
-          .map(|child| {
+          .enumerate()
+          .map(|(idx, child)| {
+            let child_y = box_item.content_offset_y + baseline + child_offsets[idx]
+              - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment(child, child_x, child_y);
             child_x += child.width();
             fragment
@@ -7876,111 +7887,70 @@ fn ruby_spacing_for_line(
   }
 }
 
+fn compute_inline_items_single_line_layout(
+  children: &[InlineItem],
+  strut_metrics: BaselineMetrics,
+) -> (f32, f32, Vec<f32>) {
+  let mut acc = LineBaselineAccumulator::new(&strut_metrics);
+  let mut offsets = Vec::with_capacity(children.len());
+
+  for child in children {
+    if matches!(child, InlineItem::Floating(_)) {
+      offsets.push(0.0);
+      continue;
+    }
+
+    let vertical_align = child.vertical_align();
+    let metrics = if vertical_align.is_line_relative() {
+      child.baseline_metrics()
+    } else {
+      child.line_metrics()
+    };
+
+    let offset = if vertical_align.is_line_relative() {
+      acc.add_line_relative(&metrics, vertical_align);
+      0.0
+    } else {
+      acc.add_baseline_relative(&metrics, vertical_align, Some(&strut_metrics))
+    };
+
+    offsets.push(offset);
+  }
+
+  let baseline = acc.baseline_position();
+  let height = acc.line_height();
+
+  // Adjust Y offsets for top/bottom aligned items (mirrors `LineBuilder::finish_line`).
+  for (idx, child) in children.iter().enumerate() {
+    if matches!(child, InlineItem::Floating(_)) {
+      continue;
+    }
+    let vertical_align = child.vertical_align();
+    match vertical_align {
+      VerticalAlign::Top => {
+        offsets[idx] = child.baseline_metrics().baseline_offset - baseline;
+      }
+      VerticalAlign::Bottom => {
+        let metrics = child.baseline_metrics();
+        offsets[idx] = height - metrics.height - (baseline - metrics.baseline_offset);
+      }
+      _ => {}
+    }
+  }
+
+  (baseline, height, offsets)
+}
+
 fn compute_inline_box_metrics(
   children: &[InlineItem],
   content_offset_y: f32,
   bottom_inset: f32,
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  let effective_children: Vec<&InlineItem> = children
-    .iter()
-    .filter(|child| {
-      !matches!(
-        child,
-        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
-      )
-    })
-    .collect();
+  let (baseline, line_height, _) = compute_inline_items_single_line_layout(children, fallback);
 
-  if effective_children.is_empty() {
-    let baseline_offset = content_offset_y + fallback.baseline_offset;
-    let ascent = content_offset_y + fallback.ascent;
-    let height = content_offset_y + fallback.height + bottom_inset;
-    let descent = (height - baseline_offset).max(0.0);
-    return BaselineMetrics {
-      baseline_offset,
-      height,
-      ascent,
-      descent,
-      line_gap: fallback.line_gap,
-      // Preserve the authored line-height for vertical-align percentage/length resolution.
-      line_height: fallback.line_height,
-      x_height: fallback.x_height,
-    };
-  }
-
-  let mut content_height: f32 = 0.0;
-  for child in &effective_children {
-    let child_metrics = child.baseline_metrics();
-    content_height = content_height.max(child_metrics.height);
-  }
-
-  let baseline_child = effective_children
-    .iter()
-    .copied()
-    .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or(effective_children[0]);
-  let child_metrics = baseline_child.baseline_metrics();
-
-  let baseline_offset = content_offset_y + child_metrics.baseline_offset;
-  let ascent = content_offset_y + child_metrics.ascent;
-  let height = content_offset_y + content_height + bottom_inset;
-  let descent = (height - baseline_offset).max(0.0);
-
-  BaselineMetrics {
-    baseline_offset,
-    height,
-    ascent,
-    descent,
-    line_gap: child_metrics.line_gap,
-    // Preserve the authored line-height for vertical-align percentage/length resolution.
-    line_height: fallback.line_height,
-    x_height: child_metrics.x_height,
-  }
-}
-
-fn compute_inline_box_line_metrics(
-  children: &[InlineItem],
-  fallback: BaselineMetrics,
-) -> BaselineMetrics {
-  fn metrics_for_item(item: &InlineItem) -> BaselineMetrics {
-    match item {
-      InlineItem::InlineBox(b) => compute_inline_box_line_metrics(&b.children, b.strut_metrics),
-      _ => item.baseline_metrics(),
-    }
-  }
-
-  let effective_children: Vec<&InlineItem> = children
-    .iter()
-    .filter(|child| {
-      !matches!(
-        child,
-        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
-      )
-    })
-    .collect();
-
-  if effective_children.is_empty() {
-    return fallback;
-  }
-
-  let mut content_height: f32 = fallback.height.max(0.0);
-  for child in &effective_children {
-    content_height = content_height.max(metrics_for_item(child).height);
-  }
-
-  let baseline_child = effective_children
-    .iter()
-    .copied()
-    .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or(effective_children[0]);
-  let child_metrics = metrics_for_item(baseline_child);
-
-  let baseline_offset = child_metrics
-    .baseline_offset
-    .max(fallback.baseline_offset)
-    .min(content_height);
-  let height = content_height;
+  let baseline_offset = content_offset_y + baseline;
+  let height = content_offset_y + line_height + bottom_inset;
   let descent = (height - baseline_offset).max(0.0);
 
   BaselineMetrics {
@@ -7988,10 +7958,30 @@ fn compute_inline_box_line_metrics(
     height,
     ascent: baseline_offset,
     descent,
-    line_gap: child_metrics.line_gap,
+    line_gap: fallback.line_gap,
     // Preserve the authored line-height for vertical-align percentage/length resolution.
     line_height: fallback.line_height,
-    x_height: child_metrics.x_height,
+    x_height: fallback.x_height,
+  }
+}
+
+fn compute_inline_box_line_metrics(
+  children: &[InlineItem],
+  fallback: BaselineMetrics,
+) -> BaselineMetrics {
+  let (baseline, height, _) = compute_inline_items_single_line_layout(children, fallback);
+  let baseline_offset = baseline.min(height).max(0.0);
+  let descent = (height - baseline_offset).max(0.0);
+
+  BaselineMetrics {
+    baseline_offset,
+    height,
+    ascent: baseline_offset,
+    descent,
+    line_gap: fallback.line_gap,
+    // Preserve the authored line-height for vertical-align percentage/length resolution.
+    line_height: fallback.line_height,
+    x_height: fallback.x_height,
   }
 }
 

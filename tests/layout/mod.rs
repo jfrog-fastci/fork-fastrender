@@ -155,6 +155,7 @@ mod manual_multicol_breaks;
 mod multicol;
 mod bundled_serif_default_line_metrics;
 mod vertical_align_baseline_relative_sign;
+mod vertical_align_middle_inline_replaced;
 mod nested_absolute;
 mod noscript_layout;
 mod noscript_scripting_enabled_layout;
