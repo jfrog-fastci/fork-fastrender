@@ -104,6 +104,15 @@ fn array_literal_index_get() {
 }
 
 #[test]
+fn array_is_array_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"Array.isArray([1]) && !Array.isArray({}) && !Array.isArray("x")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt
