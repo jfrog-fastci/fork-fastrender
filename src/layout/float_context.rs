@@ -376,42 +376,6 @@ impl FloatSweepState {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ClearanceSideState {
-  cursor: usize,
-  current_y: f32,
-  max_bottom: f32,
-}
-
-impl ClearanceSideState {
-  fn new() -> Self {
-    Self {
-      cursor: 0,
-      current_y: f32::NEG_INFINITY,
-      max_bottom: f32::NEG_INFINITY,
-    }
-  }
-
-  fn reset(&mut self) {
-    *self = Self::new();
-  }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ClearanceSweepState {
-  left: ClearanceSideState,
-  right: ClearanceSideState,
-}
-
-impl ClearanceSweepState {
-  fn new() -> Self {
-    Self {
-      left: ClearanceSideState::new(),
-      right: ClearanceSideState::new(),
-    }
-  }
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FloatProfileStats {
   pub width_queries: u64,
@@ -564,10 +528,17 @@ pub struct FloatContext {
   /// Sweep state used to answer monotonic Y queries efficiently.
   sweep_state: RefCell<FloatSweepState>,
 
-  clearance_state: RefCell<ClearanceSweepState>,
+  /// Cached maximum bottom edge of all left floats in this context.
+  ///
+  /// This is used to implement CSS2.1 §9.5.2 `clear`, which requires clearing below *any* earlier
+  /// floats on the specified side(s) — including floats that start below the element's current `y`
+  /// (e.g. when a previous sibling has a fixed height and its floats overflow).
+  clearance_left_max_bottom: f32,
 
-  clearance_left_ordered: bool,
-  clearance_right_ordered: bool,
+  /// Cached maximum bottom edge of all right floats in this context.
+  ///
+  /// See [`FloatContext::clearance_left_max_bottom`].
+  clearance_right_max_bottom: f32,
 
   /// Recorded timeout if any float queries exceed the layout deadline.
   timeout_elapsed: Cell<Option<Duration>>,
@@ -600,9 +571,8 @@ impl FloatContext {
       float_map: Vec::new(),
       events: Vec::new(),
       sweep_state: RefCell::new(FloatSweepState::new(0, &[])),
-      clearance_state: RefCell::new(ClearanceSweepState::new()),
-      clearance_left_ordered: true,
-      clearance_right_ordered: true,
+      clearance_left_max_bottom: f32::NEG_INFINITY,
+      clearance_right_max_bottom: f32::NEG_INFINITY,
       timeout_elapsed: Cell::new(None),
       current_y: 0.0,
     }
@@ -625,10 +595,6 @@ impl FloatContext {
 
   fn reset_sweep_state(&mut self) {
     self.sweep_state = RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events));
-  }
-
-  fn reset_clearance_state(&mut self) {
-    self.clearance_state = RefCell::new(ClearanceSweepState::new());
   }
 
   fn record_timeout(&self, elapsed: Duration) {
@@ -1101,20 +1067,12 @@ impl FloatContext {
     //
     // Callers can also advance `current_y` to account for preceding line boxes / blocks.
     self.current_y = self.current_y.max(start_y);
-    if side == FloatSide::Left && self.clearance_left_ordered {
-      if let Some(previous) = storage.last() {
-        let (prev_start, _) = float_vertical_span(previous);
-        if start_y < prev_start {
-          self.clearance_left_ordered = false;
-        }
+    match side {
+      FloatSide::Left => {
+        self.clearance_left_max_bottom = self.clearance_left_max_bottom.max(end_y);
       }
-    }
-    if side == FloatSide::Right && self.clearance_right_ordered {
-      if let Some(previous) = storage.last() {
-        let (prev_start, _) = float_vertical_span(previous);
-        if start_y < prev_start {
-          self.clearance_right_ordered = false;
-        }
+      FloatSide::Right => {
+        self.clearance_right_max_bottom = self.clearance_right_max_bottom.max(end_y);
       }
     }
     let index = storage.len();
@@ -1146,50 +1104,6 @@ impl FloatContext {
     sweep_state.pending_start_events.push(Reverse(start_event));
     let current_y = sweep_state.current_y;
     self.advance_sweep_to(current_y, &mut sweep_state);
-  }
-
-  fn clearance_side_max_bottom(
-    &self,
-    y: f32,
-    floats: &[FloatInfo],
-    state: &mut ClearanceSideState,
-  ) -> f32 {
-    if y < state.current_y {
-      state.reset();
-    }
-
-    let mut steps = 0u64;
-    while let Some(float) = floats.get(state.cursor) {
-      let (top, bottom) = float_vertical_span(float);
-      if top <= y {
-        state.max_bottom = state.max_bottom.max(bottom);
-        state.cursor += 1;
-        steps += 1;
-      } else {
-        break;
-      }
-    }
-    state.current_y = y;
-    if steps > 0 {
-      profile_count_clearance_step(steps);
-    }
-    state.max_bottom
-  }
-
-  fn clearance_side_max_bottom_slow(&self, y: f32, floats: &[FloatInfo]) -> f32 {
-    let mut max_bottom = f32::NEG_INFINITY;
-    let mut steps = 0u64;
-    for float in floats {
-      steps += 1;
-      let (top, bottom) = float_vertical_span(float);
-      if top <= y {
-        max_bottom = max_bottom.max(bottom);
-      }
-    }
-    if steps > 0 {
-      profile_count_clearance_step(steps);
-    }
-    max_bottom
   }
 
   /// Get the left edge at a given Y position (accounting for left floats)
@@ -1433,24 +1347,20 @@ impl FloatContext {
 
     profile_count_clearance_query();
     let mut clear_y = y;
-    let mut state = self.clearance_state.borrow_mut();
+    let mut steps = 0u64;
 
     if clear.clears_left() {
-      let max_bottom = if self.clearance_left_ordered {
-        self.clearance_side_max_bottom(y, &self.left_floats, &mut state.left)
-      } else {
-        self.clearance_side_max_bottom_slow(y, &self.left_floats)
-      };
-      clear_y = clear_y.max(max_bottom);
+      clear_y = clear_y.max(self.clearance_left_max_bottom);
+      steps += 1;
     }
 
     if clear.clears_right() {
-      let max_bottom = if self.clearance_right_ordered {
-        self.clearance_side_max_bottom(y, &self.right_floats, &mut state.right)
-      } else {
-        self.clearance_side_max_bottom_slow(y, &self.right_floats)
-      };
-      clear_y = clear_y.max(max_bottom);
+      clear_y = clear_y.max(self.clearance_right_max_bottom);
+      steps += 1;
+    }
+
+    if steps > 0 {
+      profile_count_clearance_step(steps);
     }
 
     clear_y
@@ -1729,9 +1639,8 @@ impl FloatContext {
     self.float_map.clear();
     self.events.clear();
     self.reset_sweep_state();
-    self.reset_clearance_state();
-    self.clearance_left_ordered = true;
-    self.clearance_right_ordered = true;
+    self.clearance_left_max_bottom = f32::NEG_INFINITY;
+    self.clearance_right_max_bottom = f32::NEG_INFINITY;
     self.timeout_elapsed.set(None);
     self.current_y = 0.0;
   }
@@ -2449,18 +2358,14 @@ mod tests {
       let mut clear_y = y;
       if clear.clears_left() {
         for float in ctx.left_floats() {
-          let (top, bottom) = float_vertical_span(float);
-          if top <= y {
-            clear_y = clear_y.max(bottom);
-          }
+          let (_, bottom) = float_vertical_span(float);
+          clear_y = clear_y.max(bottom);
         }
       }
       if clear.clears_right() {
         for float in ctx.right_floats() {
-          let (top, bottom) = float_vertical_span(float);
-          if top <= y {
-            clear_y = clear_y.max(bottom);
-          }
+          let (_, bottom) = float_vertical_span(float);
+          clear_y = clear_y.max(bottom);
         }
       }
       clear_y
@@ -2517,11 +2422,12 @@ mod tests {
   }
 
   #[test]
-  fn clearance_falls_back_for_out_of_order_floats() {
+  fn clearance_includes_floats_that_start_below_y() {
     let mut ctx = FloatContext::new(800.0);
     ctx.add_float_at(FloatSide::Left, 0.0, 100.0, 200.0, 50.0);
-    ctx.add_float_at(FloatSide::Left, 0.0, 50.0, 200.0, 25.0);
 
-    assert_eq!(ctx.compute_clearance(60.0, ClearSide::Left), 75.0);
+    // Even though the float starts below `y`, `clear` must clear *all* earlier floats on the
+    // specified side (CSS2.1 §9.5.2).
+    assert_eq!(ctx.compute_clearance(60.0, ClearSide::Left), 150.0);
   }
 }

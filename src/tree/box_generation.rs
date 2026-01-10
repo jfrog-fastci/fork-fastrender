@@ -4358,47 +4358,64 @@ fn generate_boxes_for_styled_into(
     // CSS Display Level 3: When a box is a flex/grid item, its outer display type is blockified.
     //
     // https://www.w3.org/TR/css-display-3/#transformations
+    display.blockify()
+  }
+
+  fn blockify_display_for_float(display: Display) -> Display {
+    // CSS 2.1 §9.7: the used display type is affected by `float`.
+    //
+    // Floats are blockified. Additionally, table-internal display types become `block` since they
+    // cannot participate in table layout once taken out of flow.
+    //
+    // https://www.w3.org/TR/CSS21/visuren.html#dis-pos-flo
     match display {
-      Display::Inline => Display::Block,
-      Display::InlineBlock => Display::FlowRoot,
-      Display::InlineFlex => Display::Flex,
-      Display::InlineGrid => Display::Grid,
-      Display::InlineTable => Display::Table,
-      // FastRender models ruby as inline-level flow boxes; blockify to a plain block.
-      Display::Ruby
-      | Display::RubyBase
-      | Display::RubyText
-      | Display::RubyBaseContainer
-      | Display::RubyTextContainer => Display::Block,
-      _ => display,
+      Display::TableRow
+      | Display::TableCell
+      | Display::TableRowGroup
+      | Display::TableHeaderGroup
+      | Display::TableFooterGroup
+      | Display::TableColumn
+      | Display::TableColumnGroup
+      | Display::TableCaption => Display::Block,
+      other => other.blockify(),
     }
   }
 
-  fn blockify_style_for_flex_or_grid_item_if_needed<'a>(
+  fn transform_style_for_box_generation_if_needed<'a>(
     style: &Arc<ComputedStyle>,
     stack: &[Frame<'a>],
   ) -> Arc<ComputedStyle> {
+    let mut display = style.display;
+
+    // CSS Display Level 3: flex/grid items are blockified.
+    //
     // Absolutely positioned children of flex/grid containers are out-of-flow and do not become
-    // flex/grid items, so blockification does not apply.
-    if matches!(style.position, Position::Absolute | Position::Fixed) {
-      return Arc::clone(style);
+    // flex/grid items, so this blockification step does not apply to them.
+    if !matches!(style.position, Position::Absolute | Position::Fixed) {
+      let container_display = nearest_non_contents_container_display(stack);
+      if matches!(
+        container_display,
+        Some(Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+      ) {
+        display = blockify_flex_or_grid_item_display(display);
+      }
     }
 
-    let container_display = nearest_non_contents_container_display(stack);
-    if !matches!(
-      container_display,
-      Some(Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
-    ) {
-      return Arc::clone(style);
+    // CSS 2.1 §9.7: floats are blockified for box generation.
+    //
+    // This is critical for cases like `div { float:left; display:inline }`, where the used display
+    // type is block-level; otherwise the box tree fixups treat block descendants as "block-in-inline"
+    // and incorrectly split/hoist them out of the floated box.
+    if style.float.is_floating() {
+      display = blockify_display_for_float(display);
     }
 
-    let blockified = blockify_flex_or_grid_item_display(style.display);
-    if blockified == style.display {
+    if display == style.display {
       return Arc::clone(style);
     }
 
     let mut owned = (**style).clone();
-    owned.display = blockified;
+    owned.display = display;
     Arc::new(owned)
   }
   let mut stack: Vec<Frame<'_>> = Vec::new();
@@ -4559,7 +4576,7 @@ fn generate_boxes_for_styled_into(
             let popped = stack.pop();
             debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
-            let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
+            let style = transform_style_for_box_generation_if_needed(&styled.styles, &stack);
             let box_node = BoxNode::new_replaced(
               style,
               ReplacedType::Math(MathReplaced {
@@ -4634,7 +4651,7 @@ fn generate_boxes_for_styled_into(
             let popped = stack.pop();
             debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
-            let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
+            let style = transform_style_for_box_generation_if_needed(&styled.styles, &stack);
             let mut box_node =
               BoxNode::new_replaced(style, ReplacedType::FormControl(form_control), None, None);
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
@@ -4679,7 +4696,7 @@ fn generate_boxes_for_styled_into(
               Vec::new()
             };
             let ancestor_len = stack.len().saturating_sub(1);
-            let style = blockify_style_for_flex_or_grid_item_if_needed(
+            let style = transform_style_for_box_generation_if_needed(
               &styled.styles,
               &stack[..ancestor_len],
             );
@@ -4966,7 +4983,7 @@ fn generate_boxes_for_styled_into(
           }
         }
 
-        let style = blockify_style_for_flex_or_grid_item_if_needed(&base_style, &stack);
+        let style = transform_style_for_box_generation_if_needed(&base_style, &stack);
         let display = style.display;
         let fc_type = display
           .formatting_context_type()
