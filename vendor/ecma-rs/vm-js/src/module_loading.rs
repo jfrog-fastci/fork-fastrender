@@ -147,13 +147,16 @@ impl GraphLoadingState {
     host: &mut dyn crate::VmHostHooks,
     host_defined: HostDefined,
   ) -> Result<(Self, Value), VmError> {
-    let cap = crate::promise_ops::new_promise_capability(vm, scope, host)?;
-
-    // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
-    let values = [cap.promise, cap.resolve, cap.reject];
-    let promise_roots = {
-      // Use a nested scope so the temporary stack roots are popped before returning.
+    // Create a nested scope so any temporary stack roots created while constructing the promise
+    // capability (and while registering persistent roots) are popped before we return.
+    //
+    // `GraphLoadingState` itself keeps the capability values alive via persistent roots.
+    let (cap, promise_roots) = {
       let mut root_scope = scope.reborrow();
+      let cap = crate::promise_ops::new_promise_capability(vm, &mut root_scope, host)?;
+
+      // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
+      let values = [cap.promise, cap.resolve, cap.reject];
       root_scope.push_roots(&values)?;
 
       let mut roots: Vec<RootId> = Vec::new();
@@ -172,12 +175,13 @@ impl GraphLoadingState {
         }
       }
 
-      PromiseCapabilityRoots {
+      let promise_roots = PromiseCapabilityRoots {
         promise: roots[0],
         resolve: roots[1],
         reject: roots[2],
-      }
-    };
+      };
+      Ok((cap, promise_roots))
+    }?;
 
     Ok((
       Self(Rc::new(RefCell::new(GraphLoadingStateInner {
@@ -252,8 +256,15 @@ impl GraphLoadingState {
     // Ensure we always release the persistent roots even if calling the resolve function fails
     // (e.g. termination due to budgets/interrupts).
     let result = (|| {
-      scope.push_root(cap.resolve)?;
-      let _ = vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[Value::Undefined])?;
+      let mut call_scope = scope.reborrow();
+      call_scope.push_root(cap.resolve)?;
+      let _ = vm.call_with_host(
+        &mut call_scope,
+        host,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Undefined],
+      )?;
       Ok(())
     })();
     scope.heap_mut().remove_root(roots.promise);
@@ -281,9 +292,10 @@ impl GraphLoadingState {
     let reason = err.thrown_value().unwrap_or(Value::Undefined);
 
     let result = (|| {
-      scope.push_root(cap.reject)?;
-      scope.push_root(reason)?;
-      let _ = vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[reason])?;
+      let mut call_scope = scope.reborrow();
+      call_scope.push_root(cap.reject)?;
+      call_scope.push_root(reason)?;
+      let _ = vm.call_with_host(&mut call_scope, host, cap.reject, Value::Undefined, &[reason])?;
       Ok(())
     })();
     scope.heap_mut().remove_root(roots.promise);
@@ -1080,6 +1092,80 @@ mod tests {
       assert!(scope.heap().get_root(promise_root).is_none());
       assert!(scope.heap().get_root(resolve_root).is_none());
       assert!(scope.heap().get_root(reject_root).is_none());
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn graph_loading_state_does_not_leak_stack_roots() {
+    // `GraphLoadingState` must not leave temporary stack roots behind on the caller's `Scope`.
+    // Persistent roots are tracked separately and are removed when the graph-loading promise is
+    // settled.
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host;
+      let mut scope = heap.scope();
+
+      let roots_before = (
+        scope.heap().root_stack.len(),
+        scope.heap().env_root_stack.len(),
+      );
+
+      let (state, _promise) =
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+
+      assert_eq!(
+        (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
+        roots_before
+      );
+
+      // Resolving the promise should not leak stack roots either.
+      let roots_before_resolve = (
+        scope.heap().root_stack.len(),
+        scope.heap().env_root_stack.len(),
+      );
+      state.resolve_promise(&mut vm, &mut scope, &mut host).unwrap();
+      assert_eq!(
+        (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
+        roots_before_resolve
+      );
+
+      // Fresh state to exercise `reject_promise`.
+      let (state2, _promise2) =
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+      assert_eq!(
+        (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
+        roots_before
+      );
+
+      let roots_before_reject = (
+        scope.heap().root_stack.len(),
+        scope.heap().env_root_stack.len(),
+      );
+      state2
+        .reject_promise(
+          &mut vm,
+          &mut scope,
+          &mut host,
+          VmError::LimitExceeded("test"),
+        )
+        .unwrap();
+      assert_eq!(
+        (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
+        roots_before_reject
+      );
     }));
 
     realm.teardown(&mut heap);
