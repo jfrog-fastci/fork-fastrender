@@ -7069,9 +7069,16 @@ impl InlineFormattingContext {
             compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
           let mut child_x = box_item.start_edge;
           let mut children = Vec::with_capacity(box_item.children.len());
-          let paint_origin_y = block_pos - box_item.content_offset_y;
+          // CSS 2.1 §10.6.1: for inline non-replaced elements, vertical padding/borders are
+          // applied around the *content area* (font metrics), not the line-height strut.
+          //
+          // This means that when `line-height` introduces leading, the border box should sit
+          // *inside* the line-height box, offset by half-leading.
+          let half_leading = box_item.strut_metrics.half_leading();
+          let line_box_origin_y = box_item.content_offset_y - half_leading;
+          let paint_origin_y = block_pos + half_leading - box_item.content_offset_y;
           for (idx, child) in box_item.children.iter().enumerate() {
-            let child_y = box_item.content_offset_y + baseline + child_offsets[idx]
+            let child_y = line_box_origin_y + baseline + child_offsets[idx]
               - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment_oriented(
               child,
@@ -7091,11 +7098,13 @@ impl InlineFormattingContext {
             children.push(fragment);
           }
 
+          let content_height =
+            (box_item.strut_metrics.ascent + box_item.strut_metrics.descent).max(0.0);
           let bounds = Rect::from_xywh(
             inline_pos,
             paint_origin_y,
             box_item.width(),
-            box_item.metrics.height + box_item.content_offset_y + box_item.bottom_inset,
+            content_height + box_item.content_offset_y + box_item.bottom_inset,
           );
           record_containing_block(
             bounds,
@@ -7417,13 +7426,17 @@ impl InlineFormattingContext {
         let (baseline, _height, child_offsets) =
           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
         let mut child_x = box_item.start_edge;
-        let paint_origin_y = y - box_item.content_offset_y;
+        // CSS 2.1 §10.6.1: vertical padding/borders start at the content area's edges (font
+        // metrics), not the line-height strut edges.
+        let half_leading = box_item.strut_metrics.half_leading();
+        let line_box_origin_y = box_item.content_offset_y - half_leading;
+        let paint_origin_y = y + half_leading - box_item.content_offset_y;
         let children: Vec<_> = box_item
           .children
           .iter()
           .enumerate()
           .map(|(idx, child)| {
-            let child_y = box_item.content_offset_y + baseline + child_offsets[idx]
+            let child_y = line_box_origin_y + baseline + child_offsets[idx]
               - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment(child, child_x, child_y);
             child_x += child.width();
@@ -7431,11 +7444,13 @@ impl InlineFormattingContext {
           })
           .collect();
 
+        let content_height =
+          (box_item.strut_metrics.ascent + box_item.strut_metrics.descent).max(0.0);
         let bounds = Rect::from_xywh(
           x,
           paint_origin_y,
           box_item.width(),
-          box_item.metrics.height + box_item.content_offset_y + box_item.bottom_inset,
+          content_height + box_item.content_offset_y + box_item.bottom_inset,
         );
         let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
         FragmentNode::new_with_style(

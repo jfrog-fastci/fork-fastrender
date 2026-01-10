@@ -3182,6 +3182,29 @@ impl<'a> LineBuilder<'a> {
     if should_indent { self.indent } else { 0.0 }
   }
 
+  fn is_collapsible_space_item(item: &InlineItem) -> bool {
+    let InlineItem::Text(text) = item else {
+      return false;
+    };
+
+    matches!(
+      text.style.white_space,
+      WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+    ) && !text.text.is_empty()
+      && text.text.chars().all(|ch| ch == ' ')
+      && !text.is_marker
+  }
+
+  fn line_is_at_start_for_whitespace_trim(&self) -> bool {
+    // Leading collapsible whitespace is suppressed even if the line begins with placeholder items
+    // like static-position anchors.
+    self
+      .current_line
+      .items
+      .iter()
+      .all(|p| matches!(p.item, InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)))
+  }
+
   fn start_new_line(&mut self) {
     let is_first_line = self.lines.is_empty();
     let para_start = self.next_line_is_para_start;
@@ -3357,6 +3380,9 @@ impl<'a> LineBuilder<'a> {
 
   /// Adds an inline item to the builder
   pub fn add_item(&mut self, item: InlineItem) -> Result<(), LayoutError> {
+    if self.line_is_at_start_for_whitespace_trim() && Self::is_collapsible_space_item(&item) {
+      return Ok(());
+    }
     if matches!(item, InlineItem::HardBreak) {
       return self.force_break();
     }
@@ -3604,6 +3630,10 @@ impl<'a> LineBuilder<'a> {
         return Ok(());
       }
       check_layout_deadline(&mut self.deadline_counter)?;
+
+      if self.line_is_at_start_for_whitespace_trim() && Self::is_collapsible_space_item(&item) {
+        return Ok(());
+      }
 
       match item {
         InlineItem::Text(text_item) => {
@@ -5745,6 +5775,30 @@ mod tests {
     assert_eq!(lines.len(), 1);
     let line_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
     assert_eq!(line_text, "My Visit");
+  }
+
+  #[test]
+  fn collapsible_spaces_do_not_start_soft_wrapped_lines() {
+    // CSS whitespace collapsing suppresses leading spaces on each line. This matters when inline
+    // content ends exactly at the line width and the following collapsed space item is moved to
+    // the start of the next line.
+    let mut builder = make_builder(20.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("when", 20.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item(" ", 4.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item("writing", 20.0)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    assert_eq!(line0_text, "when");
+    assert_eq!(line1_text, "writing");
   }
 
   #[test]
