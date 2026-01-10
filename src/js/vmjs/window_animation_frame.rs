@@ -650,7 +650,9 @@ mod tests {
     let mut opts = JsExecutionOptions::default();
     // Give the scheduling task enough fuel to successfully enqueue the callback, while still
     // ensuring the callback itself will terminate once it enters the infinite loop.
-    opts.max_instruction_count = Some(10_000);
+    //
+    // Keep this fairly small so the test runs quickly (the callback is an infinite loop).
+    opts.max_instruction_count = Some(500);
     // Keep wall-time generous so we deterministically hit OutOfFuel first.
     opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
     let mut host = Host::new_with_js_execution_options(opts);
