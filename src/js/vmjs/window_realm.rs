@@ -12411,7 +12411,6 @@ mod tests {
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
 
-      let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
       let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
@@ -12486,7 +12485,6 @@ mod tests {
         other => panic!("expected Event object, got {other:?}"),
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-      let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
       let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
@@ -12561,7 +12559,6 @@ mod tests {
         other => panic!("expected Event object, got {other:?}"),
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-      let mut host_ctx = ();
       let mut hooks = NoopHostHooks::default();
       let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
