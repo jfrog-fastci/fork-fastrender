@@ -1149,6 +1149,27 @@ mod tests {
   }
 
   #[test]
+  fn dispatch_event_handle_event_listener_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      window.addEventListener('x', { handleEvent() { globalThis.__host_ok = recordHost(); } });
+      window.dispatchEvent({ type: 'x' });
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn abort_signal_onabort_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
@@ -1159,6 +1180,28 @@ mod tests {
       globalThis.__host_ok = false;
       var c = new AbortController();
       c.signal.onabort = () => { globalThis.__host_ok = recordHost(); };
+      c.abort();
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn abort_signal_event_listener_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      var c = new AbortController();
+      c.signal.addEventListener('abort', () => { globalThis.__host_ok = recordHost(); });
       c.abort();
       "#,
     )?;
