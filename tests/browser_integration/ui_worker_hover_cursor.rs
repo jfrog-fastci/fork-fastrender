@@ -196,3 +196,89 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
 
   worker.join().unwrap();
 }
+
+#[test]
+fn hover_updates_after_viewport_scroll_without_pointer_position() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "index.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            a { display: block; width: 160px; height: 30px; background: rgb(220, 220, 0); }
+            .spacer { height: 600px; }
+            .top { height: 10px; }
+            .bottom { height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div class="top"></div>
+          <a id="link1" href="a.html">Link 1</a>
+          <div class="spacer"></div>
+          <a id="link2" href="b.html">Link 2</a>
+          <div class="bottom"></div>
+        </body>
+      </html>
+    "##,
+  );
+
+  let expected_link1 = url::Url::parse(&page_url)
+    .expect("parse base url")
+    .join("a.html")
+    .expect("resolve link1 href")
+    .to_string();
+  let expected_link2 = url::Url::parse(&page_url)
+    .expect("parse base url")
+    .join("b.html")
+    .expect("resolve link2 href")
+    .to_string();
+
+  let worker = spawn_ui_worker("fastr-ui-worker-hover-scroll").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (256, 200), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url,
+      NavigationReason::TypedUrl,
+    ))
+    .unwrap();
+
+  next_frame_ready(&worker.ui_rx, tab_id);
+
+  // Hover link 1 (near the top of the viewport).
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 20.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Pointer);
+  assert_eq!(hovered_url.as_deref(), Some(expected_link1.as_str()));
+
+  worker
+    .ui_tx
+    .send(support::scroll_msg(tab_id, (0.0, 640.0), None))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Pointer);
+  assert_eq!(hovered_url.as_deref(), Some(expected_link2.as_str()));
+
+  worker.join().unwrap();
+}

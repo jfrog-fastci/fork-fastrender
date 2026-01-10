@@ -1205,7 +1205,7 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
-            hover_update_pos_css = pointer_pos_css;
+            hover_update_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
           }
         }
 
