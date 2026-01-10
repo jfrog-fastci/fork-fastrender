@@ -10,6 +10,8 @@ pub mod window {
 
   use super::{BindingValue, WebHostBindings};
 
+  use crate::js::webidl::conversions;
+
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
     value: BindingValue<R::JsValue>,
@@ -114,7 +116,11 @@ pub mod window {
         } else {
           rt.js_undefined()
         };
-        converted_args.push(BindingValue::Number(rt.to_number(v0)?));
+        converted_args.push(BindingValue::Number(conversions::to_long(
+          rt,
+          v0,
+          conversions::IntegerConversionAttrs::default(),
+        )? as f64));
         let result = host.call_operation(rt, Some(this), "Foo", "baz", 1, converted_args)?;
         binding_value_to_js::<Host, R>(rt, result)
       }
@@ -187,8 +193,13 @@ pub mod window {
                 if values.len() >= rt.limits().max_sequence_length {
                   return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
                 }
-                let converted =
-                  rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+                let converted = rt.with_stack_roots(&[next], |rt| {
+                  Ok(BindingValue::Number(conversions::to_long(
+                    rt,
+                    next,
+                    conversions::IntegerConversionAttrs::default(),
+                  )? as f64))
+                })?;
                 values.push(converted);
               }
               Ok(BindingValue::FrozenArray(values))
@@ -238,8 +249,13 @@ pub mod window {
                 if values.len() >= rt.limits().max_sequence_length {
                   return Err(rt.throw_range_error("sequence exceeds maximum length"));
                 }
-                let converted =
-                  rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+                let converted = rt.with_stack_roots(&[next], |rt| {
+                  Ok(BindingValue::Number(conversions::to_long(
+                    rt,
+                    next,
+                    conversions::IntegerConversionAttrs::default(),
+                  )? as f64))
+                })?;
                 values.push(converted);
               }
               Ok(BindingValue::Sequence(values))

@@ -647,14 +647,22 @@ impl Document {
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
     let inert_subtree = inert_subtree || kind_implies_inert_subtree(&kind);
+    let is_html_script = match &kind {
+      NodeKind::Element {
+        tag_name, namespace, ..
+      } => {
+        tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+      }
+      _ => false,
+    };
     self.nodes.push(Node {
       kind,
       parent,
       children: Vec::new(),
       inert_subtree,
+      script_force_async: is_html_script,
       script_already_started: false,
       script_parser_document: false,
-      script_force_async: false,
       mathml_annotation_xml_integration_point: false,
     });
     if let Some(parent_id) = parent {
