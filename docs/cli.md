@@ -115,12 +115,12 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - `--fail-on-regression` also enables the missing-stage gates and `--fail-on-slow-ok-ms=5000` by default (use `--no-fail-on-missing-stages` / `--no-fail-on-missing-stage-timings` / `--no-fail-on-slow-ok` to opt out, or pass `--fail-on-slow-ok-ms <ms>` to override the default threshold).
   - Stage-bucket sanity guardrail: when changing stage timing accounting, run `pageset_progress report --fail-on-stage-sum-exceeds-total` (tune `--stage-sum-tolerance-percent`, default 10%) to catch double-counting/CPU-sum mixups early.
 - Render one page: `bash scripts/cargo_agent.sh xtask render-page --url https://example.com --output out.png [--viewport 1200x800 --dpr 1.0 --full-page]`
-- Offline fixture “page loop” (FastRender render + optional overlay + optional Chrome diff): `bash scripts/cargo_agent.sh xtask page-loop --fixture <stem> [--overlay --write-snapshot --chrome]`
+- Offline fixture “page loop” (FastRender render + optional overlay + optional inspect dumps + optional Chrome diff): `bash scripts/cargo_agent.sh xtask page-loop --fixture <stem> [--overlay --inspect-dump-json --write-snapshot --chrome]`
   - When you want “the next highest-signal page”, you can select a single fixture from committed progress JSON:
-    - Worst-accuracy ok page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --overlay --write-snapshot --chrome`
-    - First failing page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --only-failures --overlay --write-snapshot --chrome`
-    - Slowest page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-slowest 1 --overlay --write-snapshot --chrome`
-    - Filter by hotspot: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --hotspot layout --overlay --write-snapshot --chrome`
+    - Worst-accuracy ok page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --overlay --inspect-dump-json --write-snapshot --chrome`
+    - First failing page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --only-failures --overlay --inspect-dump-json --write-snapshot --chrome`
+    - Slowest page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-slowest 1 --overlay --inspect-dump-json --write-snapshot --chrome`
+    - Filter by hotspot: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --hotspot layout --overlay --inspect-dump-json --write-snapshot --chrome`
 - Diff renders: `bash scripts/cargo_agent.sh xtask diff-renders --before fetches/renders/baseline --after fetches/renders/new [--output target/render-diffs]`
   - Supports directory diffs (recursive) and PNG file-to-file diffs.
   - Writes `diff_report.html` / `diff_report.json` into `--output` (diff images under `diff_report_files/diffs/`).
