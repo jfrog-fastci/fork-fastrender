@@ -27,9 +27,10 @@ use fastrender::resource::bundle::{
 use fastrender::resource::{
   canonicalize_vary_header_value, compute_vary_key_for_request, ensure_font_mime_sane,
   ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane, ensure_stylesheet_mime_sane,
-  offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, CorsMode,
-  DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
-  ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  offline_placeholder_png_bytes, offline_placeholder_png_content_type, offline_placeholder_woff2_bytes,
+  origin_from_url, CorsMode, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchDestination,
+  FetchRequest, FetchedResource, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
+  DEFAULT_ACCEPT_LANGUAGE,
   DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
@@ -1690,7 +1691,7 @@ fn placeholder_resource(
     FetchDestination::Image | FetchDestination::ImageCors => {
       let mut res = FetchedResource::with_final_url(
         offline_placeholder_png_bytes().to_vec(),
-        Some("image/png".to_string()),
+        Some(offline_placeholder_png_content_type().to_string()),
         Some(url.to_string()),
       );
       // When CORS enforcement is enabled (`FASTR_FETCH_ENFORCE_CORS`), `<img crossorigin>` loads
@@ -2551,7 +2552,7 @@ fn crawl_document(
       );
       let mut truncated = res.clone();
       truncated.bytes = offline_placeholder_png_bytes().to_vec();
-      truncated.content_type = Some("image/png".to_string());
+      truncated.content_type = Some(offline_placeholder_png_content_type().to_string());
       fetcher.replace(&url, truncated);
       continue;
     }
@@ -5211,7 +5212,10 @@ mod tests {
     let res = recorded
       .get("https://example.com/bg")
       .expect("expected placeholder resource");
-    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(
+      res.content_type.as_deref(),
+      Some(offline_placeholder_png_content_type())
+    );
     assert!(
       res.bytes.starts_with(b"\x89PNG"),
       "expected PNG placeholder bytes"
@@ -5700,7 +5704,10 @@ mod tests {
     let res = recorded
       .get("https://example.com/large.png")
       .expect("expected large image resource to be recorded");
-    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(
+      res.content_type.as_deref(),
+      Some(offline_placeholder_png_content_type())
+    );
     assert_eq!(res.bytes, offline_placeholder_png_bytes().to_vec());
 
     Ok(())
@@ -5769,7 +5776,10 @@ mod tests {
     let res = recorded
       .get("https://example.com/large")
       .expect("expected large image resource to be recorded");
-    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(
+      res.content_type.as_deref(),
+      Some(offline_placeholder_png_content_type())
+    );
     assert_eq!(res.bytes, offline_placeholder_png_bytes().to_vec());
 
     Ok(())

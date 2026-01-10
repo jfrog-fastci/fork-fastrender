@@ -5252,7 +5252,7 @@ impl HttpFetcher {
             if bytes.is_empty() && substitute_empty_image_body {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             if should_substitute_markup_image_body(
@@ -5264,13 +5264,13 @@ impl HttpFetcher {
             ) {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             if substitute_captcha_image {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             let is_retryable_status = retryable_http_status(status_code);
@@ -5772,7 +5772,7 @@ impl HttpFetcher {
             if bytes.is_empty() && substitute_empty_image_body {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             if should_substitute_markup_image_body(
@@ -5784,13 +5784,13 @@ impl HttpFetcher {
             ) {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             if substitute_captcha_image {
               let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
               bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
               decode_stage = decode_stage_for_content_type(content_type.as_deref());
             }
             let is_retryable_status = retryable_http_status(status_code);
@@ -6556,7 +6556,7 @@ impl HttpFetcher {
                   ))
               {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
               if should_substitute_markup_image_body(
@@ -6567,12 +6567,12 @@ impl HttpFetcher {
                 &bytes,
               ) {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
               if substitute_captcha_image {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
             }
@@ -7293,7 +7293,7 @@ impl HttpFetcher {
             if !method_is_head {
               if bytes.is_empty() && substitute_empty_image_body {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
               if should_substitute_markup_image_body(
@@ -7304,12 +7304,12 @@ impl HttpFetcher {
                 &bytes,
               ) {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
               if substitute_captcha_image {
                 bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
                 decode_stage = decode_stage_for_content_type(content_type.as_deref());
               }
             }
@@ -11086,6 +11086,11 @@ const OFFLINE_FIXTURE_PLACEHOLDER_PNG: &[u8] = &[
   0x42, 0x60, 0x82,
 ];
 const OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME: &str = "image/png";
+// When we substitute missing/invalid image bytes with a deterministic placeholder, mark the
+// content-type with a FastRender-specific parameter so downstream code can treat it as a
+// "missing image" sentinel (rather than a real 1×1 transparent image).
+const OFFLINE_FIXTURE_PLACEHOLDER_PNG_MARKER_PARAM: &str = "fastrender-placeholder=1";
+const OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE: &str = "image/png;fastrender-placeholder=1";
 const OFFLINE_FIXTURE_PLACEHOLDER_WOFF2: &[u8] =
   include_bytes!("../tests/pages/fixtures/assets/fonts/DejaVuSans-subset.woff2");
 const OFFLINE_FIXTURE_PLACEHOLDER_WOFF2_MIME: &str = "font/woff2";
@@ -11096,6 +11101,26 @@ const OFFLINE_FIXTURE_PLACEHOLDER_WOFF2_MIME: &str = "font/woff2";
 /// bytes for missing image resources.
 pub fn offline_placeholder_png_bytes() -> &'static [u8] {
   OFFLINE_FIXTURE_PLACEHOLDER_PNG
+}
+
+/// Content-Type for [`offline_placeholder_png_bytes`], including a marker that indicates the PNG
+/// was substituted by FastRender tooling (missing/invalid resource) and should be treated as a
+/// placeholder sentinel.
+pub fn offline_placeholder_png_content_type() -> &'static str {
+  OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE
+}
+
+pub(crate) fn content_type_is_offline_placeholder_png(content_type: Option<&str>) -> bool {
+  let Some(content_type) = content_type else {
+    return false;
+  };
+  if !content_type_mime(content_type).eq_ignore_ascii_case(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME) {
+    return false;
+  }
+  content_type
+    .split(';')
+    .skip(1)
+    .any(|part| part.trim().eq_ignore_ascii_case(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MARKER_PARAM))
 }
 
 /// Deterministic WOFF2 placeholder font used for offline fixtures.
@@ -11253,7 +11278,7 @@ fn substitute_offline_fixture_placeholder_full(
   match kind {
     FetchContextKind::Image | FetchContextKind::ImageCors => {
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
     }
     FetchContextKind::Font => {
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_WOFF2.to_vec();
@@ -11278,7 +11303,7 @@ fn substitute_offline_fixture_placeholder_prefix(
     FetchContextKind::Image | FetchContextKind::ImageCors => {
       let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
     }
     FetchContextKind::Font => {
       let take = OFFLINE_FIXTURE_PLACEHOLDER_WOFF2.len().min(read_limit);
@@ -13222,7 +13247,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13261,7 +13286,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13306,7 +13331,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13345,7 +13370,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
   }
@@ -13409,7 +13434,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13449,7 +13474,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13495,7 +13520,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
 
@@ -13535,7 +13560,7 @@ mod tests {
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
       assert_eq!(
         res.content_type.as_deref(),
-        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+        Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
       );
     }
   }
@@ -14375,7 +14400,7 @@ mod tests {
     assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
     assert_eq!(
       res.content_type.as_deref(),
-      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
     );
   }
 
@@ -18298,7 +18323,7 @@ mod tests {
     assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
     assert_eq!(
       res.content_type.as_deref(),
-      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
     );
 
     let partial = fetcher
@@ -18307,7 +18332,7 @@ mod tests {
     assert_eq!(partial.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
     assert_eq!(
       partial.content_type.as_deref(),
-      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
     );
   }
 
@@ -18322,7 +18347,7 @@ mod tests {
     assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG);
     assert_eq!(
       res.content_type.as_deref(),
-      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
     );
 
     let partial = fetcher
@@ -18331,7 +18356,7 @@ mod tests {
     assert_eq!(partial.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
     assert_eq!(
       partial.content_type.as_deref(),
-      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME)
+      Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE)
     );
   }
 

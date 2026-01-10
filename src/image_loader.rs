@@ -4888,11 +4888,13 @@ impl ImageCache {
         return Err(err);
       }
     };
-    // Offline fixtures (and some tracking pixel endpoints) substitute missing/empty image bodies
-    // with a deterministic 1×1 transparent PNG so layout/paint can proceed. Treat that specific
-    // payload as the same placeholder image used for non-fetchable `about:` URLs so callers can
-    // detect it (e.g. for replaced-content fallbacks).
-    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+    // Offline fixtures (and some bot-mitigation paths) may substitute missing/invalid image bytes
+    // with a deterministic 1×1 transparent PNG. Treat those resources as the shared `about:`
+    // placeholder image so painters can detect and reject them (e.g. to render UA broken-image
+    // UI for `<img>`).
+    if crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
+      || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
+    {
       return Ok(self.cache_placeholder_image(cache_key));
     }
     if let Some(ctx) = &self.resource_context {
@@ -5010,14 +5012,16 @@ impl ImageCache {
     resource: &FetchedResource,
     crossorigin: CrossOriginAttribute,
   ) -> Result<Arc<CachedImage>> {
-    // Offline fixtures replace missing file payloads with a deterministic 1×1 transparent PNG so
-    // layout can still derive an intrinsic size. Treat that specific payload as the same placeholder
-    // image used for `about:` URLs so callers can detect it (notably, replaced-content painters
-    // render UA missing-image UI when `ImageCache::is_placeholder_image` is true).
-    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+    if resource.bytes.is_empty() {
       return Ok(self.cache_placeholder_image(cache_key));
     }
-    if resource.bytes.is_empty() {
+    // `ResourceFetcher` implementations (notably the offline fixture tooling) may substitute missing
+    // image responses with a deterministic 1×1 transparent PNG. This is a "missing image" sentinel
+    // and must behave like our internal `about:` placeholder so callers can reliably detect it
+    // (e.g. replaced `<img>` fallback UI / broken-image icon).
+    if crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
+      || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
+    {
       return Ok(self.cache_placeholder_image(cache_key));
     }
     if should_substitute_markup_payload_for_image(
@@ -7941,9 +7945,15 @@ mod tests {
   #[test]
   fn offline_fixture_placeholder_png_is_detected_as_placeholder_image_after_probe_cache_reuse() {
     let url = "test://missing.png";
+    let bytes = encode_single_pixel_png([0, 0, 0, 0]);
+    assert_ne!(
+      bytes.as_slice(),
+      crate::resource::offline_placeholder_png_bytes(),
+      "test requires non-canonical placeholder bytes"
+    );
     let mut res = FetchedResource::new(
-      crate::resource::offline_placeholder_png_bytes().to_vec(),
-      Some("image/png".to_string()),
+      bytes,
+      Some(crate::resource::offline_placeholder_png_content_type().to_string()),
     );
     res.status = Some(200);
     res.final_url = Some(url.to_string());
@@ -7959,8 +7969,8 @@ mod tests {
       "expected probe to fetch exactly once"
     );
 
-    // Load should reuse the probed bytes and, because the payload matches the offline placeholder,
-    // return the shared `about:` placeholder image.
+    // Load should reuse the probed bytes and, because the response is marked as an offline
+    // placeholder sentinel, return the shared `about:` placeholder image.
     let img = cache.load(url).expect("image should load");
     assert_eq!(
       fetcher.requests().len(),

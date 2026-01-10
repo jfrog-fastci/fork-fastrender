@@ -919,7 +919,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       if !method_is_head {
         if bytes.is_empty() && substitute_empty_image_body {
           bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
           decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
         }
         if super::should_substitute_markup_image_body(
@@ -930,12 +930,12 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           &bytes,
         ) {
           bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
           decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
         }
         if substitute_captcha_image {
           bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_CONTENT_TYPE.to_string());
           decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
         }
       }
