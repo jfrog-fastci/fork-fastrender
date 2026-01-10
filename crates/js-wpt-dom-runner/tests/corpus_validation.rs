@@ -250,6 +250,7 @@ fn offline_corpus_is_valid() {
   );
 
   let mut errors: Vec<String> = Vec::new();
+  let mut direct_report_offenders: Vec<String> = Vec::new();
 
   for entry in WalkDir::new(&corpus_root) {
     let entry = entry.expect("walkdir entry");
@@ -266,6 +267,23 @@ fn offline_corpus_is_valid() {
     };
 
     let source = read_text(path);
+
+    // After harness migration, corpus tests must use `testharness.js` and the reporter script
+    // under `tests/wpt_dom/resources/`. Direct calls from test files bypass subtest collection and
+    // diverge from standard WPT semantics. We intentionally allow these strings in `resources/`
+    // because the harness plumbing lives there.
+    if path.strip_prefix(&tests_root).is_ok()
+      && (source.contains("__fastrender_wpt_report(")
+        || source.contains("__fastrender_wpt_report_json"))
+    {
+      let rel = path
+        .strip_prefix(&corpus_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+      direct_report_offenders.push(rel);
+    }
+
     let mut refs = Vec::new();
 
     let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
@@ -315,6 +333,21 @@ fn offline_corpus_is_valid() {
     }
   }
 
+  direct_report_offenders.sort();
+  direct_report_offenders.dedup();
+  if !direct_report_offenders.is_empty() {
+    let mut msg = String::new();
+    msg.push_str("corpus test files must not call `__fastrender_wpt_report*` directly ");
+    msg.push_str("(use `testharness.js` + the reporter script under `resources/` instead)\n");
+    msg.push_str("offending files:\n");
+    for rel in &direct_report_offenders {
+      msg.push_str("    - ");
+      msg.push_str(rel);
+      msg.push('\n');
+    }
+    errors.push(msg.trim_end().to_string());
+  }
+
   errors.sort();
   errors.dedup();
 
@@ -332,4 +365,3 @@ fn offline_corpus_is_valid() {
     panic!("{msg}");
   }
 }
-
