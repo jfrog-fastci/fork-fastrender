@@ -13,7 +13,7 @@ pub struct LintNoOpenSslArgs {
   /// Check the resolved dependency graph for the entire Cargo workspace (all workspace members),
   /// not just the `fastrender` crate.
   ///
-  /// This is a stronger hermeticity guard: CI runs `cargo test --all-features` at the workspace
+  /// This is a stronger hermeticity guard: CI runs `bash scripts/cargo_agent.sh test --all-features` at the workspace
   /// root, which compiles all workspace members.
   #[arg(long)]
   pub workspace: bool,
@@ -124,8 +124,8 @@ fn check_openssl_sys_absent(
        Dependency path(s):\n\
        {}\n\
        \n\
-       To debug:\n\
-         cargo tree -i openssl-sys"
+        To debug:\n\
+          bash scripts/cargo_agent.sh tree -i openssl-sys"
       ,
       scope.label(),
       chains

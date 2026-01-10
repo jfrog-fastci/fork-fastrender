@@ -570,20 +570,20 @@ struct TestArgs {
   #[arg(long)]
   release: bool,
 
-  /// Extra arguments forwarded to `cargo test`
+  /// Extra arguments forwarded to `bash scripts/cargo_agent.sh test`
   #[arg(last = true)]
   extra: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum TestSuite {
-  /// Full default test suite (`cargo test --quiet`)
+  /// Full default test suite (`bash scripts/cargo_agent.sh test --quiet`)
   Core,
-  /// Style regression harness (`cargo test --quiet --test style_tests`)
+  /// Style regression harness (`bash scripts/cargo_agent.sh test --quiet --test style_tests`)
   Style,
-  /// Visual fixtures (`cargo test --quiet fixtures`)
+  /// Visual fixtures (`bash scripts/cargo_agent.sh test --quiet fixtures`)
   Fixtures,
-  /// Local WPT harness (`cargo test --quiet wpt_local_suite_passes -- --exact`)
+  /// Local WPT harness (`bash scripts/cargo_agent.sh test --quiet wpt_local_suite_passes -- --exact`)
   Wpt,
   /// Run all of the above sequentially
   All,
