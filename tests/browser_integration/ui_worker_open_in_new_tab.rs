@@ -139,12 +139,17 @@ fn link_activation_can_request_open_in_new_tab() {
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   // 3) Ctrl/Cmd+click on a normal link should request a new tab.
+  let new_tab_modifiers = if cfg!(target_os = "macos") {
+    PointerModifiers::META
+  } else {
+    PointerModifiers::CTRL
+  };
   ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
       pos_css: (10.0, 60.0),
       button: PointerButton::Primary,
-      modifiers: PointerModifiers::CTRL,
+      modifiers: new_tab_modifiers,
     })
     .unwrap();
   ui_tx
@@ -152,7 +157,7 @@ fn link_activation_can_request_open_in_new_tab() {
       tab_id,
       pos_css: (10.0, 60.0),
       button: PointerButton::Primary,
-      modifiers: PointerModifiers::CTRL,
+      modifiers: new_tab_modifiers,
     })
     .unwrap();
   wait_for_open_in_new_tab(&ui_rx, tab_id, &page2_url);

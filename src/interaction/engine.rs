@@ -2642,8 +2642,9 @@ impl InteractionEngine {
                 .and_then(|node| node.get_attribute_ref("target"))
                 .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
 
-              let gesture_new_tab = matches!(button, PointerButton::Middle)
-                || (matches!(button, PointerButton::Primary) && (modifiers.ctrl() || modifiers.meta()));
+              let gesture_new_tab =
+                matches!(button, PointerButton::Middle)
+                  || (matches!(button, PointerButton::Primary) && modifiers.command());
 
               action = if target_blank || gesture_new_tab {
                 InteractionAction::OpenInNewTab { href: resolved }

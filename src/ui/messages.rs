@@ -83,6 +83,17 @@ impl PointerModifiers {
   pub const ALT: Self = Self(1 << 2);
   pub const META: Self = Self(1 << 3);
 
+  /// Cross-platform "command" modifier (Cmd on macOS, Ctrl elsewhere).
+  ///
+  /// This is useful for browser-style gestures like Cmd/Ctrl-click to open links in a new tab.
+  pub fn command(self) -> bool {
+    if cfg!(target_os = "macos") {
+      self.meta()
+    } else {
+      self.ctrl()
+    }
+  }
+
   pub fn ctrl(self) -> bool {
     (self.0 & Self::CTRL.0) != 0
   }
