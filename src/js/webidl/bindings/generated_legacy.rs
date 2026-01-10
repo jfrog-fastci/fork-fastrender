@@ -929,42 +929,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn window_alert<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    _this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    let argcount = std::cmp::min(args.len(), 1);
-    match argcount {
-      0 => {
-        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-        let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
-        binding_value_to_js::<Host, R>(rt, result)
-      }
-      1 => {
-        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-        let v0 = if args.len() > 0 {
-          args[0]
-        } else {
-          rt.js_undefined()
-        };
-        converted_args.push({
-          let s = rt.to_string(v0)?;
-          BindingValue::String(rt.js_string_to_rust_string(s)?)
-        });
-        let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
-        binding_value_to_js::<Host, R>(rt, result)
-      }
-      _ => Err(rt.throw_type_error("No matching overload for Window.alert")),
-    }
-  }
-
-  #[allow(dead_code)]
   fn window_clear_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
