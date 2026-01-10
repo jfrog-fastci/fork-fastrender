@@ -204,6 +204,47 @@ fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Poin
   }
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
+  // not treat all Unicode whitespace as ignorable (e.g. NBSP).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn cursor_for_form_control(dom: &mut crate::dom::DomNode, dom_node_id: usize) -> CursorKind {
+  let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, dom_node_id) else {
+    return CursorKind::Default;
+  };
+  let Some(tag) = node.tag_name() else {
+    return CursorKind::Default;
+  };
+
+  if tag.eq_ignore_ascii_case("textarea") {
+    return CursorKind::Text;
+  }
+  if tag.eq_ignore_ascii_case("input") {
+    let ty = trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or(""));
+    // Mirror the HTML spec: invalid/unknown `type` values fall back to `text`.
+    //
+    // Avoid showing the I-beam cursor for non-text-like controls (checkboxes, buttons, etc).
+    if ty.is_empty()
+      || !(ty.eq_ignore_ascii_case("hidden")
+        || ty.eq_ignore_ascii_case("button")
+        || ty.eq_ignore_ascii_case("submit")
+        || ty.eq_ignore_ascii_case("reset")
+        || ty.eq_ignore_ascii_case("checkbox")
+        || ty.eq_ignore_ascii_case("radio")
+        || ty.eq_ignore_ascii_case("range")
+        || ty.eq_ignore_ascii_case("file")
+        || ty.eq_ignore_ascii_case("image")
+        || ty.eq_ignore_ascii_case("color"))
+    {
+      return CursorKind::Text;
+    }
+  }
+
+  CursorKind::Default
+}
+
 fn compute_scroll_metrics(
   doc: Option<&BrowserDocument>,
   viewport_css: (u32, u32),
@@ -1626,7 +1667,7 @@ impl BrowserRuntime {
                   None => (None, CursorKind::Default),
                 }
               }
-              HitTestKind::FormControl => (None, CursorKind::Text),
+              HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
               _ => (None, CursorKind::Default),
             },
             None => (None, CursorKind::Default),
