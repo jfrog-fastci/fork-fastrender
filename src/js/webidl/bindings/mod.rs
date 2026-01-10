@@ -991,14 +991,16 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
+    // Keep `state` alive until after `teardown` so native dispatch pointers stored on function
+    // objects remain valid for the lifetime of the realm.
+    let state = Box::new(VmJsWebIdlBindingsState::<AttributeAndConstHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
       || -> Result<(), VmError> {
-        let state = Box::new(VmJsWebIdlBindingsState::<AttributeAndConstHost>::new(
-          realm.global_object(),
-          WebIdlLimits::default(),
-          Box::new(NoHooks),
-        ));
-
         let mut host = AttributeAndConstHost::default();
         {
           let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
@@ -1467,14 +1469,16 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
+    // Keep `state` alive until after `teardown` so native dispatch pointers stored on function
+    // objects remain valid for the lifetime of the realm.
+    let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
       || -> Result<(), VmError> {
-        let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
-          realm.global_object(),
-          WebIdlLimits::default(),
-          Box::new(NoHooks),
-        ));
-
         let mut host = AlertHost::default();
         {
           let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
