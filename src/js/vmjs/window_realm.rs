@@ -15,7 +15,7 @@ use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
-use crate::resource::{ensure_script_mime_sane, CorsMode, FetchDestination, FetchRequest, ResourceFetcher};
+use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher};
 use crate::style::media::MediaContext;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
