@@ -184,7 +184,23 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff --from-progress progress/p
 bash scripts/cargo_agent.sh xtask fixture-chrome-diff --from-progress progress/pages --top-worst-accuracy 10
 ```
 
-Defaults are aligned with the `pages_regression` suite (`viewport=1040x1240`, `dpr=1.0`) unless you override them.
+Viewport defaults differ depending on which baseline you are trying to match:
+
+- **Offline fixture workflows** (`xtask fixture-chrome-diff`, `xtask page-loop`, and the `pages_regression` test suite) default to `viewport=1040x1240`, `dpr=1.0`.
+- **Pageset progress accuracy refresh** (`xtask refresh-progress-accuracy`, which updates committed `progress/pages/*.json`) defaults to `viewport=1200x800`, `dpr=1.0` to match the pageset progress Chrome baselines.
+
+Override `--viewport WxH` on the fixture workflows when you want to compare against the other baseline.
+For example:
+
+```bash
+# Run deterministic fixture diffs at the pageset progress baseline viewport (1200x800):
+bash scripts/cargo_agent.sh xtask fixture-chrome-diff --viewport 1200x800
+
+# If you intentionally want to refresh committed progress accuracy using the fixture viewport
+# (1040x1240) instead of the pageset baseline, run the underlying steps manually:
+bash scripts/cargo_agent.sh xtask fixture-chrome-diff --viewport 1040x1240 --out-dir target/fixture_chrome_diff_1040x1240
+bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report target/fixture_chrome_diff_1040x1240/report.json --progress-dir progress/pages
+```
 
 For determinism, the Chrome baseline step disables CSS animations/transitions by default (via an injected `<style>` block). This both reduces screenshot frame-timing noise and keeps Chrome baselines aligned with FastRender’s “no animation” model. Opt out for debugging with:
 
