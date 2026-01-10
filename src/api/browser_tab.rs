@@ -1090,11 +1090,13 @@ impl BrowserTab {
   fn run_event_loop_until_idle_with_render_hook(
     &mut self,
     limits: RunLimits,
+    mut on_error: impl FnMut(Error),
     mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
-    self.event_loop.run_until_idle_with_hook(
+    self.event_loop.run_until_idle_handling_errors_with_hook(
       &mut self.host,
       limits,
+      &mut on_error,
       |host, _event_loop| -> Result<()> {
         if host.document.is_dirty() {
           if host.document.render_if_needed()?.is_some() {
@@ -1107,7 +1109,18 @@ impl BrowserTab {
   }
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    self.run_event_loop_until_idle_with_render_hook(limits, || {})
+    let trace = self.trace.clone();
+    self.run_event_loop_until_idle_with_render_hook(
+      limits,
+      move |err| {
+        // Match browser behavior: report uncaught task errors but keep the event loop running.
+        if trace.is_enabled() {
+          let mut span = trace.span("js.uncaught_exception", "js");
+          span.arg_str("message", &err.to_string());
+        }
+      },
+      || {},
+    )
   }
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
@@ -1136,6 +1149,15 @@ impl BrowserTab {
       return Ok(RunUntilStableOutcome::Stable { frames_rendered });
     }
     let mut frames_executed = 0usize;
+    let trace = self.trace.clone();
+    let mut report_error = move |err: Error| {
+      // Uncaught JS exceptions should not abort event-loop execution (browser behavior). For now,
+      // record them into the trace when tracing is enabled.
+      if trace.is_enabled() {
+        let mut span = trace.span("js.uncaught_exception", "js");
+        span.arg_str("message", &err.to_string());
+      }
+    };
 
     loop {
       if frames_executed >= max_frames {
@@ -1146,7 +1168,7 @@ impl BrowserTab {
       }
       frames_executed += 1;
 
-      match self.run_event_loop_until_idle_with_render_hook(limits, || {
+      match self.run_event_loop_until_idle_with_render_hook(limits, &mut report_error, || {
         frames_rendered = frames_rendered.saturating_add(1);
       })? {
         RunUntilIdleOutcome::Idle => {}
@@ -1158,7 +1180,9 @@ impl BrowserTab {
         }
       }
 
-      let raf_outcome = self.event_loop.run_animation_frame(&mut self.host)?;
+      let raf_outcome = self
+        .event_loop
+        .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
       if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
         // HTML: microtask checkpoint after rAF callbacks.
         //
@@ -1171,7 +1195,20 @@ impl BrowserTab {
           max_microtasks: limits.max_microtasks,
           max_wall_time: limits.max_wall_time,
         };
-        match self.event_loop.run_until_idle(&mut self.host, microtask_limits)? {
+        let mut render_hook = |host: &mut BrowserTabHost,
+                               _event_loop: &mut EventLoop<BrowserTabHost>|
+         -> Result<()> {
+          if host.document.render_if_needed()?.is_some() {
+            frames_rendered += 1;
+          }
+          Ok(())
+        };
+        match self.event_loop.run_until_idle_handling_errors_with_hook(
+          &mut self.host,
+          microtask_limits,
+          &mut report_error,
+          &mut render_hook,
+        )? {
           RunUntilIdleOutcome::Idle => {}
           RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
             // Expected: tasks are present, but this checkpoint only drains microtasks.

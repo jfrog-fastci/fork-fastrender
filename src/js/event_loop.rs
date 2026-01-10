@@ -675,6 +675,53 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  /// Run until there are no more queued tasks/microtasks, treating task/microtask errors as
+  /// uncaught exceptions surfaced via `on_error`, and invoking `hook` after each task turn or
+  /// standalone microtask checkpoint.
+  ///
+  /// This combines the semantics of [`EventLoop::run_until_idle_handling_errors`] (exceptions do
+  /// not abort the run) with [`EventLoop::run_until_idle_with_hook`] (embeddings can interleave
+  /// per-turn work like rendering/invalidation between turns).
+  ///
+  /// ## Hook behavior
+  ///
+  /// The hook is called after:
+  /// - draining the microtask queue when the event loop starts a microtask checkpoint, and
+  /// - executing a single task (including its post-task microtask checkpoint).
+  ///
+  /// Errors returned by `hook` are treated as fatal and abort the run (they are **not** passed to
+  /// `on_error`).
+  pub fn run_until_idle_handling_errors_with_hook<OnError, Hook>(
+    &mut self,
+    host: &mut Host,
+    limits: RunLimits,
+    mut on_error: OnError,
+    mut hook: Hook,
+  ) -> Result<RunUntilIdleOutcome>
+  where
+    OnError: FnMut(Error),
+    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+  {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
+
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
+
+    match self.run_until_idle_handling_errors_inner_with_hook(
+      host,
+      &mut run_state,
+      &mut on_error,
+      &mut hook,
+    ) {
+      Ok(outcome) => Ok(outcome),
+      Err(RunStepError::Stop(reason)) => Ok(RunUntilIdleOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
   fn run_until_idle_inner(
     &mut self,
     host: &mut Host,
@@ -741,6 +788,36 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if self.run_next_task_limited_handling_errors(host, run_state, on_error)? {
+        continue;
+      }
+
+      return Ok(RunUntilIdleOutcome::Idle);
+    }
+  }
+
+  fn run_until_idle_handling_errors_inner_with_hook<OnError, Hook>(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    on_error: &mut OnError,
+    hook: &mut Hook,
+  ) -> RunStepResult<RunUntilIdleOutcome>
+  where
+    OnError: FnMut(Error),
+    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+  {
+    loop {
+      run_state.check_deadline()?;
+      self.queue_due_timers().map_err(RunStepError::Error)?;
+
+      if !self.microtask_queue.is_empty() {
+        self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error)?;
+        hook(host, self).map_err(RunStepError::Error)?;
+        continue;
+      }
+
+      if self.run_next_task_limited_handling_errors(host, run_state, on_error)? {
+        hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
 
@@ -1577,6 +1654,121 @@ mod tests {
       host.log,
       vec!["microtask", "hook", "task", "nested_microtask", "hook"]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_handling_errors_with_hook_reports_task_error_and_continues() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let mut host = Host::default();
+    let mut errors: Vec<String> = Vec::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task1");
+      Err(Error::Other("boom".to_string()))
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors_with_hook(
+        &mut host,
+        RunLimits::unbounded(),
+        |err| match err {
+          Error::Other(msg) => errors.push(msg),
+          other => errors.push(other.to_string()),
+        },
+        |_host, _event_loop| Ok(()),
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["task1", "task2"]);
+    assert_eq!(errors, vec!["boom".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_handling_errors_with_hook_runs_after_checkpoint_and_task() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask");
+      Ok(())
+    })?;
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      host.log.push("task");
+      event_loop.queue_microtask(|host, _event_loop| {
+        host.log.push("nested_microtask");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let mut hooks = 0usize;
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors_with_hook(
+        &mut host,
+        RunLimits::unbounded(),
+        |_| {},
+        |host, _event_loop| {
+          hooks += 1;
+          host.log.push("hook");
+          Ok(())
+        },
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(hooks, 2);
+    assert_eq!(
+      host.log,
+      vec!["microtask", "hook", "task", "nested_microtask", "hook"]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_handling_errors_with_hook_aborts_on_hook_error() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let mut host = Host::default();
+    let mut errors: Vec<String> = Vec::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task1");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    let err = event_loop
+      .run_until_idle_handling_errors_with_hook(
+        &mut host,
+        RunLimits::unbounded(),
+        |err| errors.push(err.to_string()),
+        |_host, _event_loop| Err(Error::Other("hook failed".to_string())),
+      )
+      .expect_err("expected hook failure to abort the run");
+    assert!(matches!(err, Error::Other(msg) if msg == "hook failed"));
+    assert_eq!(host.log, vec!["task1"]);
+    assert!(errors.is_empty(), "hook errors should not go to on_error");
     Ok(())
   }
 

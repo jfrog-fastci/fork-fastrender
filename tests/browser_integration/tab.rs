@@ -165,6 +165,86 @@ fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
 }
 
 #[derive(Default)]
+struct ErrorThenMutationExecutor;
+
+impl BrowserTabJsExecutor for ErrorThenMutationExecutor {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    _spec: &fastrender::js::ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let code = script_text.trim();
+    if code != "queue-error-then-mutation" {
+      return Ok(());
+    }
+
+    // First task throws an uncaught exception (should be reported but must not abort the event loop).
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| {
+      Err(Error::Other("boom".to_string()))
+    })?;
+
+    // Second task mutates the DOM; this should still execute and be observable in the rendered
+    // output even though the first task failed.
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      let box_id = find_element_by_id(host.dom(), "box")
+        .ok_or_else(|| Error::Other("expected #box element".to_string()))?;
+      host
+        .dom_mut()
+        .set_attribute(box_id, "class", "b")
+        .map_err(|e| Error::Other(e.to_string()))?;
+      Ok(())
+    })?;
+
+    Ok(())
+  }
+}
+
+#[test]
+fn browser_tab_task_error_does_not_prevent_later_dom_mutations_and_rendering() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; }
+          .a { background: rgb(255, 0, 0); }
+          .b { background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body>
+        <div id="box" class="a"></div>
+        <script>queue-error-then-mutation</script>
+      </body>
+    </html>"#;
+  let options = RenderOptions::new().with_viewport(64, 64);
+
+  let mut tab = BrowserTab::from_html(html, options, ErrorThenMutationExecutor::default())?;
+
+  let frame_a = tab.render_frame()?;
+  assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
+
+  let outcome = tab.run_until_stable(10)?;
+  match outcome {
+    fastrender::RunUntilStableOutcome::Stable { frames_rendered } => {
+      assert!(
+        frames_rendered >= 1,
+        "expected a new frame to be rendered after the mutation"
+      );
+    }
+    other => panic!("expected stable outcome, got {other:?}"),
+  }
+
+  let frame_b = tab.render_frame()?;
+  assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
+  Ok(())
+}
+
+#[derive(Default)]
 struct TimerMutationExecutor;
 
 impl BrowserTabJsExecutor for TimerMutationExecutor {
