@@ -26,12 +26,51 @@ fn errors_when_imports_is_not_object() {
 }
 
 #[test]
+fn errors_when_scopes_is_not_object() {
+  let err = parse_import_map_string(r#"{ "scopes": [] }"#, &base_url()).unwrap_err();
+  assert!(
+    matches!(err, ImportMapError::TypeError(ref msg) if msg.contains(r#"value for the "scopes" top-level key needs to be a JSON object"#)),
+    "{err:?}"
+  );
+}
+
+#[test]
+fn errors_when_integrity_is_not_object() {
+  let err = parse_import_map_string(r#"{ "integrity": [] }"#, &base_url()).unwrap_err();
+  assert!(
+    matches!(err, ImportMapError::TypeError(ref msg) if msg.contains(r#"value for the "integrity" top-level key needs to be a JSON object"#)),
+    "{err:?}"
+  );
+}
+
+#[test]
+fn errors_when_scope_value_is_not_object() {
+  let err = parse_import_map_string(r#"{ "scopes": { "/a/": [] } }"#, &base_url()).unwrap_err();
+  assert!(
+    matches!(err, ImportMapError::TypeError(ref msg) if msg.contains("prefix /a/")),
+    "{err:?}"
+  );
+}
+
+#[test]
 fn normalizes_url_like_specifier_keys_to_absolute_url_strings() {
   let (map, _warnings) =
     parse_import_map_string(r#"{ "imports": { "/app/helper": "./helper.mjs" } }"#, &base_url())
       .unwrap();
   assert_eq!(map.imports.entries.len(), 1);
   assert_eq!(map.imports.entries[0].0, "https://example.com/app/helper");
+}
+
+#[test]
+fn empty_specifier_key_is_skipped_with_warning() {
+  let (map, warnings) =
+    parse_import_map_string(r#"{ "imports": { "": "/skip.js", "a": "/a.js" } }"#, &base_url())
+      .unwrap();
+  assert_eq!(map.imports.entries.len(), 1);
+  assert_eq!(map.imports.entries[0].0, "a");
+  assert!(warnings
+    .iter()
+    .any(|w| matches!(w.kind, ImportMapWarningKind::EmptySpecifierKey)));
 }
 
 #[test]
@@ -143,6 +182,20 @@ fn bare_relative_integrity_keys_are_ignored() {
   assert!(warnings.iter().any(|w| matches!(
     w.kind,
     ImportMapWarningKind::IntegrityKeyFailedToResolve { .. }
+  )));
+}
+
+#[test]
+fn integrity_values_must_be_strings() {
+  let (map, warnings) = parse_import_map_string(
+    r#"{ "integrity": { "/foo.js": 123 } }"#,
+    &base_url(),
+  )
+  .unwrap();
+  assert!(map.integrity.entries.is_empty());
+  assert!(warnings.iter().any(|w| matches!(
+    w.kind,
+    ImportMapWarningKind::IntegrityValueNotString { .. }
   )));
 }
 
