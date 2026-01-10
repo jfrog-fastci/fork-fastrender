@@ -1908,7 +1908,15 @@ impl<'a> Evaluator<'a> {
     match res {
       Err(VmError::Throw(value)) => Ok(Completion::Throw(thrown_at_stmt(value))),
       Err(VmError::ThrowWithStack { value, mut stack }) => {
-        update_top_frame(&mut stack);
+        // If the stack trace was captured while executing a native builtin, the top frame's
+        // location will be `<native>:0:0`. Patch that frame to the current statement location so
+        // callers see where the exception was triggered in user code.
+        //
+        // For user-thrown exceptions, the captured stack already contains meaningful source
+        // locations and should not be overwritten.
+        if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
+          update_top_frame(&mut stack);
+        }
         Ok(Completion::Throw(Thrown { value, stack }))
       }
       Err(VmError::TypeError(message)) => {

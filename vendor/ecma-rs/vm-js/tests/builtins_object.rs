@@ -295,7 +295,12 @@ fn object_assign_throws_when_setting_non_writable_target_property() -> Result<()
     .vm
     .call_without_host(&mut scope, Value::Object(assign), Value::Object(object), &args)
     .unwrap_err();
-  assert!(matches!(err, VmError::TypeError(_)));
+  // `Vm::call*` coerces internal `VmError::TypeError` into a thrown `TypeError` value so it is
+  // catchable by non-evaluator call sites (Promise jobs, host callbacks, etc.).
+  assert!(matches!(
+    err,
+    VmError::Throw(_) | VmError::ThrowWithStack { .. }
+  ));
 
   Ok(())
 }

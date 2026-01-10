@@ -1688,9 +1688,11 @@ pub fn promise_constructor_construct(
   // Promise constructor:
   // `promise = OrdinaryCreateFromConstructor(NewTarget, "%Promise.prototype%", ...)`.
   let intr = require_intrinsics(vm)?;
-  let promise = crate::spec_ops::ordinary_create_from_constructor(
+  let promise = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
     vm,
     scope,
+    host,
+    hooks,
     new_target,
     intr.promise_prototype(),
     &[

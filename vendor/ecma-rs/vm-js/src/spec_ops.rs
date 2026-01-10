@@ -3,14 +3,17 @@
 //! This module contains small helpers that mirror ECMA-262 abstract operations closely. These are
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
-use crate::{GcObject, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError};
+use crate::{GcObject, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use std::mem;
 
 /// `GetPrototypeFromConstructor(constructor, intrinsicDefaultProto)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-getprototypefromconstructor>
-pub fn get_prototype_from_constructor(
+pub fn get_prototype_from_constructor_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   constructor: Value,
   intrinsic_default_proto: GcObject,
 ) -> Result<GcObject, VmError> {
@@ -27,11 +30,39 @@ pub fn get_prototype_from_constructor(
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
 
-  let proto = vm.get(&mut scope, constructor_obj, key)?;
+  let proto = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    constructor_obj,
+    key,
+    Value::Object(constructor_obj),
+  )?;
   match proto {
     Value::Object(o) => Ok(o),
     _ => Ok(intrinsic_default_proto),
   }
+}
+
+pub fn get_prototype_from_constructor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  constructor: Value,
+  intrinsic_default_proto: GcObject,
+) -> Result<GcObject, VmError> {
+  // Backwards-compatible wrapper that uses a dummy host context and the VM-owned microtask queue.
+  let mut dummy_host = ();
+  let mut hooks = mem::take(vm.microtask_queue_mut());
+  let result = get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    &mut dummy_host,
+    &mut hooks,
+    constructor,
+    intrinsic_default_proto,
+  );
+  *vm.microtask_queue_mut() = hooks;
+  result
 }
 
 /// `OrdinaryCreateFromConstructor(constructor, intrinsicDefaultProto, internalSlotsList)`
@@ -49,7 +80,48 @@ pub fn ordinary_create_from_constructor<F>(
 where
   F: FnOnce(&mut Scope<'_>) -> Result<GcObject, VmError>,
 {
-  let proto = get_prototype_from_constructor(vm, scope, new_target, intrinsic_default_proto)?;
+  // Backwards-compatible wrapper that uses a dummy host context and the VM-owned microtask queue.
+  let mut dummy_host = ();
+  let mut hooks = mem::take(vm.microtask_queue_mut());
+  let result = ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    &mut dummy_host,
+    &mut hooks,
+    new_target,
+    intrinsic_default_proto,
+    _internal_slots_list,
+    allocate,
+  );
+  *vm.microtask_queue_mut() = hooks;
+  result
+}
+
+/// `OrdinaryCreateFromConstructor(constructor, intrinsicDefaultProto, internalSlotsList)`
+/// (ECMA-262), using an explicit embedder host context and host hook implementation.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-ordinarycreatefromconstructor>
+pub fn ordinary_create_from_constructor_with_host_and_hooks<F>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  new_target: Value,
+  intrinsic_default_proto: GcObject,
+  _internal_slots_list: &[&'static str],
+  allocate: F,
+) -> Result<GcObject, VmError>
+where
+  F: FnOnce(&mut Scope<'_>) -> Result<GcObject, VmError>,
+{
+  let proto = get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intrinsic_default_proto,
+  )?;
 
   // Root `new_target`/`proto` across allocation in case it triggers GC.
   let mut scope = scope.reborrow();
