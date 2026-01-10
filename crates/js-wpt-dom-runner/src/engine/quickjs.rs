@@ -77,6 +77,12 @@ impl QuickJsBackend {
         }
         Err(err) => {
           self.microtasks_executed = executed;
+          // `rquickjs` surfaces an interrupt as a regular error; normalize it to a timeout so the
+          // runner doesn't misclassify deadline-based termination as a harness error.
+          if self.is_timed_out() {
+            self.timed_out = true;
+            return Ok(());
+          }
           return Err(RunError::Js(err.to_string()));
         }
       }
@@ -170,7 +176,15 @@ impl Backend for QuickJsBackend {
         self.drain_microtasks_internal()?;
         Ok(())
       }
-      Err(err) => Err(err),
+      Err(err) => {
+        // `rquickjs` uses the interrupt handler to abort execution, but reports that abort as an
+        // exception. Detect that we've hit the per-test deadline and report it as a timeout.
+        if self.is_timed_out() {
+          self.timed_out = true;
+          return Ok(());
+        }
+        Err(err)
+      }
     }
   }
 
@@ -191,11 +205,20 @@ impl Backend for QuickJsBackend {
       return Ok(false);
     }
 
-    let ran: i32 = self.ctx()?.with(|ctx| {
+    let ran: i32 = match self.ctx()?.with(|ctx| {
       ctx
         .eval("__fastrender_poll_timers()")
         .map_err(|e| RunError::Js(e.to_string()))
-    })?;
+    }) {
+      Ok(v) => v,
+      Err(err) => {
+        if self.is_timed_out() {
+          self.timed_out = true;
+          return Ok(false);
+        }
+        return Err(err);
+      }
+    };
 
     let ran = ran.max(0) as usize;
     if ran == 0 {
