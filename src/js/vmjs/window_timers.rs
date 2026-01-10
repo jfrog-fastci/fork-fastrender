@@ -1293,6 +1293,7 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::JsExecutionOptions;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1639,6 +1640,41 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn cb_record_vm_budget(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+      return Ok(Value::Undefined);
+    };
+
+    let budget = vm.budget();
+    set_prop(
+      scope,
+      global,
+      "__budget_fuel_is_some",
+      Value::Bool(budget.fuel.is_some()),
+    );
+    set_prop(
+      scope,
+      global,
+      "__budget_deadline_is_some",
+      Value::Bool(budget.deadline.is_some()),
+    );
+    let fuel_value = budget
+      .fuel
+      .map(|fuel| Value::Number(fuel as f64))
+      .unwrap_or(Value::Number(-1.0));
+    set_prop(scope, global, "__budget_fuel_value", fuel_value);
+
+    Ok(Value::Undefined)
+  }
+
   fn cb_noop(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
@@ -1871,6 +1907,86 @@ mod tests {
 
     let err = err.expect_err("expected TypeError for Symbol handle");
     assert_type_error_contains(scope.heap_mut(), err, SYMBOL_TO_NUMBER_ERROR);
+    Ok(())
+  }
+
+  #[test]
+  fn timer_callbacks_apply_vm_budget_from_js_execution_options() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut js_options = JsExecutionOptions::default();
+    // Use a small fuel budget so we can detect whether the timer callback picked up the configured
+    // value (vm-js decrements fuel on ticks, so we only assert it stays <= this maximum).
+    js_options.max_instruction_count = Some(1_000);
+    // Disable wall-time budgeting so the timer callback budget has no deadline unless a render
+    // deadline is active.
+    js_options.event_loop_run_limits.max_wall_time = None;
+
+    let window = WindowRealm::new_with_js_execution_options(
+      WindowRealmConfig::new("https://example.invalid/"),
+      js_options,
+    )
+    .unwrap();
+    let mut host = Host {
+      host_ctx: HostCtx {
+        hook_downcast_count: 0,
+      },
+      window,
+    };
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      set_prop(&mut scope, global, "__budget_fuel_is_some", Value::Bool(false));
+      set_prop(&mut scope, global, "__budget_deadline_is_some", Value::Bool(false));
+      set_prop(&mut scope, global, "__budget_fuel_value", Value::Number(-1.0));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+        let timeout_cb =
+          make_callback(vm, &mut scope, global, "timeout_cb", cb_record_vm_budget);
+        vm.call_without_host(
+          &mut scope,
+          set_timeout,
+          Value::Undefined,
+          &[Value::Object(timeout_cb), Value::Number(0.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let (fuel_is_some, deadline_is_some, fuel_value) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      (
+        get_prop(&mut scope, global, "__budget_fuel_is_some"),
+        get_prop(&mut scope, global, "__budget_deadline_is_some"),
+        get_prop(&mut scope, global, "__budget_fuel_value"),
+      )
+    };
+
+    assert_eq!(fuel_is_some, Value::Bool(true));
+    assert_eq!(deadline_is_some, Value::Bool(false));
+
+    let Value::Number(n) = fuel_value else {
+      panic!("expected number fuel value, got {fuel_value:?}");
+    };
+    assert!(n >= 0.0 && n <= 1_000.0, "fuel={n}");
+
     Ok(())
   }
 
