@@ -584,11 +584,11 @@ fn scan_html_for_remote_fetches(html: &str, include_scripts: bool) -> Vec<UrlSpa
       .expect("source src regex")
   });
   let img_srcset = IMG_SRCSET.get_or_init(|| {
-    Regex::new("(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    Regex::new("(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
       .expect("img srcset regex")
   });
   let source_srcset = SOURCE_SRCSET.get_or_init(|| {
-    Regex::new("(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    Regex::new("(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
       .expect("source srcset regex")
   });
   let script_src = SCRIPT_SRC.get_or_init(|| {
@@ -609,7 +609,7 @@ fn scan_html_for_remote_fetches(html: &str, include_scripts: bool) -> Vec<UrlSpa
     Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap()
   });
   let attr_imagesrcset = ATTR_IMAGESRCSET.get_or_init(|| {
-    Regex::new("(?is)(?:^|\\s)imagesrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')").unwrap()
+    Regex::new("(?is)(?:^|\\s)imagesrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap()
   });
 
   let mut out = Vec::new();
@@ -663,12 +663,12 @@ fn scan_html_for_remote_fetches(html: &str, include_scripts: bool) -> Vec<UrlSpa
 
   const MAX_SRCSET_CANDIDATES: usize = 64;
   for caps in img_srcset.captures_iter(html.as_ref()) {
-    if let Some(m) = capture_first_match(&caps, &[1, 2]) {
+    if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_srcset_violations(&mut out, m.as_str(), m.start(), MAX_SRCSET_CANDIDATES);
     }
   }
   for caps in source_srcset.captures_iter(html.as_ref()) {
-    if let Some(m) = capture_first_match(&caps, &[1, 2]) {
+    if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_srcset_violations(&mut out, m.as_str(), m.start(), MAX_SRCSET_CANDIDATES);
     }
   }
@@ -768,7 +768,7 @@ fn scan_html_for_remote_fetches(html: &str, include_scripts: bool) -> Vec<UrlSpa
 
     // imagesrcset=
     if let Some(srcset_caps) = attr_imagesrcset.captures(tag_str) {
-      if let Some(value_match) = capture_first_match(&srcset_caps, &[1, 2]) {
+      if let Some(value_match) = capture_first_match(&srcset_caps, &[1, 2, 3]) {
         push_srcset_violations(
           &mut out,
           value_match.as_str(),
@@ -973,5 +973,34 @@ mod tests {
     assert!(!on.contains("https://example.com/inner.js"));
     assert!(!on.contains("javascript:alert(1)"));
     assert!(!on.contains("data:text/javascript,alert(1)"));
+  }
+
+  #[test]
+  fn srcset_unquoted_attributes_are_detected() {
+    let html = r#"
+<!doctype html>
+<html>
+  <head>
+    <link rel="preload" imagesrcset=https://example.com/preload-a.png,https://example.com/preload-b.png>
+  </head>
+  <body>
+    <img srcset=https://example.com/a.png,https://example.com/b.png>
+    <picture>
+      <source srcset=https://example.com/c.png,https://example.com/d.png>
+    </picture>
+  </body>
+</html>
+"#;
+
+    let urls: BTreeSet<String> = scan_html_for_remote_fetches(html, false)
+      .into_iter()
+      .map(|span| span.url)
+      .collect();
+    assert!(urls.contains("https://example.com/a.png"));
+    assert!(urls.contains("https://example.com/b.png"));
+    assert!(urls.contains("https://example.com/c.png"));
+    assert!(urls.contains("https://example.com/d.png"));
+    assert!(urls.contains("https://example.com/preload-a.png"));
+    assert!(urls.contains("https://example.com/preload-b.png"));
   }
 }

@@ -1850,6 +1850,7 @@ fn run_diff_renders_allowing_differences(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use clap::Parser;
 
   #[test]
   fn extract_pages_regression_fixture_stems_dedups_and_sorts() {

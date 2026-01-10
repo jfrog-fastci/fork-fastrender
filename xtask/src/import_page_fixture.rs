@@ -2155,6 +2155,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
