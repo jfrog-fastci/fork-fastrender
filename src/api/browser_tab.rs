@@ -2154,9 +2154,15 @@ impl BrowserTab {
     // `check_active_periodic`, but it does not accept `RenderOptions` directly. Store the deadline
     // in the streaming parse state so it remains active if parsing is resumed via event-loop tasks
     // (e.g. when parser-blocking scripts are delayed by script-blocking stylesheets).
-    let deadline = (options.timeout.is_some() || options.cancel_callback.is_some()).then(|| {
-      RenderDeadline::new(options.timeout, options.cancel_callback.clone())
-    });
+    // Prefer the existing root deadline (if enabled) so resumed parse tasks inherit the same start
+    // instant across nested callers.
+    let deadline = crate::render_control::root_deadline()
+      .filter(|deadline| deadline.is_enabled())
+      .or_else(|| {
+        (options.timeout.is_some() || options.cancel_callback.is_some()).then(|| {
+          RenderDeadline::new(options.timeout, options.cancel_callback.clone())
+        })
+      });
 
     self.host.streaming_parse = Some(StreamingParseState {
       parser: StreamingHtmlParser::new(document_url),
@@ -2248,12 +2254,33 @@ impl BrowserTab {
       pending_frame: None,
       history: TabHistory::new(),
     };
+    let options_for_parse = options.clone();
+    // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+    // - HTML parsing,
+    // - and any synchronous navigation requests triggered by scripts during parsing.
+    let deadline_enabled =
+      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
+    let root_deadline_is_enabled =
+      crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
+    let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
+      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+    });
+    let _deadline_guard = deadline
+      .as_ref()
+      .map(|deadline| DeadlineGuard::install(Some(deadline)));
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab.host.reset_scripting_state(None, document_referrer_policy)?;
-    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
+    let mut parse_options = options_for_parse.clone();
+    if root_deadline_is_enabled {
+      // Avoid installing a nested deadline: the outer root deadline already enforces the render
+      // budget across parsing + any follow-up navigation committed from scripts.
+      parse_options.timeout = None;
+      parse_options.cancel_callback = None;
+    }
+    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
     } else if tab.host.streaming_parse.is_none() {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -2402,12 +2429,33 @@ impl BrowserTab {
       pending_frame: None,
       history: TabHistory::new(),
     };
+    let options_for_parse = options.clone();
+    // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+    // - HTML parsing,
+    // - and any synchronous navigation requests triggered by scripts during parsing.
+    let deadline_enabled =
+      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
+    let root_deadline_is_enabled =
+      crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
+    let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
+      RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone())
+    });
+    let _deadline_guard = deadline
+      .as_ref()
+      .map(|deadline| DeadlineGuard::install(Some(deadline)));
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab.host.reset_scripting_state(None, document_referrer_policy)?;
-    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
+    let mut parse_options = options_for_parse.clone();
+    if root_deadline_is_enabled {
+      // Avoid installing a nested deadline: the outer root deadline already enforces the render
+      // budget across parsing + any follow-up navigation committed from scripts.
+      parse_options.timeout = None;
+      parse_options.cancel_callback = None;
+    }
+    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
+      tab.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -6235,6 +6283,87 @@ html, body { margin: 0; padding: 0; }
         RenderOptions::default().with_timeout(Some(Duration::from_millis(40))),
       )
       .expect_err("expected deadline to span script-triggered navigation");
+
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::DomParse,
+        ..
+      }) => {}
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn from_html_timeout_spans_script_triggered_navigation() -> Result<()> {
+    use crate::error::{RenderError, RenderStage};
+    use std::time::Duration;
+
+    struct SleepyNavigateExecutor {
+      target_url: String,
+      pending: Option<LocationNavigationRequest>,
+    }
+
+    impl BrowserTabJsExecutor for SleepyNavigateExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          std::thread::sleep(Duration::from_millis(60));
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: false,
+          });
+        }
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let dir = tempdir().map_err(Error::Io)?;
+    let target_path = dir.path().join("target.html");
+    std::fs::write(
+      &target_path,
+      "<!doctype html><html><body><div id=done></div></body></html>",
+    )
+    .map_err(Error::Io)?;
+    let target_url = Url::from_file_path(&target_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let executor = SleepyNavigateExecutor {
+      target_url,
+      pending: None,
+    };
+
+    let err = match BrowserTab::from_html(
+      "<!doctype html><html><body><script>NAVIGATE</script></body></html>",
+      RenderOptions::default().with_timeout(Some(Duration::from_millis(40))),
+      executor,
+    ) {
+      Ok(_) => panic!("expected deadline to span script-triggered navigation"),
+      Err(err) => err,
+    };
 
     match err {
       Error::Render(RenderError::Timeout {
