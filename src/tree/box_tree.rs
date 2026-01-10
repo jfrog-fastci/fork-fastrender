@@ -909,23 +909,34 @@ fn resolve_sizes_length_value(
   root_font_size: f32,
 ) -> Option<f32> {
   use crate::style::values::LengthUnit;
-    match length.unit {
-      LengthUnit::Percent => length.resolve_against(viewport.width),
-      LengthUnit::Vw
-      | LengthUnit::Vh
-      | LengthUnit::Vi
-      | LengthUnit::Vb
-      | LengthUnit::Vmin
-      | LengthUnit::Vmax
-      | LengthUnit::Dvw
-      | LengthUnit::Dvh
-      | LengthUnit::Dvi
-      | LengthUnit::Dvb
-      | LengthUnit::Dvmin
-      | LengthUnit::Dvmax => length.resolve_with_viewport(viewport.width, viewport.height),
-      LengthUnit::Em => Some(font_size * length.value),
-      LengthUnit::Rem => Some(root_font_size * length.value),
-      LengthUnit::Ex | LengthUnit::Ch => Some(font_size * length.value * 0.5),
+  match length.unit {
+    LengthUnit::Percent => length.resolve_against(viewport.width),
+    LengthUnit::Vw
+    | LengthUnit::Vh
+    | LengthUnit::Vi
+    | LengthUnit::Vb
+    | LengthUnit::Vmin
+    | LengthUnit::Vmax
+    | LengthUnit::Dvw
+    | LengthUnit::Dvh
+    | LengthUnit::Dvi
+    | LengthUnit::Dvb
+    | LengthUnit::Dvmin
+    | LengthUnit::Dvmax => length.resolve_with_viewport(viewport.width, viewport.height),
+    LengthUnit::Em => Some(font_size * length.value),
+    LengthUnit::Rem => Some(root_font_size * length.value),
+    LengthUnit::Ex | LengthUnit::Ch => Some(font_size * length.value * 0.5),
+    LengthUnit::Cap => Some(font_size * length.value * 0.7),
+    LengthUnit::Ic => Some(font_size * length.value),
+    // Root font-relative units.
+    LengthUnit::Rex | LengthUnit::Rch => Some(root_font_size * length.value * 0.5),
+    LengthUnit::Rcap => Some(root_font_size * length.value * 0.7),
+    LengthUnit::Ric => Some(root_font_size * length.value),
+    // Root line-height isn't available here; approximate it using the UA `normal` fallback.
+    LengthUnit::Rlh => Some(root_font_size * length.value * 1.2),
+    // `lh` depends on computed `line-height`, which isn't available during sizes evaluation;
+    // approximate it using `normal` (1.2em).
+    LengthUnit::Lh => Some(font_size * length.value * 1.2),
     LengthUnit::Calc => length.resolve_with_context(
       Some(viewport.width),
       viewport.width,
@@ -2215,6 +2226,22 @@ mod tests {
 
     // 10rem should resolve against the root font size, not the element font size.
     assert_eq!(list.evaluate(&media_ctx, viewport, 10.0, 20.0), 200.0);
+  }
+
+  #[test]
+  fn sizes_list_resolves_rch_against_root_font_size() {
+    let list = SizesList {
+      entries: vec![SizesEntry {
+        media: None,
+        length: Length::new(10.0, LengthUnit::Rch).into(),
+      }],
+    };
+
+    let viewport = Size::new(800.0, 600.0);
+    let media_ctx = MediaContext::screen(viewport.width, viewport.height);
+
+    // 10rch should resolve against the root font size (0.5em on the root), not the element font size.
+    assert_eq!(list.evaluate(&media_ctx, viewport, 10.0, 20.0), 100.0);
   }
 
   #[test]
