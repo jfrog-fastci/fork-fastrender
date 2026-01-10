@@ -35,6 +35,8 @@ impl DomKind {
 }
 
 const DOM_TOKEN_LIST_HOST_KIND: u64 = 3;
+const DOM_STRING_MAP_HOST_KIND: u64 = 4;
+const CSS_STYLE_DECL_HOST_KIND: u64 = 5;
 
 fn dom_kind_for_node_kind(kind: &NodeKind) -> DomKind {
   match kind {
@@ -238,6 +240,8 @@ pub struct DomHost {
   // Identity cache: preserve wrapper identity without keeping wrappers alive.
   node_wrappers: HashMap<NodeId, WeakGcObject>,
   class_list_wrappers: HashMap<NodeId, WeakGcObject>,
+  dataset_wrappers: HashMap<NodeId, WeakGcObject>,
+  style_wrappers: HashMap<NodeId, WeakGcObject>,
   live_collections: Vec<LiveCollection>,
 
   // Persistent roots for cached objects. `DomHost` isn't traced by the GC.
@@ -248,6 +252,8 @@ pub struct DomHost {
   proto_element: GcObject,
   proto_document: GcObject,
   proto_dom_token_list: GcObject,
+  proto_dom_string_map: GcObject,
+  proto_css_style_decl: GcObject,
   proto_html_collection: GcObject,
 
   // Cached constructor/prototype for DOMException.
@@ -466,6 +472,43 @@ fn require_this_dom_token_list<'a>(
   match &host.dom.borrow().node(node_id).kind {
     NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
     _ => return throw_type_error(scope, host, "DOMTokenList refers to a non-Element node"),
+  }
+
+  Ok(node_id)
+}
+
+fn require_this_css_style_decl<'a>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  this: Value,
+) -> Result<NodeId, VmError> {
+  let obj = match this {
+    Value::Object(o) => o,
+    _ => return throw_type_error(scope, host, "receiver is not an object"),
+  };
+
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
+    return throw_type_error(scope, host, "CSSStyleDeclaration method called on incompatible receiver");
+  };
+
+  if slots.b != CSS_STYLE_DECL_HOST_KIND {
+    return throw_type_error(scope, host, "CSSStyleDeclaration method called on incompatible receiver");
+  }
+
+  let node_idx_u64 = slots.a;
+  if node_idx_u64 > (usize::MAX as u64) {
+    return throw_type_error(scope, host, "invalid node id on CSSStyleDeclaration");
+  }
+
+  let node_id = NodeId::from_index(node_idx_u64 as usize);
+  if node_id.index() >= host.dom.borrow().nodes_len() {
+    return throw_type_error(scope, host, "CSSStyleDeclaration refers to an unknown DOM node");
+  }
+
+  match &host.dom.borrow().node(node_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+    _ => return throw_type_error(scope, host, "CSSStyleDeclaration refers to a non-Element node"),
   }
 
   Ok(node_id)
@@ -2139,6 +2182,90 @@ fn dom_element_class_list_getter(
   Ok(Value::Object(wrapper))
 }
 
+fn dom_element_dataset_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  if let Some(existing) = host
+    .dataset_wrappers
+    .get(&element_id)
+    .copied()
+    .and_then(|weak| weak.upgrade(scope.heap()))
+  {
+    return Ok(Value::Object(existing));
+  }
+
+  let wrapper = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrapper))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wrapper, Some(host.proto_dom_string_map))?;
+
+  scope.heap_mut().object_set_host_slots(
+    wrapper,
+    HostSlots {
+      a: element_id.index() as u64,
+      b: DOM_STRING_MAP_HOST_KIND,
+    },
+  )?;
+
+  host
+    .dataset_wrappers
+    .insert(element_id, WeakGcObject::from(wrapper));
+
+  Ok(Value::Object(wrapper))
+}
+
+fn dom_element_style_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  if let Some(existing) = host
+    .style_wrappers
+    .get(&element_id)
+    .copied()
+    .and_then(|weak| weak.upgrade(scope.heap()))
+  {
+    return Ok(Value::Object(existing));
+  }
+
+  let wrapper = scope.alloc_object()?;
+  scope.push_root(Value::Object(wrapper))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(wrapper, Some(host.proto_css_style_decl))?;
+
+  scope.heap_mut().object_set_host_slots(
+    wrapper,
+    HostSlots {
+      a: element_id.index() as u64,
+      b: CSS_STYLE_DECL_HOST_KIND,
+    },
+  )?;
+
+  host
+    .style_wrappers
+    .insert(element_id, WeakGcObject::from(wrapper));
+
+  Ok(Value::Object(wrapper))
+}
+
 fn dom_token_list_contains(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2182,8 +2309,10 @@ fn dom_token_list_add(
     .borrow_mut()
     .class_list_add(element_id, token_refs.as_slice());
   match result {
-    Ok(_) => {
-      host.sync_live_collections(scope)?;
+    Ok(changed) => {
+      if changed {
+        host.sync_live_collections(scope)?;
+      }
       Ok(Value::Undefined)
     }
     Err(e) => throw_dom_error(scope, host, e),
@@ -2213,8 +2342,10 @@ fn dom_token_list_remove(
     .borrow_mut()
     .class_list_remove(element_id, token_refs.as_slice());
   match result {
-    Ok(_) => {
-      host.sync_live_collections(scope)?;
+    Ok(changed) => {
+      if changed {
+        host.sync_live_collections(scope)?;
+      }
       Ok(Value::Undefined)
     }
     Err(e) => throw_dom_error(scope, host, e),
@@ -2241,15 +2372,111 @@ fn dom_token_list_toggle(
     Some(v) => Some(scope.heap().to_boolean(v)?),
   };
 
+  let before = match host.dom.borrow().class_list_contains(element_id, &token) {
+    Ok(v) => v,
+    Err(e) => return throw_dom_error(scope, host, e),
+  };
+
   let result = host
     .dom
     .borrow_mut()
     .class_list_toggle(element_id, &token, force);
   match result {
-    Ok(v) => {
-      host.sync_live_collections(scope)?;
-      Ok(Value::Bool(v))
+    Ok(after) => {
+      if after != before {
+        host.sync_live_collections(scope)?;
+      }
+      Ok(Value::Bool(after))
     }
+    Err(e) => throw_dom_error(scope, host, e),
+  }
+}
+
+fn dom_token_list_replace(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_dom_token_list(scope, host, this)?;
+
+  let token_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_token_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let token = to_dom_string(scope, host, token_val)?;
+  let new_token = to_dom_string(scope, host, new_token_val)?;
+
+  let before = match host.dom.borrow().get_attribute(element_id, "class") {
+    Ok(v) => v.map(str::to_string),
+    Err(e) => return throw_dom_error(scope, host, e),
+  };
+
+  let found = match host
+    .dom
+    .borrow_mut()
+    .class_list_replace(element_id, &token, &new_token)
+  {
+    Ok(v) => v,
+    Err(e) => return throw_dom_error(scope, host, e),
+  };
+
+  let after = match host.dom.borrow().get_attribute(element_id, "class") {
+    Ok(v) => v.map(str::to_string),
+    Err(e) => return throw_dom_error(scope, host, e),
+  };
+
+  if before != after {
+    host.sync_live_collections(scope)?;
+  }
+
+  Ok(Value::Bool(found))
+}
+
+fn css_style_decl_get_property_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_css_style_decl(scope, host, this)?;
+
+  let name_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name = to_dom_string(scope, host, name_val)?;
+
+  let value = host.dom.borrow().style_get_property_value(element_id, &name);
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn css_style_decl_set_property(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_css_style_decl(scope, host, this)?;
+
+  let name_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let name = to_dom_string(scope, host, name_val)?;
+  let value = to_dom_string(scope, host, value_val)?;
+
+  match host
+    .dom
+    .borrow_mut()
+    .style_set_property(element_id, &name, &value)
+  {
+    Ok(_) => Ok(Value::Undefined),
     Err(e) => throw_dom_error(scope, host, e),
   }
 }
@@ -2386,6 +2613,20 @@ pub fn install_dom_bindings_with_limits(
     Some(realm.intrinsics().object_prototype()),
   )?;
 
+  let proto_dom_string_map = scope.alloc_object()?;
+  scope.push_root(Value::Object(proto_dom_string_map))?;
+  scope.heap_mut().object_set_prototype(
+    proto_dom_string_map,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+
+  let proto_css_style_decl = scope.alloc_object()?;
+  scope.push_root(Value::Object(proto_css_style_decl))?;
+  scope.heap_mut().object_set_prototype(
+    proto_css_style_decl,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+
   let proto_html_collection = scope.alloc_object()?;
   scope.push_root(Value::Object(proto_html_collection))?;
   scope.heap_mut().object_set_prototype(
@@ -2441,10 +2682,15 @@ pub fn install_dom_bindings_with_limits(
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
   let call_text_content_set = vm.register_native_call(dom_node_text_content_setter)?;
   let call_class_list_get = vm.register_native_call(dom_element_class_list_getter)?;
+  let call_dataset_get = vm.register_native_call(dom_element_dataset_getter)?;
+  let call_style_get = vm.register_native_call(dom_element_style_getter)?;
   let call_token_list_contains = vm.register_native_call(dom_token_list_contains)?;
   let call_token_list_add = vm.register_native_call(dom_token_list_add)?;
   let call_token_list_remove = vm.register_native_call(dom_token_list_remove)?;
   let call_token_list_toggle = vm.register_native_call(dom_token_list_toggle)?;
+  let call_token_list_replace = vm.register_native_call(dom_token_list_replace)?;
+  let call_style_get_prop = vm.register_native_call(css_style_decl_get_property_value)?;
+  let call_style_set_prop = vm.register_native_call(css_style_decl_set_property)?;
   let call_illegal_constructor = vm.register_native_call(dom_illegal_constructor)?;
 
   // Install methods/getters.
@@ -2576,11 +2822,22 @@ pub fn install_dom_bindings_with_limits(
     call_text_content_set,
   )?;
   install_getter(&mut scope, proto_element, "classList", call_class_list_get)?;
+  install_getter(&mut scope, proto_element, "dataset", call_dataset_get)?;
+  install_getter(&mut scope, proto_element, "style", call_style_get)?;
 
   install_method(&mut scope, proto_dom_token_list, "contains", call_token_list_contains, 1)?;
   install_method(&mut scope, proto_dom_token_list, "add", call_token_list_add, 0)?;
   install_method(&mut scope, proto_dom_token_list, "remove", call_token_list_remove, 0)?;
   install_method(&mut scope, proto_dom_token_list, "toggle", call_token_list_toggle, 1)?;
+  install_method(&mut scope, proto_dom_token_list, "replace", call_token_list_replace, 2)?;
+  install_method(
+    &mut scope,
+    proto_css_style_decl,
+    "getPropertyValue",
+    call_style_get_prop,
+    1,
+  )?;
+  install_method(&mut scope, proto_css_style_decl, "setProperty", call_style_set_prop, 2)?;
   install_method(&mut scope, proto_html_collection, "item", call_html_collection_item, 1)?;
 
   let mut host = DomHost {
@@ -2592,12 +2849,16 @@ pub fn install_dom_bindings_with_limits(
     cookie_jar: CookieJar::new(),
     node_wrappers: HashMap::new(),
     class_list_wrappers: HashMap::new(),
+    dataset_wrappers: HashMap::new(),
+    style_wrappers: HashMap::new(),
     live_collections: Vec::new(),
     prototype_roots: Vec::new(),
     proto_node,
     proto_element,
     proto_document,
     proto_dom_token_list,
+    proto_dom_string_map,
+    proto_css_style_decl,
     proto_html_collection,
     dom_exception,
     type_error_prototype: realm.intrinsics().type_error_prototype(),
@@ -2654,6 +2915,8 @@ pub fn install_dom_bindings_with_limits(
     scope.heap_mut().add_root(Value::Object(proto_element))?,
     scope.heap_mut().add_root(Value::Object(proto_document))?,
     scope.heap_mut().add_root(Value::Object(proto_dom_token_list))?,
+    scope.heap_mut().add_root(Value::Object(proto_dom_string_map))?,
+    scope.heap_mut().add_root(Value::Object(proto_css_style_decl))?,
     scope.heap_mut().add_root(Value::Object(proto_html_collection))?,
     scope
       .heap_mut()

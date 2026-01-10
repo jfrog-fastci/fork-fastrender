@@ -26,7 +26,7 @@
 //! queue is **host-owned**; this crate only provides the job representation.
 
 use crate::heap::{Trace, Tracer};
-use crate::{GcObject, ModuleGraph, RootId, Scope, Value, Vm, VmError};
+use crate::{GcObject, ModuleGraph, PropertyKey, RootId, Scope, Value, Vm, VmError};
 use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest};
 use std::any::Any;
 use std::fmt;
@@ -550,6 +550,62 @@ pub trait VmHostHooks {
   /// [microtask checkpoints](https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint).
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>);
 
+  /// Host hook for "exotic" `[[Get]]` behavior.
+  ///
+  /// This allows embeddings to model lightweight host objects (e.g. DOMStringMap-style named
+  /// properties) without implementing full ECMAScript Proxy semantics.
+  ///
+  /// The VM calls this hook **after** an own-property lookup miss and **before** walking the
+  /// prototype chain.
+  ///
+  /// - Return `Ok(Some(value))` to treat the property as resolved to `value`.
+  /// - Return `Ok(None)` to fall back to ordinary property lookup semantics.
+  #[inline]
+  fn host_exotic_get(
+    &mut self,
+    _scope: &mut Scope<'_>,
+    _obj: GcObject,
+    _key: PropertyKey,
+    _receiver: Value,
+  ) -> Result<Option<Value>, VmError> {
+    Ok(None)
+  }
+
+  /// Host hook for "exotic" `[[Set]]` behavior.
+  ///
+  /// The VM calls this hook **before** ordinary `[[Set]]` processing so the host can override
+  /// prototype-chain properties (mirroring WebIDL's legacy platform object named property setter
+  /// behaviour).
+  ///
+  /// - Return `Ok(Some(true/false))` to treat the set as handled and return that boolean result.
+  /// - Return `Ok(None)` to fall back to ordinary `[[Set]]` semantics.
+  #[inline]
+  fn host_exotic_set(
+    &mut self,
+    _scope: &mut Scope<'_>,
+    _obj: GcObject,
+    _key: PropertyKey,
+    _value: Value,
+    _receiver: Value,
+  ) -> Result<Option<bool>, VmError> {
+    Ok(None)
+  }
+
+  /// Host hook for "exotic" `[[Delete]]` behavior.
+  ///
+  /// - Return `Ok(Some(true/false))` to treat the deletion as handled and return that boolean
+  ///   result.
+  /// - Return `Ok(None)` to fall back to ordinary `[[Delete]]` semantics.
+  #[inline]
+  fn host_exotic_delete(
+    &mut self,
+    _scope: &mut Scope<'_>,
+    _obj: GcObject,
+    _key: PropertyKey,
+  ) -> Result<Option<bool>, VmError> {
+    Ok(None)
+  }
+
   /// Allows downcasting host hook trait objects in tests/embeddings.
   ///
   /// Most embeddings should ignore this. The default implementation returns `None`.
@@ -604,6 +660,36 @@ pub trait VmHostHooks {
     impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
       fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
         self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_exotic_get(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+        receiver: Value,
+      ) -> Result<Option<Value>, VmError> {
+        self.0.host_exotic_get(scope, obj, key, receiver)
+      }
+
+      fn host_exotic_set(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+        value: Value,
+        receiver: Value,
+      ) -> Result<Option<bool>, VmError> {
+        self.0.host_exotic_set(scope, obj, key, value, receiver)
+      }
+
+      fn host_exotic_delete(
+        &mut self,
+        scope: &mut Scope<'_>,
+        obj: GcObject,
+        key: PropertyKey,
+      ) -> Result<Option<bool>, VmError> {
+        self.0.host_exotic_delete(scope, obj, key)
       }
 
       fn as_any_mut(&mut self) -> Option<&mut dyn Any> {

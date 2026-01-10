@@ -26,9 +26,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use url::Url;
 use vm_js::{
-  GcObject, GcString, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
-  VmOptions,
+  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmOptions,
 };
 
 pub type ConsoleSink =
@@ -983,6 +983,7 @@ const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
+const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
@@ -1128,6 +1129,164 @@ fn with_active_dom_event<R>(
   let ptr = ACTIVE_EVENTS.with(|events| events.borrow().get(&event_id).copied())?;
   // Safety: the pointer is installed by the dispatch invoker for the duration of a listener call.
   Some(unsafe { f(&mut *ptr.as_ptr()) })
+}
+
+pub(crate) fn dataset_exotic_get(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_STRING_MAP_HOST_KIND {
+    return Ok(None);
+  }
+
+  let PropertyKey::String(prop_s) = key else {
+    return Ok(None);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(None),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(None);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+  let Some(value) = dom.dataset_get(node_id, &prop) else {
+    return Ok(None);
+  };
+  Ok(Some(Value::String(scope.alloc_string(value)?)))
+}
+
+pub(crate) fn dataset_exotic_set(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+) -> Result<Option<bool>, VmError> {
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_STRING_MAP_HOST_KIND {
+    return Ok(None);
+  }
+
+  let PropertyKey::String(prop_s) = key else {
+    return Ok(None);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(None),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(None);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+  let value_value = scope.heap_mut().to_string(value)?;
+  let value = scope
+    .heap()
+    .get_string(value_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  dom
+    .dataset_set(node_id, &prop, &value)
+    .map_err(|_| VmError::TypeError("failed to set dataset property"))?;
+
+  Ok(Some(true))
+}
+
+pub(crate) fn dataset_exotic_delete(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<bool>, VmError> {
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != DOM_STRING_MAP_HOST_KIND {
+    return Ok(None);
+  }
+
+  let PropertyKey::String(prop_s) = key else {
+    return Ok(None);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(None),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(None);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+
+  dom
+    .dataset_delete(node_id, &prop)
+    .map_err(|_| VmError::TypeError("failed to delete dataset property"))?;
+
+  Ok(Some(true))
 }
 
 fn current_script_for_source(id: u64) -> Option<NodeId> {
@@ -2597,6 +2756,36 @@ fn get_or_create_node_wrapper(
 
       let key = alloc_key(scope, "classList")?;
       scope.define_property(wrapper, key, data_desc(Value::Object(class_list)))?;
+    }
+  }
+
+  // `Element.dataset` (DOMStringMap-like): implemented via host exotic property hooks so
+  // `el.dataset.fooBar = "x"` reflects to `data-foo-bar="x"`.
+  if let Value::Number(source_id_value) = dom_source_id_value {
+    if let Some(dom_ptr) = dom_for_source(source_id_value as u64) {
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+      // the lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_ref() };
+      if matches!(
+        dom.node(node_id).kind,
+        dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
+      ) {
+        let dataset = scope.alloc_object()?;
+        scope.push_root(Value::Object(dataset))?;
+        scope.heap_mut().object_set_host_slots(
+          dataset,
+          HostSlots {
+            a: node_id.index() as u64,
+            b: DOM_STRING_MAP_HOST_KIND,
+          },
+        )?;
+
+        let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+        scope.define_property(dataset, source_id_key, data_desc(dom_source_id_value))?;
+
+        let key = alloc_key(scope, "dataset")?;
+        scope.define_property(wrapper, key, data_desc(Value::Object(dataset)))?;
+      }
     }
   }
 

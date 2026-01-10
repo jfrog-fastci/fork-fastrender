@@ -780,6 +780,44 @@ mod tests {
   }
 
   #[test]
+  fn element_dataset_and_style_reflect_to_dom_attributes() -> Result<()> {
+    // Build a tiny DOM with a single element so `document.getElementById` can find it.
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let target = dom.create_element("div", "");
+    dom
+      .set_attribute(target, "id", "target")
+      .expect("set id attribute");
+    dom.append_child(dom.root(), target).expect("append child");
+
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "const el = document.getElementById('target');\n\
+       el.dataset.fooBar = 'baz';\n\
+       el.dataset.removeMe = 'x';\n\
+       delete el.dataset.removeMe;\n\
+       el.style.setProperty('backgroundColor', 'red');",
+    )?;
+
+    let dom = host.host().dom();
+    assert_eq!(
+      dom.get_attribute(target, "data-foo-bar")
+        .expect("get data-foo-bar"),
+      Some("baz")
+    );
+    assert_eq!(
+      dom.get_attribute(target, "data-remove-me")
+        .expect("get data-remove-me"),
+      None
+    );
+    assert_eq!(
+      dom.get_attribute(target, "style").expect("get style"),
+      Some("background-color: red;")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

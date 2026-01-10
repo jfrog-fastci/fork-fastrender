@@ -15,7 +15,10 @@ use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
-use crate::js::window_realm::{WindowRealm, WindowRealmHost, WindowRealmUserData};
+use crate::js::window_realm::{
+  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealm, WindowRealmHost,
+  WindowRealmUserData,
+};
 use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
@@ -760,6 +763,38 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       }
       self.enqueue_error = Some(err);
     }
+  }
+
+  fn host_exotic_get(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: vm_js::PropertyKey,
+    receiver: vm_js::Value,
+  ) -> Result<Option<vm_js::Value>, VmError> {
+    let _ = receiver;
+    dataset_exotic_get(scope, obj, key)
+  }
+
+  fn host_exotic_set(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: vm_js::PropertyKey,
+    value: vm_js::Value,
+    receiver: vm_js::Value,
+  ) -> Result<Option<bool>, VmError> {
+    let _ = receiver;
+    dataset_exotic_set(scope, obj, key, value)
+  }
+
+  fn host_exotic_delete(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: vm_js::PropertyKey,
+  ) -> Result<Option<bool>, VmError> {
+    dataset_exotic_delete(scope, obj, key)
   }
 
   fn host_call_job_callback(

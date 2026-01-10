@@ -1,9 +1,12 @@
-use fastrender::dom2::Document;
+use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{install_dom_bindings, install_dom_bindings_with_limits, CurrentScriptState};
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vm_js::{Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  Heap, HeapLimits, Job, JsRuntime, PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm,
+  VmError, VmHostHooks, VmOptions,
+};
 
 fn get_data_property_value(
   heap: &Heap,
@@ -1423,6 +1426,27 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
     Some("b")
   );
 
+  // replace(token, newToken) reflects to the backing `class` attribute.
+  let key_replace = PropertyKey::from_string(scope.alloc_string("replace")?);
+  let replace = get_data_property_value(scope.heap(), list_obj, &key_replace).expect("replace exists");
+  let arg_b3 = Value::String(scope.alloc_string("b")?);
+  let arg_d = Value::String(scope.alloc_string("d")?);
+  let replaced = vm.call_without_host(&mut scope, replace, list1, &[arg_b3, arg_d])?;
+  assert_eq!(replaced, Value::Bool(true));
+  assert_eq!(
+    dom.borrow().get_attribute(e1_id, "class").unwrap(),
+    Some("d")
+  );
+
+  let arg_nope = Value::String(scope.alloc_string("nope")?);
+  let arg_x = Value::String(scope.alloc_string("x")?);
+  let replaced = vm.call_without_host(&mut scope, replace, list1, &[arg_nope, arg_x])?;
+  assert_eq!(replaced, Value::Bool(false));
+  assert_eq!(
+    dom.borrow().get_attribute(e1_id, "class").unwrap(),
+    Some("d")
+  );
+
   // Invalid tokens (ASCII whitespace) throw SyntaxError.
   let bad = Value::String(scope.alloc_string("bad token")?);
   let thrown = match vm.call_without_host(&mut scope, add, list1, &[bad]) {
@@ -1447,6 +1471,185 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
 
   drop(scope);
   realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn dataset_and_style_shims_reflect_to_attributes() -> Result<(), VmError> {
+  const DOM_STRING_MAP_HOST_KIND: u64 = 4;
+
+  #[derive(Clone)]
+  struct DatasetHooks {
+    dom: Rc<RefCell<Document>>,
+  }
+
+  impl VmHostHooks for DatasetHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+      // This test does not enqueue Promise jobs. If that changes, the hook should discard the job
+      // via a real `VmJobContext` to avoid leaking persistent roots.
+      panic!("unexpected Promise job in dataset/style shim test");
+    }
+
+    fn host_exotic_get(
+      &mut self,
+      scope: &mut Scope<'_>,
+      obj: vm_js::GcObject,
+      key: PropertyKey,
+      receiver: Value,
+    ) -> Result<Option<Value>, VmError> {
+      let _ = receiver;
+
+      let slots = scope.heap().object_host_slots(obj)?;
+      let Some(slots) = slots else {
+        return Ok(None);
+      };
+      if slots.b != DOM_STRING_MAP_HOST_KIND {
+        return Ok(None);
+      }
+
+      let PropertyKey::String(prop_s) = key else {
+        return Ok(None);
+      };
+
+      let node_index = match usize::try_from(slots.a) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+      };
+      let node_id = match self.dom.borrow().node_id_from_index(node_index) {
+        Ok(id) => id,
+        Err(_) => return Ok(None),
+      };
+
+      let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+      let dom = self.dom.borrow();
+      let Some(value) = dom.dataset_get(node_id, &prop) else {
+        return Ok(None);
+      };
+      Ok(Some(Value::String(scope.alloc_string(value)?)))
+    }
+
+    fn host_exotic_set(
+      &mut self,
+      scope: &mut Scope<'_>,
+      obj: vm_js::GcObject,
+      key: PropertyKey,
+      value: Value,
+      receiver: Value,
+    ) -> Result<Option<bool>, VmError> {
+      let _ = receiver;
+
+      let slots = scope.heap().object_host_slots(obj)?;
+      let Some(slots) = slots else {
+        return Ok(None);
+      };
+      if slots.b != DOM_STRING_MAP_HOST_KIND {
+        return Ok(None);
+      }
+
+      let PropertyKey::String(prop_s) = key else {
+        return Ok(None);
+      };
+
+      let node_index = match usize::try_from(slots.a) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+      };
+      let node_id = match self.dom.borrow().node_id_from_index(node_index) {
+        Ok(id) => id,
+        Err(_) => return Ok(None),
+      };
+
+      let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+
+      let value_s = scope.heap_mut().to_string(value)?;
+      let value = scope.heap().get_string(value_s)?.to_utf8_lossy();
+
+      self
+        .dom
+        .borrow_mut()
+        .dataset_set(node_id, &prop, &value)
+        .map_err(|_| VmError::TypeError("failed to set dataset property"))?;
+
+      Ok(Some(true))
+    }
+
+    fn host_exotic_delete(
+      &mut self,
+      scope: &mut Scope<'_>,
+      obj: vm_js::GcObject,
+      key: PropertyKey,
+    ) -> Result<Option<bool>, VmError> {
+      let slots = scope.heap().object_host_slots(obj)?;
+      let Some(slots) = slots else {
+        return Ok(None);
+      };
+      if slots.b != DOM_STRING_MAP_HOST_KIND {
+        return Ok(None);
+      }
+
+      let PropertyKey::String(prop_s) = key else {
+        return Ok(None);
+      };
+
+      let node_index = match usize::try_from(slots.a) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+      };
+      let node_id = match self.dom.borrow().node_id_from_index(node_index) {
+        Ok(id) => id,
+        Err(_) => return Ok(None),
+      };
+
+      let prop = scope.heap().get_string(prop_s)?.to_utf8_lossy();
+
+      self
+        .dom
+        .borrow_mut()
+        .dataset_delete(node_id, &prop)
+        .map_err(|_| VmError::TypeError("failed to delete dataset property"))?;
+
+      Ok(Some(true))
+    }
+  }
+
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(limits);
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  let realm_ptr = rt.realm() as *const Realm;
+  // SAFETY: `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields. We do not move
+  // `rt` while these borrows are live.
+  let realm = unsafe { &*realm_ptr };
+  install_dom_bindings(&mut rt.vm, &mut rt.heap, realm, dom.clone(), current_script)?;
+
+  let mut hooks = DatasetHooks { dom: dom.clone() };
+  let ok = rt.exec_script_with_hooks(
+    &mut hooks,
+    "(() => {\n\
+      const el = document.createElement('div');\n\
+      el.id = 't';\n\
+      document.appendChild(el);\n\
+      el.dataset.fooBar = 'baz';\n\
+      const got = el.dataset.fooBar;\n\
+      delete el.dataset.fooBar;\n\
+      const missing = el.dataset.fooBar;\n\
+      el.style.setProperty('backgroundColor', 'red');\n\
+      const style = el.style.getPropertyValue('background-color');\n\
+      return got === 'baz' && missing === undefined && style === 'red';\n\
+    })()",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+
+  let t = dom.borrow().get_element_by_id("t").expect("missing #t");
+  assert_eq!(dom.borrow().get_attribute(t, "data-foo-bar").unwrap(), None);
+  assert_eq!(
+    dom.borrow().get_attribute(t, "style").unwrap(),
+    Some("background-color: red;")
+  );
+
   Ok(())
 }
 

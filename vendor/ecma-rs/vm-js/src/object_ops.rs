@@ -183,7 +183,46 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    let Some(desc) = self.heap().get_property(obj, &key)? else {
+    // Root the inputs so host hook implementations can allocate freely.
+    //
+    // This is particularly important for `host_exotic_get`, which can allocate new JS strings when
+    // synthesizing values (e.g. `DOMStringMap` / `element.dataset` style shims).
+    let mut scope = self.reborrow();
+    let roots = [
+      Value::Object(obj),
+      match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      },
+      receiver,
+    ];
+    scope.push_roots(&roots)?;
+
+    // Fast path: own property.
+    if let Some(desc) = scope.heap().object_get_own_property(obj, &key)? {
+      return match desc.kind {
+        PropertyKind::Data { value, .. } => Ok(value),
+        PropertyKind::Accessor { get, .. } => {
+          if matches!(get, Value::Undefined) {
+            Ok(Value::Undefined)
+          } else {
+            if !scope.heap().is_callable(get)? {
+              return Err(VmError::TypeError("accessor getter is not callable"));
+            }
+            vm.call_with_host_and_hooks(host, &mut scope, hooks, get, receiver, &[])
+          }
+        }
+      };
+    }
+
+    // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
+    // prototype chain.
+    if let Some(value) = hooks.host_exotic_get(&mut scope, obj, key, receiver)? {
+      return Ok(value);
+    }
+
+    // Fall back to prototype chain lookup.
+    let Some(desc) = scope.heap().get_property(obj, &key)? else {
       return Ok(Value::Undefined);
     };
 
@@ -193,10 +232,10 @@ impl<'a> Scope<'a> {
         if matches!(get, Value::Undefined) {
           Ok(Value::Undefined)
         } else {
-          if !self.heap().is_callable(get)? {
+          if !scope.heap().is_callable(get)? {
             return Err(VmError::TypeError("accessor getter is not callable"));
           }
-          vm.call_with_host_and_hooks(host, self, hooks, get, receiver, &[])
+          vm.call_with_host_and_hooks(host, &mut scope, hooks, get, receiver, &[])
         }
       }
     }
@@ -348,6 +387,12 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
+    // Host hook for "exotic" property setters (e.g. DOM named properties) runs before ordinary
+    // `[[Set]]` processing so it can override prototype-chain properties like `constructor`.
+    if let Some(result) = hooks.host_exotic_set(self, obj, key, value, receiver)? {
+      return Ok(result);
+    }
+
     let mut desc = self.heap().get_property(obj, &key)?;
     if desc.is_none() {
       desc = Some(PropertyDescriptor {
@@ -425,6 +470,34 @@ impl<'a> Scope<'a> {
       },
     ];
     self.push_roots(&roots)?;
+    self.heap_mut().ordinary_delete(obj, key)
+  }
+
+  /// ECMAScript `[[Delete]]` for ordinary objects, using an explicit embedder host context and host
+  /// hook implementation.
+  pub fn ordinary_delete_with_host_and_hooks(
+    &mut self,
+    _vm: &mut Vm,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<bool, VmError> {
+    // Root inputs together so GC cannot collect `key` while growing the root stack (important when
+    // deleting a missing property).
+    let roots = [
+      Value::Object(obj),
+      match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      },
+    ];
+    self.push_roots(&roots)?;
+
+    if let Some(result) = hooks.host_exotic_delete(self, obj, key)? {
+      return Ok(result);
+    }
+
     self.heap_mut().ordinary_delete(obj, key)
   }
 

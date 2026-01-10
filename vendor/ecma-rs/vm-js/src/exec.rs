@@ -4118,7 +4118,13 @@ impl<'a> Evaluator<'a> {
             return Ok(Value::Bool(true));
           }
 
-          Ok(Value::Bool(key_scope.ordinary_delete(global_object, key)?))
+          Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            global_object,
+            key,
+          )?))
         }
         Expr::IdPat(id) => {
           if self.strict {
@@ -4148,12 +4154,24 @@ impl<'a> Evaluator<'a> {
             return Ok(Value::Bool(true));
           }
 
-          Ok(Value::Bool(key_scope.ordinary_delete(global_object, key)?))
+          Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            global_object,
+            key,
+          )?))
         }
         Expr::Member(_) | Expr::ComputedMember(_) => {
           let reference = self.eval_reference(scope, &expr.argument)?;
           match reference {
-            Reference::Property { object, key } => Ok(Value::Bool(scope.ordinary_delete(object, key)?)),
+            Reference::Property { object, key } => Ok(Value::Bool(scope.ordinary_delete_with_host_and_hooks(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              object,
+              key,
+            )?)),
             // Deleting bindings (`delete x`) is handled above.
             Reference::Binding(_) => Ok(Value::Bool(false)),
           }
