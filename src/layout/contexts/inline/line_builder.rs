@@ -2284,6 +2284,13 @@ impl ReshapeCache {
       if self.diagnostics_enabled {
         INLINE_RESHAPE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
       }
+      // The shaping pipeline records diagnostics on its own cache hits, but this reshape cache
+      // bypasses `ShapingPipeline::shape_with_context`. Mirror the accounting here so per-render
+      // diagnostics counts remain stable even when line-breaking reuses cached substrings.
+      if crate::text::pipeline::text_diagnostics_enabled() {
+        let glyphs: usize = cached.iter().map(|run| run.glyphs.len()).sum();
+        crate::text::pipeline::record_text_shape(None, cached.len(), glyphs);
+      }
       return Some((**cached).clone());
     }
 

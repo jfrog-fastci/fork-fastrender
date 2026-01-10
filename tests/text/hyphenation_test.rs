@@ -306,9 +306,9 @@ fn test_supported_language_code() {
 
 #[test]
 fn test_supported_language_is_embedded() {
-  // Only en-US is embedded by default
+  // Hyphenation patterns are embedded for all supported languages.
   assert!(SupportedLanguage::EnglishUS.is_embedded());
-  assert!(!SupportedLanguage::German.is_embedded());
+  assert!(SupportedLanguage::German.is_embedded());
 }
 
 #[test]

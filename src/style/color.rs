@@ -236,12 +236,12 @@ fn xyz_d50_to_lab(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
 
 fn oklab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
   let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
-  let m_ = (l - 0.105_561_35 * a - 0.063_854_17 * b).powi(3);
+  let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
   let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
 
-  let r = 4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_93 * s_;
-  let g = -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_4 * s_;
-  let b = 0.004_514_37 * l_ - 0.005_718_789 * m_ + 1.065_574_4 * s_;
+  let r = 4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_;
+  let g = -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_;
+  let b = -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_;
   (r, g, b)
 }
 
@@ -3837,7 +3837,15 @@ mod tests {
   #[test]
   fn parses_oklab_and_oklch() {
     let gray = Color::parse("oklab(50% 0 0)").unwrap().to_rgba(Rgba::BLACK);
-    assert!(gray.r > 0 && gray.g > 0 && gray.b > 0);
+    assert_eq!(gray.r, gray.g);
+    assert_eq!(gray.g, gray.b);
+
+    // DaisyUI (used by manjaro.org) uses neutral OKLCH values like `oklch(96.1151% 0 0)` for
+    // backgrounds. If the OKLab conversion matrix is wrong, these end up with a non-zero tint.
+    let neutral = Color::parse("oklch(96.1151% 0 0)")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(neutral, Rgba::new(242, 242, 242, 1.0));
 
     let oklch = Color::parse("oklch(60% 0.1 40deg / 0.25)")
       .unwrap()

@@ -551,6 +551,39 @@ fn bundled_fallback_chain_matches_pipeline_for_ascii() {
 }
 
 #[test]
+fn bundled_ui_sans_serif_fallback_chain_matches_pipeline_for_ascii() {
+  let _guard = super::text_diagnostics_guard();
+  let db = Arc::new(FontDatabase::with_config(&FontConfig::bundled_only()));
+  if db.is_empty() {
+    return;
+  }
+
+  let ctx = FontContext::with_database(Arc::clone(&db));
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["ui-sans-serif".to_string()].into();
+  let chain = FallbackChain::from_families(&style.font_family);
+
+  let runs = match ShapingPipeline::new().shape("F", &style, &ctx) {
+    Ok(runs) => runs,
+    Err(_) => return,
+  };
+  if runs.is_empty() {
+    return;
+  }
+
+  if let Some(chain_font) = chain
+    .resolve('F', db.as_ref())
+    .and_then(|id: FontId| db.load_font(id.inner()))
+  {
+    assert_eq!(
+      runs[0].font.family, chain_font.family,
+      "expected shaping pipeline to match fallback chain for ui-sans-serif (pipeline={} chain={})",
+      runs[0].font.family, chain_font.family
+    );
+  }
+}
+
+#[test]
 fn fallback_chain_matches_pipeline_for_cjk_when_available() {
   let _guard = super::text_diagnostics_guard();
   let db = Arc::new(FontDatabase::new());

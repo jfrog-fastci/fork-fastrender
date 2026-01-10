@@ -1214,13 +1214,19 @@ impl GenericFamily {
         "DejaVu Serif",
         "FreeSerif",
       ],
+      // Try to match common Linux fontconfig defaults: on many modern distributions `sans-serif`
+      // resolves to Noto Sans with DejaVu as a fallback (see e.g. `fc-match -s sans-serif`).
+      //
+      // Keep legacy web font names (Arial/Helvetica/Verdana) near the front so pages that specify
+      // those names as their primary face still land on reasonable substitutes when they're
+      // available.
       GenericFamily::SansSerif | GenericFamily::UiSansSerif | GenericFamily::UiRounded => &[
         "Arial",
         "Helvetica",
         "Helvetica Neue",
         "Verdana",
-        "Liberation Sans",
         "Noto Sans",
+        "Liberation Sans",
         "DejaVu Sans",
         "FreeSans",
         "Roboto",
@@ -1251,8 +1257,9 @@ impl GenericFamily {
         "Roboto",
         "Ubuntu",
         "Cantarell",
-        "DejaVu Sans",
+        "Noto Sans",
         "Liberation Sans",
+        "DejaVu Sans",
       ],
       GenericFamily::Emoji => &[
         "FastRender Emoji",

@@ -10468,7 +10468,13 @@ impl DisplayListBuilder {
     }
 
     let text = if let TextEmphasisStyle::String(ref s) = style.text_emphasis_style {
-      let mark_str = s.as_str();
+      // CSS Text Decoration 4: for `text-emphasis-style: <string>`, only the first *typographic
+      // character unit* is used. Use the first extended grapheme cluster so multi-codepoint
+      // clusters (e.g. flags, emoji sequences) render as a single mark.
+      use unicode_segmentation::UnicodeSegmentation;
+
+      let raw = s.as_str();
+      let mark_str = raw.graphemes(true).next().unwrap_or("");
       if mark_str.is_empty() {
         None
       } else {

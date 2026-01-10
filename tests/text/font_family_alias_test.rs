@@ -17,12 +17,12 @@ fn load_db_with_fonts(paths: &[&str]) -> FontDatabase {
 
 #[test]
 fn helvetica_prefers_named_aliases_before_generic_sans_serif() {
-  // Load DejaVu first so the fontdb generic `sans-serif` mapping resolves to DejaVu Sans, not
-  // Noto Sans. This makes it possible to assert that our named-family alias expansion for
-  // "Helvetica" is consulted before the generic fallback.
+  // Load fonts such that the generic `sans-serif` mapping resolves to Noto Sans, while the
+  // "Helvetica" alias list can still find Roboto Flex first. This lets the test verify that our
+  // named-family alias expansion is consulted before falling back to the generic family mapping.
   let db = load_db_with_fonts(&[
-    "tests/fixtures/fonts/DejaVuSans-subset.ttf",
     "tests/fixtures/fonts/NotoSans-subset.ttf",
+    "tests/fonts/RobotoFlex-VF.ttf",
   ]);
 
   let query = Query {
@@ -34,8 +34,8 @@ fn helvetica_prefers_named_aliases_before_generic_sans_serif() {
   let sans_id = db.inner().query(&query).expect("sans-serif should resolve");
   let sans_font = db.load_font(sans_id).expect("sans-serif font should load");
   assert_eq!(
-    sans_font.family, "DejaVu Sans",
-    "test requires generic sans-serif to resolve to DejaVu Sans so we can observe aliasing"
+    sans_font.family, "Noto Sans",
+    "test requires generic sans-serif to resolve to Noto Sans so we can observe aliasing"
   );
 
   let db = Arc::new(db);
@@ -49,8 +49,7 @@ fn helvetica_prefers_named_aliases_before_generic_sans_serif() {
   assert!(!runs.is_empty(), "expected at least one shaped run");
 
   assert_eq!(
-    runs[0].font.family, "Noto Sans",
-    "Helvetica should alias to Noto Sans before falling back to the generic sans-serif mapping"
+    runs[0].font.family, "Roboto Flex",
+    "Helvetica should alias to Roboto Flex before falling back to the generic sans-serif mapping"
   );
 }
-

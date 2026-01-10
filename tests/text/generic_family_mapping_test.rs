@@ -71,6 +71,30 @@ fn system_ui_uses_named_fallbacks_before_generic_mapping() {
 }
 
 #[test]
+fn ui_sans_serif_prefers_noto_sans_over_dejavu_when_both_available() {
+  let db = load_db_with_fonts(&[
+    "tests/fixtures/fonts/DejaVuSans-subset.ttf",
+    "tests/fixtures/fonts/NotoSans-subset.ttf",
+  ]);
+
+  let noto_id = db
+    .query("Noto Sans", FontWeight::NORMAL, FontStyle::Normal)
+    .expect("Noto Sans should be available");
+  let dejavu_id = db
+    .query("DejaVu Sans", FontWeight::NORMAL, FontStyle::Normal)
+    .expect("DejaVu Sans should be available");
+
+  let chain = FallbackChain::new().add_generic(GenericFamily::UiSansSerif);
+  let default_id = chain
+    .resolve_default(&db)
+    .expect("ui-sans-serif should resolve a default font")
+    .inner();
+
+  assert_eq!(default_id, noto_id);
+  assert_ne!(default_id, dejavu_id);
+}
+
+#[test]
 fn emoji_generic_prefers_bundled_emoji_face_in_bundled_only_mode() {
   let db = FontDatabase::with_config(&FontConfig::bundled_only());
   let chain = FallbackChain::new().add_generic(GenericFamily::Emoji);

@@ -101,7 +101,10 @@ fn bundled_fonts_cover_spacing_modifier_letters() {
   let mut pipeline = ShapingPipeline::new();
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());
 
-  let samples = [("sans-serif", "Roboto Flex"), ("serif", "STIX Two Math")];
+  // Some pageset fixtures contain clusters using U+02FD (˽) combined with combining marks.
+  // Our primary bundled text faces (Roboto Flex / STIX Two Math) do not cover those codepoints,
+  // so the cluster should fall back to the bundled Noto families instead of shaping .notdef.
+  let samples = [("sans-serif", "Noto Sans"), ("serif", "Noto Serif")];
 
   // pageset regression: phoronix.com surfaced clusters containing U+02FD (˽) with combining marks.
   let text = "˽\u{0365}";
@@ -122,7 +125,7 @@ fn bundled_fonts_cover_spacing_modifier_letters() {
         saw_modifier = true;
         assert_eq!(
           run.font.family, expected_font,
-          "U+02FD should be covered by the primary bundled {family} font"
+          "U+02FD should be covered by the bundled {family} fallback chain"
         );
         assert!(
           run.glyphs.iter().all(|g| g.glyph_id != 0),
@@ -247,6 +250,7 @@ fn bundled_generics_prefer_bundled_text_fonts() {
     .query("monospace", FontWeight::NORMAL, FontStyle::Normal)
     .expect("monospace bundled fallback");
 
+  // Bundled generics should resolve to stable text faces (not emoji fonts).
   assert_eq!(db.load_font(sans).unwrap().family, "Roboto Flex");
   assert_eq!(db.load_font(serif).unwrap().family, "STIX Two Math");
   assert_eq!(db.load_font(mono).unwrap().family, "Noto Sans Mono");

@@ -1,6 +1,8 @@
 use fastrender::api::{FastRender, FastRenderConfig, RenderArtifactRequest, RenderOptions};
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::text::font_db::FontConfig;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -51,9 +53,17 @@ fn swap_web_fonts_are_used_by_render_pipeline() {
   </head>
   <body>Aa</body>
 </html>
-"#;
+  "#;
 
-  let config = FastRenderConfig::new().with_font_sources(FontConfig::bundled_only());
+  // Swap web fonts are only activated after the initial stylesheet/font request work settles.
+  // Ensure the render pipeline waits for the swap window so the face is available for shaping.
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_WEB_FONT_WAIT_MS".to_string(),
+    "500".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_runtime_toggles(toggles);
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::new().with_viewport(200, 100);

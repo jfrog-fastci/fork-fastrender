@@ -329,6 +329,53 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
       }
     }
 
+    let try_generic_named_fallbacks =
+      |generic: GenericFamily, picker: &mut FontPreferencePicker| -> Option<ResolvedFont> {
+        for name in generic.fallback_families() {
+          for weight_choice in &weight_preferences {
+            for slope in slope_preferences {
+              for stretch_choice in &stretch_preferences {
+                if let Some(id) = db.query_named_family_with_aliases(
+                  name,
+                  *weight_choice,
+                  *slope,
+                  *stretch_choice,
+                ) {
+                  if let Some(font) = db.load_font(id) {
+                    let resolved = ResolvedFont { font, id: Some(id) };
+                    let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
+                    let idx = picker.bump_order();
+                    picker.record_any(&resolved, is_emoji_font, idx);
+                    if db.has_glyph_cached(id, ch) {
+                      if let Some(font) = picker.consider(resolved, is_emoji_font, idx) {
+                        return Some(font);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        None
+      };
+
+    let prefer_named_fallbacks_for_generic = match entry {
+      FamilyEntry::Generic(generic) => {
+        generic.prefers_named_fallbacks_first()
+          && !matches!(generic, GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace)
+      }
+      _ => false,
+    };
+
+    if prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(resolved) = try_generic_named_fallbacks(*generic, picker) {
+          return Some(resolved);
+        }
+      }
+    }
+
     for stretch_choice in &stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
@@ -367,31 +414,10 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
       }
     }
 
-    if let FamilyEntry::Generic(generic) = entry {
-      for name in generic.fallback_families() {
-        for weight_choice in &weight_preferences {
-          for slope in slope_preferences {
-            for stretch_choice in &stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
-                if let Some(font) = db.load_font(id) {
-                  let resolved = ResolvedFont { font, id: Some(id) };
-                  let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
-                  let idx = picker.bump_order();
-                  picker.record_any(&resolved, is_emoji_font, idx);
-                  if db.has_glyph_cached(id, ch) {
-                    if let Some(font) = picker.consider(resolved, is_emoji_font, idx) {
-                      return Some(font);
-                    }
-                  }
-                }
-              }
-            }
-          }
+    if !prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(resolved) = try_generic_named_fallbacks(*generic, picker) {
+          return Some(resolved);
         }
       }
     }
@@ -533,6 +559,56 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
       }
     }
 
+    let try_generic_named_fallbacks =
+      |generic: GenericFamily, picker: &mut FontPreferencePicker| -> Option<ResolvedFont> {
+        for name in generic.fallback_families() {
+          for weight_choice in &weight_preferences {
+            for slope in slope_preferences {
+              for stretch_choice in &stretch_preferences {
+                if let Some(id) = db.query_named_family_with_aliases(
+                  name,
+                  *weight_choice,
+                  *slope,
+                  *stretch_choice,
+                ) {
+                  if let Some(font) = db.load_font(id) {
+                    if !base_supported(id) {
+                      continue;
+                    }
+                    let resolved = ResolvedFont { font, id: Some(id) };
+                    let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
+                    let idx = picker.bump_order();
+                    picker.record_any(&resolved, is_emoji_font, idx);
+                    if needed.is_empty() || covers_needed(id) {
+                      if let Some(font) = picker.consider(resolved, is_emoji_font, idx) {
+                        return Some(font);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        None
+      };
+
+    let prefer_named_fallbacks_for_generic = match entry {
+      FamilyEntry::Generic(generic) => {
+        generic.prefers_named_fallbacks_first()
+          && !matches!(generic, GenericFamily::Serif | GenericFamily::SansSerif | GenericFamily::Monospace)
+      }
+      _ => false,
+    };
+
+    if prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(resolved) = try_generic_named_fallbacks(*generic, &mut picker) {
+          return Some(resolved);
+        }
+      }
+    }
+
     for stretch_choice in &stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
@@ -574,34 +650,10 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
       }
     }
 
-    if let FamilyEntry::Generic(generic) = entry {
-      for name in generic.fallback_families() {
-        for weight_choice in &weight_preferences {
-          for slope in slope_preferences {
-            for stretch_choice in &stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
-                if let Some(font) = db.load_font(id) {
-                  if !base_supported(id) {
-                    continue;
-                  }
-                  let resolved = ResolvedFont { font, id: Some(id) };
-                  let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
-                  let idx = picker.bump_order();
-                  picker.record_any(&resolved, is_emoji_font, idx);
-                  if needed.is_empty() || covers_needed(id) {
-                    if let Some(font) = picker.consider(resolved, is_emoji_font, idx) {
-                      return Some(font);
-                    }
-                  }
-                }
-              }
-            }
-          }
+    if !prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(resolved) = try_generic_named_fallbacks(*generic, &mut picker) {
+          return Some(resolved);
         }
       }
     }

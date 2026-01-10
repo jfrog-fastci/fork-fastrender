@@ -844,6 +844,7 @@ fn constraints_from_taffy(
   _viewport_size: crate::geometry::Size,
   mut known: taffy::geometry::Size<Option<f32>>,
   available: taffy::geometry::Size<taffy::style::AvailableSpace>,
+  writing_mode: WritingMode,
   _inline_percentage_base: Option<f32>,
 ) -> LayoutConstraints {
   // Taffy can probe leaf nodes with "tiny" definite constraints (0px/1px) when it really means
@@ -901,17 +902,39 @@ fn constraints_from_taffy(
   let mut constraints = LayoutConstraints::new(width, height);
   constraints.used_border_box_width = known_width;
   constraints.used_border_box_height = known_height;
-  // Percentages on grid items resolve against the available size offered by the grid area.
+  // Percentages on grid items resolve against the *grid area's* definite size (not the grid
+  // container's size).
   //
-  // Prefer that over any parent percentage base so `width: 100%` does not incorrectly resolve
-  // against the grid container's full width during track sizing.
+  // This matters for both axes:
+  // - `width: <percentage>` resolves against the grid area inline size (physical X in
+  //   horizontal-tb).
+  // - `height: <percentage>` resolves against the grid area block size (physical Y in
+  //   horizontal-tb).
   //
-  // When the grid area width is not definite (e.g. intrinsic sizing probes like min/max-content),
-  // keep the base unset so percentages behave like `auto` per CSS sizing rules.
-  constraints.inline_percentage_base = constraints.inline_percentage_base.or(match available.width {
-    taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
+  // When the grid area size is not definite (e.g. intrinsic sizing probes like min/max-content),
+  // keep the base unset so percentages behave like `auto` per CSS2.1 §10.5 / CSS Sizing.
+  //
+  // Note: `LayoutConstraints::{inline,block}_percentage_base` are in the box's *logical* axes, so
+  // map Taffy's physical available space through the box's writing mode.
+  let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
+  let inline_avail = if inline_is_horizontal {
+    available.width
+  } else {
+    available.height
+  };
+  let block_avail = if inline_is_horizontal {
+    available.height
+  } else {
+    available.width
+  };
+  constraints.inline_percentage_base = match inline_avail {
+    taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some(v),
     _ => None,
-  });
+  };
+  constraints.block_percentage_base = match block_avail {
+    taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some(v),
+    _ => None,
+  };
   constraints
 }
 
@@ -6259,7 +6282,90 @@ impl GridFormattingContext {
         None
       };
 
-      if continuation_available.is_none() {
+      let axis_style =
+        containing_grid_axis.unwrap_or_else(|| GridAxisStyle::from_style(box_node.style.as_ref()));
+      let inline_is_horizontal = axis_style.inline_is_horizontal();
+
+      // Grid items resolve percentage sizes against their *grid area* (not their own used size).
+      // Taffy reports the used size/offset of the grid item itself (which includes self-alignment
+      // offsets). When an item has `height: 100%` (e.g. Tailwind `h-full`) in an auto-sized row, the
+      // grid area's block size is known after track sizing but the item may still be aligned as if
+      // its height were `auto`. Chrome resolves `height:100%` against the grid area's used size,
+      // making the item fill the row and eliminating the alignment offset.
+      let grid_area_bounds = (|| -> Option<Rect> {
+        let parent_id = taffy.parent(node_id)?;
+        let parent_style = taffy.style(parent_id).ok()?;
+        if parent_style.display != Display::Grid {
+          return None;
+        }
+        let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
+          return None;
+        };
+        let parent_children = taffy.children(parent_id).ok()?;
+        if info.items.len() != parent_children.len() {
+          return None;
+        }
+        let idx = parent_children.iter().position(|&id| id == node_id)?;
+        let placement = info.items.get(idx)?;
+        let parent_layout = taffy.layout(parent_id).ok()?;
+        let row_offsets = compute_track_offsets(
+          &info.rows,
+          parent_layout.size.height,
+          parent_layout.padding.top,
+          parent_layout.padding.bottom,
+          parent_layout.border.top,
+          parent_layout.border.bottom,
+          parent_style.align_content.unwrap_or(TaffyAlignContent::Stretch),
+        );
+        let col_offsets = compute_track_offsets(
+          &info.columns,
+          parent_layout.size.width,
+          parent_layout.padding.left,
+          parent_layout.padding.right,
+          parent_layout.border.left,
+          parent_layout.border.right,
+          parent_style.justify_content.unwrap_or(TaffyAlignContent::Stretch),
+        );
+        let (x_start, x_end) =
+          grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
+        let (y_start, y_end) = grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)?;
+        Some(Rect::from_xywh(
+          x_start,
+          y_start,
+          (x_end - x_start).max(0.0),
+          (y_end - y_start).max(0.0),
+        ))
+      })();
+
+      let inline_percentage_base = grid_area_bounds
+        .map(|rect| if inline_is_horizontal { rect.width() } else { rect.height() })
+        .unwrap_or_else(|| if inline_is_horizontal { bounds.width() } else { bounds.height() });
+      let block_percentage_base = grid_area_bounds.map(|rect| {
+        if inline_is_horizontal {
+          rect.height()
+        } else {
+          rect.width()
+        }
+      });
+
+      let mut allow_measured_reuse = true;
+      let height_is_full = inline_is_horizontal
+        && style.height.is_some_and(|len| {
+          len.calc.is_none()
+            && len.unit == crate::style::values::LengthUnit::Percent
+            && (len.value - 100.0).abs() < 0.01
+        });
+      if height_is_full {
+        if let Some(grid_area) = grid_area_bounds {
+          let area_height = grid_area.height();
+          if area_height.is_finite() && area_height > bounds.height() + 0.5 {
+            bounds = Rect::from_xywh(bounds.x(), grid_area.y(), bounds.width(), area_height.max(0.0));
+            allow_measured_reuse = false;
+          }
+        }
+      }
+
+      if allow_measured_reuse && continuation_available.is_none() {
         if let Some(keys) = measured_node_keys.get(&node_id) {
           if let Some(mut reused) = Self::take_matching_measured_fragment(
             measured_fragments,
@@ -6350,14 +6456,6 @@ impl GridFormattingContext {
         child_factory.get(fc_type)
       };
 
-      let axis_style =
-        containing_grid_axis.unwrap_or_else(|| GridAxisStyle::from_style(box_node.style.as_ref()));
-      let inline_is_horizontal = axis_style.inline_is_horizontal();
-      let inline_percentage_base = if inline_is_horizontal {
-        bounds.width()
-      } else {
-        bounds.height()
-      };
       let (available_width, available_height, force_width, force_height) = match fragment_block_axis {
         PhysicalAxis::X => {
           let available_width = continuation_available.unwrap_or(bounds.width());
@@ -6380,7 +6478,8 @@ impl GridFormattingContext {
       )
       // Keep percentage resolution anchored to the grid area's inline size for the laid-out item.
       // See comment in the parallel in-flow path.
-      .with_inline_percentage_base(Some(inline_percentage_base.max(0.0)));
+      .with_inline_percentage_base(Some(inline_percentage_base.max(0.0)))
+      .with_block_percentage_base(block_percentage_base.filter(|b| b.is_finite()).map(|b| b.max(0.0)));
       let supports_used_border_box = matches!(
         fc_type,
         FormattingContextType::Block
@@ -8912,8 +9011,13 @@ impl GridFormattingContext {
             }
             return output;
           }
-          let constraints =
-            constraints_from_taffy(viewport_size, known_dimensions, available_space, None);
+          let constraints = constraints_from_taffy(
+            viewport_size,
+            known_dimensions,
+            available_space,
+            style.writing_mode,
+            None,
+          );
           if trace_measure_id.is_some_and(|id| id == box_node.id) {
             eprintln!(
               "[grid-measure] box_id={} layout_path constraints={:?}",
@@ -9139,6 +9243,7 @@ impl GridFormattingContext {
         self.viewport_size,
         known_dimensions,
         available_space,
+        style.writing_mode,
         parent_inline_base,
       );
       let placeholder =
@@ -9163,6 +9268,7 @@ impl GridFormattingContext {
       self.viewport_size,
       known_dimensions,
       available_space,
+      style.writing_mode,
       parent_inline_base,
     );
     let trace_measure = crate::debug::runtime::runtime_toggles().truthy("FASTR_TRACE_GRID_MEASURE");
@@ -13527,8 +13633,13 @@ impl FormattingContext for GridFormattingContext {
             cache.insert(key, output);
             return output;
           }
-          let constraints =
-            constraints_from_taffy(viewport_size, known_dimensions, available_space, None);
+          let constraints = constraints_from_taffy(
+            viewport_size,
+            known_dimensions,
+            available_space,
+            style.writing_mode,
+            None,
+          );
           let fragment = match fc.layout(box_node, &constraints) {
             Ok(fragment) => fragment,
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
@@ -13879,6 +13990,133 @@ mod tests {
         fragment.bounds.width()
       );
     }
+  }
+
+  #[test]
+  fn grid_item_percentage_height_resolves_against_definite_grid_area_block_size() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // A single-row grid with a definite track size. The grid area height is therefore definite, so
+    // percentage `height` values on grid items should resolve against it.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.writing_mode = WritingMode::HorizontalTb;
+    grid_style.align_items = AlignItems::Center;
+    grid_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+    ];
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0))];
+    let grid_style = Arc::new(grid_style);
+
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.height = Some(Length::px(100.0));
+    fixed_style.height_keyword = None;
+    let fixed_style = Arc::new(fixed_style);
+    let mut fixed_item = BoxNode::new_block(fixed_style, FormattingContextType::Block, vec![]);
+    fixed_item.id = 901;
+
+    // This item has `height: 100%` and a small intrinsic child. If percentage heights are treated
+    // as `auto` (incorrect for definite grid areas), its height collapses to the intrinsic child
+    // height and it gets centered with an offset. Correct behaviour is to resolve to the full grid
+    // area height (100px), producing no vertical offset under `align-items: center`.
+    let mut percent_style = ComputedStyle::default();
+    percent_style.height = Some(Length::percent(100.0));
+    percent_style.height_keyword = None;
+    percent_style.align_self = Some(AlignItems::Center);
+    let percent_style = Arc::new(percent_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.height = Some(Length::px(20.0));
+    child_style.height_keyword = None;
+    let child_style = Arc::new(child_style);
+    let child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
+
+    let mut percent_item = BoxNode::new_block(percent_style, FormattingContextType::Block, vec![child]);
+    percent_item.id = 902;
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![fixed_item, percent_item]);
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout should succeed");
+
+    let percent_fragment = find_block_fragment(&fragment, 902);
+    assert!(
+      percent_fragment.bounds.height().is_finite(),
+      "expected finite percent item height"
+    );
+    assert!(
+      (percent_fragment.bounds.height() - 100.0).abs() < 0.5,
+      "expected percent item to fill the 100px grid area, got {:.2}",
+      percent_fragment.bounds.height()
+    );
+    assert!(
+      percent_fragment.bounds.y().abs() < 0.5,
+      "expected percent item y to be aligned to the grid area's start (0px), got {:.2}",
+      percent_fragment.bounds.y()
+    );
+  }
+
+  #[test]
+  fn grid_item_height_100_percent_fills_auto_row_grid_area() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // Auto row sizing (the default) is content-based. Percentage `height` values on grid items
+    // still resolve against the resolved grid area size, matching Chrome's behaviour on
+    // manjaro.org where a `h-full` grid item should fill the row and not be vertically centered.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.writing_mode = WritingMode::HorizontalTb;
+    grid_style.align_items = AlignItems::Center;
+    grid_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+    ];
+    // Leave `grid_template_rows` empty so the implicit row uses `auto` sizing.
+    let grid_style = Arc::new(grid_style);
+
+    let mut tall_style = ComputedStyle::default();
+    tall_style.height = Some(Length::px(100.0));
+    tall_style.height_keyword = None;
+    let tall_style = Arc::new(tall_style);
+    let mut tall_item = BoxNode::new_block(tall_style, FormattingContextType::Block, vec![]);
+    tall_item.id = 910;
+
+    let mut percent_style = ComputedStyle::default();
+    percent_style.height = Some(Length::percent(100.0));
+    percent_style.height_keyword = None;
+    percent_style.align_self = Some(AlignItems::Center);
+    let percent_style = Arc::new(percent_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.height = Some(Length::px(20.0));
+    child_style.height_keyword = None;
+    let child_style = Arc::new(child_style);
+    let child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
+
+    let mut percent_item =
+      BoxNode::new_block(percent_style, FormattingContextType::Block, vec![child]);
+    percent_item.id = 911;
+
+    let grid =
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![tall_item, percent_item]);
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout should succeed");
+
+    let percent_fragment = find_block_fragment(&fragment, 911);
+    assert!(
+      (percent_fragment.bounds.height() - 100.0).abs() < 0.5,
+      "expected 100% height item to fill the auto row (100px), got {:.2}",
+      percent_fragment.bounds.height()
+    );
+    assert!(
+      percent_fragment.bounds.y().abs() < 0.5,
+      "expected 100% height item to align to row start (0px), got {:.2}",
+      percent_fragment.bounds.y()
+    );
   }
 
   #[test]
@@ -16527,7 +16765,8 @@ mod tests {
       height: AvailableSpace::MaxContent,
     };
 
-    let constraints = constraints_from_taffy(viewport, known, available, None);
+    let constraints =
+      constraints_from_taffy(viewport, known, available, WritingMode::HorizontalTb, None);
     assert_eq!(
       constraints.available_width,
       CrateAvailableSpace::Definite(1000.0)
@@ -17912,6 +18151,7 @@ mod tests {
                 viewport_size,
                 known_dimensions,
                 available_space,
+                box_node.style.writing_mode,
                 parent_inline_base,
               );
 

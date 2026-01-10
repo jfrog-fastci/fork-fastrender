@@ -397,13 +397,24 @@ fn test_breaks_outside_emoji_sequence_are_preserved() {
     "Should not allow breaks inside emoji sequence"
   );
 
+  // Keep test expectations consistent with `find_break_opportunities`: the UAX#14 iterator always
+  // yields a mandatory end-of-text break sentinel, but we downgrade it to an Allowed opportunity
+  // unless the text ends with an explicit newline/paragraph separator.
+  let text_len = text.len();
+  let ends_with_newline = text
+    .chars()
+    .last()
+    .is_some_and(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
   let outside_expected: Vec<(usize, BreakType)> = linebreaks(text)
     .filter(|(offset, _)| !(seq.start < *offset && *offset < seq.end))
     .map(|(offset, brk)| {
-      let break_type = match brk {
+      let mut break_type = match brk {
         UnicodeBreakOpportunity::Mandatory => BreakType::Mandatory,
         UnicodeBreakOpportunity::Allowed => BreakType::Allowed,
       };
+      if offset == text_len && break_type == BreakType::Mandatory && !ends_with_newline {
+        break_type = BreakType::Allowed;
+      }
       (offset, break_type)
     })
     .collect();

@@ -418,6 +418,22 @@ static TEXT_DIAGNOSTICS: OnceLock<Mutex<TextDiagnosticsState>> = OnceLock::new()
 
 static TEXT_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 static TEXT_DIAGNOSTICS_SESSION: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+  /// Thread-local marker indicating which text diagnostics session (if any) this thread is allowed
+  /// to record into.
+  ///
+  /// Text diagnostics are stored in process-global state. When a render enables diagnostics we
+  /// want to collect counters from that render without being polluted by unrelated shaping work
+  /// happening concurrently on other threads (e.g. in parallel tests or other renders that are not
+  /// collecting diagnostics). The FastRender API serializes diagnostics-enabled renders via
+  /// [`crate::api::DiagnosticsSessionGuard`], but other shaping calls can still run concurrently.
+  ///
+  /// By additionally gating recording on a thread-local session id we ensure that only the thread
+  /// that enabled diagnostics (and any threads it explicitly opts into the session) contributes to
+  /// the counters.
+  static TEXT_DIAGNOSTICS_THREAD_SESSION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 static LAST_RESORT_LOGGED: AtomicUsize = AtomicUsize::new(0);
 static SHAPING_FALLBACK_LOGGED: AtomicUsize = AtomicUsize::new(0);
 static SHAPING_CACHE_DIAG_HITS: AtomicU64 = AtomicU64::new(0);
@@ -439,8 +455,10 @@ pub(crate) fn enable_text_diagnostics() {
   if let Ok(mut state) = diagnostics_cell().lock() {
     *state = TextDiagnosticsState::new(session);
     TEXT_DIAGNOSTICS_ENABLED.store(true, Ordering::Release);
+    TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.set(session));
   } else {
     TEXT_DIAGNOSTICS_ENABLED.store(false, Ordering::Release);
+    TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.set(0));
   }
   SHAPING_CACHE_DIAG_HITS.store(0, Ordering::Relaxed);
   SHAPING_CACHE_DIAG_MISSES.store(0, Ordering::Relaxed);
@@ -455,7 +473,7 @@ pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
   }
 
   let now = Instant::now();
-  diagnostics_cell().lock().ok().map(|mut state| {
+  let result = diagnostics_cell().lock().ok().map(|mut state| {
     state.finalize_open_stages(now);
     if text_fallback_descriptor_stats_enabled() {
       let stats = state.fallback_descriptor_stats.take().unwrap_or_default();
@@ -472,11 +490,20 @@ pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
     // Prevent any late-dropped timers from mutating the taken snapshot (or a later session).
     state.session = 0;
     diag
-  })
+  });
+  TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.set(0));
+  result
 }
 
 pub(crate) fn text_diagnostics_enabled() -> bool {
-  TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
+  // Use Acquire so threads reliably observe `enable_text_diagnostics()`'s Release store when work is
+  // parallelized across the renderer thread pool.
+  if !TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Acquire) {
+    return false;
+  }
+
+  let active_session = TEXT_DIAGNOSTICS_SESSION.load(Ordering::Acquire);
+  TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.get() == active_session)
 }
 
 pub(crate) fn text_diagnostics_timer(stage: TextDiagnosticsStage) -> Option<TextDiagnosticsTimer> {
@@ -4786,6 +4813,61 @@ fn resolve_font_for_char_with_preferences(
     }
 
     let mut seen_ids = SeenFontIds::new();
+
+    let try_generic_named_fallbacks =
+      |generic: crate::text::font_db::GenericFamily,
+       seen_ids: &mut SeenFontIds,
+       picker: &mut FontPreferencePicker|
+       -> Option<Arc<LoadedFont>> {
+      for name in generic.fallback_families() {
+        let mut seen_fallback_ids = SeenFontIds::new();
+        for weight_choice in weight_preferences {
+          for slope in slope_preferences {
+            for stretch_choice in stretch_preferences {
+              if let Some(id) = db.query_named_family_with_aliases(
+                name,
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
+                if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
+                  continue;
+                }
+                let (cached_face, covers) = glyph_face_and_covers(id);
+                if let Some(font) =
+                  consider_local_font_candidate(db, picker, id, cached_face.as_deref(), covers)
+                {
+                  return Some(font);
+                }
+              }
+            }
+          }
+        }
+      }
+      None
+    };
+
+    let prefer_named_fallbacks_for_generic = match entry {
+      FamilyEntry::Generic(generic) => {
+        generic.prefers_named_fallbacks_first()
+          && !matches!(
+            generic,
+            crate::text::font_db::GenericFamily::Serif
+              | crate::text::font_db::GenericFamily::SansSerif
+              | crate::text::font_db::GenericFamily::Monospace
+          )
+      }
+      _ => false,
+    };
+
+    if prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(font) = try_generic_named_fallbacks(*generic, &mut seen_ids, picker) {
+          return Some(font);
+        }
+      }
+    }
+
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
@@ -4822,30 +4904,10 @@ fn resolve_font_for_char_with_preferences(
       }
     }
 
-    if let FamilyEntry::Generic(generic) = entry {
-      for name in generic.fallback_families() {
-        let mut seen_fallback_ids = SeenFontIds::new();
-        for weight_choice in weight_preferences {
-          for slope in slope_preferences {
-            for stretch_choice in stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
-                if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
-                  continue;
-                }
-                let (cached_face, covers) = glyph_face_and_covers(id);
-                if let Some(font) =
-                  consider_local_font_candidate(db, picker, id, cached_face.as_deref(), covers)
-                {
-                  return Some(font);
-                }
-              }
-            }
-          }
+    if !prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(font) = try_generic_named_fallbacks(*generic, &mut seen_ids, picker) {
+          return Some(font);
         }
       }
     }
@@ -5055,6 +5117,65 @@ fn resolve_font_for_cluster_with_preferences(
     }
 
     let mut seen_ids = SeenFontIds::new();
+
+    let try_generic_named_fallbacks =
+      |generic: crate::text::font_db::GenericFamily,
+       seen_ids: &mut SeenFontIds,
+       picker: &mut FontPreferencePicker|
+       -> Option<Arc<LoadedFont>> {
+      for name in generic.fallback_families() {
+        let mut seen_fallback_ids = SeenFontIds::new();
+        for weight_choice in weight_preferences {
+          for slope in slope_preferences {
+            for stretch_choice in stretch_preferences {
+              if let Some(id) = db.query_named_family_with_aliases(
+                name,
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
+                if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
+                  continue;
+                }
+                let (cached_face, covers) = face_and_covers_needed(id);
+                if let Some(font) = consider_local_font_candidate(
+                  db,
+                  picker,
+                  id,
+                  cached_face.as_deref(),
+                  covers,
+                ) {
+                  return Some(font);
+                }
+              }
+            }
+          }
+        }
+      }
+      None
+    };
+
+    let prefer_named_fallbacks_for_generic = match entry {
+      FamilyEntry::Generic(generic) => {
+        generic.prefers_named_fallbacks_first()
+          && !matches!(
+            generic,
+            crate::text::font_db::GenericFamily::Serif
+              | crate::text::font_db::GenericFamily::SansSerif
+              | crate::text::font_db::GenericFamily::Monospace
+          )
+      }
+      _ => false,
+    };
+
+    if prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(font) = try_generic_named_fallbacks(*generic, &mut seen_ids, &mut picker) {
+          return Some(font);
+        }
+      }
+    }
+
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
@@ -5091,30 +5212,10 @@ fn resolve_font_for_cluster_with_preferences(
       }
     }
 
-    if let FamilyEntry::Generic(generic) = entry {
-      for name in generic.fallback_families() {
-        let mut seen_fallback_ids = SeenFontIds::new();
-        for weight_choice in weight_preferences {
-          for slope in slope_preferences {
-            for stretch_choice in stretch_preferences {
-              if let Some(id) = db.query_named_family_with_aliases(
-                name,
-                *weight_choice,
-                *slope,
-                *stretch_choice,
-              ) {
-                if seen_ids.contains_or_insert(id) || seen_fallback_ids.contains_or_insert(id) {
-                  continue;
-                }
-                let (cached_face, covers) = face_and_covers_needed(id);
-                if let Some(font) =
-                  consider_local_font_candidate(db, &mut picker, id, cached_face.as_deref(), covers)
-                {
-                  return Some(font);
-                }
-              }
-            }
-          }
+    if !prefer_named_fallbacks_for_generic {
+      if let FamilyEntry::Generic(generic) = entry {
+        if let Some(font) = try_generic_named_fallbacks(*generic, &mut seen_ids, &mut picker) {
+          return Some(font);
         }
       }
     }
