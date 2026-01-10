@@ -76,6 +76,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;
+  fn throw_dom_exception(&mut self, name: &str, message: &str) -> Self::Error;
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error>;
 
@@ -374,6 +375,14 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     }
   }
 
+  fn throw_dom_exception(&mut self, name: &str, message: &str) -> Self::Error {
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(err) => return err,
+    };
+    crate::js::bindings::throw_dom_exception(&mut self.cx.scope, intr, name, message)
+  }
+
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
     let s = self.cx.scope.alloc_string(name)?;
     self.cx.scope.push_root(Value::String(s))?;
@@ -670,6 +679,84 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     )
   }
 
+  fn throw_dom_exception(&mut self, name: &str, message: &str) -> Self::Error {
+    use webidl_js_runtime::JsRuntime as _;
+    let obj = match self.alloc_object_value() {
+      Ok(obj) => obj,
+      Err(err) => return err,
+    };
+    let Value::Object(_) = obj else {
+      return VmError::Throw(Value::Undefined);
+    };
+
+    // Root the object while allocating the name/message strings and property keys: allocations may
+    // trigger GC, and `vm-js` does not automatically trace Rust locals.
+    let name_value = match <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+      self,
+      &[obj],
+      |rt| rt.alloc_string(name),
+    ) {
+      Ok(v) => v,
+      Err(err) => return err,
+    };
+    let message_value = match <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+      self,
+      &[obj],
+      |rt| rt.alloc_string(message),
+    ) {
+      Ok(v) => v,
+      Err(err) => return err,
+    };
+
+    let _ = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+      self,
+      &[obj, name_value, message_value],
+      |rt| {
+        let name_key =
+          <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
+            rt, "name",
+          )?;
+        let message_key =
+          <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
+            rt, "message",
+          )?;
+
+        let name_key_root = match name_key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        };
+        let message_key_root = match message_key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        };
+
+        <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+          rt,
+          &[obj, name_value, message_value, name_key_root, message_key_root],
+          |rt| {
+            <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::define_data_property(
+              rt,
+              obj,
+              name_key,
+              name_value,
+              false,
+            )?;
+            <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::define_data_property(
+              rt,
+              obj,
+              message_key,
+              message_value,
+              false,
+            )?;
+            Ok(())
+          },
+        )
+      },
+    );
+
+    VmError::Throw(obj)
+  }
+
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
       self, name,
@@ -841,6 +928,54 @@ mod tests {
     let mut host = TestHost::default();
     let out = runtime.exec_script_with_host(&mut host, "add(1, 2)")?;
     assert!(matches!(out, Value::Number(n) if (n - 3.0).abs() < f64::EPSILON));
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_runtime_throw_dom_exception_sets_name_and_message() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<TestHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+    let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+
+    let err = cx.throw_dom_exception("SyntaxError", "m");
+    let VmError::Throw(thrown) = err else {
+      return Err(VmError::TypeError("expected VmError::Throw"));
+    };
+    let Value::Object(obj) = thrown else {
+      return Err(VmError::TypeError("expected thrown value to be an object"));
+    };
+
+    let name_key_s = cx.cx.scope.alloc_string("name")?;
+    cx.cx.scope.push_root(Value::String(name_key_s))?;
+    let name_key = PropertyKey::from_string(name_key_s);
+    let name_value = cx
+      .cx
+      .scope
+      .heap()
+      .object_get_own_data_property_value(obj, &name_key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(cx.js_string_to_rust_string(name_value)?, "SyntaxError");
+
+    let message_key_s = cx.cx.scope.alloc_string("message")?;
+    cx.cx.scope.push_root(Value::String(message_key_s))?;
+    let message_key = PropertyKey::from_string(message_key_s);
+    let message_value = cx
+      .cx
+      .scope
+      .heap()
+      .object_get_own_data_property_value(obj, &message_key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(cx.js_string_to_rust_string(message_value)?, "m");
+
     Ok(())
   }
 
