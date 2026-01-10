@@ -1,5 +1,6 @@
 use fastrender::dom2::Document;
-use fastrender::js::{install_dom_bindings, CurrentScriptState};
+use fastrender::js::vm_dom::install_dom_bindings;
+use fastrender::js::CurrentScriptState;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::rc::Rc;

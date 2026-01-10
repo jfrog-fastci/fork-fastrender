@@ -182,7 +182,7 @@ Notes:
     against the committed snapshot world).
 
 DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs` and are
-installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
+installed with `fastrender::js::vm_dom::install_dom_bindings(vm, heap, realm, ...)`.
 
 Note: The deprecated `VmJsRuntime` DOM scaffold can still be generated for debugging with
 `bash scripts/cargo_agent.sh xtask webidl-bindings --backend legacy`, but it is not committed or
