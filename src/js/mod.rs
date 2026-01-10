@@ -33,6 +33,7 @@ pub mod host_document;
 pub mod html_classic_scripts;
 pub mod html_scripting;
 pub mod html_script_processing;
+pub mod import_maps;
 pub mod options;
 pub mod orchestrator;
 pub mod browser_tab;
