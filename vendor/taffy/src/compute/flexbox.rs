@@ -2651,14 +2651,18 @@ fn perform_absolute_layout_on_absolute_children(
     } else {
       // Stretch is an invalid value for justify_content in the flexbox algorithm, so we
       // treat it as if it wasn't set (and thus we default to FlexStart behaviour)
-      match (
-        constants.justify_content.unwrap_or(JustifyContent::Start),
-        constants.is_wrap_reverse,
-      ) {
-        (JustifyContent::SpaceBetween, _)
-        | (JustifyContent::Start, _)
-        | (JustifyContent::Stretch, false)
-        | (JustifyContent::FlexStart, false)
+       // `wrap-reverse` only flips the *cross axis*. For absolutely positioned items, the
+       // main-axis alignment behaviour of `justify-content: flex-start/flex-end` must only be
+       // flipped when the main axis is reversed via `flex-direction: *-reverse`.
+       let main_axis_reversed = constants.dir.is_reverse();
+       match (
+         constants.justify_content.unwrap_or(JustifyContent::Start),
+         main_axis_reversed,
+       ) {
+         (JustifyContent::SpaceBetween, _)
+         | (JustifyContent::Start, _)
+         | (JustifyContent::Stretch, false)
+         | (JustifyContent::FlexStart, false)
         | (JustifyContent::FlexEnd, true) => {
           constants.content_box_inset.main_start(constants.dir)
             + resolved_margin.main_start(constants.dir)
@@ -2804,5 +2808,209 @@ fn sum_axis_gaps(gap: f32, num_items: usize) -> f32 {
   } else {
     // ...otherwise there are (num_items - 1) gaps
     gap * (num_items - 1) as f32
+  }
+}
+
+#[cfg(all(test, feature = "taffy_tree"))]
+mod tests {
+  use crate::prelude::*;
+
+  fn build_row_wrap_reverse_tree(
+    align_content: AlignContent,
+    cross_axis_gap: f32,
+  ) -> (TaffyTree<()>, [NodeId; 3]) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child_style = Style {
+      size: Size::from_lengths(30.0, 10.0),
+      ..Default::default()
+    };
+
+    let child1 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child2 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child3 = taffy.new_leaf(child_style).unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(60.0, 110.0),
+          flex_direction: FlexDirection::Row,
+          flex_wrap: FlexWrap::WrapReverse,
+          align_content: Some(align_content),
+          gap: Size {
+            width: length(0.0),
+            height: length(cross_axis_gap),
+          },
+          ..Default::default()
+        },
+        &[child1, child2, child3],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    (taffy, [child1, child2, child3])
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_row_align_content_flex_start_reverses_line_order() {
+    let (taffy, [child1, child2, child3]) =
+      build_row_wrap_reverse_tree(AlignContent::FlexStart, 0.0);
+
+    // Line order reversed: child3 is in the second line (above), children 1/2 are in the first line (below).
+    assert_eq!(taffy.layout(child1).unwrap().location.x, 0.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 100.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.x, 30.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 100.0);
+    assert_eq!(taffy.layout(child3).unwrap().location.x, 0.0);
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 90.0);
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_row_align_content_flex_end_packs_toward_physical_cross_start() {
+    let (taffy, [child1, child2, child3]) =
+      build_row_wrap_reverse_tree(AlignContent::FlexEnd, 0.0);
+
+    // Packed toward physical cross-start (top) with line order reversed.
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 0.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 10.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 10.0);
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_row_align_content_space_between_distributes_free_space_and_reverses_lines(
+  ) {
+    let (taffy, [child1, child2, child3]) =
+      build_row_wrap_reverse_tree(AlignContent::SpaceBetween, 0.0);
+
+    // With 2 lines, `space-between` should pin one line to each edge.
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 0.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 100.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 100.0);
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_row_align_content_space_evenly_distributes_free_space_and_reverses_lines(
+  ) {
+    let (taffy, [child1, child2, child3]) =
+      build_row_wrap_reverse_tree(AlignContent::SpaceEvenly, 0.0);
+
+    // Container height = 110. Two lines with height 10 each -> 90px free space.
+    // `space-evenly` => 30px before, 30px between, 30px after.
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 30.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 70.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 70.0);
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_row_preserves_cross_axis_gap_between_lines() {
+    let (taffy, [child1, child2, child3]) =
+      build_row_wrap_reverse_tree(AlignContent::FlexStart, 5.0);
+
+    // Two 10px lines + 5px gap => 25px used, so 85px of the 110px container is free space.
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 85.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 100.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 100.0);
+  }
+
+  #[test]
+  fn flex_wrap_wrap_reverse_column_reverses_cross_axis_line_stacking() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child_style = Style {
+      size: Size::from_lengths(10.0, 30.0),
+      ..Default::default()
+    };
+
+    let child1 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child2 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child3 = taffy.new_leaf(child_style).unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(110.0, 60.0),
+          flex_direction: FlexDirection::Column,
+          flex_wrap: FlexWrap::WrapReverse,
+          align_content: Some(AlignContent::FlexStart),
+          ..Default::default()
+        },
+        &[child1, child2, child3],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    // Cross axis is horizontal. With wrap-reverse, the first line is at the physical right edge.
+    assert_eq!(taffy.layout(child1).unwrap().location.x, 100.0);
+    assert_eq!(taffy.layout(child1).unwrap().location.y, 0.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.x, 100.0);
+    assert_eq!(taffy.layout(child2).unwrap().location.y, 30.0);
+    assert_eq!(taffy.layout(child3).unwrap().location.x, 90.0);
+    assert_eq!(taffy.layout(child3).unwrap().location.y, 0.0);
+  }
+
+  #[test]
+  fn abspos_justify_content_flex_start_is_not_flipped_by_wrap_reverse() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let abs_child = taffy
+      .new_leaf(Style {
+        position: Position::Absolute,
+        size: Size::from_lengths(10.0, 10.0),
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(100.0, 10.0),
+          flex_direction: FlexDirection::Row,
+          flex_wrap: FlexWrap::WrapReverse,
+          justify_content: Some(JustifyContent::FlexStart),
+          ..Default::default()
+        },
+        &[abs_child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(taffy.layout(abs_child).unwrap().location.x, 0.0);
+  }
+
+  #[test]
+  fn abspos_justify_content_flex_start_is_flipped_by_row_reverse() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let abs_child = taffy
+      .new_leaf(Style {
+        position: Position::Absolute,
+        size: Size::from_lengths(10.0, 10.0),
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(100.0, 10.0),
+          flex_direction: FlexDirection::RowReverse,
+          flex_wrap: FlexWrap::NoWrap,
+          justify_content: Some(JustifyContent::FlexStart),
+          ..Default::default()
+        },
+        &[abs_child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(taffy.layout(abs_child).unwrap().location.x, 90.0);
   }
 }
