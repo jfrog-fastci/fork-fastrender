@@ -165,6 +165,14 @@ impl Document {
       let node_id = node;
       let changed = {
         let node = self.node_checked_mut(node_id)?;
+        let is_html_script = match &node.kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace),
+          _ => false,
+        };
         let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
           return Err(DomError::InvalidNodeType);
         };
@@ -175,6 +183,9 @@ impl Document {
           false
         } else {
           attrs.push((name.to_string(), String::new()));
+          if is_html_script && name.eq_ignore_ascii_case("async") {
+            node.script_force_async = false;
+          }
           true
         }
       };

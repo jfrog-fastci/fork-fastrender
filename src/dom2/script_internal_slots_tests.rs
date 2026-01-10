@@ -63,6 +63,10 @@ fn async_attribute_added_clears_force_async_flag() {
   doc.set_attribute(script, "async", "").unwrap();
   assert!(!doc.node(script).script_force_async);
 
+  // The force-async flag is sticky; removing the attribute must not reset it.
+  doc.remove_attribute(script, "async").unwrap();
+  assert!(!doc.node(script).script_force_async);
+
   let script2 = doc.create_element("script", HTML_NAMESPACE);
   assert!(doc.node(script2).script_force_async);
   doc.set_bool_attribute(script2, "async", true).unwrap();
@@ -105,6 +109,9 @@ fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
   doc.set_attribute(script, "async", "").unwrap();
   assert!(doc.has_attribute(script, "async").unwrap());
   assert!(!doc.node(script).script_force_async);
+
+  // Ensure clone doesn't just copy this field from the source node.
+  doc.node_mut(script).script_force_async = true;
 
   let cloned = doc.clone_node(script, false).unwrap();
   assert!(doc.has_attribute(cloned, "async").unwrap());

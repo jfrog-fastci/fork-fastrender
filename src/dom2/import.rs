@@ -187,8 +187,8 @@ impl Document {
         if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
           continue;
         }
-        node.script_force_async = false;
         node.script_parser_document = true;
+        node.script_force_async = false;
       }
     }
 

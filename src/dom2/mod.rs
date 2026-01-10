@@ -708,13 +708,25 @@ impl Document {
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
     let inert_subtree = inert_subtree || kind_implies_inert_subtree(&kind);
+    let mut script_force_async = kind_is_html_script(&kind);
+    if script_force_async {
+      let NodeKind::Element { attributes, .. } = &kind else {
+        unreachable!();
+      };
+      if attributes
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+      {
+        script_force_async = false;
+      }
+    }
     self.nodes.push(Node {
       kind,
       parent,
       children: Vec::new(),
       inert_subtree,
       script_parser_document: false,
-      script_force_async: false,
+      script_force_async,
       script_already_started: false,
       mathml_annotation_xml_integration_point: false,
     });
