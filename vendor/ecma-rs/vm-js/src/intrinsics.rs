@@ -39,6 +39,8 @@ pub struct Intrinsics {
   bigint_prototype: GcObject,
   date_prototype: GcObject,
   symbol_prototype: GcObject,
+  array_buffer_prototype: GcObject,
+  uint8_array_prototype: GcObject,
   object_constructor: GcObject,
   function_constructor: GcObject,
   array_constructor: GcObject,
@@ -47,6 +49,8 @@ pub struct Intrinsics {
   boolean_constructor: GcObject,
   date_constructor: GcObject,
   symbol_constructor: GcObject,
+  array_buffer: GcObject,
+  uint8_array: GcObject,
   is_nan: GcObject,
   json: GcObject,
 
@@ -356,6 +360,16 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(symbol_prototype, Some(object_prototype))?;
+
+    let array_buffer_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(array_buffer_prototype, Some(object_prototype))?;
+
+    let uint8_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint8_array_prototype, Some(object_prototype))?;
 
     // --- Common property keys used throughout the intrinsic graph ---
     //
@@ -976,6 +990,259 @@ impl Intrinsics {
       }
     }
 
+    // `%ArrayBuffer%`
+    let array_buffer_call = vm.register_native_call(builtins::array_buffer_constructor_call)?;
+    let array_buffer_construct =
+      vm.register_native_construct(builtins::array_buffer_constructor_construct)?;
+    let array_buffer_name = scope.alloc_string("ArrayBuffer")?;
+    let array_buffer = alloc_rooted_native_function(
+      scope,
+      roots,
+      array_buffer_call,
+      Some(array_buffer_construct),
+      array_buffer_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(array_buffer, Some(function_prototype))?;
+    scope.define_property(
+      array_buffer,
+      common.prototype,
+      data_desc(Value::Object(array_buffer_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      array_buffer,
+      common.name,
+      data_desc(Value::String(array_buffer_name), false, false, true),
+    )?;
+    scope.define_property(
+      array_buffer,
+      common.length,
+      data_desc(Value::Number(1.0), false, false, true),
+    )?;
+    scope.define_property(
+      array_buffer_prototype,
+      common.constructor,
+      data_desc(Value::Object(array_buffer), true, false, true),
+    )?;
+
+    // ArrayBuffer.isView
+    {
+      let is_view_call = vm.register_native_call(builtins::array_buffer_is_view)?;
+      let is_view_s = scope.alloc_string("isView")?;
+      scope.push_root(Value::String(is_view_s))?;
+      let key = PropertyKey::from_string(is_view_s);
+      let func = scope.alloc_native_function(is_view_call, None, is_view_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_buffer,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // ArrayBuffer.prototype.byteLength
+    {
+      let key_s = scope.alloc_string("byteLength")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_call = vm.register_native_call(builtins::array_buffer_prototype_byte_length_get)?;
+      let get_name = scope.alloc_string("get byteLength")?;
+      let get = scope.alloc_native_function(get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // ArrayBuffer.prototype.slice
+    {
+      let slice_call = vm.register_native_call(builtins::array_buffer_prototype_slice)?;
+      let slice_s = scope.alloc_string("slice")?;
+      scope.push_root(Value::String(slice_s))?;
+      let key = PropertyKey::from_string(slice_s);
+      let func = scope.alloc_native_function(slice_call, None, slice_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // `%Uint8Array%`
+    let uint8_array_call = vm.register_native_call(builtins::uint8_array_constructor_call)?;
+    let uint8_array_construct =
+      vm.register_native_construct(builtins::uint8_array_constructor_construct)?;
+    let uint8_array_name = scope.alloc_string("Uint8Array")?;
+    let uint8_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      uint8_array_call,
+      Some(uint8_array_construct),
+      uint8_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(uint8_array, Some(function_prototype))?;
+    scope.define_property(
+      uint8_array,
+      common.prototype,
+      data_desc(Value::Object(uint8_array_prototype), true, false, false),
+    )?;
+    scope.define_property(
+      uint8_array,
+      common.name,
+      data_desc(Value::String(uint8_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      uint8_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      uint8_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(uint8_array), true, false, true),
+    )?;
+
+    // Uint8Array.prototype.byteLength / length / byteOffset / buffer
+    {
+      let byte_length_key_s = scope.alloc_string("byteLength")?;
+      scope.push_root(Value::String(byte_length_key_s))?;
+      let byte_length_key = PropertyKey::from_string(byte_length_key_s);
+      let byte_length_get_call =
+        vm.register_native_call(builtins::uint8_array_prototype_byte_length_get)?;
+      let byte_length_get_name = scope.alloc_string("get byteLength")?;
+      let byte_length_get = scope.alloc_native_function(byte_length_get_call, None, byte_length_get_name, 0)?;
+      scope.push_root(Value::Object(byte_length_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(byte_length_get, Some(function_prototype))?;
+      scope.define_property(
+        uint8_array_prototype,
+        byte_length_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(byte_length_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      let length_key_s = scope.alloc_string("length")?;
+      scope.push_root(Value::String(length_key_s))?;
+      let length_key = PropertyKey::from_string(length_key_s);
+      let length_get_call = vm.register_native_call(builtins::uint8_array_prototype_length_get)?;
+      let length_get_name = scope.alloc_string("get length")?;
+      let length_get = scope.alloc_native_function(length_get_call, None, length_get_name, 0)?;
+      scope.push_root(Value::Object(length_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(length_get, Some(function_prototype))?;
+      scope.define_property(
+        uint8_array_prototype,
+        length_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(length_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      let byte_offset_key_s = scope.alloc_string("byteOffset")?;
+      scope.push_root(Value::String(byte_offset_key_s))?;
+      let byte_offset_key = PropertyKey::from_string(byte_offset_key_s);
+      let byte_offset_get_call =
+        vm.register_native_call(builtins::uint8_array_prototype_byte_offset_get)?;
+      let byte_offset_get_name = scope.alloc_string("get byteOffset")?;
+      let byte_offset_get = scope.alloc_native_function(byte_offset_get_call, None, byte_offset_get_name, 0)?;
+      scope.push_root(Value::Object(byte_offset_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(byte_offset_get, Some(function_prototype))?;
+      scope.define_property(
+        uint8_array_prototype,
+        byte_offset_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(byte_offset_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      let buffer_key_s = scope.alloc_string("buffer")?;
+      scope.push_root(Value::String(buffer_key_s))?;
+      let buffer_key = PropertyKey::from_string(buffer_key_s);
+      let buffer_get_call = vm.register_native_call(builtins::uint8_array_prototype_buffer_get)?;
+      let buffer_get_name = scope.alloc_string("get buffer")?;
+      let buffer_get = scope.alloc_native_function(buffer_get_call, None, buffer_get_name, 0)?;
+      scope.push_root(Value::Object(buffer_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(buffer_get, Some(function_prototype))?;
+      scope.define_property(
+        uint8_array_prototype,
+        buffer_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(buffer_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // Uint8Array.prototype.slice
+    {
+      let slice_call = vm.register_native_call(builtins::uint8_array_prototype_slice)?;
+      let slice_s = scope.alloc_string("slice")?;
+      scope.push_root(Value::String(slice_s))?;
+      let key = PropertyKey::from_string(slice_s);
+      let func = scope.alloc_native_function(slice_call, None, slice_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        uint8_array_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
     // `%JSON%`
     let json = alloc_rooted_object(scope, roots)?;
     scope
@@ -1241,6 +1508,56 @@ impl Intrinsics {
       )?;
     }
 
+    // Promise.all / Promise.race / Promise.allSettled / Promise.any
+    {
+      let all_call = vm.register_native_call(builtins::promise_all)?;
+      let all_name = scope.alloc_string("all")?;
+      let all = alloc_rooted_native_function(scope, roots, all_call, None, all_name, 1)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(all, Some(function_prototype))?;
+      let key = PropertyKey::from_string(scope.alloc_string("all")?);
+      scope.define_property(promise, key, data_desc(Value::Object(all), true, false, true))?;
+
+      let race_call = vm.register_native_call(builtins::promise_race)?;
+      let race_name = scope.alloc_string("race")?;
+      let race = alloc_rooted_native_function(scope, roots, race_call, None, race_name, 1)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(race, Some(function_prototype))?;
+      let key = PropertyKey::from_string(scope.alloc_string("race")?);
+      scope.define_property(promise, key, data_desc(Value::Object(race), true, false, true))?;
+
+      let all_settled_call = vm.register_native_call(builtins::promise_all_settled)?;
+      let all_settled_name = scope.alloc_string("allSettled")?;
+      let all_settled = alloc_rooted_native_function(
+        scope,
+        roots,
+        all_settled_call,
+        None,
+        all_settled_name,
+        1,
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(all_settled, Some(function_prototype))?;
+      let key = PropertyKey::from_string(scope.alloc_string("allSettled")?);
+      scope.define_property(
+        promise,
+        key,
+        data_desc(Value::Object(all_settled), true, false, true),
+      )?;
+
+      let any_call = vm.register_native_call(builtins::promise_any)?;
+      let any_name = scope.alloc_string("any")?;
+      let any = alloc_rooted_native_function(scope, roots, any_call, None, any_name, 1)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(any, Some(function_prototype))?;
+      let key = PropertyKey::from_string(scope.alloc_string("any")?);
+      scope.define_property(promise, key, data_desc(Value::Object(any), true, false, true))?;
+    }
+
     // Promise.try / Promise.withResolvers
     {
       let try_call = vm.register_native_call(builtins::promise_try)?;
@@ -1334,6 +1651,8 @@ impl Intrinsics {
       bigint_prototype,
       date_prototype,
       symbol_prototype,
+      array_buffer_prototype,
+      uint8_array_prototype,
       object_constructor,
       function_constructor,
       array_constructor,
@@ -1342,6 +1661,8 @@ impl Intrinsics {
       boolean_constructor,
       date_constructor,
       symbol_constructor,
+      array_buffer,
+      uint8_array,
       is_nan,
       json,
       error,
@@ -1412,6 +1733,14 @@ impl Intrinsics {
     self.symbol_prototype
   }
 
+  pub fn array_buffer_prototype(&self) -> GcObject {
+    self.array_buffer_prototype
+  }
+
+  pub fn uint8_array_prototype(&self) -> GcObject {
+    self.uint8_array_prototype
+  }
+
   pub fn object_constructor(&self) -> GcObject {
     self.object_constructor
   }
@@ -1442,6 +1771,14 @@ impl Intrinsics {
 
   pub fn symbol_constructor(&self) -> GcObject {
     self.symbol_constructor
+  }
+
+  pub fn array_buffer(&self) -> GcObject {
+    self.array_buffer
+  }
+
+  pub fn uint8_array(&self) -> GcObject {
+    self.uint8_array
   }
 
   pub fn is_nan(&self) -> GcObject {

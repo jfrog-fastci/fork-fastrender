@@ -180,6 +180,20 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.symbol_constructor())),
       )?;
 
+      let array_buffer_key = PropertyKey::from_string(scope.alloc_string("ArrayBuffer")?);
+      scope.define_property(
+        global_object,
+        array_buffer_key,
+        global_data_desc(Value::Object(intrinsics.array_buffer())),
+      )?;
+
+      let uint8_array_key = PropertyKey::from_string(scope.alloc_string("Uint8Array")?);
+      scope.define_property(
+        global_object,
+        uint8_array_key,
+        global_data_desc(Value::Object(intrinsics.uint8_array())),
+      )?;
+
       let is_nan_key = PropertyKey::from_string(scope.alloc_string("isNaN")?);
       scope.define_property(
         global_object,

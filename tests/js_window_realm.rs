@@ -1940,7 +1940,7 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
 #[test]
 fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/bytes", b"hello", 200),
+    InMemoryFetcher::new().with_response("https://example.com/bytes", b"\x00\x01\x02\xff", 200),
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
@@ -1956,11 +1956,51 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
       let realm = host.window_mut();
       let res = realm.exec_script(
         r#"
-  globalThis.__bytes = null;
   globalThis.__bytes_err = null;
+  globalThis.__ab_byte_length = -1;
+  globalThis.__u_is_view = false;
+  globalThis.__u_len = -1;
+  globalThis.__u_byte_length = -1;
+  globalThis.__u_byte_offset = -1;
+  globalThis.__u_same_buffer = false;
+  globalThis.__u0 = -1;
+  globalThis.__u1 = -1;
+  globalThis.__u2 = -1;
+  globalThis.__u3 = -1;
+  globalThis.__u_slice_len = -1;
+  globalThis.__u_slice0 = -1;
+  globalThis.__u_slice1 = -1;
+  globalThis.__u_slice_same_buffer = true;
+  globalThis.__ab_slice_byte_length = -1;
+  globalThis.__ab_slice0 = -1;
+  globalThis.__ab_slice1 = -1;
   fetch("https://example.com/bytes")
     .then(function (r) { return r.arrayBuffer(); })
-    .then(function (b) { globalThis.__bytes = b; })
+    .then(function (ab) {
+      globalThis.__ab_byte_length = ab.byteLength;
+      var u = new Uint8Array(ab);
+      globalThis.__u_is_view = ArrayBuffer.isView(u);
+      globalThis.__u_len = u.length;
+      globalThis.__u_byte_length = u.byteLength;
+      globalThis.__u_byte_offset = u.byteOffset;
+      globalThis.__u_same_buffer = (u.buffer === ab);
+      globalThis.__u0 = u[0];
+      globalThis.__u1 = u[1];
+      globalThis.__u2 = u[2];
+      globalThis.__u3 = u[3];
+
+      var u2 = u.slice(1, 3);
+      globalThis.__u_slice_len = u2.length;
+      globalThis.__u_slice0 = u2[0];
+      globalThis.__u_slice1 = u2[1];
+      globalThis.__u_slice_same_buffer = (u2.buffer === ab);
+
+      var ab2 = ab.slice(1, 3);
+      globalThis.__ab_slice_byte_length = ab2.byteLength;
+      var u3 = new Uint8Array(ab2);
+      globalThis.__ab_slice0 = u3[0];
+      globalThis.__ab_slice1 = u3[1];
+    })
     .catch(function (e) { globalThis.__bytes_err = e && e.name; });
  "#,
       );
@@ -1977,27 +2017,78 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
     RunUntilIdleOutcome::Idle
   );
 
-  let (bytes, err) = {
+  let (
+    err,
+    ab_byte_length,
+    u_is_view,
+    u_len,
+    u_byte_length,
+    u_byte_offset,
+    u_same_buffer,
+    u0,
+    u1,
+    u2,
+    u3,
+    u_slice_len,
+    u_slice0,
+    u_slice1,
+    u_slice_same_buffer,
+    ab_slice_byte_length,
+    ab_slice0,
+    ab_slice1,
+  ) = {
     let realm = host.window_mut();
     let global = realm.global_object();
     let (_vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global)).unwrap();
     (
-      get_data_prop(&mut scope, global, "__bytes"),
       get_data_prop(&mut scope, global, "__bytes_err"),
+      get_data_prop(&mut scope, global, "__ab_byte_length"),
+      get_data_prop(&mut scope, global, "__u_is_view"),
+      get_data_prop(&mut scope, global, "__u_len"),
+      get_data_prop(&mut scope, global, "__u_byte_length"),
+      get_data_prop(&mut scope, global, "__u_byte_offset"),
+      get_data_prop(&mut scope, global, "__u_same_buffer"),
+      get_data_prop(&mut scope, global, "__u0"),
+      get_data_prop(&mut scope, global, "__u1"),
+      get_data_prop(&mut scope, global, "__u2"),
+      get_data_prop(&mut scope, global, "__u3"),
+      get_data_prop(&mut scope, global, "__u_slice_len"),
+      get_data_prop(&mut scope, global, "__u_slice0"),
+      get_data_prop(&mut scope, global, "__u_slice1"),
+      get_data_prop(&mut scope, global, "__u_slice_same_buffer"),
+      get_data_prop(&mut scope, global, "__ab_slice_byte_length"),
+      get_data_prop(&mut scope, global, "__ab_slice0"),
+      get_data_prop(&mut scope, global, "__ab_slice1"),
     )
   };
 
   assert_eq!(err, Value::Null);
-  assert_eq!(get_string(host.window_mut().heap(), bytes), "hello");
+  assert_eq!(ab_byte_length, Value::Number(4.0));
+  assert_eq!(u_is_view, Value::Bool(true));
+  assert_eq!(u_len, Value::Number(4.0));
+  assert_eq!(u_byte_length, Value::Number(4.0));
+  assert_eq!(u_byte_offset, Value::Number(0.0));
+  assert_eq!(u_same_buffer, Value::Bool(true));
+  assert_eq!(u0, Value::Number(0.0));
+  assert_eq!(u1, Value::Number(1.0));
+  assert_eq!(u2, Value::Number(2.0));
+  assert_eq!(u3, Value::Number(255.0));
+  assert_eq!(u_slice_len, Value::Number(2.0));
+  assert_eq!(u_slice0, Value::Number(1.0));
+  assert_eq!(u_slice1, Value::Number(2.0));
+  assert_eq!(u_slice_same_buffer, Value::Bool(false));
+  assert_eq!(ab_slice_byte_length, Value::Number(2.0));
+  assert_eq!(ab_slice0, Value::Number(1.0));
+  assert_eq!(ab_slice1, Value::Number(2.0));
   Ok(())
 }
 
 #[test]
 fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
-    InMemoryFetcher::new().with_response("https://example.com/once-bytes", b"hello", 200),
+    InMemoryFetcher::new().with_response("https://example.com/once-bytes", b"\x00\x01\x02\xff", 200),
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
@@ -2013,12 +2104,15 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
       let realm = host.window_mut();
       let res = realm.exec_script(
         r#"
-  globalThis.__ab_first = "";
+  globalThis.__ab_first_len = -1;
+  globalThis.__ab_first0 = -1;
   globalThis.__ab_second_err = "";
   fetch("https://example.com/once-bytes")
     .then(function (r) {
       return r.arrayBuffer().then(function (b) {
-        globalThis.__ab_first = b;
+        var u = new Uint8Array(b);
+        globalThis.__ab_first_len = u.length;
+        globalThis.__ab_first0 = u[0];
         return r.arrayBuffer().then(
           function () { globalThis.__ab_second_err = "no error"; },
           function (e) { globalThis.__ab_second_err = e && e.name; }
@@ -2040,19 +2134,186 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
     RunUntilIdleOutcome::Idle
   );
 
-  let (first, second_err) = {
+  let (first_len, first0, second_err) = {
     let realm = host.window_mut();
     let global = realm.global_object();
     let (_vm, heap) = realm.vm_and_heap_mut();
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global)).unwrap();
-    let first = get_data_prop(&mut scope, global, "__ab_first");
+    let first_len = get_data_prop(&mut scope, global, "__ab_first_len");
+    let first0 = get_data_prop(&mut scope, global, "__ab_first0");
     let second_err = get_data_prop(&mut scope, global, "__ab_second_err");
-    (get_string(scope.heap(), first), get_string(scope.heap(), second_err))
+    (
+      first_len,
+      first0,
+      get_string(scope.heap(), second_err),
+    )
   };
 
-  assert_eq!(first, "hello");
+  assert_eq!(first_len, Value::Number(4.0));
+  assert_eq!(first0, Value::Number(0.0));
   assert_eq!(second_err, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let res = realm.exec_script(
+    r#"
+  globalThis.__ab_byte_length = -1;
+  globalThis.__is_view_u = false;
+  globalThis.__is_view_ab = true;
+  globalThis.__u_len = -1;
+  globalThis.__u_byte_length = -1;
+  globalThis.__u_byte_offset = -1;
+  globalThis.__u_same_buffer = false;
+  globalThis.__u0 = -1;
+  globalThis.__u1 = -1;
+  globalThis.__u2 = -1;
+  globalThis.__u3 = -1;
+
+  globalThis.__u_off_byte_offset = -1;
+  globalThis.__u_off_len = -1;
+  globalThis.__u_off0 = -1;
+  globalThis.__u_off1 = -1;
+  globalThis.__u_off_same_buffer = false;
+
+  globalThis.__ab_slice_byte_length = -1;
+  globalThis.__ab_slice0 = -1;
+  globalThis.__ab_slice1 = -1;
+  globalThis.__u_slice_len = -1;
+  globalThis.__u_slice0 = -1;
+  globalThis.__u_slice1 = -1;
+  globalThis.__u_slice_same_buffer = true;
+
+  var ab = new ArrayBuffer(4);
+  globalThis.__ab_byte_length = ab.byteLength;
+
+  var u = new Uint8Array(ab);
+  globalThis.__is_view_u = ArrayBuffer.isView(u);
+  globalThis.__is_view_ab = ArrayBuffer.isView(ab);
+  globalThis.__u_len = u.length;
+  globalThis.__u_byte_length = u.byteLength;
+  globalThis.__u_byte_offset = u.byteOffset;
+  globalThis.__u_same_buffer = (u.buffer === ab);
+
+  u[0] = 1;
+  u[1] = 256;
+  u[2] = -1;
+  u[3] = 2.9;
+
+  globalThis.__u0 = u[0];
+  globalThis.__u1 = u[1];
+  globalThis.__u2 = u[2];
+  globalThis.__u3 = u[3];
+
+  var u_off = new Uint8Array(ab, 1, 2);
+  globalThis.__u_off_byte_offset = u_off.byteOffset;
+  globalThis.__u_off_len = u_off.length;
+  globalThis.__u_off0 = u_off[0];
+  globalThis.__u_off1 = u_off[1];
+  globalThis.__u_off_same_buffer = (u_off.buffer === ab);
+
+  var ab_slice = ab.slice(1, 3);
+  globalThis.__ab_slice_byte_length = ab_slice.byteLength;
+  var u_ab_slice = new Uint8Array(ab_slice);
+  globalThis.__ab_slice0 = u_ab_slice[0];
+  globalThis.__ab_slice1 = u_ab_slice[1];
+
+  var u_slice = u.slice(1, 3);
+  globalThis.__u_slice_len = u_slice.length;
+  globalThis.__u_slice0 = u_slice[0];
+  globalThis.__u_slice1 = u_slice[1];
+  globalThis.__u_slice_same_buffer = (u_slice.buffer === ab);
+"#,
+  );
+  if let Err(err) = res {
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    return Err(Error::Other(format_vm_error(heap, err)));
+  }
+
+  let (
+    ab_byte_length,
+    is_view_u,
+    is_view_ab,
+    u_len,
+    u_byte_length,
+    u_byte_offset,
+    u_same_buffer,
+    u0,
+    u1,
+    u2,
+    u3,
+    u_off_byte_offset,
+    u_off_len,
+    u_off0,
+    u_off1,
+    u_off_same_buffer,
+    ab_slice_byte_length,
+    ab_slice0,
+    ab_slice1,
+    u_slice_len,
+    u_slice0,
+    u_slice1,
+    u_slice_same_buffer,
+  ) = {
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    (
+      get_data_prop(&mut scope, global, "__ab_byte_length"),
+      get_data_prop(&mut scope, global, "__is_view_u"),
+      get_data_prop(&mut scope, global, "__is_view_ab"),
+      get_data_prop(&mut scope, global, "__u_len"),
+      get_data_prop(&mut scope, global, "__u_byte_length"),
+      get_data_prop(&mut scope, global, "__u_byte_offset"),
+      get_data_prop(&mut scope, global, "__u_same_buffer"),
+      get_data_prop(&mut scope, global, "__u0"),
+      get_data_prop(&mut scope, global, "__u1"),
+      get_data_prop(&mut scope, global, "__u2"),
+      get_data_prop(&mut scope, global, "__u3"),
+      get_data_prop(&mut scope, global, "__u_off_byte_offset"),
+      get_data_prop(&mut scope, global, "__u_off_len"),
+      get_data_prop(&mut scope, global, "__u_off0"),
+      get_data_prop(&mut scope, global, "__u_off1"),
+      get_data_prop(&mut scope, global, "__u_off_same_buffer"),
+      get_data_prop(&mut scope, global, "__ab_slice_byte_length"),
+      get_data_prop(&mut scope, global, "__ab_slice0"),
+      get_data_prop(&mut scope, global, "__ab_slice1"),
+      get_data_prop(&mut scope, global, "__u_slice_len"),
+      get_data_prop(&mut scope, global, "__u_slice0"),
+      get_data_prop(&mut scope, global, "__u_slice1"),
+      get_data_prop(&mut scope, global, "__u_slice_same_buffer"),
+    )
+  };
+
+  assert_eq!(ab_byte_length, Value::Number(4.0));
+  assert_eq!(is_view_u, Value::Bool(true));
+  assert_eq!(is_view_ab, Value::Bool(false));
+  assert_eq!(u_len, Value::Number(4.0));
+  assert_eq!(u_byte_length, Value::Number(4.0));
+  assert_eq!(u_byte_offset, Value::Number(0.0));
+  assert_eq!(u_same_buffer, Value::Bool(true));
+  assert_eq!(u0, Value::Number(1.0));
+  assert_eq!(u1, Value::Number(0.0));
+  assert_eq!(u2, Value::Number(255.0));
+  assert_eq!(u3, Value::Number(2.0));
+  assert_eq!(u_off_byte_offset, Value::Number(1.0));
+  assert_eq!(u_off_len, Value::Number(2.0));
+  assert_eq!(u_off0, Value::Number(0.0));
+  assert_eq!(u_off1, Value::Number(255.0));
+  assert_eq!(u_off_same_buffer, Value::Bool(true));
+  assert_eq!(ab_slice_byte_length, Value::Number(2.0));
+  assert_eq!(ab_slice0, Value::Number(0.0));
+  assert_eq!(ab_slice1, Value::Number(255.0));
+  assert_eq!(u_slice_len, Value::Number(2.0));
+  assert_eq!(u_slice0, Value::Number(0.0));
+  assert_eq!(u_slice1, Value::Number(255.0));
+  assert_eq!(u_slice_same_buffer, Value::Bool(false));
   Ok(())
 }
 

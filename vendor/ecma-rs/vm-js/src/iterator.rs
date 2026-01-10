@@ -1,4 +1,5 @@
 use crate::property::PropertyKey;
+use crate::error_object::new_type_error_object;
 use crate::{GcObject, GcSymbol, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
@@ -31,6 +32,14 @@ fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
 fn symbol_for(scope: &mut Scope<'_>, description: &str) -> Result<GcSymbol, VmError> {
   let key = scope.alloc_string(description)?;
   scope.heap_mut().symbol_for(key)
+}
+
+fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let err = new_type_error_object(scope, &intr, message)?;
+  Ok(VmError::Throw(err))
 }
 
 fn is_array(scope: &mut Scope<'_>, value: Value) -> Result<Option<GcObject>, VmError> {
@@ -68,7 +77,7 @@ fn get_method(
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
   let Value::Object(obj) = obj else {
-    return Err(VmError::Unimplemented("GetMethod on non-object"));
+    return Err(throw_type_error(vm, scope, "GetMethod on non-object")?);
   };
 
   let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
@@ -76,7 +85,7 @@ fn get_method(
     return Ok(None);
   }
   if !scope.heap().is_callable(func)? {
-    return Err(VmError::NotCallable);
+    return Err(throw_type_error(vm, scope, "GetMethod: target is not callable")?);
   }
   Ok(Some(func))
 }
@@ -110,8 +119,11 @@ pub fn get_iterator(
 
   // Fall back to iterator protocol: `GetMethod(iterable, @@iterator)`.
   let iterator_sym = symbol_for(scope, "Symbol.iterator")?;
-  let method = get_method(vm, host, hooks, scope, iterable, PropertyKey::from_symbol(iterator_sym))?
-    .ok_or(VmError::Unimplemented("GetIterator: missing @@iterator method"))?;
+  let Some(method) =
+    get_method(vm, host, hooks, scope, iterable, PropertyKey::from_symbol(iterator_sym))?
+  else {
+    return Err(throw_type_error(vm, scope, "GetIterator: value is not iterable")?);
+  };
   get_iterator_from_method(vm, host, hooks, scope, iterable, method)
 }
 
@@ -126,9 +138,11 @@ pub fn get_iterator_from_method(
 ) -> Result<IteratorRecord, VmError> {
   let iterator = vm.call_with_host_and_hooks(host, scope, hooks, method, iterable, &[])?;
   let Value::Object(iterator_obj) = iterator else {
-    return Err(VmError::Unimplemented(
+    return Err(throw_type_error(
+      vm,
+      scope,
       "GetIteratorFromMethod: iterator method did not return an object",
-    ));
+    )?);
   };
 
   // Root the iterator object while allocating/reading the `next` method in case those operations
@@ -146,7 +160,7 @@ pub fn get_iterator_from_method(
     Value::Object(iterator_obj),
   )?;
   if !next_scope.heap().is_callable(next)? {
-    return Err(VmError::NotCallable);
+    return Err(throw_type_error(vm, &mut next_scope, "Iterator.next is not callable")?);
   }
 
   Ok(IteratorRecord {

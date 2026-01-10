@@ -1763,10 +1763,6 @@ fn response_array_buffer_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // Note: `vm-js` does not yet expose a real `ArrayBuffer`/typed array implementation. As an MVP,
-  // `Response.arrayBuffer()` resolves to a binary string where each UTF-16 code unit is one byte
-  // (`0..=255`). This provides a deterministic, bounded way for tests/scripts to access raw bytes
-  // without allocating per-byte JS objects.
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
@@ -1785,11 +1781,14 @@ fn response_array_buffer_native(
 
   match result {
     Ok(bytes) => {
-      let mut units: Vec<u16> = Vec::new();
-      units.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
-      units.extend(bytes.into_iter().map(u16::from));
-      let s = scope.alloc_string_from_u16_vec(units)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::Object(ab)])?;
     }
     Err(err) => {
       let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;

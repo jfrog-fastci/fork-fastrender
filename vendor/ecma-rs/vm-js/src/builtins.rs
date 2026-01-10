@@ -40,6 +40,43 @@ fn require_callable(this: Value) -> Result<GcObject, VmError> {
   }
 }
 
+fn slice_index_from_value(
+  scope: &mut Scope<'_>,
+  value: Value,
+  len: usize,
+  default: usize,
+) -> Result<usize, VmError> {
+  if matches!(value, Value::Undefined) {
+    return Ok(default);
+  }
+  let n = scope.heap_mut().to_number(value)?;
+  if n.is_nan() {
+    return Ok(0);
+  }
+  if !n.is_finite() {
+    return Ok(if n.is_sign_negative() { 0 } else { len });
+  }
+  let n = n.trunc();
+  let idx = if n < 0.0 {
+    ((len as f64) + n).max(0.0)
+  } else {
+    n
+  };
+  Ok((idx.clamp(0.0, len as f64)) as usize)
+}
+
+fn slice_range_from_args(scope: &mut Scope<'_>, len: usize, args: &[Value]) -> Result<(usize, usize), VmError> {
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let start = slice_index_from_value(scope, begin, len, 0)?;
+  let mut finish = slice_index_from_value(scope, end, len, len)?;
+  if finish < start {
+    finish = start;
+  }
+  Ok((start, finish))
+}
+
 fn get_array_like_args(scope: &mut Scope<'_>, obj: GcObject) -> Result<Vec<Value>, VmError> {
   // Treat `obj` as array-like:
   // - read `length` as a Number
@@ -536,6 +573,325 @@ pub fn array_constructor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   array_constructor_impl(vm, scope, args)
+}
+
+pub fn array_buffer_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("ArrayBuffer constructor requires 'new'"))
+}
+
+pub fn array_buffer_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let length_val = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let length_num = scope.heap_mut().to_number(length_val)?;
+  if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
+    return Err(VmError::TypeError("ArrayBuffer length must be a non-negative integer"));
+  }
+  let byte_length = length_num as usize;
+
+  let ab = scope.alloc_array_buffer(byte_length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+  Ok(Value::Object(ab))
+}
+
+pub fn array_buffer_is_view(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let is_view = match arg0 {
+    Value::Object(obj) => scope.heap().is_uint8_array_object(obj),
+    _ => false,
+  };
+  Ok(Value::Bool(is_view))
+}
+
+pub fn array_buffer_prototype_byte_length_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.byteLength called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .array_buffer_byte_length(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.byteLength called on incompatible receiver"))?;
+  Ok(Value::Number(len as f64))
+}
+
+pub fn array_buffer_prototype_slice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.prototype.slice called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .array_buffer_byte_length(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.slice called on incompatible receiver"))?;
+
+  let (start, end) = slice_range_from_args(scope, len, args)?;
+
+  let bytes = {
+    let data = scope.heap().array_buffer_data(obj).map_err(|_| VmError::InvalidHandle)?;
+    let slice = &data[start..end];
+    let mut out: Vec<u8> = Vec::new();
+    out
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut out, slice)?;
+    out
+  };
+
+  let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+  Ok(Value::Object(ab))
+}
+
+pub fn uint8_array_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Uint8Array constructor requires 'new'"))
+}
+
+pub fn uint8_array_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // `new Uint8Array(length)`
+  if !matches!(arg0, Value::Object(_)) {
+    let length_num = if matches!(arg0, Value::Undefined) {
+      0.0
+    } else {
+      scope.heap_mut().to_number(arg0)?
+    };
+    if !length_num.is_finite() || length_num < 0.0 || length_num.fract() != 0.0 {
+      return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
+    }
+    let length = length_num as usize;
+
+    let ab = scope.alloc_array_buffer(length)?;
+    scope.push_root(Value::Object(ab))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+    let view = scope.alloc_uint8_array(ab, 0, length)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+    return Ok(Value::Object(view));
+  }
+
+  // `new Uint8Array(buffer, byteOffset?, length?)`
+  let Value::Object(buffer) = arg0 else {
+    return Err(VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"));
+  };
+  let buf_len = scope
+    .heap()
+    .array_buffer_byte_length(buffer)
+    .map_err(|_| VmError::TypeError("Uint8Array constructor expects an ArrayBuffer"))?;
+
+  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let byte_offset = if matches!(byte_offset_val, Value::Undefined) {
+    0usize
+  } else {
+    let n = scope.heap_mut().to_number(byte_offset_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError("Uint8Array byteOffset must be a non-negative integer"));
+    }
+    n as usize
+  };
+
+  let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  let length = if matches!(length_val, Value::Undefined) {
+    buf_len.saturating_sub(byte_offset)
+  } else {
+    let n = scope.heap_mut().to_number(length_val)?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+      return Err(VmError::TypeError("Uint8Array length must be a non-negative integer"));
+    }
+    n as usize
+  };
+
+  let view = scope.alloc_uint8_array(buffer, byte_offset, length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+  Ok(Value::Object(view))
+}
+
+pub fn uint8_array_prototype_byte_length_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Uint8Array.byteLength called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .uint8_array_byte_length(obj)
+    .map_err(|_| VmError::TypeError("Uint8Array.byteLength called on incompatible receiver"))?;
+  Ok(Value::Number(len as f64))
+}
+
+pub fn uint8_array_prototype_length_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Uint8Array.length called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .uint8_array_length(obj)
+    .map_err(|_| VmError::TypeError("Uint8Array.length called on incompatible receiver"))?;
+  Ok(Value::Number(len as f64))
+}
+
+pub fn uint8_array_prototype_byte_offset_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Uint8Array.byteOffset called on non-object"));
+  };
+  let offset = scope
+    .heap()
+    .uint8_array_byte_offset(obj)
+    .map_err(|_| VmError::TypeError("Uint8Array.byteOffset called on incompatible receiver"))?;
+  Ok(Value::Number(offset as f64))
+}
+
+pub fn uint8_array_prototype_buffer_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Uint8Array.buffer called on non-object"));
+  };
+  let buffer = scope
+    .heap()
+    .uint8_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("Uint8Array.buffer called on incompatible receiver"))?;
+  Ok(Value::Object(buffer))
+}
+
+pub fn uint8_array_prototype_slice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Uint8Array.prototype.slice called on non-object"));
+  };
+  let len = scope
+    .heap()
+    .uint8_array_length(obj)
+    .map_err(|_| VmError::TypeError("Uint8Array.prototype.slice called on incompatible receiver"))?;
+
+  let (start, end) = slice_range_from_args(scope, len, args)?;
+
+  let bytes = {
+    let data = scope.heap().uint8_array_data(obj).map_err(|_| VmError::InvalidHandle)?;
+    let slice = &data[start..end];
+    let mut out: Vec<u8> = Vec::new();
+    out
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut out, slice)?;
+    out
+  };
+
+  let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+  scope.push_root(Value::Object(ab))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+  let new_view = scope.alloc_uint8_array(ab, 0, end - start)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(new_view, Some(intr.uint8_array_prototype()))?;
+  Ok(Value::Object(new_view))
 }
 
 pub fn function_constructor_call(

@@ -605,7 +605,13 @@ impl Heap {
   pub fn is_valid_object(&self, obj: GcObject) -> bool {
     matches!(
       self.get_heap_object(obj.0),
-      Ok(HeapObject::Object(_) | HeapObject::Function(_) | HeapObject::Promise(_))
+      Ok(
+        HeapObject::Object(_)
+          | HeapObject::ArrayBuffer(_)
+          | HeapObject::Uint8Array(_)
+          | HeapObject::Function(_)
+          | HeapObject::Promise(_)
+      )
     )
   }
 
@@ -615,6 +621,56 @@ impl Heap {
   /// Promise internal slots (represented here by the `HeapObject::Promise` variant).
   pub fn is_promise_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::Promise(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
+  pub fn is_array_buffer_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::ArrayBuffer(_)))
+  }
+
+  /// Returns `true` if `obj` currently points to a live Uint8Array object allocation.
+  pub fn is_uint8_array_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Uint8Array(_)))
+  }
+
+  pub(crate) fn array_buffer_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_array_buffer(obj)?.byte_length())
+  }
+
+  pub(crate) fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
+    Ok(self.get_array_buffer(obj)?.data.as_ref())
+  }
+
+  pub(crate) fn uint8_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_uint8_array(obj)?.length)
+  }
+
+  pub(crate) fn uint8_array_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_uint8_array(obj)?.byte_length())
+  }
+
+  pub(crate) fn uint8_array_byte_offset(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_uint8_array(obj)?.byte_offset)
+  }
+
+  pub(crate) fn uint8_array_buffer(&self, obj: GcObject) -> Result<GcObject, VmError> {
+    Ok(self.get_uint8_array(obj)?.viewed_array_buffer)
+  }
+
+  pub(crate) fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
+    let view = self.get_uint8_array(obj)?;
+    let start = view.byte_offset;
+    let end = view
+      .byte_offset
+      .checked_add(view.length)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    buf
+      .data
+      .get(start..end)
+      .ok_or(VmError::InvariantViolation(
+        "Uint8Array view references out-of-bounds ArrayBuffer data",
+      ))
   }
 
   /// Alias for [`Heap::is_promise_object`].
@@ -763,6 +819,8 @@ impl Heap {
   fn get_object_base(&self, obj: GcObject) -> Result<&ObjectBase, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::Object(o) => Ok(&o.base),
+      HeapObject::ArrayBuffer(b) => Ok(&b.base),
+      HeapObject::Uint8Array(a) => Ok(&a.base),
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
       _ => Err(VmError::InvalidHandle),
@@ -772,6 +830,8 @@ impl Heap {
   fn get_object_base_mut(&mut self, obj: GcObject) -> Result<&mut ObjectBase, VmError> {
     match self.get_heap_object_mut(obj.0)? {
       HeapObject::Object(o) => Ok(&mut o.base),
+      HeapObject::ArrayBuffer(b) => Ok(&mut b.base),
+      HeapObject::Uint8Array(a) => Ok(&mut a.base),
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
       _ => Err(VmError::InvalidHandle),
@@ -899,6 +959,32 @@ impl Heap {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
+    // Integer-indexed exotic behaviour for typed arrays.
+    //
+    // We implement only `Uint8Array` for now: numeric index properties are not stored in the
+    // object's property table and are instead materialized on demand from the view's
+    // `[[ViewedArrayBuffer]]`.
+    if let PropertyKey::String(s) = key {
+      if let Some(index) = self.string_to_array_index(*s) {
+        if let HeapObject::Uint8Array(view) = self.get_heap_object(obj.0)? {
+          let idx = index as usize;
+          if idx < view.length {
+            let byte = self.uint8_array_get(view, idx)?;
+            return Ok(Some(PropertyDescriptor {
+              enumerable: true,
+              configurable: false,
+              kind: PropertyKind::Data {
+                value: Value::Number(byte as f64),
+                writable: true,
+              },
+            }));
+          }
+          // Out-of-bounds index: no own property.
+          return Ok(None);
+        }
+      }
+    }
+
     let obj = self.get_object_base(obj)?;
     for prop in obj.properties.iter() {
       if self.property_key_eq(&prop.key, key) {
@@ -920,6 +1006,8 @@ impl Heap {
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
+      ArrayBuffer { data_len: usize },
+      Uint8Array,
       Function {
         bound_args_len: usize,
         native_slots_len: usize,
@@ -944,6 +1032,26 @@ impl Heap {
             .position(|prop| self.property_key_eq(&prop.key, key)),
           TargetKind::OrdinaryObject,
           obj.base.properties.len(),
+        ),
+        HeapObject::ArrayBuffer(buf) => (
+          buf
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::ArrayBuffer {
+            data_len: buf.data.len(),
+          },
+          buf.base.properties.len(),
+        ),
+        HeapObject::Uint8Array(arr) => (
+          arr
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::Uint8Array,
+          arr.base.properties.len(),
         ),
         HeapObject::Function(func) => (
           func
@@ -980,6 +1088,10 @@ impl Heap {
     let new_property_count = property_count.saturating_sub(1);
     let new_bytes = match target_kind {
       TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
+      TargetKind::ArrayBuffer { data_len } => {
+        JsArrayBuffer::heap_size_bytes_for_counts(new_property_count, data_len)
+      }
+      TargetKind::Uint8Array => JsUint8Array::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::Function {
         bound_args_len,
         native_slots_len,
@@ -1002,16 +1114,24 @@ impl Heap {
       .map_err(|_| VmError::OutOfMemory)?;
 
     {
-      let slot = &self.slots[slot_idx];
-      match slot.value.as_ref() {
-        Some(HeapObject::Object(obj)) => {
-          buf.extend_from_slice(&obj.base.properties[..idx]);
-          buf.extend_from_slice(&obj.base.properties[idx + 1..]);
-        }
-        Some(HeapObject::Function(func)) => {
-          buf.extend_from_slice(&func.base.properties[..idx]);
-          buf.extend_from_slice(&func.base.properties[idx + 1..]);
-        }
+        let slot = &self.slots[slot_idx];
+        match slot.value.as_ref() {
+          Some(HeapObject::Object(obj)) => {
+            buf.extend_from_slice(&obj.base.properties[..idx]);
+            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+          }
+          Some(HeapObject::ArrayBuffer(obj)) => {
+            buf.extend_from_slice(&obj.base.properties[..idx]);
+            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+          }
+          Some(HeapObject::Uint8Array(obj)) => {
+            buf.extend_from_slice(&obj.base.properties[..idx]);
+            buf.extend_from_slice(&obj.base.properties[idx + 1..]);
+          }
+          Some(HeapObject::Function(func)) => {
+            buf.extend_from_slice(&func.base.properties[..idx]);
+            buf.extend_from_slice(&func.base.properties[idx + 1..]);
+          }
         Some(HeapObject::Promise(p)) => {
           buf.extend_from_slice(&p.object.base.properties[..idx]);
           buf.extend_from_slice(&p.object.base.properties[idx + 1..]);
@@ -1026,6 +1146,8 @@ impl Heap {
     };
     match obj {
       HeapObject::Object(obj) => obj.base.properties = properties,
+      HeapObject::ArrayBuffer(obj) => obj.base.properties = properties,
+      HeapObject::Uint8Array(obj) => obj.base.properties = properties,
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
       _ => return Err(VmError::InvalidHandle),
@@ -1500,6 +1622,75 @@ impl Heap {
       return None;
     }
     Some(n as u32)
+  }
+
+  fn get_array_buffer(&self, obj: GcObject) -> Result<&JsArrayBuffer, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::ArrayBuffer(b) => Ok(b),
+      _ => Err(VmError::InvalidHandle),
+    }
+  }
+
+  fn get_array_buffer_mut(&mut self, obj: GcObject) -> Result<&mut JsArrayBuffer, VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::ArrayBuffer(b) => Ok(b),
+      _ => Err(VmError::InvalidHandle),
+    }
+  }
+
+  fn get_uint8_array(&self, obj: GcObject) -> Result<&JsUint8Array, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::Uint8Array(a) => Ok(a),
+      _ => Err(VmError::InvalidHandle),
+    }
+  }
+
+  fn uint8_array_get(&self, view: &JsUint8Array, index: usize) -> Result<u8, VmError> {
+    let abs = view
+      .byte_offset
+      .checked_add(index)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    buf
+      .data
+      .get(abs)
+      .copied()
+      .ok_or(VmError::InvariantViolation(
+        "Uint8Array view references out-of-bounds ArrayBuffer data",
+      ))
+  }
+
+  fn uint8_array_set_element(
+    &mut self,
+    view_obj: GcObject,
+    index: usize,
+    value: u8,
+  ) -> Result<(), VmError> {
+    // Extract view fields without holding a mutable borrow across ArrayBuffer access.
+    let (buffer, byte_offset, length) = {
+      let view = self.get_uint8_array(view_obj)?;
+      (view.viewed_array_buffer, view.byte_offset, view.length)
+    };
+
+    if index >= length {
+      // Out-of-bounds writes are ignored.
+      return Ok(());
+    }
+
+    let abs = byte_offset
+      .checked_add(index)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+
+    let buf_len = self.get_array_buffer(buffer)?.data.len();
+    if abs >= buf_len {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array view references out-of-bounds ArrayBuffer data",
+      ));
+    }
+
+    let buf = self.get_array_buffer_mut(buffer)?;
+    buf.data[abs] = value;
+    Ok(())
   }
 
   fn get_promise(&self, promise: GcObject) -> Result<&JsPromise, VmError> {
@@ -2151,9 +2342,42 @@ impl Heap {
 
     let idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
 
+    // Integer-indexed exotic behaviour for typed arrays:
+    // - writing an in-bounds integer index updates the view's underlying ArrayBuffer
+    // - out-of-bounds writes are silently ignored (non-strict semantics)
+    //
+    // Note: we intentionally do **not** store integer indices in the object's property table.
+    if let Some(index) = key_array_index {
+      if matches!(self.slots[idx].value.as_ref(), Some(HeapObject::Uint8Array(_))) {
+        let n = match desc.kind {
+          PropertyKind::Data { value, .. } => {
+            // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
+            self.to_number(value)?
+          }
+          PropertyKind::Accessor { .. } => {
+            return Err(VmError::TypeError(
+              "Uint8Array integer index properties must be data descriptors",
+            ))
+          }
+        };
+
+        let byte = if !n.is_finite() {
+          0u8
+        } else {
+          // `ToUint8`: wrap modulo 2^8.
+          n.trunc().rem_euclid(256.0) as u8
+        };
+
+        self.uint8_array_set_element(obj, index as usize, byte)?;
+        return Ok(());
+      }
+    }
+
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
+      ArrayBuffer { data_len: usize },
+      Uint8Array,
       Function {
         bound_args_len: usize,
         native_slots_len: usize,
@@ -2182,6 +2406,36 @@ impl Heap {
             slot.bytes,
             existing_idx,
             obj.array_length(),
+          )
+        }
+        HeapObject::ArrayBuffer(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::ArrayBuffer {
+              data_len: obj.data.len(),
+            },
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
+        HeapObject::Uint8Array(obj) => {
+          let existing_idx = obj
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::Uint8Array,
+            obj.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
           )
         }
         HeapObject::Function(func) => {
@@ -2255,6 +2509,8 @@ impl Heap {
         // Replace in-place (no change to heap size).
         match self.slots[idx].value.as_mut() {
           Some(HeapObject::Object(obj)) => obj.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::Uint8Array(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
           _ => return Err(VmError::InvalidHandle),
@@ -2266,6 +2522,10 @@ impl Heap {
           .ok_or(VmError::OutOfMemory)?;
         let new_bytes = match target_kind {
           TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
+          TargetKind::ArrayBuffer { data_len } => {
+            JsArrayBuffer::heap_size_bytes_for_counts(new_property_count, data_len)
+          }
+          TargetKind::Uint8Array => JsUint8Array::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::Function {
             bound_args_len,
             native_slots_len,
@@ -2295,6 +2555,8 @@ impl Heap {
           let slot = &self.slots[idx];
           match slot.value.as_ref() {
             Some(HeapObject::Object(obj)) => buf.extend_from_slice(&obj.base.properties),
+            Some(HeapObject::ArrayBuffer(obj)) => buf.extend_from_slice(&obj.base.properties),
+            Some(HeapObject::Uint8Array(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
             _ => return Err(VmError::InvalidHandle),
@@ -2306,6 +2568,8 @@ impl Heap {
 
         match self.slots[idx].value.as_mut() {
           Some(HeapObject::Object(obj)) => obj.base.properties = properties,
+          Some(HeapObject::ArrayBuffer(obj)) => obj.base.properties = properties,
+          Some(HeapObject::Uint8Array(obj)) => obj.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
           _ => return Err(VmError::InvalidHandle),
@@ -3083,6 +3347,81 @@ impl<'a> Scope<'a> {
     ))
   }
 
+  /// Allocates a new `ArrayBuffer` object with `byte_length` zero-initialized bytes.
+  ///
+  /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
+  pub fn alloc_array_buffer(&mut self, byte_length: usize) -> Result<GcObject, VmError> {
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_counts(0, byte_length);
+    self.heap.ensure_can_allocate(new_bytes)?;
+ 
+    // Allocate the backing buffer fallibly so hostile input cannot abort the host process on OOM.
+    let mut buf: Vec<u8> = Vec::new();
+    buf
+      .try_reserve_exact(byte_length)
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.resize(byte_length, 0);
+    let data = buf.into_boxed_slice();
+
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
+    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates a new `ArrayBuffer` object backed by the provided bytes.
+  ///
+  /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
+  pub fn alloc_array_buffer_from_u8_vec(&mut self, bytes: Vec<u8>) -> Result<GcObject, VmError> {
+    let byte_length = bytes.len();
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_counts(0, byte_length);
+    self.heap.ensure_can_allocate(new_bytes)?;
+
+    // Avoid process abort on allocator OOM: if `bytes` has spare capacity, converting it to a boxed
+    // slice may reallocate. Preserve the original allocation only when it's already exact-sized.
+    let data: Box<[u8]> = if bytes.capacity() == bytes.len() {
+      bytes.into_boxed_slice()
+    } else {
+      let mut buf: Vec<u8> = Vec::new();
+      buf
+        .try_reserve_exact(byte_length)
+        .map_err(|_| VmError::OutOfMemory)?;
+      buf.extend_from_slice(&bytes);
+      buf.into_boxed_slice()
+    };
+
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
+    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates a new `Uint8Array` view over `viewed_array_buffer`.
+  ///
+  /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
+  pub fn alloc_uint8_array(
+    &mut self,
+    viewed_array_buffer: GcObject,
+    byte_offset: usize,
+    length: usize,
+  ) -> Result<GcObject, VmError> {
+    // Root the buffer during validation/allocation in case `alloc_unchecked` triggers a GC.
+    let mut scope = self.reborrow();
+    scope.push_root(Value::Object(viewed_array_buffer))?;
+
+    let buf_len = scope.heap.get_array_buffer(viewed_array_buffer)?.byte_length();
+    let end = byte_offset.checked_add(length).ok_or(VmError::OutOfMemory)?;
+    if end > buf_len {
+      return Err(VmError::TypeError("Uint8Array view out of bounds"));
+    }
+
+    let new_bytes = JsUint8Array::heap_size_bytes_for_property_count(0);
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Uint8Array(JsUint8Array::new(
+      None,
+      viewed_array_buffer,
+      byte_offset,
+      length,
+    ));
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates a new pending Promise object on the heap.
   pub fn alloc_promise(&mut self) -> Result<GcObject, VmError> {
     self.alloc_promise_with_prototype(None)
@@ -3679,6 +4018,8 @@ enum HeapObject {
   String(JsString),
   Symbol(JsSymbol),
   Object(JsObject),
+  ArrayBuffer(JsArrayBuffer),
+  Uint8Array(JsUint8Array),
   Function(JsFunction),
   Env(EnvRecord),
   Promise(JsPromise),
@@ -3690,6 +4031,8 @@ impl Trace for HeapObject {
       HeapObject::String(s) => s.trace(tracer),
       HeapObject::Symbol(s) => s.trace(tracer),
       HeapObject::Object(o) => o.trace(tracer),
+      HeapObject::ArrayBuffer(b) => b.trace(tracer),
+      HeapObject::Uint8Array(a) => a.trace(tracer),
       HeapObject::Function(f) => f.trace(tracer),
       HeapObject::Env(e) => e.trace(tracer),
       HeapObject::Promise(p) => p.trace(tracer),
@@ -3839,6 +4182,73 @@ impl JsObject {
 impl Trace for JsObject {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
+  }
+}
+
+#[derive(Debug)]
+struct JsArrayBuffer {
+  base: ObjectBase,
+  data: Box<[u8]>,
+}
+
+impl JsArrayBuffer {
+  fn new(prototype: Option<GcObject>, data: Box<[u8]>) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      data,
+    }
+  }
+
+  fn byte_length(&self) -> usize {
+    self.data.len()
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.data.len())
+  }
+
+  fn heap_size_bytes_for_counts(property_count: usize, data_len: usize) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(property_count).saturating_add(data_len)
+  }
+}
+
+impl Trace for JsArrayBuffer {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+  }
+}
+
+#[derive(Debug)]
+struct JsUint8Array {
+  base: ObjectBase,
+  viewed_array_buffer: GcObject,
+  byte_offset: usize,
+  length: usize,
+}
+
+impl JsUint8Array {
+  fn new(prototype: Option<GcObject>, viewed_array_buffer: GcObject, byte_offset: usize, length: usize) -> Self {
+    Self {
+      base: ObjectBase::new(prototype),
+      viewed_array_buffer,
+      byte_offset,
+      length,
+    }
+  }
+
+  fn byte_length(&self) -> usize {
+    self.length
+  }
+
+  fn heap_size_bytes_for_property_count(property_count: usize) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(property_count)
+  }
+}
+
+impl Trace for JsUint8Array {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.base.trace(tracer);
+    tracer.trace_value(Value::Object(self.viewed_array_buffer));
   }
 }
 
