@@ -53,12 +53,13 @@ mod is_alias_matches_test;
 mod dom2_closest;
 mod dom2_js_events;
 #[cfg(feature = "quickjs")]
-mod js_current_script;
-mod js_script_fetch_semantics;
-mod script_crossorigin_cors;
-mod vm_js_dynamic_script_crossorigin_cors;
-#[cfg(feature = "quickjs")]
-mod js_dom_quickjs_bindings;
+  mod js_current_script;
+  mod js_script_fetch_semantics;
+  mod js_runtime_consolidation_guard;
+  mod script_crossorigin_cors;
+  mod vm_js_dynamic_script_crossorigin_cors;
+  #[cfg(feature = "quickjs")]
+  mod js_dom_quickjs_bindings;
 mod js_event_loop_timers;
 mod js_diagnostics;
 mod js_dom_shims;
