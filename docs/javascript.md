@@ -54,8 +54,9 @@ The most important early behaviors to preserve:
 - **`defer` classic scripts**: run after parsing completes (before “document ready” milestones).
 - **`async` classic scripts**: run when ready, independent of parser progress (scheduled as tasks).
 - **Module scripts**: later (requires module graph + host module hooks).
-- **Import maps**: parsing/normalization exists in `src/js/import_maps/`, but registration/merging and
-  module loader integration are not wired yet; see [`docs/import_maps.md`](import_maps.md).
+- **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`, but they are
+  not yet wired into the streaming `<script>` pipeline or module graph loader; see
+  [`docs/import_maps.md`](import_maps.md).
 
 Correctness requirements that fall out of this:
 
