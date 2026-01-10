@@ -4694,10 +4694,7 @@ fn write_operation_wrapper_vmjs(
 fn emit_overload_condition_vmjs(sig: &OperationSig, args_ident: &str) -> String {
   let required = required_arg_count(&sig.arguments);
   let max = max_arg_count(&sig.arguments);
-  let len_check = match max {
-    Some(max) => format!("{args_ident}.len() >= {required} && {args_ident}.len() <= {max}"),
-    None => format!("{args_ident}.len() >= {required}"),
-  };
+  let len_check = emit_args_len_check(args_ident, required, max);
 
   // If there are multiple overloads, we use the first argument's predicate as a best-effort
   // discriminator (works for the MVP overload shapes we care about).
@@ -4710,6 +4707,29 @@ fn emit_overload_condition_vmjs(sig: &OperationSig, args_ident: &str) -> String 
     format!("{len_check} && ({args_ident}.len() == 0 || ({pred}))")
   } else {
     format!("{len_check} && ({pred})")
+  }
+}
+
+fn emit_args_len_check(args_ident: &str, required: usize, max: Option<usize>) -> String {
+  match max {
+    Some(max) => {
+      if required == max {
+        format!("{args_ident}.len() == {required}")
+      } else if required == 0 {
+        // `len() >= 0` is always true for `usize` and triggers `unused_comparisons`.
+        format!("{args_ident}.len() <= {max}")
+      } else {
+        format!("{args_ident}.len() >= {required} && {args_ident}.len() <= {max}")
+      }
+    }
+    None => {
+      if required == 0 {
+        // Avoid generating `len() >= 0` (always true).
+        "true".to_string()
+      } else {
+        format!("{args_ident}.len() >= {required}")
+      }
+    }
   }
 }
 
@@ -4809,10 +4829,7 @@ fn write_constructor_wrapper_vmjs(
   for (idx, sig) in overloads.iter().enumerate() {
     let required = required_arg_count(&sig.arguments);
     let max = max_arg_count(&sig.arguments);
-    let cond = match max {
-      Some(max) => format!("args.len() >= {required} && args.len() <= {max}"),
-      None => format!("args.len() >= {required}"),
-    };
+    let cond = emit_args_len_check("args", required, max);
     if idx == 0 {
       out.push_str(&format!("  if {cond} {{\n"));
     } else {
