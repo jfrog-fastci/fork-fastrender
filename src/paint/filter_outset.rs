@@ -222,6 +222,103 @@ pub fn filter_outset_with_bounds(
   }
 }
 
+/// Compute a conservative outset for tiled rendering.
+///
+/// This is similar to [`filter_outset_with_bounds`], but it accounts for filter *kernel
+/// dependencies* that may require extra pixels even when the visible output does not expand.
+///
+/// In particular, `drop-shadow()` with a negative spread performs an erosion pass. The filter's
+/// output might shrink (so the visible outset is reduced), but the erosion still needs to sample
+/// transparent neighbors up to `abs(spread)` away. When rendering tiles in isolation, failing to
+/// include that halo can cause tile edges to be treated as transparent, producing seams and
+/// serial-vs-parallel divergence.
+pub(crate) fn filter_halo_outset_with_bounds(
+  filters: &[ResolvedFilter],
+  scale: f32,
+  bbox: Option<Rect>,
+) -> FilterOutset {
+  let mut outset = FilterOutset::ZERO;
+  let scale = if scale.is_finite() { scale.abs() } else { 0.0 };
+
+  for filter in filters {
+    match filter {
+      ResolvedFilter::Blur(radius) => {
+        let delta = (*radius * scale).abs() * 3.0;
+        outset.left += delta;
+        outset.top += delta;
+        outset.right += delta;
+        outset.bottom += delta;
+      }
+      ResolvedFilter::DropShadow {
+        offset_x,
+        offset_y,
+        blur_radius,
+        spread,
+        ..
+      } => {
+        let dx = offset_x * scale;
+        let dy = offset_y * scale;
+        let blur = blur_radius * scale;
+        let spread = spread * scale;
+        // Unlike `filter_outset_with_bounds`, use `abs(spread)` so negative spreads still request
+        // a halo large enough for the erosion kernel.
+        let delta = blur.abs() * 3.0 + spread.abs();
+
+        let shadow_left = outset.left + delta - dx;
+        let shadow_right = outset.right + delta + dx;
+        let shadow_top = outset.top + delta - dy;
+        let shadow_bottom = outset.bottom + delta + dy;
+
+        outset.left = outset.left.max(shadow_left);
+        outset.top = outset.top.max(shadow_top);
+        outset.right = outset.right.max(shadow_right);
+        outset.bottom = outset.bottom.max(shadow_bottom);
+      }
+      ResolvedFilter::SvgFilter(filter) => {
+        if let Some(bbox) = bbox {
+          let region = filter.resolve_region(bbox);
+          let delta_left = (bbox.min_x() - region.min_x()).max(0.0) * scale;
+          let delta_top = (bbox.min_y() - region.min_y()).max(0.0) * scale;
+          let delta_right = (region.max_x() - bbox.max_x()).max(0.0) * scale;
+          let delta_bottom = (region.max_y() - bbox.max_y()).max(0.0) * scale;
+
+          let kernel = svg_filter_kernel_outset_css(filter.as_ref(), bbox);
+          let kernel_left = kernel.left * scale;
+          let kernel_top = kernel.top * scale;
+          let kernel_right = kernel.right * scale;
+          let kernel_bottom = kernel.bottom * scale;
+
+          if kernel_left.is_finite() {
+            outset.left += kernel_left;
+          }
+          if kernel_top.is_finite() {
+            outset.top += kernel_top;
+          }
+          if kernel_right.is_finite() {
+            outset.right += kernel_right;
+          }
+          if kernel_bottom.is_finite() {
+            outset.bottom += kernel_bottom;
+          }
+
+          outset.left = outset.left.max(delta_left);
+          outset.top = outset.top.max(delta_top);
+          outset.right = outset.right.max(delta_right);
+          outset.bottom = outset.bottom.max(delta_bottom);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  FilterOutset {
+    left: outset.left.max(0.0),
+    top: outset.top.max(0.0),
+    right: outset.right.max(0.0),
+    bottom: outset.bottom.max(0.0),
+  }
+}
+
 /// Compute the maximum outset needed to accommodate the provided filters, returning a tuple.
 ///
 /// `bbox` is the bounding box of the filtered content in CSS pixels. `scale`

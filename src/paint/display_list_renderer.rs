@@ -70,6 +70,7 @@ use crate::paint::display_list::Transform3D;
 use crate::paint::display_list::TransformItem;
 #[cfg(test)]
 use crate::paint::filter_outset::filter_outset;
+use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
   gradient_bucket, rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
@@ -9272,9 +9273,9 @@ impl DisplayListRenderer {
           }
         }
         DisplayItem::PushStackingContext(sc) => {
-          let filters_outset = filter_outset_with_bounds(&sc.filters, 1.0, Some(sc.bounds));
+          let filters_outset = filter_halo_outset_with_bounds(&sc.filters, 1.0, Some(sc.bounds));
           let backdrop_outset =
-            filter_outset_with_bounds(&sc.backdrop_filters, 1.0, Some(sc.bounds));
+            filter_halo_outset_with_bounds(&sc.backdrop_filters, 1.0, Some(sc.bounds));
           max_pad = max_pad.max(filters_outset.max_side().max(backdrop_outset.max_side()));
         }
         _ => {}
