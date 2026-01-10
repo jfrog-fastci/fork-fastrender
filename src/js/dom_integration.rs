@@ -230,7 +230,7 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
   use super::prepare_dynamic_script_on_insertion;
-  use crate::dom2::{parse_html, Document};
+  use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::{
     ClassicScriptScheduler, DomHost, EventLoop, RunLimits, ScriptElementEvent, ScriptElementSpec,
@@ -368,10 +368,16 @@ mod tests {
 
   #[test]
   fn dynamic_script_javascript_src_does_not_start_fetch() -> Result<()> {
-    let dom = parse_html(
-      "<!doctype html><html><body><script id=s src=\"javascript:alert(1)\">INLINE</script></body></html>",
-    )?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "src", "javascript:alert(1)")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("INLINE");
+    dom.append_child(script, text).expect("append_child");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -393,10 +399,14 @@ mod tests {
 
   #[test]
   fn dynamic_script_src_trims_ascii_whitespace() -> Result<()> {
-    let dom = parse_html(
-      "<!doctype html><html><body><script id=s src=\"&#9;https://example.com/a.js&#10;\"></script></body></html>",
-    )?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "src", "\thttps://example.com/a.js\n")
+      .expect("set_attribute should succeed");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -410,9 +420,14 @@ mod tests {
 
   #[test]
   fn dynamic_script_relative_src_is_preserved_without_base_url() -> Result<()> {
-    let dom =
-      parse_html("<!doctype html><html><body><script id=s src=\"a.js\"></script></body></html>")?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "src", "a.js")
+      .expect("set_attribute should succeed");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -426,9 +441,16 @@ mod tests {
 
   #[test]
   fn dynamic_script_empty_src_suppresses_inline_fallback() -> Result<()> {
-    let dom =
-      parse_html("<!doctype html><html><body><script id=s src=\"\">INLINE</script></body></html>")?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "src", "")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("INLINE");
+    dom.append_child(script, text).expect("append_child");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -450,10 +472,14 @@ mod tests {
 
   #[test]
   fn dynamic_script_crossorigin_use_credentials_trims_ascii_whitespace() -> Result<()> {
-    let dom = parse_html(
-      "<!doctype html><html><body><script id=s crossorigin=\" \tuse-credentials\t \"></script></body></html>",
-    )?;
-    let script = dom.get_element_by_id("s").expect("script element not found");
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "crossorigin", " \tuse-credentials\t ")
+      .expect("set_attribute should succeed");
 
     let spec = super::build_non_parser_inserted_script_spec(&dom, script);
     assert_eq!(
