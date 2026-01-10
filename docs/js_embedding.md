@@ -96,7 +96,7 @@ executor; real integrations will wire this to a JS engine.
 ```rust
 use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
 use fastrender::dom2::NodeId;
-use fastrender::js::{EventLoop, ScriptElementSpec};
+use fastrender::js::{EventLoop, JsExecutionOptions, ScriptElementSpec};
 
 #[derive(Default)]
 struct NoopExecutor;
@@ -109,6 +109,7 @@ impl BrowserTabJsExecutor for NoopExecutor {
         _current_script: Option<NodeId>,
         _document: &mut fastrender::BrowserDocumentDom2,
         _event_loop: &mut EventLoop<BrowserTabHost>,
+        _js_execution_options: JsExecutionOptions,
     ) -> Result<()> {
         Ok(())
     }
