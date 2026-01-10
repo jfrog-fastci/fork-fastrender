@@ -238,8 +238,8 @@ Type alias: `ResolvedModuleSet = Vec<SpecifierResolutionRecord>`.
   special URL (non-special URL-like specifiers such as `blob:` should not be affected by new prefix
   rules).
 
-Host integration should keep one `ImportMapState` per document/realm/global and pass it to
-`register_import_map(...)` and `resolve_module_specifier(...)`.
+Host integration should keep one `ImportMapState` per **global object** / JS realm (e.g. a `Window`)
+and pass it to `register_import_map(...)` and `resolve_module_specifier(...)`.
 
 ---
 
