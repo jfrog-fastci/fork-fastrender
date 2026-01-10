@@ -212,14 +212,23 @@ fn generated_bindings_convert_sequence_long_from_iterable() -> Result<(), VmErro
   })?;
 
   assert!(host.called.get());
-  let received = host.received.borrow().clone();
+  let received = host.received.borrow();
+  assert_eq!(received.len(), 1, "expected host to receive one argument");
+  let BindingValue::Sequence(values) = &received[0] else {
+    panic!("expected sequence argument, got {received:?}");
+  };
   assert_eq!(
-    received,
-    vec![BindingValue::Sequence(vec![
-      BindingValue::Number(1.0),
-      BindingValue::Number(2.0),
-    ])]
+    values.len(),
+    2,
+    "expected sequence to contain two values; received={received:?}"
   );
+  match (&values[0], &values[1]) {
+    (BindingValue::Number(a), BindingValue::Number(b)) => {
+      assert_eq!(*a, 1.0);
+      assert_eq!(*b, 2.0);
+    }
+    _ => panic!("expected numeric sequence, received={received:?}"),
+  }
   Ok(())
 }
 
