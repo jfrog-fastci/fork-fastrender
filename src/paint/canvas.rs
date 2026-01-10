@@ -2640,11 +2640,46 @@ impl Canvas {
       }
     }
 
+    let transform = self.current_state.transform;
+
+    // Chrome/Blink tends to snap box-decoration geometry (including semi-transparent skeleton
+    // placeholders) to the device pixel grid when the effective transform is translation-only.
+    //
+    // This avoids 1px blended seams when layout produces quarter/half pixel edges (e.g. via
+    // percentage padding like `padding-top: 56.25%` used for 16:9 aspect ratio boxes).
+    //
+    // Keep this restricted to translation-only transforms whose translation is already near an
+    // integer device pixel so we don't quantize real subpixel animations (e.g. `transform:
+    // translateY(0.5px)`).
+    let rect = if self.current_state.blend_mode == SkiaBlendMode::SourceOver
+      && transform.kx.abs() <= 1e-6
+      && transform.ky.abs() <= 1e-6
+      && (transform.sx - 1.0).abs() <= 1e-6
+      && (transform.sy - 1.0).abs() <= 1e-6
+      && (transform.tx - transform.tx.round()).abs() <= 1e-3
+      && (transform.ty - transform.ty.round()).abs() <= 1e-3
+    {
+      let x0 = rect.min_x().round();
+      let x1 = rect.max_x().round();
+      let y0 = rect.min_y().round();
+      let y1 = rect.max_y().round();
+      let min_x = x0.min(x1);
+      let max_x = x0.max(x1);
+      let min_y = y0.min(y1);
+      let max_y = y0.max(y1);
+      let snapped = Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y);
+      if snapped.width() > 0.0 && snapped.height() > 0.0 {
+        snapped
+      } else {
+        rect
+      }
+    } else {
+      rect
+    };
+
     if self.try_fill_rounded_rect_source_over_trunc(rect, radii, color) {
       return;
     }
-
-    let transform = self.current_state.transform;
 
     // As with `draw_rect_impl`, pixel-snap opaque axis-aligned rounded-rect fills so UI
     // backgrounds don't produce 1px blended seams at fractional boundaries. For rounded rects we
@@ -4674,6 +4709,30 @@ mod tests {
     assert_eq!(
       (inside.red(), inside.green(), inside.blue(), inside.alpha()),
       (255, 255, 255, 255)
+    );
+  }
+
+  #[test]
+  fn semi_transparent_axis_aligned_rounded_rect_fills_are_pixel_snapped() {
+    let mut canvas = Canvas::new(100, 60, Rgba::WHITE).unwrap();
+    let rect = Rect::from_xywh(10.0, 4.8, 80.0, 42.0);
+    let radii = BorderRadii::uniform(20.0);
+    canvas.draw_rounded_rect(rect, radii, Rgba::new(0, 0, 0, 0.1));
+
+    // Like `opaque_axis_aligned_rounded_rect_fills_are_pixel_snapped`, ensure fractional edges do
+    // not produce a partially-blended scanline above the rounded-rect.
+    let above = canvas.pixmap().pixel(50, 4).unwrap();
+    assert_eq!(
+      (above.red(), above.green(), above.blue(), above.alpha()),
+      (255, 255, 255, 255)
+    );
+
+    // Inside the rounded-rect, `black@0.1` should blend over white to `229` per channel when alpha
+    // is quantized via `round(alpha*255)` and composited with truncating `mul/255`.
+    let inside = canvas.pixmap().pixel(50, 5).unwrap();
+    assert_eq!(
+      (inside.red(), inside.green(), inside.blue(), inside.alpha()),
+      (229, 229, 229, 255)
     );
   }
 
