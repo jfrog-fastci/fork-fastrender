@@ -7631,6 +7631,109 @@ impl InlineFormattingContext {
     tracker.finish()
   }
 
+  fn min_content_width_for_replaced(&self, replaced: &ReplacedItem) -> Option<f32> {
+    let ReplacedType::FormControl(control) = &replaced.replaced_type else {
+      return None;
+    };
+
+    use crate::tree::box_tree::FormControlKind;
+    if !matches!(
+      &control.control,
+      FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
+    ) {
+      return None;
+    }
+
+    let style = replaced.style.as_ref();
+    let percentage_base = 0.0;
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+
+    let mut edges = if inline_is_horizontal {
+      resolve_length_for_width(
+        style.padding_left,
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.padding_right,
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.used_border_left_width(),
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.used_border_right_width(),
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      )
+    } else {
+      resolve_length_for_width(
+        style.padding_top,
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.padding_bottom,
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.used_border_top_width(),
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ) + resolve_length_for_width(
+        style.used_border_bottom_width(),
+        percentage_base,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      )
+    };
+
+    // Text inputs and textareas can scroll their internal content, so for intrinsic min-content
+    // sizing treat their content width as shrinkable to 0 while preserving padding/border.
+    let reserve_gutter = style.scrollbar_gutter.stable
+      && if inline_is_horizontal {
+        matches!(
+          style.overflow_y,
+          crate::style::types::Overflow::Hidden
+            | crate::style::types::Overflow::Auto
+            | crate::style::types::Overflow::Scroll
+        )
+      } else {
+        matches!(
+          style.overflow_x,
+          crate::style::types::Overflow::Hidden
+            | crate::style::types::Overflow::Auto
+            | crate::style::types::Overflow::Scroll
+        )
+      };
+    if reserve_gutter {
+      let gutter = crate::layout::utils::resolve_scrollbar_width(style);
+      if gutter > 0.0 {
+        edges += gutter;
+        if style.scrollbar_gutter.both_edges {
+          edges += gutter;
+        }
+      }
+    }
+
+    let min_border_box = edges.max(0.0);
+    Some(min_border_box + replaced.margin_left + replaced.margin_right)
+  }
+
   fn max_content_width(&self, items: &[InlineItem]) -> f32 {
     let mut tracker = SegmentTracker::new();
     self.accumulate_max_segments(items, &mut tracker);
@@ -7676,7 +7779,11 @@ impl InlineFormattingContext {
         }
         InlineItem::Replaced(replaced) => {
           tracker.break_segment();
-          tracker.add_width(replaced.total_width());
+          tracker.add_width(
+            self
+              .min_content_width_for_replaced(replaced)
+              .unwrap_or_else(|| replaced.total_width()),
+          );
           tracker.break_segment();
         }
         InlineItem::Floating(_) => {

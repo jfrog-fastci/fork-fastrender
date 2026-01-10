@@ -41,6 +41,7 @@ mod flex_auto_min_and_intrinsics;
 mod flex_auto_min_height_definite_cross_size;
 mod flex_auto_min_size_aspect_ratio_transferred;
 mod flex_auto_min_size_column_single_line;
+mod flex_auto_min_size_form_controls;
 mod flex_auto_min_size_block_axis;
 mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;

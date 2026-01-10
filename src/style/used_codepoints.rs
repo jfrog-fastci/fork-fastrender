@@ -147,4 +147,20 @@ mod tests {
       "expected generated content U+F04C to be included in used codepoints"
     );
   }
+
+  #[test]
+  fn includes_generated_content_from_custom_property_var() {
+    let dom = crate::dom::parse_html("<html><body><i class=\"fa\"></i></body></html>").unwrap();
+    let sheet = crate::css::parser::parse_stylesheet(
+      r#".fa{--fa:"\f04c";}.fa::before{content:var(--fa);}"#,
+    )
+    .unwrap();
+    let styled = crate::style::cascade::apply_styles(&dom, &sheet);
+
+    let codepoints = collect_used_codepoints(&styled).unwrap();
+    assert!(
+      codepoints.contains(&0xF04C),
+      "expected var()-substituted generated content U+F04C to be included in used codepoints"
+    );
+  }
 }

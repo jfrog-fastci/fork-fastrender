@@ -8531,15 +8531,38 @@ impl FormattingContext for BlockFormattingContext {
       } else {
         size.height
       };
-      let edges = if inline_is_horizontal {
+
+      let edges_max = if inline_is_horizontal {
         horizontal_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
       } else {
         vertical_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
       };
-      let result = inline_size + edges;
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
-      return Ok((result, result));
+      let max_result = (inline_size + edges_max).max(0.0);
+
+      let mut min_result = max_result;
+      if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced_box.replaced_type
+      {
+        use crate::tree::box_tree::FormControlKind;
+
+        if matches!(
+          &control.control,
+          FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
+        ) {
+          // Text inputs and textareas can scroll their internal content. Their min-content size
+          // should therefore be able to shrink down to 0 content width while preserving
+          // padding/border.
+          let edges_min = if inline_is_horizontal {
+            horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+          } else {
+            vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+          };
+          min_result = edges_min.max(0.0).min(max_result);
+        }
+      }
+
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
+      return Ok((min_result, max_result));
     }
 
     let factory = &self.factory;
