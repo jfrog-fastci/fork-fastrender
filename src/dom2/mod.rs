@@ -112,7 +112,6 @@ pub struct Node {
   pub inert_subtree: bool,
   pub script_force_async: bool,
   pub script_already_started: bool,
-  pub script_force_async: bool,
   pub script_parser_document: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
@@ -660,7 +659,6 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
-      script_force_async: false,
       script_already_started: false,
       script_force_async: is_html_script,
       script_parser_document: false,
