@@ -163,6 +163,7 @@ use types::OverflowWrap;
 use types::AnchorSizeFunction;
 use types::OverscrollBehavior;
 use types::PointerEvents;
+use types::PositionArea;
 use types::PositionAnchor;
 use types::PositionTryOrder;
 use types::Resize;
@@ -968,6 +969,8 @@ pub struct ComputedStyle {
   pub anchor_scope: AnchorScope,
   /// Default anchor element for this positioned box (CSS `position-anchor`).
   pub position_anchor: PositionAnchor,
+  /// Attachment area around the default anchor box (CSS `position-area`).
+  pub position_area: PositionArea,
   /// Fallback `@position-try` sets to consult when anchor-based positioning would overflow.
   pub position_try_fallbacks: Vec<String>,
   /// Determines the order in which `position-try-fallbacks` are evaluated.
@@ -1452,6 +1455,7 @@ impl Default for ComputedStyle {
       anchor_names: Vec::new(),
       anchor_scope: AnchorScope::None,
       position_anchor: PositionAnchor::None,
+      position_area: PositionArea::None,
       position_try_fallbacks: Vec::new(),
       position_try_order: PositionTryOrder::Normal,
       top: InsetValue::Auto,

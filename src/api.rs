@@ -15392,6 +15392,17 @@ fn hash_position_anchor(anchor: &crate::style::types::PositionAnchor, hasher: &m
   }
 }
 
+fn hash_position_area(area: &crate::style::types::PositionArea, hasher: &mut DefaultHasher) {
+  match area {
+    crate::style::types::PositionArea::None => 0u8.hash(hasher),
+    crate::style::types::PositionArea::Keywords(a, b) => {
+      1u8.hash(hasher);
+      hash_enum_discriminant(a, hasher);
+      hash_enum_discriminant(b, hasher);
+    }
+  }
+}
+
 fn hash_anchor_scope(scope: &crate::style::types::AnchorScope, hasher: &mut DefaultHasher) {
   match scope {
     crate::style::types::AnchorScope::None => 0u8.hash(hasher),
@@ -16756,6 +16767,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   }
   hash_appearance(&style.appearance, &mut h);
   hash_position_anchor(&style.position_anchor, &mut h);
+  hash_position_area(&style.position_area, &mut h);
   style.anchor_names.hash(&mut h);
   hash_anchor_scope(&style.anchor_scope, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
@@ -19034,6 +19046,21 @@ mod tests {
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected running element identity to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_position_area() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut updated = base;
+    updated.position_area = crate::style::types::PositionArea::parse("block-start")
+      .expect("parse position-area");
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&updated),
+      "expected position-area to affect layout fingerprints"
     );
   }
 

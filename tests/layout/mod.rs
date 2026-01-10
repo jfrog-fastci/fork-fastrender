@@ -7,6 +7,7 @@ mod abspos_percent_bases;
 mod abspos_static_position;
 mod abspos_static_position_subgrid;
 mod anchor_positioning;
+mod position_area;
 mod aria_hidden_has_no_effect;
 mod aria_hidden_layout;
 mod block_constraints_viewport_clamp;

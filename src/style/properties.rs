@@ -4975,6 +4975,7 @@ pub(crate) fn apply_property_from_source(
     "anchor-name" => styles.anchor_names = source.anchor_names.clone(),
     "anchor-scope" => styles.anchor_scope = source.anchor_scope.clone(),
     "position-anchor" => styles.position_anchor = source.position_anchor.clone(),
+    "position-area" => styles.position_area = source.position_area.clone(),
     "position-try-fallbacks" => styles.position_try_fallbacks = source.position_try_fallbacks.clone(),
     "position-try-order" => styles.position_try_order = source.position_try_order,
     "position-try" => {
@@ -9879,6 +9880,33 @@ fn apply_declaration_with_base_internal_with_order(
           styles.position_anchor = PositionAnchor::Auto;
         } else if token.starts_with("--") && token.len() > 2 {
           styles.position_anchor = PositionAnchor::Name(token.to_string());
+        }
+      }
+    }
+    "position-area" => {
+      let raw_single;
+      let raw: Option<&str> = match resolved_value {
+        PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
+        PropertyValue::Multiple(parts) => {
+          if parts.is_empty() {
+            None
+          } else {
+            raw_single = parts
+              .iter()
+              .map(|part| match part {
+                PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
+                _ => None,
+              })
+              .collect::<Option<Vec<_>>>()
+              .map(|parts| parts.join(" "));
+            raw_single.as_deref()
+          }
+        }
+        _ => None,
+      };
+      if let Some(raw) = raw {
+        if let Some(parsed) = PositionArea::parse(raw) {
+          styles.position_area = parsed;
         }
       }
     }

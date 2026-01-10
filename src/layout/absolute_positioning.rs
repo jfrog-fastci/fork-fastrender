@@ -3059,6 +3059,17 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
         }
         _ => {}
       }
+
+      if let Some(mut tracks) = style
+        .position_area
+        .resolve_tracks(style.writing_mode, style.direction)
+      {
+        match axis {
+          crate::style::LogicalAxis::Inline => tracks.inline = tracks.inline.flip(),
+          crate::style::LogicalAxis::Block => tracks.block = tracks.block.flip(),
+        }
+        style.position_area = crate::style::types::PositionArea::from_tracks(tracks);
+      }
       return;
     }
 
@@ -3120,25 +3131,355 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     flip_start_inset_value(&mut style.right, inline_sides, block_sides);
     flip_start_inset_value(&mut style.bottom, inline_sides, block_sides);
     flip_start_inset_value(&mut style.left, inline_sides, block_sides);
+
+    if let Some(mut tracks) = style
+      .position_area
+      .resolve_tracks(style.writing_mode, style.direction)
+    {
+      std::mem::swap(&mut tracks.block, &mut tracks.inline);
+      style.position_area = crate::style::types::PositionArea::from_tracks(tracks);
+    }
   }
 
-  let base_result = abs.layout_absolute(base_input, containing_block)?;
+  #[derive(Clone, Copy)]
+  struct PositionAreaContext {
+    containing_block: ContainingBlock,
+    area_rect: Rect,
+    anchor_rect: Rect,
+    tracks: crate::style::types::PositionAreaTracks,
+    inline_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    block_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  }
+
+  fn positioned_inset<'a>(style: &'a PositionedStyle, side: crate::style::PhysicalSide) -> &'a LengthOrAuto {
+    match side {
+      crate::style::PhysicalSide::Top => &style.top,
+      crate::style::PhysicalSide::Right => &style.right,
+      crate::style::PhysicalSide::Bottom => &style.bottom,
+      crate::style::PhysicalSide::Left => &style.left,
+    }
+  }
+
+  fn axis_insets_auto(style: &PositionedStyle, sides: (crate::style::PhysicalSide, crate::style::PhysicalSide)) -> bool {
+    positioned_inset(style, sides.0).is_auto() && positioned_inset(style, sides.1).is_auto()
+  }
+
+  fn apply_position_area_used_values(style: &mut PositionedStyle) {
+    if style.left.is_auto() {
+      style.left = LengthOrAuto::px(0.0);
+    }
+    if style.right.is_auto() {
+      style.right = LengthOrAuto::px(0.0);
+    }
+    if style.top.is_auto() {
+      style.top = LengthOrAuto::px(0.0);
+    }
+    if style.bottom.is_auto() {
+      style.bottom = LengthOrAuto::px(0.0);
+    }
+
+    // `position-area` (and `anchor-center`) treat `margin: auto` as `0` (CSS Anchor Positioning).
+    style.margin_left_auto = false;
+    style.margin_right_auto = false;
+    style.margin_top_auto = false;
+    style.margin_bottom_auto = false;
+  }
+
+  fn rect_side(rect: Rect, side: crate::style::PhysicalSide) -> f32 {
+    match side {
+      crate::style::PhysicalSide::Top => rect.y(),
+      crate::style::PhysicalSide::Right => rect.max_x(),
+      crate::style::PhysicalSide::Bottom => rect.max_y(),
+      crate::style::PhysicalSide::Left => rect.x(),
+    }
+  }
+
+  fn resolve_position_area_context(
+    style: &ComputedStyle,
+    containing_block: &ContainingBlock,
+    anchors: Option<&AnchorIndex>,
+    query_parent_box_id: Option<usize>,
+  ) -> Option<PositionAreaContext> {
+    let tracks = style
+      .position_area
+      .resolve_tracks(style.writing_mode, style.direction)?;
+
+    let anchor_name = match &style.position_anchor {
+      crate::style::types::PositionAnchor::Name(name) => name.as_str(),
+      _ => return None,
+    };
+    let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
+    let anchor_rect = anchor.rect;
+    let cb_rect = containing_block.rect;
+
+    let inline_sides = axis_physical_sides(style, crate::style::LogicalAxis::Inline);
+    let block_sides = axis_physical_sides(style, crate::style::LogicalAxis::Block);
+
+    fn grid_lines(
+      cb_rect: Rect,
+      anchor_rect: Rect,
+      sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    ) -> [f32; 4] {
+      let start_side = sides.0;
+      let end_side = sides.1;
+      let cb_start = rect_side(cb_rect, start_side);
+      let cb_end = rect_side(cb_rect, end_side);
+      let anchor_start = rect_side(anchor_rect, start_side);
+      let anchor_end = rect_side(anchor_rect, end_side);
+      let positive = matches!(start_side, crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Top);
+      let outer_start = if positive {
+        cb_start.min(anchor_start)
+      } else {
+        cb_start.max(anchor_start)
+      };
+      let outer_end = if positive {
+        cb_end.max(anchor_end)
+      } else {
+        cb_end.min(anchor_end)
+      };
+      [outer_start, anchor_start, anchor_end, outer_end]
+    }
+
+    fn line_indices(track: crate::style::types::PositionAreaTrack) -> (usize, usize) {
+      use crate::style::types::PositionAreaTrack::*;
+      match track {
+        Start => (0, 1),
+        Center => (1, 2),
+        End => (2, 3),
+        SpanStart => (0, 2),
+        SpanEnd => (1, 3),
+        SpanAll => (0, 3),
+      }
+    }
+
+    let mut left = cb_rect.x();
+    let mut right = cb_rect.max_x();
+    let mut top = cb_rect.y();
+    let mut bottom = cb_rect.max_y();
+
+    for (sides, track) in [
+      (inline_sides, tracks.inline),
+      (block_sides, tracks.block),
+    ] {
+      let lines = grid_lines(cb_rect, anchor_rect, sides);
+      let (a, b) = line_indices(track);
+      let v0 = lines[a];
+      let v1 = lines[b];
+      let min = v0.min(v1);
+      let max = v0.max(v1);
+
+      match sides.0 {
+        crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Right => {
+          left = min;
+          right = max;
+        }
+        crate::style::PhysicalSide::Top | crate::style::PhysicalSide::Bottom => {
+          top = min;
+          bottom = max;
+        }
+      }
+    }
+
+    let area_rect = Rect::new(
+      Point::new(left, top),
+      Size::new((right - left).max(0.0), (bottom - top).max(0.0)),
+    );
+    let derived = ContainingBlock::with_viewport_and_bases(
+      area_rect,
+      containing_block.viewport_size(),
+      containing_block.inline_percentage_base().map(|_| area_rect.size.width),
+      containing_block.block_percentage_base().map(|_| area_rect.size.height),
+    );
+
+    Some(PositionAreaContext {
+      containing_block: derived,
+      area_rect,
+      anchor_rect,
+      tracks,
+      inline_sides,
+      block_sides,
+    })
+  }
+
+  fn apply_position_area_alignment(
+    context: &PositionAreaContext,
+    style: &PositionedStyle,
+    inline_insets_auto: bool,
+    block_insets_auto: bool,
+    result: &mut AbsoluteLayoutResult,
+  ) {
+    use crate::style::types::PositionAreaTrack::*;
+
+    let border_rect = border_box_rect(result, style);
+    let border_size = border_rect.size;
+    let mut border_origin = border_rect.origin;
+    let content_offset = Point::new(
+      style.border_width.left + style.padding.left,
+      style.border_width.top + style.padding.top,
+    );
+
+    #[derive(Clone, Copy)]
+    enum Alignment {
+      Start,
+      End,
+      Center,
+      AnchorCenter,
+    }
+
+    fn default_alignment(track: crate::style::types::PositionAreaTrack) -> Alignment {
+      match track {
+        Center => Alignment::Center,
+        SpanAll => Alignment::AnchorCenter,
+        Start | SpanStart => Alignment::End,
+        End | SpanEnd => Alignment::Start,
+      }
+    }
+
+    fn apply_axis(
+      border_origin: &mut Point,
+      border_size: Size,
+      area_rect: Rect,
+      anchor_rect: Rect,
+      sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+      alignment: Alignment,
+    ) {
+      let start_side = sides.0;
+      let end_side = sides.1;
+      let horizontal = matches!(start_side, crate::style::PhysicalSide::Left | crate::style::PhysicalSide::Right);
+
+      let set_side = |desired: f32, side: crate::style::PhysicalSide| -> f32 {
+        match side {
+          crate::style::PhysicalSide::Left => desired,
+          crate::style::PhysicalSide::Right => desired - border_size.width,
+          crate::style::PhysicalSide::Top => desired,
+          crate::style::PhysicalSide::Bottom => desired - border_size.height,
+        }
+      };
+
+      match alignment {
+        Alignment::Start => {
+          let desired = rect_side(area_rect, start_side);
+          if horizontal {
+            border_origin.x = set_side(desired, start_side);
+          } else {
+            border_origin.y = set_side(desired, start_side);
+          }
+        }
+        Alignment::End => {
+          let desired = rect_side(area_rect, end_side);
+          if horizontal {
+            border_origin.x = set_side(desired, end_side);
+          } else {
+            border_origin.y = set_side(desired, end_side);
+          }
+        }
+        Alignment::Center => {
+          let desired = (rect_side(area_rect, start_side) + rect_side(area_rect, end_side)) / 2.0;
+          if horizontal {
+            border_origin.x = desired - border_size.width / 2.0;
+          } else {
+            border_origin.y = desired - border_size.height / 2.0;
+          }
+        }
+        Alignment::AnchorCenter => {
+          let desired = if horizontal {
+            anchor_rect.x() + anchor_rect.width() / 2.0
+          } else {
+            anchor_rect.y() + anchor_rect.height() / 2.0
+          };
+          if horizontal {
+            border_origin.x = desired - border_size.width / 2.0;
+          } else {
+            border_origin.y = desired - border_size.height / 2.0;
+          }
+        }
+      }
+    }
+
+    if inline_insets_auto {
+      apply_axis(
+        &mut border_origin,
+        border_size,
+        context.area_rect,
+        context.anchor_rect,
+        context.inline_sides,
+        default_alignment(context.tracks.inline),
+      );
+    }
+    if block_insets_auto {
+      apply_axis(
+        &mut border_origin,
+        border_size,
+        context.area_rect,
+        context.anchor_rect,
+        context.block_sides,
+        default_alignment(context.tracks.block),
+      );
+    }
+
+    result.position = Point::new(border_origin.x + content_offset.x, border_origin.y + content_offset.y);
+  }
+
+  let base_position_area =
+    resolve_position_area_context(base_style, containing_block, anchors, query_parent_box_id);
+  let base_cb = base_position_area
+    .as_ref()
+    .map(|ctx| ctx.containing_block)
+    .unwrap_or(*containing_block);
+
+  let base_positioned = resolve_positioned_style_with_anchors(
+    base_style,
+    &base_cb,
+    viewport,
+    font_context,
+    anchors,
+    query_parent_box_id,
+  );
+  let base_inline_auto = base_position_area
+    .as_ref()
+    .map(|ctx| axis_insets_auto(&base_positioned, ctx.inline_sides))
+    .unwrap_or(false);
+  let base_block_auto = base_position_area
+    .as_ref()
+    .map(|ctx| axis_insets_auto(&base_positioned, ctx.block_sides))
+    .unwrap_or(false);
+
+  let mut base_positioned_used = base_positioned.clone();
+  if base_position_area.is_some() {
+    apply_position_area_used_values(&mut base_positioned_used);
+  }
+
+  let mut base_input_used = base_input.clone();
+  base_input_used.style = base_positioned_used.clone();
+  let mut base_result = abs.layout_absolute(&base_input_used, &base_cb)?;
+  if let Some(ctx) = base_position_area.as_ref() {
+    apply_position_area_alignment(
+      ctx,
+      &base_input_used.style,
+      base_inline_auto,
+      base_block_auto,
+      &mut base_result,
+    );
+  }
   let base_overflow = overflow_area(
-    border_box_rect(&base_result, &base_input.style),
+    border_box_rect(&base_result, &base_input_used.style),
     containing_block.rect,
   );
 
   if base_overflow <= OVERFLOW_EPSILON || base_style.position_try_fallbacks.is_empty() {
-    return Ok((base_input.style.clone(), base_result));
+    return Ok((base_input_used.style.clone(), base_result));
   }
 
   struct TryCandidate {
     key: f32,
+    order: usize,
     positioned: PositionedStyle,
+    position_area: Option<PositionAreaContext>,
+    containing_block: ContainingBlock,
   }
 
   let try_order = base_style.position_try_order;
-  let candidate_key = |positioned: &PositionedStyle| -> f32 {
+  let candidate_key = |positioned: &PositionedStyle, containing_block: &ContainingBlock| -> f32 {
     use crate::layout::utils::resolve_offset_for_positioned;
     use crate::style::types::PositionTryOrder;
 
@@ -3184,7 +3525,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
 
   let mut candidates: Vec<TryCandidate> = Vec::new();
 
-  for name in base_style.position_try_fallbacks.iter() {
+  for (order, name) in base_style.position_try_fallbacks.iter().enumerate() {
     let mut trial_style = base_style.clone();
     let (try_name, tactics) =
       parse_fallback_item(name.as_str()).unwrap_or((Some(name.as_str()), Vec::new()));
@@ -3217,41 +3558,76 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
 
     crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
 
+    let position_area =
+      resolve_position_area_context(&trial_style, containing_block, anchors, query_parent_box_id);
+    let trial_cb = position_area
+      .as_ref()
+      .map(|ctx| ctx.containing_block)
+      .unwrap_or(*containing_block);
+
     let trial_positioned = resolve_positioned_style_with_anchors(
       &trial_style,
-      containing_block,
+      &trial_cb,
       viewport,
       font_context,
       anchors,
       query_parent_box_id,
     );
 
-    let key = candidate_key(&trial_positioned);
+    let key = candidate_key(&trial_positioned, &trial_cb);
     candidates.push(TryCandidate {
       key,
+      order,
       positioned: trial_positioned,
+      position_area,
+      containing_block: trial_cb,
     });
   }
 
   if !matches!(try_order, crate::style::types::PositionTryOrder::Normal) {
     // `position-try-order` uses a stable sort, keeping author order when the available space ties.
-    candidates.sort_by(|a, b| b.key.total_cmp(&a.key));
+    candidates.sort_by(|a, b| b.key.total_cmp(&a.key).then_with(|| a.order.cmp(&b.order)));
   }
 
   for candidate in candidates {
     let mut trial_input = base_input.clone();
-    trial_input.style = candidate.positioned.clone();
-    let trial_result = abs.layout_absolute(&trial_input, containing_block)?;
+    let inline_auto = candidate
+      .position_area
+      .as_ref()
+      .map(|ctx| axis_insets_auto(&candidate.positioned, ctx.inline_sides))
+      .unwrap_or(false);
+    let block_auto = candidate
+      .position_area
+      .as_ref()
+      .map(|ctx| axis_insets_auto(&candidate.positioned, ctx.block_sides))
+      .unwrap_or(false);
+
+    let mut positioned_used = candidate.positioned.clone();
+    if candidate.position_area.is_some() {
+      apply_position_area_used_values(&mut positioned_used);
+    }
+    trial_input.style = positioned_used.clone();
+
+    let mut trial_result = abs.layout_absolute(&trial_input, &candidate.containing_block)?;
+    if let Some(ctx) = candidate.position_area.as_ref() {
+      apply_position_area_alignment(
+        ctx,
+        &trial_input.style,
+        inline_auto,
+        block_auto,
+        &mut trial_result,
+      );
+    }
     let trial_overflow =
-      overflow_area(border_box_rect(&trial_result, &candidate.positioned), containing_block.rect);
+      overflow_area(border_box_rect(&trial_result, &trial_input.style), containing_block.rect);
 
     if trial_overflow <= OVERFLOW_EPSILON {
-      return Ok((candidate.positioned, trial_result));
+      return Ok((positioned_used, trial_result));
     }
   }
 
   // No option avoided overflow; keep the current (base) styles.
-  Ok((base_input.style.clone(), base_result))
+  Ok((base_input_used.style.clone(), base_result))
 }
 
 /// Returns the padding + border edge sizes that participate in intrinsic sizing.

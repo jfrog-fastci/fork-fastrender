@@ -3862,6 +3862,588 @@ impl Default for PositionAnchor {
   }
 }
 
+/// A track selection within a single axis of the position-area grid.
+///
+/// `position-area` conceptually selects rows/columns in a 3×3 grid defined by the pre-modification
+/// containing block edges and the default anchor box edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionAreaTrack {
+  Start,
+  Center,
+  End,
+  SpanStart,
+  SpanEnd,
+  SpanAll,
+}
+
+impl PositionAreaTrack {
+  pub fn flip(self) -> Self {
+    match self {
+      PositionAreaTrack::Start => PositionAreaTrack::End,
+      PositionAreaTrack::End => PositionAreaTrack::Start,
+      PositionAreaTrack::SpanStart => PositionAreaTrack::SpanEnd,
+      PositionAreaTrack::SpanEnd => PositionAreaTrack::SpanStart,
+      PositionAreaTrack::Center | PositionAreaTrack::SpanAll => self,
+    }
+  }
+}
+
+/// Resolved `position-area` tracks for the block and inline axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionAreaTracks {
+  pub block: PositionAreaTrack,
+  pub inline: PositionAreaTrack,
+}
+
+/// Keywords accepted by the `position-area` property.
+///
+/// This enum stores the computed-value-time keyword pair (per the spec) rather than resolving to
+/// physical sides immediately. Resolution to block/inline tracks happens at layout time using the
+/// element's writing mode and direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionAreaKeyword {
+  // Common ambiguous keywords (allowed in all syntaxes).
+  Center,
+  SpanAll,
+
+  // Ambiguous logical keywords (block/inline axis determined by position in the pair).
+  Start,
+  End,
+  SpanStart,
+  SpanEnd,
+
+  // Self-relative ambiguous keywords.
+  SelfStart,
+  SelfEnd,
+  SpanSelfStart,
+  SpanSelfEnd,
+
+  // Flow-relative block/inline keywords.
+  BlockStart,
+  BlockEnd,
+  SpanBlockStart,
+  SpanBlockEnd,
+  InlineStart,
+  InlineEnd,
+  SpanInlineStart,
+  SpanInlineEnd,
+
+  // Self-relative block/inline keywords.
+  SelfBlockStart,
+  SelfBlockEnd,
+  SpanSelfBlockStart,
+  SpanSelfBlockEnd,
+  SelfInlineStart,
+  SelfInlineEnd,
+  SpanSelfInlineStart,
+  SpanSelfInlineEnd,
+
+  // Physical X/Y keywords.
+  Left,
+  Right,
+  SpanLeft,
+  SpanRight,
+  Top,
+  Bottom,
+  SpanTop,
+  SpanBottom,
+  XStart,
+  XEnd,
+  SpanXStart,
+  SpanXEnd,
+  YStart,
+  YEnd,
+  SpanYStart,
+  SpanYEnd,
+  SelfXStart,
+  SelfXEnd,
+  SpanSelfXStart,
+  SpanSelfXEnd,
+  SelfYStart,
+  SelfYEnd,
+  SpanSelfYStart,
+  SpanSelfYEnd,
+}
+
+impl PositionAreaKeyword {
+  fn parse(raw: &str) -> Option<Self> {
+    let kw = raw.to_ascii_lowercase();
+    Some(match kw.as_str() {
+      "center" => PositionAreaKeyword::Center,
+      "span-all" => PositionAreaKeyword::SpanAll,
+      "start" => PositionAreaKeyword::Start,
+      "end" => PositionAreaKeyword::End,
+      "span-start" => PositionAreaKeyword::SpanStart,
+      "span-end" => PositionAreaKeyword::SpanEnd,
+      "self-start" => PositionAreaKeyword::SelfStart,
+      "self-end" => PositionAreaKeyword::SelfEnd,
+      "span-self-start" => PositionAreaKeyword::SpanSelfStart,
+      "span-self-end" => PositionAreaKeyword::SpanSelfEnd,
+      "block-start" => PositionAreaKeyword::BlockStart,
+      "block-end" => PositionAreaKeyword::BlockEnd,
+      "span-block-start" => PositionAreaKeyword::SpanBlockStart,
+      "span-block-end" => PositionAreaKeyword::SpanBlockEnd,
+      "inline-start" => PositionAreaKeyword::InlineStart,
+      "inline-end" => PositionAreaKeyword::InlineEnd,
+      "span-inline-start" => PositionAreaKeyword::SpanInlineStart,
+      "span-inline-end" => PositionAreaKeyword::SpanInlineEnd,
+      "self-block-start" => PositionAreaKeyword::SelfBlockStart,
+      "self-block-end" => PositionAreaKeyword::SelfBlockEnd,
+      "span-self-block-start" => PositionAreaKeyword::SpanSelfBlockStart,
+      "span-self-block-end" => PositionAreaKeyword::SpanSelfBlockEnd,
+      "self-inline-start" => PositionAreaKeyword::SelfInlineStart,
+      "self-inline-end" => PositionAreaKeyword::SelfInlineEnd,
+      "span-self-inline-start" => PositionAreaKeyword::SpanSelfInlineStart,
+      "span-self-inline-end" => PositionAreaKeyword::SpanSelfInlineEnd,
+      "left" => PositionAreaKeyword::Left,
+      "right" => PositionAreaKeyword::Right,
+      "span-left" => PositionAreaKeyword::SpanLeft,
+      "span-right" => PositionAreaKeyword::SpanRight,
+      "top" => PositionAreaKeyword::Top,
+      "bottom" => PositionAreaKeyword::Bottom,
+      "span-top" => PositionAreaKeyword::SpanTop,
+      "span-bottom" => PositionAreaKeyword::SpanBottom,
+      "x-start" => PositionAreaKeyword::XStart,
+      "x-end" => PositionAreaKeyword::XEnd,
+      "span-x-start" => PositionAreaKeyword::SpanXStart,
+      "span-x-end" => PositionAreaKeyword::SpanXEnd,
+      "y-start" => PositionAreaKeyword::YStart,
+      "y-end" => PositionAreaKeyword::YEnd,
+      "span-y-start" => PositionAreaKeyword::SpanYStart,
+      "span-y-end" => PositionAreaKeyword::SpanYEnd,
+      "self-x-start" => PositionAreaKeyword::SelfXStart,
+      "self-x-end" => PositionAreaKeyword::SelfXEnd,
+      "span-self-x-start" => PositionAreaKeyword::SpanSelfXStart,
+      "span-self-x-end" => PositionAreaKeyword::SpanSelfXEnd,
+      "self-y-start" => PositionAreaKeyword::SelfYStart,
+      "self-y-end" => PositionAreaKeyword::SelfYEnd,
+      "span-self-y-start" => PositionAreaKeyword::SpanSelfYStart,
+      "span-self-y-end" => PositionAreaKeyword::SpanSelfYEnd,
+      _ => return None,
+    })
+  }
+
+  fn is_axis_unambiguous(self) -> bool {
+    !matches!(
+      self,
+      PositionAreaKeyword::Center
+        | PositionAreaKeyword::SpanAll
+        | PositionAreaKeyword::Start
+        | PositionAreaKeyword::End
+        | PositionAreaKeyword::SpanStart
+        | PositionAreaKeyword::SpanEnd
+        | PositionAreaKeyword::SelfStart
+        | PositionAreaKeyword::SelfEnd
+        | PositionAreaKeyword::SpanSelfStart
+        | PositionAreaKeyword::SpanSelfEnd
+    )
+  }
+
+  fn is_plain_ambiguous(self) -> bool {
+    matches!(
+      self,
+      PositionAreaKeyword::Start
+        | PositionAreaKeyword::End
+        | PositionAreaKeyword::SpanStart
+        | PositionAreaKeyword::SpanEnd
+        | PositionAreaKeyword::SelfStart
+        | PositionAreaKeyword::SelfEnd
+        | PositionAreaKeyword::SpanSelfStart
+        | PositionAreaKeyword::SpanSelfEnd
+    )
+  }
+}
+
+/// Computed value for the CSS `position-area` property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PositionArea {
+  None,
+  Keywords(PositionAreaKeyword, PositionAreaKeyword),
+}
+
+impl Default for PositionArea {
+  fn default() -> Self {
+    Self::None
+  }
+}
+
+impl PositionArea {
+  pub fn parse(raw: &str) -> Option<Self> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+      return None;
+    }
+    if raw.eq_ignore_ascii_case("none") {
+      return Some(Self::None);
+    }
+
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      return None;
+    }
+
+    let mut parts: Vec<PositionAreaKeyword> = Vec::new();
+    while !parser.is_exhausted() {
+      let ident = parser.expect_ident().ok()?;
+      let kw = PositionAreaKeyword::parse(ident.as_ref())?;
+      parts.push(kw);
+      parser.skip_whitespace();
+    }
+
+    match parts.as_slice() {
+      [] => None,
+      [single] => {
+        let first = *single;
+        let second = if first.is_axis_unambiguous() {
+          PositionAreaKeyword::SpanAll
+        } else {
+          first
+        };
+        Some(Self::Keywords(first, second))
+      }
+      [a, b] => Some(Self::Keywords(*a, *b)),
+      _ => None,
+    }
+  }
+
+  pub fn from_tracks(tracks: PositionAreaTracks) -> Self {
+    fn block_kw(track: PositionAreaTrack) -> PositionAreaKeyword {
+      match track {
+        PositionAreaTrack::Start => PositionAreaKeyword::BlockStart,
+        PositionAreaTrack::End => PositionAreaKeyword::BlockEnd,
+        PositionAreaTrack::SpanStart => PositionAreaKeyword::SpanBlockStart,
+        PositionAreaTrack::SpanEnd => PositionAreaKeyword::SpanBlockEnd,
+        PositionAreaTrack::Center => PositionAreaKeyword::Center,
+        PositionAreaTrack::SpanAll => PositionAreaKeyword::SpanAll,
+      }
+    }
+
+    fn inline_kw(track: PositionAreaTrack) -> PositionAreaKeyword {
+      match track {
+        PositionAreaTrack::Start => PositionAreaKeyword::InlineStart,
+        PositionAreaTrack::End => PositionAreaKeyword::InlineEnd,
+        PositionAreaTrack::SpanStart => PositionAreaKeyword::SpanInlineStart,
+        PositionAreaTrack::SpanEnd => PositionAreaKeyword::SpanInlineEnd,
+        PositionAreaTrack::Center => PositionAreaKeyword::Center,
+        PositionAreaTrack::SpanAll => PositionAreaKeyword::SpanAll,
+      }
+    }
+
+    Self::Keywords(block_kw(tracks.block), inline_kw(tracks.inline))
+  }
+
+  pub fn resolve_tracks(&self, writing_mode: WritingMode, direction: Direction) -> Option<PositionAreaTracks> {
+    let (a, b) = match self {
+      PositionArea::None => return None,
+      PositionArea::Keywords(a, b) => (*a, *b),
+    };
+
+    #[derive(Clone, Copy)]
+    enum AxisValue {
+      Track(PositionAreaTrack),
+      PhysicalStart,
+      PhysicalEnd,
+      SpanPhysicalStart,
+      SpanPhysicalEnd,
+    }
+
+    #[derive(Clone, Copy)]
+    enum TokenKind {
+      Block(PositionAreaTrack),
+      Inline(PositionAreaTrack),
+      X(AxisValue),
+      Y(AxisValue),
+      Ambiguous(PositionAreaTrack),
+    }
+
+    fn token_from_keyword(kw: PositionAreaKeyword) -> (TokenKind, bool) {
+      let plain_ambiguous = kw.is_plain_ambiguous();
+      let kind = match kw {
+        PositionAreaKeyword::Center => TokenKind::Ambiguous(PositionAreaTrack::Center),
+        PositionAreaKeyword::SpanAll => TokenKind::Ambiguous(PositionAreaTrack::SpanAll),
+        PositionAreaKeyword::Start | PositionAreaKeyword::SelfStart => {
+          TokenKind::Ambiguous(PositionAreaTrack::Start)
+        }
+        PositionAreaKeyword::End | PositionAreaKeyword::SelfEnd => TokenKind::Ambiguous(PositionAreaTrack::End),
+        PositionAreaKeyword::SpanStart | PositionAreaKeyword::SpanSelfStart => {
+          TokenKind::Ambiguous(PositionAreaTrack::SpanStart)
+        }
+        PositionAreaKeyword::SpanEnd | PositionAreaKeyword::SpanSelfEnd => {
+          TokenKind::Ambiguous(PositionAreaTrack::SpanEnd)
+        }
+
+        PositionAreaKeyword::BlockStart | PositionAreaKeyword::SelfBlockStart => {
+          TokenKind::Block(PositionAreaTrack::Start)
+        }
+        PositionAreaKeyword::BlockEnd | PositionAreaKeyword::SelfBlockEnd => TokenKind::Block(PositionAreaTrack::End),
+        PositionAreaKeyword::SpanBlockStart | PositionAreaKeyword::SpanSelfBlockStart => {
+          TokenKind::Block(PositionAreaTrack::SpanStart)
+        }
+        PositionAreaKeyword::SpanBlockEnd | PositionAreaKeyword::SpanSelfBlockEnd => {
+          TokenKind::Block(PositionAreaTrack::SpanEnd)
+        }
+
+        PositionAreaKeyword::InlineStart | PositionAreaKeyword::SelfInlineStart => {
+          TokenKind::Inline(PositionAreaTrack::Start)
+        }
+        PositionAreaKeyword::InlineEnd | PositionAreaKeyword::SelfInlineEnd => {
+          TokenKind::Inline(PositionAreaTrack::End)
+        }
+        PositionAreaKeyword::SpanInlineStart | PositionAreaKeyword::SpanSelfInlineStart => {
+          TokenKind::Inline(PositionAreaTrack::SpanStart)
+        }
+        PositionAreaKeyword::SpanInlineEnd | PositionAreaKeyword::SpanSelfInlineEnd => {
+          TokenKind::Inline(PositionAreaTrack::SpanEnd)
+        }
+
+        PositionAreaKeyword::Left => TokenKind::X(AxisValue::PhysicalStart),
+        PositionAreaKeyword::Right => TokenKind::X(AxisValue::PhysicalEnd),
+        PositionAreaKeyword::SpanLeft => TokenKind::X(AxisValue::SpanPhysicalStart),
+        PositionAreaKeyword::SpanRight => TokenKind::X(AxisValue::SpanPhysicalEnd),
+        PositionAreaKeyword::XStart | PositionAreaKeyword::SelfXStart => TokenKind::X(AxisValue::Track(PositionAreaTrack::Start)),
+        PositionAreaKeyword::XEnd | PositionAreaKeyword::SelfXEnd => TokenKind::X(AxisValue::Track(PositionAreaTrack::End)),
+        PositionAreaKeyword::SpanXStart | PositionAreaKeyword::SpanSelfXStart => {
+          TokenKind::X(AxisValue::Track(PositionAreaTrack::SpanStart))
+        }
+        PositionAreaKeyword::SpanXEnd | PositionAreaKeyword::SpanSelfXEnd => {
+          TokenKind::X(AxisValue::Track(PositionAreaTrack::SpanEnd))
+        }
+
+        PositionAreaKeyword::Top => TokenKind::Y(AxisValue::PhysicalStart),
+        PositionAreaKeyword::Bottom => TokenKind::Y(AxisValue::PhysicalEnd),
+        PositionAreaKeyword::SpanTop => TokenKind::Y(AxisValue::SpanPhysicalStart),
+        PositionAreaKeyword::SpanBottom => TokenKind::Y(AxisValue::SpanPhysicalEnd),
+        PositionAreaKeyword::YStart | PositionAreaKeyword::SelfYStart => TokenKind::Y(AxisValue::Track(PositionAreaTrack::Start)),
+        PositionAreaKeyword::YEnd | PositionAreaKeyword::SelfYEnd => TokenKind::Y(AxisValue::Track(PositionAreaTrack::End)),
+        PositionAreaKeyword::SpanYStart | PositionAreaKeyword::SpanSelfYStart => {
+          TokenKind::Y(AxisValue::Track(PositionAreaTrack::SpanStart))
+        }
+        PositionAreaKeyword::SpanYEnd | PositionAreaKeyword::SpanSelfYEnd => {
+          TokenKind::Y(AxisValue::Track(PositionAreaTrack::SpanEnd))
+        }
+      };
+
+      (kind, plain_ambiguous)
+    }
+
+    let (t1, plain1) = token_from_keyword(a);
+    let (t2, plain2) = token_from_keyword(b);
+
+    // If the author uses the axis-ambiguous `start`/`end` keywords, the value must come from the
+    // `{1,2}` ambiguous syntax and cannot mix with the axis-specific keywords.
+    if plain1 || plain2 {
+      match (t1, t2) {
+        (TokenKind::Ambiguous(track1), TokenKind::Ambiguous(track2)) => {
+          return Some(PositionAreaTracks {
+            block: track1,
+            inline: track2,
+          });
+        }
+        _ => return None,
+      }
+    }
+
+    let has_logical = matches!(t1, TokenKind::Block(_) | TokenKind::Inline(_))
+      || matches!(t2, TokenKind::Block(_) | TokenKind::Inline(_));
+    let has_physical = matches!(t1, TokenKind::X(_) | TokenKind::Y(_))
+      || matches!(t2, TokenKind::X(_) | TokenKind::Y(_));
+
+    if has_logical && has_physical {
+      return None;
+    }
+
+    // Axis-ambiguous-only values like `center center` default to block + inline.
+    if !has_logical && !has_physical {
+      let TokenKind::Ambiguous(track1) = t1 else {
+        return None;
+      };
+      let TokenKind::Ambiguous(track2) = t2 else {
+        return None;
+      };
+      return Some(PositionAreaTracks {
+        block: track1,
+        inline: track2,
+      });
+    }
+
+    if has_logical {
+      let mut block: Option<PositionAreaTrack> = None;
+      let mut inline: Option<PositionAreaTrack> = None;
+      let mut ambiguous: Option<PositionAreaTrack> = None;
+
+      for token in [t1, t2] {
+        match token {
+          TokenKind::Block(track) => {
+            if block.replace(track).is_some() {
+              return None;
+            }
+          }
+          TokenKind::Inline(track) => {
+            if inline.replace(track).is_some() {
+              return None;
+            }
+          }
+          TokenKind::Ambiguous(track) => {
+            if ambiguous.replace(track).is_some() {
+              return None;
+            }
+          }
+          _ => return None,
+        }
+      }
+
+      match (block, inline, ambiguous) {
+        (Some(block), Some(inline), None) => Some(PositionAreaTracks { block, inline }),
+        (Some(block), None, Some(amb)) => Some(PositionAreaTracks {
+          block,
+          inline: amb,
+        }),
+        (None, Some(inline), Some(amb)) => Some(PositionAreaTracks {
+          block: amb,
+          inline,
+        }),
+        // Disallow `block-start block-end` etc (missing inline axis).
+        _ => None,
+      }
+    } else {
+      // Physical syntax (x/y), mapped to block/inline based on the containing block writing mode.
+      let mut x: Option<AxisValue> = None;
+      let mut y: Option<AxisValue> = None;
+      let mut ambiguous: Option<AxisValue> = None;
+
+      for token in [t1, t2] {
+        match token {
+          TokenKind::X(value) => {
+            if x.replace(value).is_some() {
+              return None;
+            }
+          }
+          TokenKind::Y(value) => {
+            if y.replace(value).is_some() {
+              return None;
+            }
+          }
+          TokenKind::Ambiguous(track) => {
+            let value = AxisValue::Track(track);
+            if ambiguous.replace(value).is_some() {
+              return None;
+            }
+          }
+          _ => return None,
+        }
+      }
+
+      let (x, y) = match (x, y, ambiguous) {
+        (Some(x), Some(y), None) => (x, y),
+        (Some(x), None, Some(amb)) => (x, amb),
+        (None, Some(y), Some(amb)) => (amb, y),
+        _ => return None,
+      };
+
+      fn axis_sides(
+        horizontal: bool,
+        positive: bool,
+      ) -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
+        match (horizontal, positive) {
+          (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
+          (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
+          (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
+          (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
+        }
+      }
+
+      let inline_sides = axis_sides(
+        crate::style::inline_axis_is_horizontal(writing_mode),
+        crate::style::inline_axis_positive(writing_mode, direction),
+      );
+      let block_sides = axis_sides(
+        crate::style::block_axis_is_horizontal(writing_mode),
+        crate::style::block_axis_positive(writing_mode),
+      );
+
+      let x_is_inline = crate::style::inline_axis_is_horizontal(writing_mode);
+
+      let (logical_for_x, logical_for_y) = if x_is_inline {
+        (crate::style::LogicalAxis::Inline, crate::style::LogicalAxis::Block)
+      } else {
+        (crate::style::LogicalAxis::Block, crate::style::LogicalAxis::Inline)
+      };
+
+      let physical_start_for_axis = |axis: crate::style::LogicalAxis| -> crate::style::PhysicalSide {
+        match axis {
+          crate::style::LogicalAxis::Inline => inline_sides.0,
+          crate::style::LogicalAxis::Block => block_sides.0,
+        }
+      };
+
+      let map_physical_value = |value: AxisValue, axis: crate::style::LogicalAxis| -> Option<PositionAreaTrack> {
+        let start_side = physical_start_for_axis(axis);
+        let physical_start_side = match axis {
+          crate::style::LogicalAxis::Inline => {
+            if x_is_inline {
+              crate::style::PhysicalSide::Left
+            } else {
+              crate::style::PhysicalSide::Top
+            }
+          }
+          crate::style::LogicalAxis::Block => {
+            if x_is_inline {
+              crate::style::PhysicalSide::Top
+            } else {
+              crate::style::PhysicalSide::Left
+            }
+          }
+        };
+
+        Some(match value {
+          AxisValue::Track(track) => track,
+          AxisValue::PhysicalStart => {
+            if start_side == physical_start_side {
+              PositionAreaTrack::Start
+            } else {
+              PositionAreaTrack::End
+            }
+          }
+          AxisValue::PhysicalEnd => {
+            if start_side == physical_start_side {
+              PositionAreaTrack::End
+            } else {
+              PositionAreaTrack::Start
+            }
+          }
+          AxisValue::SpanPhysicalStart => {
+            if start_side == physical_start_side {
+              PositionAreaTrack::SpanStart
+            } else {
+              PositionAreaTrack::SpanEnd
+            }
+          }
+          AxisValue::SpanPhysicalEnd => {
+            if start_side == physical_start_side {
+              PositionAreaTrack::SpanEnd
+            } else {
+              PositionAreaTrack::SpanStart
+            }
+          }
+        })
+      };
+
+      let x_track = map_physical_value(x, logical_for_x)?;
+      let y_track = map_physical_value(y, logical_for_y)?;
+
+      let (block, inline) = if x_is_inline {
+        (y_track, x_track)
+      } else {
+        (x_track, y_track)
+      };
+
+      Some(PositionAreaTracks { block, inline })
+    }
+  }
+}
+
 /// Computed value for the `position-try-order` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionTryOrder {
