@@ -20,6 +20,7 @@ pub mod history;
 pub mod messages;
 pub mod frame_upload;
 pub mod shortcuts;
+pub mod scrollbars;
 pub mod worker;
 pub mod url;
 pub mod zoom;

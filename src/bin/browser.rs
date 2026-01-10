@@ -736,14 +736,11 @@ struct OpenContextMenu {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
-struct ScrollbarDragState {
+struct ScrollbarDrag {
   tab_id: fastrender::ui::TabId,
-  start_scroll_y: f32,
-  /// Last scroll position derived from the ongoing drag (in viewport-local CSS pixels).
-  ///
-  /// This is used for immediate visual feedback while dragging (the worker may not have produced a
-  /// new frame yet).
-  visual_scroll_y: f32,
+  axis: fastrender::ui::scrollbars::ScrollbarAxis,
+  last_cursor_points: egui::Pos2,
+  scrollbar: fastrender::ui::scrollbars::OverlayScrollbar,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -785,11 +782,11 @@ struct App {
   pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
 
   page_rect_points: Option<egui::Rect>,
-  page_scrollbar_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
-  scrollbar_drag: Option<ScrollbarDragState>,
+  overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars,
+  scrollbar_drag: Option<ScrollbarDrag>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
@@ -1020,10 +1017,10 @@ error: {err}",
       tab_cancel: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       page_rect_points: None,
-      page_scrollbar_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
+      overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
       scrollbar_drag: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
@@ -2088,6 +2085,28 @@ error: {err}",
     }
   }
 
+  fn cancel_scrollbar_drag(&mut self) {
+    if self.scrollbar_drag.is_none() {
+      return;
+    }
+    self.scrollbar_drag = None;
+
+    let cursor_inside_page = self.last_cursor_pos_points.is_some_and(|pos| {
+      self
+        .page_rect_points
+        .is_some_and(|page_rect| page_rect.contains(pos))
+    });
+
+    if cursor_inside_page {
+      self.hover_sync_pending = true;
+    } else {
+      // When ending a scrollbar drag with the cursor outside the page rect, ensure the worker's
+      // hover state is cleared.
+      self.cursor_in_page = false;
+      self.clear_page_hover();
+    }
+  }
+
   fn clear_page_hover(&mut self) {
     let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) else {
       return;
@@ -2127,6 +2146,10 @@ error: {err}",
           self.close_context_menu();
           self.window.request_redraw();
         }
+        if self.scrollbar_drag.is_some() {
+          self.cancel_scrollbar_drag();
+          self.window.request_redraw();
+        }
         if self.pointer_captured {
           self.cancel_pointer_capture();
           self.window.request_redraw();
@@ -2134,6 +2157,7 @@ error: {err}",
       }
       WindowEvent::CursorLeft { .. } => {
         let had_pointer_capture = self.pointer_captured;
+        let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
         let had_context_menu = self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
@@ -2148,11 +2172,14 @@ error: {err}",
         if had_pointer_capture {
           self.cancel_pointer_capture();
         }
+        if had_scrollbar_drag {
+          self.cancel_scrollbar_drag();
+        }
 
         if had_cursor_in_page || had_pointer_capture {
           self.clear_page_hover();
         }
-        if had_cursor_in_page || had_pointer_capture || had_context_menu {
+        if had_cursor_in_page || had_pointer_capture || had_scrollbar_drag || had_context_menu {
           self.window.request_redraw();
         }
       }
@@ -2162,6 +2189,35 @@ error: {err}",
           position.y as f32 / self.pixels_per_point,
         );
         self.last_cursor_pos_points = Some(pos_points);
+
+        if self.scrollbar_drag.is_some() {
+          let (tab_id, axis, scrollbar, axis_delta_points) = {
+            let drag = self.scrollbar_drag.as_mut().unwrap();
+            let delta_points = pos_points - drag.last_cursor_points;
+            drag.last_cursor_points = pos_points;
+            let axis_delta_points = match drag.axis {
+              fastrender::ui::scrollbars::ScrollbarAxis::Vertical => delta_points.y,
+              fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => delta_points.x,
+            };
+            (drag.tab_id, drag.axis, drag.scrollbar, axis_delta_points)
+          };
+
+          let axis_delta_css = scrollbar.scroll_delta_css_for_thumb_drag_points(axis_delta_points);
+          if axis_delta_css != 0.0 {
+            let delta_css = match axis {
+              fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
+              fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
+            };
+            self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css: None,
+            });
+          }
+          self.window.request_redraw();
+          return;
+        }
+
         if self
           .open_select_dropdown_rect
           .is_some_and(|rect| rect.contains(pos_points))
@@ -2175,12 +2231,19 @@ error: {err}",
           return;
         };
         let mut now_in_page = rect.contains(pos_points);
-        if now_in_page
-          && self
-            .page_scrollbar_rect_points
-            .is_some_and(|scrollbar| scrollbar.contains(pos_points))
-        {
-          now_in_page = false;
+        if now_in_page {
+          let pos = fastrender::Point::new(pos_points.x, pos_points.y);
+          if self
+            .overlay_scrollbars
+            .vertical
+            .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+            || self
+              .overlay_scrollbars
+              .horizontal
+              .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+          {
+            now_in_page = false;
+          }
         }
 
         // `page_input_mapping`/`page_input_tab` are populated during the most recent paint. When
@@ -2249,6 +2312,16 @@ error: {err}",
           return;
         }
 
+        if self.scrollbar_drag.is_some() {
+          if matches!(state, ElementState::Released)
+            && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+          {
+            self.cancel_scrollbar_drag();
+            self.window.request_redraw();
+          }
+          return;
+        }
+
         let Some(pos_points) = self.last_cursor_pos_points else {
           return;
         };
@@ -2304,6 +2377,63 @@ error: {err}",
             if self.pointer_captured {
               return;
             }
+
+            // Scrollbar track/thumb interactions should not be forwarded to the page worker.
+            if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
+              let Some(tab_id) = self.page_input_tab else {
+                return;
+              };
+              let pos = fastrender::Point::new(pos_points.x, pos_points.y);
+
+              if let Some(scrollbar) = self
+                .overlay_scrollbars
+                .vertical
+                .filter(|sb| sb.thumb_rect_points.contains_point(pos))
+                .or_else(|| {
+                  self
+                    .overlay_scrollbars
+                    .horizontal
+                    .filter(|sb| sb.thumb_rect_points.contains_point(pos))
+                })
+              {
+                self.scrollbar_drag = Some(ScrollbarDrag {
+                  tab_id,
+                  axis: scrollbar.axis,
+                  last_cursor_points: pos_points,
+                  scrollbar,
+                });
+                self.window.request_redraw();
+                return;
+              }
+
+              if let Some(delta_y) = self
+                .overlay_scrollbars
+                .vertical
+                .and_then(|sb| sb.page_delta_css_for_track_click(pos))
+              {
+                self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (0.0, delta_y),
+                  pointer_css: None,
+                });
+                self.window.request_redraw();
+                return;
+              }
+              if let Some(delta_x) = self
+                .overlay_scrollbars
+                .horizontal
+                .and_then(|sb| sb.page_delta_css_for_track_click(pos))
+              {
+                self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (delta_x, 0.0),
+                  pointer_css: None,
+                });
+                self.window.request_redraw();
+                return;
+              }
+            }
+
             // Ensure any pending hover update is applied before we start a new pointer interaction.
             self.flush_pending_pointer_move();
             let Some(rect) = self.page_rect_points else {
@@ -2312,9 +2442,15 @@ error: {err}",
             if !rect.contains(pos_points) {
               return;
             }
+            let pos = fastrender::Point::new(pos_points.x, pos_points.y);
             if self
-              .page_scrollbar_rect_points
-              .is_some_and(|scrollbar| scrollbar.contains(pos_points))
+              .overlay_scrollbars
+              .vertical
+              .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+              || self
+                .overlay_scrollbars
+                .horizontal
+                .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
             {
               return;
             }
@@ -3077,10 +3213,10 @@ error: {err}",
       self.send_viewport_changed_if_needed(viewport_css, dpr);
 
       self.page_rect_points = None;
-      self.page_scrollbar_rect_points = None;
       self.page_viewport_css = None;
       self.page_input_tab = None;
       self.page_input_mapping = None;
+      self.overlay_scrollbars = fastrender::ui::scrollbars::OverlayScrollbars::default();
 
       let Some(active_tab) = self.browser_state.active_tab_id() else {
         ui.label("No active tab.");
@@ -3156,138 +3292,65 @@ error: {err}",
           }
         }
 
-        // -----------------------------------------------------------------------------
-        // Overlay scrollbars
-        // -----------------------------------------------------------------------------
-        //
-        // Draw a thin draggable scrollbar on top of the rendered page image. This keeps long pages
-        // usable even when the user does not have a scroll wheel / trackpad.
+        // Overlay scrollbars (visual only; interactions are handled by the winit event path so we
+        // can reliably suppress forwarding pointer events to the page worker).
         if let Some(tab) = self.browser_state.tab(active_tab) {
           if let Some(metrics) = tab.scroll_metrics {
-            let max_scroll_y = metrics.bounds_css.max_y;
-            let viewport_h = metrics.viewport_css.1 as f32;
-            let content_h = metrics.content_css.1;
+            let page_rect_points = fastrender::Rect::from_xywh(
+              response.rect.min.x,
+              response.rect.min.y,
+              response.rect.width(),
+              response.rect.height(),
+            );
+            self.overlay_scrollbars = fastrender::ui::scrollbars::overlay_scrollbars_for_viewport(
+              page_rect_points,
+              viewport_css_for_mapping,
+              &tab.scroll_state,
+              metrics.bounds_css,
+            );
 
-            // Only draw when there is a meaningful scroll range.
-            if max_scroll_y.is_finite()
-              && max_scroll_y > 0.0
-              && content_h.is_finite()
-              && content_h > viewport_h
-            {
-              // Track geometry (in egui points; 1 point == 1 CSS px in our mapping).
-              const THICKNESS: f32 = 6.0;
-              const MARGIN: f32 = 2.0;
-              const MIN_THUMB_LEN: f32 = 24.0;
+            let painter = ui.painter();
+            let to_egui_rect = |rect: fastrender::Rect| {
+              egui::Rect::from_min_max(
+                egui::pos2(rect.min_x(), rect.min_y()),
+                egui::pos2(rect.max_x(), rect.max_y()),
+              )
+            };
 
-              let track_rect = egui::Rect::from_min_max(
-                egui::pos2(
-                  response.rect.max.x - MARGIN - THICKNESS,
-                  response.rect.min.y + MARGIN,
-                ),
-                egui::pos2(response.rect.max.x - MARGIN, response.rect.max.y - MARGIN),
-              );
+            let dark = ui.visuals().dark_mode;
+            let (r, g, b) = if dark { (255, 255, 255) } else { (0, 0, 0) };
 
-              self.page_scrollbar_rect_points = Some(track_rect);
+            let draw_scrollbar =
+              |scrollbar: fastrender::ui::scrollbars::OverlayScrollbar, dragging: bool| {
+                let thickness_points = match scrollbar.axis {
+                  fastrender::ui::scrollbars::ScrollbarAxis::Vertical => scrollbar.track_rect_points.width(),
+                  fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => scrollbar.track_rect_points.height(),
+                };
+                let rounding = egui::Rounding::same((thickness_points * 0.5).max(0.0));
+                let track = to_egui_rect(scrollbar.track_rect_points);
+                let thumb = to_egui_rect(scrollbar.thumb_rect_points);
 
-              // Drag state is per-tab; reset it if we switched tabs.
-              if self
+                let track_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 32);
+                let thumb_alpha = if dragging { 196 } else { 128 };
+                let thumb_color = egui::Color32::from_rgba_unmultiplied(r, g, b, thumb_alpha);
+
+                painter.rect_filled(track, rounding, track_color);
+                painter.rect_filled(thumb, rounding, thumb_color);
+              };
+
+            if let Some(v) = self.overlay_scrollbars.vertical {
+              let dragging = self
                 .scrollbar_drag
                 .as_ref()
-                .is_some_and(|drag| drag.tab_id != active_tab)
-              {
-                self.scrollbar_drag = None;
-              }
-
-              let track_h = track_rect.height().max(0.0);
-              let thumb_h = (track_h * (viewport_h / content_h))
-                .clamp(MIN_THUMB_LEN, track_h)
-                .max(1.0);
-              let thumb_travel = (track_h - thumb_h).max(1.0);
-
-              let scroll_x = tab.scroll_state.viewport.x;
-              let scroll_y = tab.scroll_state.viewport.y;
-
-              let mut scroll_y_for_interact = scroll_y;
-              if let Some(drag) = self.scrollbar_drag.as_ref() {
-                if drag.tab_id == active_tab {
-                  scroll_y_for_interact = drag.visual_scroll_y;
-                }
-              }
-              let scroll_y_for_interact = scroll_y_for_interact.clamp(0.0, max_scroll_y);
-
-              let thumb_top =
-                track_rect.min.y + (scroll_y_for_interact / max_scroll_y) * thumb_travel;
-              let thumb_rect_interact = egui::Rect::from_min_max(
-                egui::pos2(track_rect.min.x, thumb_top),
-                egui::pos2(track_rect.max.x, thumb_top + thumb_h),
-              );
-
-              let id = egui::Id::new(("fastr_scrollbar_thumb_y", active_tab.0));
-              let thumb_response =
-                ui.interact(thumb_rect_interact, id, egui::Sense::click_and_drag());
-
-              if thumb_response.drag_started() {
-                let start_scroll_y = scroll_y.clamp(0.0, max_scroll_y);
-                self.scrollbar_drag = Some(ScrollbarDragState {
-                  tab_id: active_tab,
-                  start_scroll_y,
-                  visual_scroll_y: start_scroll_y,
-                });
-              }
-              if thumb_response.drag_released() {
-                self.scrollbar_drag = None;
-              }
-
-              let mut scroll_y_for_paint = scroll_y.clamp(0.0, max_scroll_y);
-              if let Some(drag) = self.scrollbar_drag.as_mut() {
-                if drag.tab_id == active_tab && thumb_response.dragged() {
-                  let delta_y = thumb_response.drag_delta().y;
-                  let next = (drag.start_scroll_y + (delta_y / thumb_travel) * max_scroll_y)
-                    .clamp(0.0, max_scroll_y);
-                  drag.visual_scroll_y = next;
-                  scroll_y_for_paint = next;
-
-                  self.send_worker_msg(fastrender::ui::UiToWorker::ScrollTo {
-                    tab_id: active_tab,
-                    pos_css: (scroll_x, next),
-                  });
-
-                  // Ensure we keep drawing while the thumb is dragged, even if the worker hasn't
-                  // produced a new frame yet.
-                  ui.ctx().request_repaint();
-                }
-              }
-
-              let thumb_top = track_rect.min.y + (scroll_y_for_paint / max_scroll_y) * thumb_travel;
-              let thumb_rect = egui::Rect::from_min_max(
-                egui::pos2(track_rect.min.x, thumb_top),
-                egui::pos2(track_rect.max.x, thumb_top + thumb_h),
-              );
-
-              let dark = ui.visuals().dark_mode;
-              let track_color = if dark {
-                egui::Color32::from_white_alpha(32)
-              } else {
-                egui::Color32::from_black_alpha(32)
-              };
-
-              let mut thumb_color = if dark {
-                egui::Color32::from_white_alpha(128)
-              } else {
-                egui::Color32::from_black_alpha(128)
-              };
-
-              if thumb_response.hovered() || thumb_response.dragged() {
-                thumb_color = if dark {
-                  egui::Color32::from_white_alpha(196)
-                } else {
-                  egui::Color32::from_black_alpha(196)
-                };
-              }
-
-              let rounding = egui::Rounding::same(3.0);
-              ui.painter().rect_filled(track_rect, rounding, track_color);
-              ui.painter().rect_filled(thumb_rect, rounding, thumb_color);
+                .is_some_and(|d| d.axis == v.axis && d.tab_id == active_tab);
+              draw_scrollbar(v, dragging);
+            }
+            if let Some(h) = self.overlay_scrollbars.horizontal {
+              let dragging = self
+                .scrollbar_drag
+                .as_ref()
+                .is_some_and(|d| d.axis == h.axis && d.tab_id == active_tab);
+              draw_scrollbar(h, dragging);
             }
           }
         }
