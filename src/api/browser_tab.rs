@@ -4518,6 +4518,19 @@ mod tests {
       Ok(())
     }
 
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      // These lifecycle tests only need a minimal JS environment; treat module scripts the same as
+      // classic scripts.
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    }
+
     fn dispatch_lifecycle_event(
       &mut self,
       target: EventTargetId,
