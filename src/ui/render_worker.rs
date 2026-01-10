@@ -1230,22 +1230,22 @@ impl BrowserRuntime {
       .as_deref()
       .unwrap_or(about_pages::ABOUT_BASE_URL)
       .to_string();
-    let scroll = &tab.scroll_state;
-    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let scroll_snapshot = tab.scroll_state.clone();
+    let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
     let engine = &mut tab.interaction;
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let (dom_changed, action, anchor_css) =
+    let (dom_changed, action, anchor_css, focus_scroll) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled =
-          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let scrolled = (!scroll_snapshot.elements.is_empty())
+          .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
         let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
         let (dom_changed, action) = engine.pointer_up_with_scroll(
           dom,
           box_tree,
           hit_tree,
-          scroll,
+          &scroll_snapshot,
           viewport_point,
           &document_url,
           &base_url,
@@ -1255,16 +1255,39 @@ impl BrowserRuntime {
           InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
             // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
             // offsets internally.
-            select_anchor_css(box_tree, fragment_tree, scroll, *select_node_id)
+            select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
           }
           _ => None,
         };
 
-        (dom_changed, (dom_changed, action, anchor_css))
+        let focus_scroll = match &action {
+          InteractionAction::FocusChanged {
+            node_id: Some(node_id),
+          } => crate::interaction::focus_scroll::scroll_state_for_focus(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *node_id,
+          ),
+          _ => None,
+        };
+
+        (dom_changed, (dom_changed, action, anchor_css, focus_scroll))
       }) {
-      Ok(result) => result,
-      Err(_) => return,
-    };
+        Ok(result) => result,
+        Err(_) => return,
+      };
+
+    let mut scroll_changed = false;
+    if let Some(next_scroll) = focus_scroll {
+      tab.scroll_state = next_scroll;
+      doc.set_scroll_state(tab.scroll_state.clone());
+      scroll_changed = true;
+      let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+        tab_id,
+        scroll: tab.scroll_state.clone(),
+      });
+    }
 
     match action {
       InteractionAction::Navigate { href } => {
@@ -1298,7 +1321,8 @@ impl BrowserRuntime {
         }
       }
       _ => {
-        if dom_changed {
+        if dom_changed || scroll_changed {
+          tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
       }
@@ -1451,7 +1475,8 @@ impl BrowserRuntime {
         return;
       };
 
-      let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+      let scroll_snapshot = tab.scroll_state.clone();
+      let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let (dom_changed, action) = tab.interaction.key_activate_with_box_tree(
           dom,
           Some(box_tree),
@@ -1459,9 +1484,20 @@ impl BrowserRuntime {
           &document_url,
           &base_url,
         );
-        (dom_changed, (dom_changed, action))
+        let focus_scroll = match &action {
+          InteractionAction::FocusChanged {
+            node_id: Some(node_id),
+          } => crate::interaction::focus_scroll::scroll_state_for_focus(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *node_id,
+          ),
+          _ => None,
+        };
+        (dom_changed, (dom_changed, action, focus_scroll))
       });
-      let (changed, action) = match result {
+      let (changed, action, focus_scroll) = match result {
         Ok(result) => result,
         Err(_) => {
           let mut action = InteractionAction::None;
@@ -1471,9 +1507,20 @@ impl BrowserRuntime {
             action = next_action;
             dom_changed
           });
-          (changed, action)
+          (changed, action, None)
         }
       };
+
+      let mut scroll_changed = false;
+      if let Some(next_scroll) = focus_scroll {
+        tab.scroll_state = next_scroll;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
 
       match action {
         InteractionAction::Navigate { href } => {
@@ -1514,7 +1561,7 @@ impl BrowserRuntime {
           }
         }
         _ => {
-          if changed {
+          if changed || scroll_changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
           }

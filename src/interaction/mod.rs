@@ -2,6 +2,7 @@ pub mod anchor_scroll;
 pub mod dom_index;
 pub mod dom_mutation;
 pub mod engine;
+pub mod focus_scroll;
 pub mod form_submit;
 pub mod fragment_geometry;
 pub mod hit_test;
