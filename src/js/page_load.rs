@@ -423,6 +423,58 @@ where
     })?;
     Ok(())
   }
+
+  /// Queue a networking task that reports an external script fetch failure to the scheduler.
+  ///
+  /// HTML treats failed scripts as "done" for ordering and lifecycle gating:
+  /// - the script must not execute,
+  /// - parser-blocking scripts must unblock parsing so later tokens can be processed,
+  /// - deferred scripts must be counted as executed for `DOMContentLoaded`,
+  /// - and the document `load` event must be allowed to fire once all pending blockers complete.
+  pub fn queue_fetch_failed(
+    &mut self,
+    script_id: crate::js::ScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let node_id = host.script_nodes.get(&script_id).copied().ok_or_else(|| {
+        Error::Other(format!(
+          "page_load: fetch_failed signalled for unknown script_id={}",
+          script_id.as_u64()
+        ))
+      })?;
+      let node_idx = node_id.index();
+
+      // Queue an element task to fire the script `error` event (represented by `script_events` in
+      // this harness). Queue it before any parsing-unblock or lifecycle tasks so the task ordering
+      // mirrors BrowserTab's synchronous error dispatch.
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+        host.script_events.push(format!("error@{node_idx}"));
+        Ok(())
+      })?;
+
+      let actions = host.scheduler.fetch_failed(script_id)?;
+
+      if host.blocked_on == Some(script_id) {
+        host.blocked_on = None;
+        host.queue_parse_task(event_loop)?;
+      }
+
+      if host.deferred_scripts.contains(&script_id) {
+        host.lifecycle.deferred_script_executed(event_loop)?;
+      }
+
+      if host.pending_script_load_blockers.remove(&script_id) {
+        host
+          .lifecycle
+          .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
+      }
+
+      host.apply_actions(actions, event_loop)?;
+      Ok(())
+    })?;
+    Ok(())
+  }
 }
 
 impl<F, E> DocumentLifecycleHost for HtmlLoadOrchestrator<F, E>
@@ -634,6 +686,49 @@ mod tests {
   }
 
   #[test]
+  fn blocking_external_script_fetch_failure_unblocks_parsing() -> Result<()> {
+    let html = "<!doctype html><script src=a.js></script><script>b</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      16,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.executor.log.is_empty());
+    assert_eq!(host.fetcher.started.len(), 1);
+    let (blocking_id, _, _, _) = host.fetcher.started[0].clone();
+    assert_eq!(host.blocked_on, Some(blocking_id));
+    assert!(host.lifecycle_events.is_empty());
+
+    host.queue_fetch_failed(blocking_id, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.blocked_on, None);
+    assert_eq!(
+      host.executor.log,
+      vec!["script:b".to_string(), "microtask:b".to_string()]
+    );
+    assert_eq!(host.script_events.len(), 1);
+    assert!(host.script_events[0].starts_with("error@"));
+    assert_eq!(
+      host.lifecycle_events,
+      vec![
+        "readystatechange".to_string(),
+        "DOMContentLoaded".to_string(),
+        "readystatechange".to_string(),
+        "load".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn async_scripts_execute_in_completion_order_and_can_run_during_parsing() -> Result<()> {
     let filler = "x".repeat(2048);
     let html = format!(
@@ -728,6 +823,73 @@ mod tests {
       !host.pending_script_load_blockers.contains(&script_id),
       "expected async script to complete its load blocker after execution"
     );
+    assert_eq!(
+      host.lifecycle_events,
+      vec![
+        "readystatechange".to_string(),
+        "DOMContentLoaded".to_string(),
+        "readystatechange".to_string(),
+        "load".to_string(),
+      ],
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn load_waits_for_async_external_script_fetch_failure() -> Result<()> {
+    use crate::web::dom::DocumentReadyState;
+    let html = "<!doctype html><script async src=a.js></script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    spin_until_started_fetches(&mut host, &mut event_loop, 1)?;
+    let (script_id, _url, _dest, _credentials_mode) = host.fetcher.started[0].clone();
+
+    // Allow parsing to finish and fire DOMContentLoaded, but do not complete the async script yet.
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let doc = host
+      .finished_document
+      .as_ref()
+      .expect("document should have finished parsing");
+    assert_eq!(
+      doc.ready_state(),
+      DocumentReadyState::Interactive,
+      "expected DOMContentLoaded to have fired while async script is still pending"
+    );
+    assert!(
+      host.pending_script_load_blockers.contains(&script_id),
+      "expected async script to remain registered as a load blocker until it completes"
+    );
+    assert!(host.script_events.is_empty());
+    assert_eq!(
+      host.lifecycle_events,
+      vec!["readystatechange".to_string(), "DOMContentLoaded".to_string()],
+      "expected DOMContentLoaded but not load before async script completion"
+    );
+
+    // Now fail the async fetch; `load` should fire afterwards.
+    host.queue_fetch_failed(script_id, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let doc = host
+      .finished_document
+      .as_ref()
+      .expect("document should still exist");
+    assert_eq!(doc.ready_state(), DocumentReadyState::Complete);
+    assert!(
+      !host.pending_script_load_blockers.contains(&script_id),
+      "expected failed async script to complete its load blocker"
+    );
+    assert_eq!(host.script_events.len(), 1);
+    assert!(host.script_events[0].starts_with("error@"));
     assert_eq!(
       host.lifecycle_events,
       vec![
