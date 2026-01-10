@@ -7,7 +7,7 @@
 //! out of layout is treated as flow order; this module decides where to break and
 //! clones the appropriate fragment subtrees for each fragmentainer.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::error::RenderStage;
 use crate::geometry::{Point, Rect};
@@ -22,8 +22,8 @@ use crate::style::{
   block_axis_is_horizontal, block_axis_positive, inline_axis_positive, ComputedStyle,
 };
 use crate::tree::fragment_tree::{
-  FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo, GridItemFragmentationData,
-  GridTrackRanges,
+  CollapsedBorderSegment, FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo,
+  GridItemFragmentationData, GridTrackRanges, TableCollapsedBorders,
 };
 
 /// The fragmentation context determines how break hints are interpreted.
@@ -2654,6 +2654,29 @@ fn innermost_footer_table_at<'a>(
     .max_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+fn collapsed_line_positions(
+  sizes: &[f32],
+  line_widths: &[f32],
+  padding_start: f32,
+  padding_end: f32,
+) -> Vec<f32> {
+  debug_assert!(line_widths.len() >= sizes.len().saturating_add(1));
+
+  let mut line_pos = Vec::with_capacity(sizes.len() + 1);
+  let mut cursor = padding_start;
+  line_pos.push(cursor);
+
+  for (idx, size) in sizes.iter().enumerate() {
+    let prev_half = line_widths.get(idx).copied().unwrap_or(0.0) * 0.5;
+    let next_half = line_widths.get(idx + 1).copied().unwrap_or(0.0) * 0.5;
+    cursor += prev_half + size + next_half;
+    line_pos.push(cursor);
+  }
+
+  let _extent = cursor + padding_end;
+  line_pos
+}
+
 fn inject_table_headers_and_footers(
   original: &FragmentNode,
   clipped: &mut FragmentNode,
@@ -2678,6 +2701,8 @@ fn inject_table_headers_and_footers(
 
   let has_header = clipped.children.iter().any(is_table_header_fragment);
   let has_footer = clipped.children.iter().any(is_table_footer_fragment);
+  let header_injected = !headers.is_empty() && !has_header && !clipped.slice_info.is_first;
+  let footer_injected = !footers.is_empty() && !has_footer && !clipped.slice_info.is_last;
 
   let mut max_block_extent = axis.block_size(&clipped.bounds);
   let original_block_size = axis.block_size(&original.bounds);
@@ -2696,7 +2721,7 @@ fn inject_table_headers_and_footers(
     Point::new(0.0, -clip_origin_phys)
   };
 
-  if !headers.is_empty() && !has_header && !clipped.slice_info.is_first {
+  if header_injected {
     let mut regions = Vec::new();
     for header in &headers {
       let (start, end) = axis.flow_range(0.0, original_block_size, &header.bounds);
@@ -2741,7 +2766,7 @@ fn inject_table_headers_and_footers(
     clipped.children_mut().splice(0..0, clones);
   }
 
-  if !footers.is_empty() && !has_footer && !clipped.slice_info.is_last {
+  if footer_injected {
     let mut regions = Vec::new();
     for footer in &footers {
       let (start, end) = axis.flow_range(0.0, original_block_size, &footer.bounds);
@@ -2788,6 +2813,176 @@ fn inject_table_headers_and_footers(
     }
     max_block_extent = max_block_extent.max(footer_offset);
     clipped.children_mut().extend(clones);
+  }
+
+  if header_injected || footer_injected {
+    if let Some(orig_borders) = original.table_borders.as_deref() {
+      if clipped.table_borders.is_some() {
+        const EPSILON: f32 = 0.01;
+        let slice_end = slice_start + clipped_block_size;
+
+        let mut row_offsets = Vec::with_capacity(orig_borders.row_count);
+        for row in 0..orig_borders.row_count {
+          row_offsets.push(orig_borders.row_offset(row).unwrap_or(0.0));
+        }
+
+        let start_pp = row_offsets.partition_point(|&o| o <= slice_start + EPSILON);
+        let body_start_row = start_pp.saturating_sub(1).min(orig_borders.row_count);
+        let end_pp = row_offsets.partition_point(|&o| o <= slice_end - EPSILON);
+        let body_end_row = end_pp.max(body_start_row).min(orig_borders.row_count);
+
+        let header_range = if header_injected {
+          orig_borders.header_rows.unwrap_or((0, 0))
+        } else {
+          (0, 0)
+        };
+        let footer_range = if footer_injected {
+          orig_borders.footer_rows.unwrap_or((0, 0))
+        } else {
+          (0, 0)
+        };
+
+        let header_len = header_range.1.saturating_sub(header_range.0);
+        let footer_len = footer_range.1.saturating_sub(footer_range.0);
+        let body_len = body_end_row.saturating_sub(body_start_row);
+
+        let mut row_map: Vec<usize> = Vec::with_capacity(header_len + body_len + footer_len);
+        if header_len > 0 {
+          row_map.extend(header_range.0..header_range.1);
+        }
+        row_map.extend(body_start_row..body_end_row);
+        if footer_len > 0 {
+          row_map.extend(footer_range.0..footer_range.1);
+        }
+
+        let new_row_count = row_map.len();
+        if new_row_count > 0 {
+          let mut vertical_borders =
+            Vec::with_capacity((orig_borders.column_count + 1) * new_row_count);
+          for col in 0..=orig_borders.column_count {
+            for &orig_row in &row_map {
+              vertical_borders.push(
+                orig_borders
+                  .vertical_segment(col, orig_row)
+                  .unwrap_or(CollapsedBorderSegment::none()),
+              );
+            }
+          }
+
+          let mut boundary_source: Vec<Option<usize>> = Vec::with_capacity(new_row_count + 1);
+          for boundary in 0..=new_row_count {
+            let source = if boundary == 0 {
+              (clipped.slice_info.is_first && !header_injected).then_some(0)
+            } else if boundary == new_row_count {
+              (clipped.slice_info.is_last && !footer_injected).then_some(orig_borders.row_count)
+            } else if header_injected && header_len > 0 && body_len > 0 && boundary == header_len {
+              Some(header_range.1)
+            } else if footer_injected
+              && footer_len > 0
+              && body_len > 0
+              && boundary == header_len + body_len
+            {
+              Some(footer_range.0)
+            } else {
+              let prev_orig_row = row_map[boundary - 1];
+              let next_orig_row = row_map[boundary];
+              (next_orig_row == prev_orig_row + 1).then_some(next_orig_row)
+            };
+            boundary_source.push(source);
+          }
+
+          let mut horizontal_borders =
+            Vec::with_capacity((new_row_count + 1) * orig_borders.column_count);
+          let mut horizontal_line_base = Vec::with_capacity(new_row_count + 1);
+          for source in &boundary_source {
+            horizontal_line_base.push(
+              source
+                .map(|orig_boundary| orig_borders.horizontal_line_width(orig_boundary))
+                .unwrap_or(0.0),
+            );
+            for col in 0..orig_borders.column_count {
+              horizontal_borders.push(
+                source
+                  .and_then(|orig_boundary| orig_borders.horizontal_segment(orig_boundary, col))
+                  .unwrap_or(CollapsedBorderSegment::none()),
+              );
+            }
+          }
+
+          let mut row_heights = Vec::with_capacity(new_row_count);
+          for &orig_row in &row_map {
+            row_heights.push(orig_borders.row_height(orig_row).unwrap_or(0.0));
+          }
+
+          let padding_start = if clipped.slice_info.is_first && !header_injected {
+            orig_borders.row_line_positions.first().copied().unwrap_or(0.0)
+          } else {
+            0.0
+          };
+          let padding_end = if clipped.slice_info.is_last && !footer_injected {
+            let last_line = orig_borders.row_line_positions.last().copied().unwrap_or(0.0);
+            (original_block_size - last_line).max(0.0)
+          } else {
+            0.0
+          };
+
+          let row_line_positions = collapsed_line_positions(
+            &row_heights,
+            &horizontal_line_base,
+            padding_start,
+            padding_end,
+          );
+
+          let mut corner_borders =
+            Vec::with_capacity((new_row_count + 1) * (orig_borders.column_count + 1));
+          for source in &boundary_source {
+            for col in 0..=orig_borders.column_count {
+              corner_borders.push(
+                source
+                  .and_then(|orig_boundary| orig_borders.corner(orig_boundary, col))
+                  .unwrap_or(CollapsedBorderSegment::none()),
+              );
+            }
+          }
+
+          let max_corner_half = corner_borders
+            .iter()
+            .map(|c| c.width * 0.5)
+            .fold(0.0f32, f32::max);
+          let min_x = orig_borders.column_line_positions.first().copied().unwrap_or(0.0)
+            - (orig_borders.vertical_line_base.first().copied().unwrap_or(0.0) * 0.5)
+              .max(max_corner_half);
+          let max_x = orig_borders.column_line_positions.last().copied().unwrap_or(0.0)
+            + (orig_borders.vertical_line_base.last().copied().unwrap_or(0.0) * 0.5)
+              .max(max_corner_half);
+          let min_y = row_line_positions.first().copied().unwrap_or(0.0)
+            - (horizontal_line_base.first().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+          let max_y = row_line_positions.last().copied().unwrap_or(0.0)
+            + (horizontal_line_base.last().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+
+          clipped.table_borders = Some(Arc::new(TableCollapsedBorders {
+            column_count: orig_borders.column_count,
+            row_count: new_row_count,
+            column_line_positions: orig_borders.column_line_positions.clone(),
+            row_line_positions,
+            vertical_borders,
+            horizontal_borders,
+            corner_borders,
+            vertical_line_base: orig_borders.vertical_line_base.clone(),
+            horizontal_line_base,
+            paint_bounds: Rect::from_xywh(
+              min_x,
+              min_y,
+              (max_x - min_x).max(0.0),
+              (max_y - min_y).max(0.0),
+            ),
+            header_rows: orig_borders.header_rows,
+            footer_rows: orig_borders.footer_rows,
+            fragment_local: true,
+          }));
+        }
+      }
+    }
   }
 
   let children_block_end = clipped

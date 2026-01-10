@@ -2296,16 +2296,18 @@ impl DisplayListBuilder {
             let info = fragment.slice_info;
             if !(info.is_first && info.is_last) {
               clip_to_slice = true;
-              let original_block_size = info.original_block_size.max(0.0);
-              let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
-              if block_axis_is_horizontal(style.writing_mode) {
-                if block_axis_positive(style.writing_mode) {
-                  origin.x -= slice_offset;
+              if !table_borders.fragment_local {
+                let original_block_size = info.original_block_size.max(0.0);
+                let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+                if block_axis_is_horizontal(style.writing_mode) {
+                  if block_axis_positive(style.writing_mode) {
+                    origin.x -= slice_offset;
+                  } else {
+                    origin.x = origin.x + slice_offset - original_block_size;
+                  }
                 } else {
-                  origin.x = origin.x + slice_offset - original_block_size;
+                  origin.y -= slice_offset;
                 }
-              } else {
-                origin.y -= slice_offset;
               }
             }
           }
@@ -2546,16 +2548,18 @@ impl DisplayListBuilder {
             let info = fragment.slice_info;
             if !(info.is_first && info.is_last) {
               clip_to_slice = true;
-              let original_block_size = info.original_block_size.max(0.0);
-              let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
-              if block_axis_is_horizontal(style.writing_mode) {
-                if block_axis_positive(style.writing_mode) {
-                  origin.x -= slice_offset;
+              if !table_borders.fragment_local {
+                let original_block_size = info.original_block_size.max(0.0);
+                let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+                if block_axis_is_horizontal(style.writing_mode) {
+                  if block_axis_positive(style.writing_mode) {
+                    origin.x -= slice_offset;
+                  } else {
+                    origin.x = origin.x + slice_offset - original_block_size;
+                  }
                 } else {
-                  origin.x = origin.x + slice_offset - original_block_size;
+                  origin.y -= slice_offset;
                 }
-              } else {
-                origin.y -= slice_offset;
               }
             }
           }

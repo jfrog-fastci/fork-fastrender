@@ -3802,6 +3802,9 @@ fn build_table_collapsed_borders_metadata(
       (max_x - min_x).max(0.0),
       (max_y - min_y).max(0.0),
     ),
+    header_rows: None,
+    footer_rows: None,
+    fragment_local: false,
   })
 }
 
@@ -7592,7 +7595,7 @@ impl FormattingContext for TableFormattingContext {
 
     let mut stripped_border_cache: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
 
-    let table_collapsed_borders = if let Some(borders) = collapsed_borders.as_ref() {
+    let mut table_collapsed_borders = if let Some(borders) = collapsed_borders.as_ref() {
       Some(Arc::new(build_table_collapsed_borders_metadata(
         &structure,
         borders,
@@ -7792,6 +7795,8 @@ impl FormattingContext for TableFormattingContext {
     // Row groups
     let mut row_styles: Vec<Option<(usize, Arc<ComputedStyle>)>> = vec![None; structure.row_count];
     let mut row_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
+    let mut header_rows: Option<(usize, usize)> = None;
+    let mut footer_rows: Option<(usize, usize)> = None;
     let mut row_cursor = 0usize;
     let mut seen_header_group = false;
     let mut seen_footer_group = false;
@@ -7805,6 +7810,10 @@ impl FormattingContext for TableFormattingContext {
         TableElementType::RowGroup
         | TableElementType::HeaderGroup
         | TableElementType::FooterGroup => {
+          let record_header_rows =
+            matches!(element_type, TableElementType::HeaderGroup) && !seen_header_group;
+          let record_footer_rows =
+            matches!(element_type, TableElementType::FooterGroup) && !seen_footer_group;
           let mut effective_display = child.style.display;
           match element_type {
             TableElementType::HeaderGroup => {
@@ -7837,6 +7846,12 @@ impl FormattingContext for TableFormattingContext {
           }
           if let (Some(start), Some(end)) = (first_visible, last_visible) {
             row_groups.push((start, end + 1, child.id, child.style.clone(), effective_display));
+            if record_header_rows {
+              header_rows = Some((start, end + 1));
+            }
+            if record_footer_rows {
+              footer_rows = Some((start, end + 1));
+            }
           }
         }
         TableElementType::Row => {
@@ -7846,6 +7861,15 @@ impl FormattingContext for TableFormattingContext {
           row_cursor += 1;
         }
         _ => {}
+      }
+    }
+
+    if table_collapsed_borders.is_some() && (header_rows.is_some() || footer_rows.is_some()) {
+      if let Some(existing) = table_collapsed_borders.as_ref() {
+        let mut updated = (**existing).clone();
+        updated.header_rows = header_rows;
+        updated.footer_rows = footer_rows;
+        table_collapsed_borders = Some(Arc::new(updated));
       }
     }
 

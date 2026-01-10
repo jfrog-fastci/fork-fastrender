@@ -270,3 +270,159 @@ fn collapsed_table_borders_respect_fragment_slice_info_in_print_pagination() {
     "expected at least one continuation page with a non-zero slice_offset"
   );
 }
+
+#[test]
+fn collapsed_table_borders_use_fragment_local_origin_with_repeated_thead_in_print_pagination() {
+  const EPSILON: f32 = 0.1;
+
+  let body_rows = (0..12)
+    .map(|_| "<tr><td></td></tr>")
+    .collect::<Vec<_>>()
+    .join("");
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          html, body {{ margin: 0; padding: 0; }}
+          table {{ border-collapse: collapse; box-decoration-break: slice; width: 100%; }}
+          th, td {{ border: 2px solid black; height: 30px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead><tr><th></th></tr></thead>
+          <tbody>{body_rows}</tbody>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut saw_continuation = false;
+  for (page_idx, page_root) in page_roots.iter().enumerate() {
+    let page_offset = Point::new(-page_root.bounds.origin.x, -page_root.bounds.origin.y);
+    let translated_page = page_root.translate(page_offset);
+    let (table_fragment, table_rect) = find_table_fragment(&translated_page, Point::ZERO)
+      .expect("table fragment with border metadata");
+
+    if table_fragment.slice_info.slice_offset <= EPSILON {
+      continue;
+    }
+    saw_continuation = true;
+
+    let list = DisplayListBuilder::new().build(&translated_page);
+    let items = list.items();
+    let table_items: Vec<_> = items
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::TableCollapsedBorders(item) => Some(item),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      table_items.len(),
+      1,
+      "expected exactly one TableCollapsedBorders display item on continuation page {page_idx}"
+    );
+    let item = table_items[0];
+    assert_point_eq_eps(item.origin, table_rect.origin, EPSILON);
+    assert!(
+      item.borders.fragment_local,
+      "expected fragment-local borders on continuation page {page_idx}"
+    );
+  }
+
+  assert!(
+    saw_continuation,
+    "expected at least one continuation page with a non-zero slice_offset"
+  );
+}
+
+#[test]
+fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_print_pagination() {
+  const EPSILON: f32 = 0.1;
+
+  let body_rows = (0..22)
+    .map(|_| "<tr><td></td></tr>")
+    .collect::<Vec<_>>()
+    .join("");
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          html, body {{ margin: 0; padding: 0; }}
+          table {{ border-collapse: collapse; box-decoration-break: slice; width: 100%; }}
+          th, td {{ border: 2px solid black; height: 30px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <tbody>{body_rows}</tbody>
+          <tfoot><tr><td></td></tr></tfoot>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 2, "table should span at least three pages");
+
+  let mut saw_target_page = false;
+  for (page_idx, page_root) in page_roots.iter().enumerate() {
+    let page_offset = Point::new(-page_root.bounds.origin.x, -page_root.bounds.origin.y);
+    let translated_page = page_root.translate(page_offset);
+    let (table_fragment, table_rect) = find_table_fragment(&translated_page, Point::ZERO)
+      .expect("table fragment with border metadata");
+
+    if table_fragment.slice_info.slice_offset <= EPSILON || table_fragment.slice_info.is_last {
+      continue;
+    }
+    saw_target_page = true;
+
+    let list = DisplayListBuilder::new().build(&translated_page);
+    let items = list.items();
+    let table_items: Vec<_> = items
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::TableCollapsedBorders(item) => Some(item),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      table_items.len(),
+      1,
+      "expected exactly one TableCollapsedBorders display item on page {page_idx}"
+    );
+    let item = table_items[0];
+    assert_point_eq_eps(item.origin, table_rect.origin, EPSILON);
+    assert!(
+      item.borders.fragment_local,
+      "expected fragment-local borders on page {page_idx}"
+    );
+  }
+
+  assert!(
+    saw_target_page,
+    "expected at least one continuation page that is not the last table fragment"
+  );
+}

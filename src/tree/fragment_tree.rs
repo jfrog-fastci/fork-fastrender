@@ -515,6 +515,14 @@ pub struct TableCollapsedBorders {
   pub horizontal_line_base: Vec<f32>,
   /// Bounds covering all collapsed border strokes (relative to the table fragment origin).
   pub paint_bounds: Rect,
+  /// Row range `[start, end)` (in original table row indices) covered by the first repeated
+  /// header group (`<thead>` / `display: table-header-group`).
+  pub header_rows: Option<(usize, usize)>,
+  /// Row range `[start, end)` (in original table row indices) covered by the first repeated
+  /// footer group (`<tfoot>` / `display: table-footer-group`).
+  pub footer_rows: Option<(usize, usize)>,
+  /// Whether this border set is already expressed in the fragment's local coordinate system.
+  pub fragment_local: bool,
 }
 
 impl TableCollapsedBorders {
@@ -554,6 +562,27 @@ impl TableCollapsedBorders {
   #[inline]
   pub fn horizontal_line_width(&self, index: usize) -> f32 {
     *self.horizontal_line_base.get(index).unwrap_or(&0.0)
+  }
+
+  #[inline]
+  pub fn row_offset(&self, row: usize) -> Option<f32> {
+    if row >= self.row_count {
+      return None;
+    }
+    let line = self.row_line_positions.get(row).copied().unwrap_or(0.0);
+    Some(line + self.horizontal_line_width(row) * 0.5)
+  }
+
+  #[inline]
+  pub fn row_height(&self, row: usize) -> Option<f32> {
+    if row >= self.row_count {
+      return None;
+    }
+    let start = self.row_line_positions.get(row).copied().unwrap_or(0.0);
+    let end = self.row_line_positions.get(row + 1).copied().unwrap_or(start);
+    let prev_half = self.horizontal_line_width(row) * 0.5;
+    let next_half = self.horizontal_line_width(row + 1) * 0.5;
+    Some((end - start - prev_half - next_half).max(0.0))
   }
 }
 
@@ -2150,6 +2179,9 @@ mod tests {
       vertical_line_base: Vec::new(),
       horizontal_line_base: Vec::new(),
       paint_bounds: Rect::from_xywh(-5.0, -5.0, 110.0, 60.0),
+      header_rows: None,
+      footer_rows: None,
+      fragment_local: false,
     }));
 
     let bbox = fragment.bounding_box();
