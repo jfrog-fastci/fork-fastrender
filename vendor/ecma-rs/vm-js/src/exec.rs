@@ -3063,7 +3063,7 @@ impl<'a> Evaluator<'a> {
     key_scope.push_root(Value::Object(object))?;
     let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
     key_scope.push_root(member_value)?;
-    let key = key_scope.heap_mut().to_property_key(member_value)?;
+    let key = self.to_property_key_operator(&mut key_scope, member_value)?;
     let reference = Reference::Property { object, key };
     self.get_value_from_reference(&mut key_scope, &reference)
   }
@@ -3106,7 +3106,7 @@ impl<'a> Evaluator<'a> {
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
-        let key = key_scope.heap_mut().to_property_key(member_value)?;
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
         Ok(Reference::Property { object, key })
       }
       _ => Err(VmError::Unimplemented("expression is not a reference")),
@@ -3427,7 +3427,7 @@ impl<'a> Evaluator<'a> {
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
-        let key = key_scope.heap_mut().to_property_key(member_value)?;
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
         let reference = Reference::Property { object, key };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, Value::Object(object))
@@ -3694,7 +3694,7 @@ impl<'a> Evaluator<'a> {
             ClassOrObjKey::Computed(expr) => {
               let value = self.eval_expr(&mut member_scope, expr)?;
               member_scope.push_root(value)?;
-              member_scope.heap_mut().to_property_key(value)?
+              self.to_property_key_operator(&mut member_scope, value)?
             }
           };
 
@@ -4348,7 +4348,7 @@ impl<'a> Evaluator<'a> {
         key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
-        let key = key_scope.heap_mut().to_property_key(member_value)?;
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
         let reference = Reference::Property { object, key };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, Value::Object(object))
@@ -4658,7 +4658,7 @@ impl<'a> Evaluator<'a> {
 
         // Root the RHS object across `ToPropertyKey`, which may allocate and trigger GC.
         rhs_scope.push_root(Value::Object(obj))?;
-        let key = rhs_scope.heap_mut().to_property_key(left)?;
+        let key = self.to_property_key_operator(&mut rhs_scope, left)?;
         Ok(Value::Bool(rhs_scope.ordinary_has_property(obj, key)?))
       }
       OperatorName::Instanceof => {
@@ -4983,6 +4983,27 @@ impl<'a> Evaluator<'a> {
       Ok(s) => Ok(s),
       Err(VmError::TypeError(msg)) => Err(throw_type_error(self.vm, &mut string_scope, msg)?),
       Err(err) => Err(err),
+    }
+  }
+
+  fn to_property_key_operator(
+    &mut self,
+    scope: &mut Scope<'_>,
+    value: Value,
+  ) -> Result<PropertyKey, VmError> {
+    // `ToPropertyKey` includes `ToPrimitive` with a String hint, and may allocate.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(value)?;
+    let prim = self.to_primitive(&mut key_scope, value, ToPrimitiveHint::String)?;
+    key_scope.push_root(prim)?;
+    debug_assert!(self.is_primitive_value(prim), "to_primitive returned object");
+
+    match prim {
+      Value::Symbol(sym) => Ok(PropertyKey::Symbol(sym)),
+      other => {
+        let s = self.to_string_operator(&mut key_scope, other)?;
+        Ok(PropertyKey::String(s))
+      }
     }
   }
 

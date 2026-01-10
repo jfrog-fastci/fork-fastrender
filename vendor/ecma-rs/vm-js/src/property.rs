@@ -205,14 +205,15 @@ impl Heap {
   ///
   /// This is a minimal implementation of the `ToPropertyKey` shape from ECMA-262:
   /// - `String`/`Symbol` values are returned directly.
-  /// - `Object` values are not supported yet (requires a real `ToPrimitive` implementation).
+  /// - `Object` values are not supported here because full `ToPropertyKey` requires `ToPrimitive`,
+  ///   which can invoke user code. Use [`Scope::to_property_key`] for the spec-shaped operation.
   /// - All other values go through `ToString`.
   pub fn to_property_key(&mut self, value: Value) -> Result<PropertyKey, VmError> {
     match value {
       Value::String(s) => Ok(PropertyKey::String(s)),
       Value::Symbol(s) => Ok(PropertyKey::Symbol(s)),
       Value::Object(_) => Err(VmError::Unimplemented(
-        "ToPropertyKey on objects requires ToPrimitive/built-ins",
+        "ToPropertyKey on objects requires ToPrimitive (use Scope::to_property_key)",
       )),
       other => Ok(PropertyKey::String(self.to_string(other)?)),
     }

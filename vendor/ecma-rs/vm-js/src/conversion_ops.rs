@@ -205,5 +205,39 @@ impl<'a> Scope<'a> {
 
     scope.heap_mut().to_number(prim)
   }
-}
 
+  /// ECMAScript `ToPropertyKey(argument)`.
+  ///
+  /// This performs `ToPrimitive(argument, hint String)` followed by:
+  /// - returning the Symbol directly, or
+  /// - converting the primitive to a String.
+  ///
+  /// This operation can invoke user code (`@@toPrimitive`, `toString`, `valueOf`) and therefore
+  /// requires a [`Vm`] + host context.
+  pub fn to_property_key(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<PropertyKey, VmError> {
+    // Root the input across `ToPrimitive` / `ToString` allocations, since both can trigger GC.
+    let mut scope = self.reborrow();
+    scope.push_root(value)?;
+
+    let prim = match value {
+      Value::Object(_) => scope.to_primitive(vm, host, hooks, value, ToPrimitiveHint::String)?,
+      other => other,
+    };
+    scope.push_root(prim)?;
+    debug_assert!(!matches!(prim, Value::Object(_)), "ToPrimitive returned object");
+
+    match prim {
+      Value::Symbol(sym) => Ok(PropertyKey::Symbol(sym)),
+      other => {
+        let s = scope.to_string(vm, host, hooks, other)?;
+        Ok(PropertyKey::String(s))
+      }
+    }
+  }
+}

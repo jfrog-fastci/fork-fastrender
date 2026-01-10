@@ -452,7 +452,11 @@ fn resolve_obj_pat_key(
       let value = eval_expr(vm, host, hooks, env, strict, this, scope, expr)?;
       // Root the computed value until `to_property_key` completes.
       let value = scope.push_root(value)?;
-      let key = scope.heap_mut().to_property_key(value)?;
+      let key = match scope.to_property_key(vm, host, hooks, value) {
+        Ok(key) => key,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
+        Err(err) => return Err(err),
+      };
       Ok(key)
     }
   }
@@ -561,7 +565,11 @@ fn assign_to_computed_member(
 
   let key_value = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.member)?;
   let key_value = rhs_scope.push_root(key_value)?;
-  let key = rhs_scope.heap_mut().to_property_key(key_value)?;
+  let key = match rhs_scope.to_property_key(vm, host, hooks, key_value) {
+    Ok(key) => key,
+    Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut rhs_scope, msg)?),
+    Err(err) => return Err(err),
+  };
 
   let ok =
     rhs_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, Value::Object(obj))?;

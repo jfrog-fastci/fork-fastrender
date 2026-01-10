@@ -127,3 +127,58 @@ fn string_constructor_construct_throws_on_symbol() {
     .unwrap();
   assert_eq!(ok, Value::Bool(true));
 }
+
+#[test]
+fn computed_member_to_property_key_stringifies_object_keys() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        const o = {};\n\
+        o[{}] = 1;\n\
+        return o['[object Object]'] === 1;\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
+fn to_property_key_uses_to_primitive_string_hint_and_allows_symbol_keys() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        let calls = '';\n\
+        const sym = Symbol('k');\n\
+        const keyObj = {\n\
+          toString() { calls += 's'; return {}; },\n\
+          valueOf() { calls += 'v'; return sym; },\n\
+        };\n\
+        const o = {};\n\
+        o[keyObj] = 42;\n\
+        return o[sym] === 42 && calls === 'sv';\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
+fn to_property_key_throws_when_symbol_to_primitive_is_not_callable_in_computed_member() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        try {\n\
+          const o = {};\n\
+          o[{ [Symbol.toPrimitive]: 123 }] = 1;\n\
+          return false;\n\
+        } catch (e) {\n\
+          return e && e.name === 'TypeError';\n\
+        }\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}

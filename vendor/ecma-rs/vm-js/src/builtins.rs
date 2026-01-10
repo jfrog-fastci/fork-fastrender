@@ -331,10 +331,10 @@ pub fn object_constructor_construct(
 }
 
 pub fn object_define_property(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -345,7 +345,7 @@ pub fn object_define_property(
   scope.push_root(Value::Object(target))?;
 
   let prop = args.get(1).copied().unwrap_or(Value::Undefined);
-  let key = scope.heap_mut().to_property_key(prop)?;
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
   let desc_obj = require_object(args.get(2).copied().unwrap_or(Value::Undefined))?;
