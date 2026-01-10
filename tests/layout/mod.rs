@@ -101,6 +101,7 @@ mod flex_item_blockification_inline_replaced;
 mod flex_item_flex_container_intrinsic_main_size;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
+mod flex_justify_content_overflow_unsafe;
 mod flex_forced_breaks;
 mod flex_measure_does_not_clamp_max_content_height_to_viewport;
 mod flex_fragmentation_row_lines;

@@ -1549,11 +1549,20 @@ fn resolve_flexible_lengths(line: &mut FlexLine, constants: &AlgoConstants) {
     let total_violation = unfrozen.iter_mut().fold(0.0, |acc, child| -> f32 {
       let resolved_min_main: Option<f32> = child.resolved_minimum_main_size.into();
       let max_main = child.max_size.main(constants.dir);
+      // CSS Flexbox §9.7 (step d):
+      // After clamping to min/max, floor the *content-box* size at zero.
+      //
+      // Taffy stores flex item target sizes in border-box units, so a negative content-box size
+      // corresponds to a border-box size that is smaller than the item's padding+border sum.
+      // Ensure the border-box size is floored by that sum so later phases (e.g. main-axis
+      // alignment via `justify-content`) see consistent sizes.
+      let padding_border_sum =
+        child.padding.main_axis_sum(constants.dir) + child.border.main_axis_sum(constants.dir);
       let clamped = child
         .target_size
         .main(constants.dir)
         .maybe_clamp(resolved_min_main, max_main)
-        .max(0.0);
+        .max(padding_border_sum);
       child.violation = clamped - child.target_size.main(constants.dir);
       child.target_size.set_main(constants.dir, clamped);
       child.outer_target_size.set_main(

@@ -4602,7 +4602,9 @@ impl BlockFormattingContext {
             child_margins.collapsible_through,
           );
           current_y + offset
-        } else if collapse_with_parent_top && margin_ctx.is_at_start() && !child_margins.collapsible_through
+        } else if collapse_with_parent_top
+          && margin_ctx.is_at_start()
+          && !child_margins.collapsible_through
         {
           // Parent/first-child margin collapsing is represented by the parent's own collapsed
           // margins. Discard any leading collapsible-through margins and place the first
@@ -15063,6 +15065,80 @@ mod tests {
       (fragments[1].bounds.x() - 40.0).abs() < 0.5,
       "expected BFC root to be shifted past the float, got {:.2}",
       fragments[1].bounds.x()
+    );
+  }
+
+  #[test]
+  fn sibling_margin_collapsing_is_not_broken_by_spurious_clearance() {
+    // Regression: clearance calculations in an external float context used to compute the
+    // post-clearance margin-edge position via `(base + y) - base`. With certain `base` values this
+    // produced tiny positive rounding errors even when `clear:none`, triggering the clearance path
+    // and breaking sibling margin collapsing (margins summed instead of collapsing).
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let nearest_cb = ContainingBlock::viewport(viewport);
+    let constraints = LayoutConstraints::definite_width(viewport.width);
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    let outer_style = Arc::new(outer_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.display = Display::Block;
+    first_style.height = Some(Length::px(1.0));
+    first_style.height_keyword = None;
+    first_style.margin_bottom = Some(Length::px(23.1));
+    let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+
+    let mut second_style = ComputedStyle::default();
+    second_style.display = Display::Block;
+    second_style.height = Some(Length::px(1.0));
+    second_style.height_keyword = None;
+    second_style.margin_top = Some(Length::px(21.0));
+    let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+
+    let outer = BoxNode::new_block(
+      outer_style,
+      FormattingContextType::Block,
+      vec![first, second],
+    );
+
+    let paint_viewport =
+      paint_viewport_for(outer.style.writing_mode, outer.style.direction, viewport);
+    let mut float_ctx = FloatContext::new(viewport.width);
+
+    // Ensure this test covers the rounding behavior that used to trigger spurious clearance.
+    let float_base_y: f32 = 7958.390625;
+    let margin_edge_y: f32 = 24.1;
+    let cleared_margin_edge_y = (float_base_y + margin_edge_y) - float_base_y;
+    let clearance = (cleared_margin_edge_y - margin_edge_y).max(0.0_f32);
+    assert!(
+      clearance > 0.0,
+      "test precondition failed: expected cancellation to produce spurious clearance, got {clearance}"
+    );
+
+    let (fragments, _height, _positioned) = fc
+      .layout_children_with_external_floats(
+        &outer,
+        &constraints,
+        &nearest_cb,
+        &nearest_cb,
+        paint_viewport,
+        Some(&mut float_ctx),
+        0.0,
+        float_base_y,
+      )
+      .expect("layout children");
+
+    assert_eq!(fragments.len(), 2);
+    assert!(
+      (fragments[1].bounds.y() - 24.1).abs() < 0.01,
+      "expected sibling margins to collapse (gap=max(23.1,21)), got y={}",
+      fragments[1].bounds.y()
     );
   }
 
