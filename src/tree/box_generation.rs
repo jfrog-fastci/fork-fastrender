@@ -4140,7 +4140,12 @@ fn create_pseudo_element_box(
       ContentItem::NoOpenQuote => context.push_quote(),
       ContentItem::NoCloseQuote => context.pop_quote(),
       ContentItem::Element { .. } => {
-        // Running elements are not yet resolved into generated content.
+        flush_text(
+          &mut text_buf,
+          &generated_content_style,
+          generated_pseudo,
+          &mut children,
+        );
       }
       ContentItem::Url(url) => {
         if trim_ascii_whitespace(url).is_empty() {

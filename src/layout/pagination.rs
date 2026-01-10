@@ -2312,11 +2312,42 @@ enum MarginBoxPlanContent {
   /// without running layout.
   SnapshotOnly { snapshot: FragmentNode },
   /// A regular margin box laid out via a dedicated box tree, plus any running-element snapshots to
-  /// append after layout.
+  /// substitute into the laid-out fragment tree.
   BoxTree {
     tree: BoxTree,
-    element_snapshots: Vec<FragmentNode>,
+    element_placeholders: HashMap<usize, FragmentNode>,
   },
+}
+
+fn substitute_running_element_placeholders(
+  root: &mut FragmentNode,
+  element_placeholders: &HashMap<usize, FragmentNode>,
+) {
+  if element_placeholders.is_empty() {
+    return;
+  }
+
+  let mut stack: Vec<*mut FragmentNode> = vec![root as *mut FragmentNode];
+  while let Some(node_ptr) = stack.pop() {
+    unsafe {
+      let node = &mut *node_ptr;
+      if let FragmentContent::Replaced { box_id: Some(id), .. } = &node.content {
+        if let Some(snapshot) = element_placeholders.get(id) {
+          let mut inserted = snapshot.clone();
+          inserted.translate_root_in_place(Point::new(node.bounds.x(), node.bounds.y()));
+          inserted.fragmentainer_index = node.fragmentainer_index;
+          inserted.fragmentainer = node.fragmentainer;
+          inserted.slice_info = node.slice_info;
+          *node = inserted;
+        }
+      }
+
+      let children = node.children_mut();
+      for child in children.iter_mut().rev() {
+        stack.push(child as *mut FragmentNode);
+      }
+    }
+  }
 }
 
 fn build_margin_box_fragments(
@@ -2364,21 +2395,13 @@ fn build_margin_box_fragments(
     let style_arc = Arc::new(owned_style);
     let box_style = style_arc.as_ref();
     let plan = if let ContentValue::Items(items) = &box_style.content_value {
-      let mut element_snapshots = Vec::new();
-      for item in items {
-        if let ContentItem::Element { ident, select } = item {
+      if items.len() == 1 {
+        if let ContentItem::Element { ident, select } = &items[0] {
           if let Some(snapshot) = crate::layout::running_elements::select_running_element(
             ident,
             *select,
             running_elements,
           ) {
-            element_snapshots.push(snapshot);
-          }
-        }
-      }
-      if items.len() == 1 {
-        if let ContentItem::Element { .. } = &items[0] {
-          if let Some(snapshot) = element_snapshots.pop() {
             MarginBoxPlan {
               style: style_arc,
               content: MarginBoxPlanContent::SnapshotOnly { snapshot },
@@ -2391,58 +2414,68 @@ fn build_margin_box_fragments(
               style: style_arc,
               content: MarginBoxPlanContent::BoxTree {
                 tree: BoxTree::new(root),
-                element_snapshots,
+                element_placeholders: HashMap::new(),
               },
             }
           }
         } else {
-          let children = build_margin_box_children(
+          let (children, element_snapshots) = build_margin_box_children(
             box_style,
             page_index,
             page_count,
             running_strings,
+            running_elements,
             &style_arc,
           );
           let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+          let tree = BoxTree::new(root);
+          let element_placeholders =
+            build_running_element_placeholder_map(&tree, element_snapshots);
           MarginBoxPlan {
             style: style_arc,
             content: MarginBoxPlanContent::BoxTree {
-              tree: BoxTree::new(root),
-              element_snapshots,
+              tree,
+              element_placeholders,
             },
           }
         }
       } else {
-        let children = build_margin_box_children(
+        let (children, element_snapshots) = build_margin_box_children(
           box_style,
           page_index,
           page_count,
           running_strings,
+          running_elements,
           &style_arc,
         );
         let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+        let tree = BoxTree::new(root);
+        let element_placeholders = build_running_element_placeholder_map(&tree, element_snapshots);
         MarginBoxPlan {
           style: style_arc,
           content: MarginBoxPlanContent::BoxTree {
-            tree: BoxTree::new(root),
-            element_snapshots,
+            tree,
+            element_placeholders,
           },
         }
       }
     } else {
-      let children = build_margin_box_children(
+      let (children, element_snapshots) = build_margin_box_children(
         box_style,
         page_index,
         page_count,
         running_strings,
+        running_elements,
         &style_arc,
       );
       let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+      let tree = BoxTree::new(root);
+      let element_placeholders = build_running_element_placeholder_map(&tree, element_snapshots);
       MarginBoxPlan {
         style: style_arc,
         content: MarginBoxPlanContent::BoxTree {
-          tree: BoxTree::new(root),
-          element_snapshots: Vec::new(),
+          tree,
+          element_placeholders,
         },
       }
     };
@@ -2484,7 +2517,7 @@ fn build_margin_box_fragments(
       }
       MarginBoxPlanContent::BoxTree {
         tree: box_tree,
-        element_snapshots,
+        element_placeholders,
       } => {
         let config = LayoutConfig::new(Size::new(bounds.width(), bounds.height()));
         let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
@@ -2496,17 +2529,7 @@ fn build_margin_box_fragments(
             tree.root.scroll_overflow.width().max(bounds.width()),
             tree.root.scroll_overflow.height().max(bounds.height()),
           );
-          let mut next_y = tree
-            .root
-            .children
-            .iter()
-            .map(|child| child.bounds.y() + child.bounds.height())
-            .fold(0.0, f32::max);
-          for mut snapshot in element_snapshots.iter().cloned() {
-            translate_fragment(&mut snapshot, 0.0, next_y);
-            next_y += snapshot.bounds.height();
-            tree.root.children_mut().push(snapshot);
-          }
+          substitute_running_element_placeholders(&mut tree.root, element_placeholders);
           translate_fragment(&mut tree.root, bounds.x(), bounds.y());
           tree
             .root
@@ -2520,14 +2543,42 @@ fn build_margin_box_fragments(
   fragments
 }
 
+fn build_running_element_placeholder_map(
+  tree: &BoxTree,
+  element_snapshots: Vec<FragmentNode>,
+) -> HashMap<usize, FragmentNode> {
+  if element_snapshots.is_empty() {
+    return HashMap::new();
+  }
+  let mut placeholder_ids = Vec::new();
+  for child in tree.root.children.iter() {
+    if let crate::tree::box_tree::BoxType::Replaced(replaced) = &child.box_type {
+      if matches!(replaced.replaced_type, ReplacedType::Canvas) {
+        placeholder_ids.push(child.id);
+      }
+    }
+  }
+  debug_assert_eq!(
+    placeholder_ids.len(),
+    element_snapshots.len(),
+    "running element placeholder count mismatch"
+  );
+  placeholder_ids
+    .into_iter()
+    .zip(element_snapshots.into_iter())
+    .collect()
+}
+
 fn build_margin_box_children(
   box_style: &ComputedStyle,
   page_index: usize,
   page_count: usize,
   running_strings: &HashMap<String, RunningStringValues>,
+  running_elements: &HashMap<String, RunningElementValues>,
   style: &Arc<ComputedStyle>,
-) -> Vec<BoxNode> {
+) -> (Vec<BoxNode>, Vec<FragmentNode>) {
   let mut children: Vec<BoxNode> = Vec::new();
+  let mut element_snapshots: Vec<FragmentNode> = Vec::new();
   let mut context = ContentContext::new();
   context.set_quotes(box_style.quotes.clone());
   context.set_running_strings(running_strings.clone());
@@ -2622,6 +2673,25 @@ fn build_margin_box_children(
           }
           ContentItem::Element { .. } => {
             flush_text(&mut text_buf, &mut children, style);
+            if let ContentItem::Element { ident, select } = item {
+              if let Some(snapshot) = crate::layout::running_elements::select_running_element(
+                ident,
+                *select,
+                running_elements,
+              ) {
+                let width = snapshot.bounds.width();
+                let height = snapshot.bounds.height();
+                if width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite() {
+                  element_snapshots.push(snapshot);
+                  children.push(BoxNode::new_replaced(
+                    style.clone(),
+                    ReplacedType::Canvas,
+                    Some(Size::new(width, height)),
+                    None,
+                  ));
+                }
+              }
+            }
           }
         }
       }
@@ -2630,7 +2700,7 @@ fn build_margin_box_children(
   }
 
   flush_text(&mut text_buf, &mut children, style);
-  children
+  (children, element_snapshots)
 }
 
 fn layout_for_style<'a>(
@@ -3545,8 +3615,11 @@ mod tests {
     box_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
     let style = Arc::new(box_style.clone());
     let running_strings: HashMap<String, RunningStringValues> = HashMap::new();
+    let running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
-    let children = build_margin_box_children(&box_style, 0, 1, &running_strings, &style);
+    let (children, element_snapshots) =
+      build_margin_box_children(&box_style, 0, 1, &running_strings, &running_elements, &style);
+    assert!(element_snapshots.is_empty());
     assert_eq!(children.len(), 1);
     let crate::tree::box_tree::BoxType::Replaced(replaced) = &children[0].box_type else {
       panic!("expected replaced child");

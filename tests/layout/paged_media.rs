@@ -1144,6 +1144,46 @@ fn running_header_carries_forward() {
 }
 
 #[test]
+fn running_element_in_margin_box_is_inserted_in_content_order() {
+  let html = r#"
+     <html>
+       <head>
+         <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px 20px;
+            @top-center { content: "A-" element(header) "-B"; }
+          }
+          body { margin: 0; }
+          .running { position: running(header); margin: 0; font-size: 16px; line-height: 16px; }
+        </style>
+      </head>
+      <body>
+        <span class="running">Title</span>
+        <div style="height: 400px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!(
+    margin_boxes_contain_text(page_roots[0], "A-Title-B"),
+    "page 1 margin box should contain running element in content order"
+  );
+  assert!(
+    margin_boxes_contain_text(page_roots[1], "A-Title-B"),
+    "page 2 margin box should contain running element in content order"
+  );
+}
+
+#[test]
 fn running_element_inside_style_containment_does_not_affect_margin_boxes() {
   let html = r#"
     <html>
