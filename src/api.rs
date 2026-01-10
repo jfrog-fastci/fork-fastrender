@@ -11433,6 +11433,7 @@ impl FastRender {
       viewport_fixed_width.max(1) as f32,
       viewport_fixed_height.max(1) as f32,
     );
+    config.quirks_mode = dom_with_state.document_quirks_mode();
     config.fragmentation = manual_fragmentation;
     config.viewport_scroll = viewport_scroll;
     config.enable_cache = !toggles.truthy("FASTR_DISABLE_LAYOUT_CACHE");

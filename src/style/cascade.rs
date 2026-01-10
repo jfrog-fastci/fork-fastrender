@@ -34288,25 +34288,31 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
       let revert_layer_base_custom_properties = custom_layer_snapshots.get(&layer_key);
-      for declaration in rule.declarations.iter() {
-        if declaration.important || !declaration.property.is_custom() {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for declaration in rule.declarations.iter() {
+          if declaration.important || !declaration.property.is_custom() {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base_and_custom_properties(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            None,
+            revert_layer_base_custom_properties,
+            parent_font_size,
+            root_font_size,
+            viewport,
+          );
         }
-        if !filter(declaration) {
-          continue;
-        }
-        apply_declaration_with_base_and_custom_properties(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          None,
-          revert_layer_base_custom_properties,
-          parent_font_size,
-          root_font_size,
-          viewport,
-        );
-      }
+      });
     }
   } else if any_custom_normal {
     for &rule_idx in rule_order.iter() {
@@ -34318,25 +34324,31 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
-      for declaration in rule.declarations.iter() {
-        if declaration.important || !declaration.property.is_custom() {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for declaration in rule.declarations.iter() {
+          if declaration.important || !declaration.property.is_custom() {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base_and_custom_properties(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            None,
+            None,
+            parent_font_size,
+            root_font_size,
+            viewport,
+          );
         }
-        if !filter(declaration) {
-          continue;
-        }
-        apply_declaration_with_base_and_custom_properties(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          None,
-          None,
-          parent_font_size,
-          root_font_size,
-          viewport,
-        );
-      }
+      });
     }
   }
   if any_custom_important {
@@ -34363,25 +34375,31 @@ fn apply_cascaded_declarations<'a, F>(
       };
       let (start, end) = important_custom_ranges[rule_idx];
       let decls = rule.declarations.as_ref();
-      for &decl_order in important_custom_decl_orders[start..end].iter() {
-        let declaration = &decls[decl_order];
-        debug_assert!(declaration.important);
-        debug_assert!(declaration.property.is_custom());
-        if !filter(declaration) {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for &decl_order in important_custom_decl_orders[start..end].iter() {
+          let declaration = &decls[decl_order];
+          debug_assert!(declaration.important);
+          debug_assert!(declaration.property.is_custom());
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base_and_custom_properties(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            None,
+            revert_layer_base_custom_properties,
+            parent_font_size,
+            root_font_size,
+            viewport,
+          );
         }
-        apply_declaration_with_base_and_custom_properties(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          None,
-          revert_layer_base_custom_properties,
-          parent_font_size,
-          root_font_size,
-          viewport,
-        );
-      }
+      });
     }
   }
 
@@ -34413,48 +34431,54 @@ fn apply_cascaded_declarations<'a, F>(
           StyleOrigin::UserAgent => defaults,
           StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
         };
-        for declaration in rule.declarations.iter() {
-          if declaration.important || declaration.property.is_custom() {
-            continue;
-          }
-          if declaration.property.as_str() != "color-scheme" {
-            continue;
-          }
-          if !filter(declaration) {
-            continue;
-          }
-          let revert_layer_base = if track_revert_layer {
-            let stratum = (rule.origin.rank(), false);
-            if color_scheme_layer_snapshot_stratum != Some(stratum) {
-              color_scheme_layer_snapshots.clear();
-              color_scheme_layer_snapshot_stratum = Some(stratum);
+        let cascade_origin = match rule.origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        crate::style::with_cascade_order_origin(cascade_origin, || {
+          for declaration in rule.declarations.iter() {
+            if declaration.important || declaration.property.is_custom() {
+              continue;
             }
-            let layer_order = &rule.layer_order;
-            let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-              Some(existing) => existing,
-              None => {
-                color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                color_scheme_layer_snapshots
-                  .get_mut(layer_order.as_ref())
-                  .expect("layer snapshot inserted")
+            if declaration.property.as_str() != "color-scheme" {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            let revert_layer_base = if track_revert_layer {
+              let stratum = (rule.origin.rank(), false);
+              if color_scheme_layer_snapshot_stratum != Some(stratum) {
+                color_scheme_layer_snapshots.clear();
+                color_scheme_layer_snapshot_stratum = Some(stratum);
               }
+              let layer_order = &rule.layer_order;
+              let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+                Some(existing) => existing,
+                None => {
+                  color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                  color_scheme_layer_snapshots
+                    .get_mut(layer_order.as_ref())
+                    .expect("layer snapshot inserted")
+                }
+              };
+              Some(&*layer_base)
+            } else {
+              None
             };
-            Some(&*layer_base)
-          } else {
-            None
-          };
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            false,
-          );
-        }
+            apply_declaration_with_base(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              false,
+            );
+          }
+        });
       }
     }
 
@@ -34470,48 +34494,54 @@ fn apply_cascaded_declarations<'a, F>(
         };
         let (start, end) = important_other_ranges[rule_idx];
         let decls = rule.declarations.as_ref();
-        for &decl_order in important_other_decl_orders[start..end].iter() {
-          let declaration = &decls[decl_order];
-          debug_assert!(declaration.important);
-          debug_assert!(!declaration.property.is_custom());
-          if declaration.property.as_str() != "color-scheme" {
-            continue;
-          }
-          if !filter(declaration) {
-            continue;
-          }
-          let revert_layer_base = if track_revert_layer {
-            let stratum = (rule.origin.rank(), true);
-            if color_scheme_layer_snapshot_stratum != Some(stratum) {
-              color_scheme_layer_snapshots.clear();
-              color_scheme_layer_snapshot_stratum = Some(stratum);
+        let cascade_origin = match rule.origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        crate::style::with_cascade_order_origin(cascade_origin, || {
+          for &decl_order in important_other_decl_orders[start..end].iter() {
+            let declaration = &decls[decl_order];
+            debug_assert!(declaration.important);
+            debug_assert!(!declaration.property.is_custom());
+            if declaration.property.as_str() != "color-scheme" {
+              continue;
             }
-            let layer_order = &rule.layer_order;
-            let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-              Some(existing) => existing,
-              None => {
-                color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                color_scheme_layer_snapshots
-                  .get_mut(layer_order.as_ref())
-                  .expect("layer snapshot inserted")
+            if !filter(declaration) {
+              continue;
+            }
+            let revert_layer_base = if track_revert_layer {
+              let stratum = (rule.origin.rank(), true);
+              if color_scheme_layer_snapshot_stratum != Some(stratum) {
+                color_scheme_layer_snapshots.clear();
+                color_scheme_layer_snapshot_stratum = Some(stratum);
               }
+              let layer_order = &rule.layer_order;
+              let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+                Some(existing) => existing,
+                None => {
+                  color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                  color_scheme_layer_snapshots
+                    .get_mut(layer_order.as_ref())
+                    .expect("layer snapshot inserted")
+                }
+              };
+              Some(&*layer_base)
+            } else {
+              None
             };
-            Some(&*layer_base)
-          } else {
-            None
-          };
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            false,
-          );
-        }
+            apply_declaration_with_base(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              false,
+            );
+          }
+        });
       }
     }
   }
@@ -34652,29 +34682,35 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
       let revert_layer_base = layer_snapshots.get(&layer_key).map(|s| s as &ComputedStyle);
-      for declaration in rule.declarations.iter() {
-        if declaration.important
-          || declaration.property.is_custom()
-          || declaration.property.as_str() == "color-scheme"
-          || declaration.property.as_str() == "writing-mode"
-        {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for declaration in rule.declarations.iter() {
+          if declaration.important
+            || declaration.property.is_custom()
+            || declaration.property.as_str() == "color-scheme"
+            || declaration.property.as_str() == "writing-mode"
+          {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            is_dark_color_scheme,
+          );
         }
-        if !filter(declaration) {
-          continue;
-        }
-        apply_declaration_with_base(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          revert_layer_base,
-          parent_font_size,
-          root_font_size,
-          viewport,
-          is_dark_color_scheme,
-        );
-      }
+      });
     }
   } else if any_other_normal {
     for &rule_idx in rule_order.iter() {
@@ -34686,29 +34722,35 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
-      for declaration in rule.declarations.iter() {
-        if declaration.important
-          || declaration.property.is_custom()
-          || declaration.property.as_str() == "color-scheme"
-          || declaration.property.as_str() == "writing-mode"
-        {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for declaration in rule.declarations.iter() {
+          if declaration.important
+            || declaration.property.is_custom()
+            || declaration.property.as_str() == "color-scheme"
+            || declaration.property.as_str() == "writing-mode"
+          {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            None,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            is_dark_color_scheme,
+          );
         }
-        if !filter(declaration) {
-          continue;
-        }
-        apply_declaration_with_base(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          None,
-          parent_font_size,
-          root_font_size,
-          viewport,
-          is_dark_color_scheme,
-        );
-      }
+      });
     }
   }
   if any_other_important {
@@ -34735,31 +34777,36 @@ fn apply_cascaded_declarations<'a, F>(
       };
       let (start, end) = important_other_ranges[rule_idx];
       let decls = rule.declarations.as_ref();
-      for &decl_order in important_other_decl_orders[start..end].iter() {
-        let declaration = &decls[decl_order];
-        debug_assert!(declaration.important);
-        debug_assert!(!declaration.property.is_custom());
-        if declaration.property.as_str() == "color-scheme" {
-          continue;
+      let cascade_origin = match rule.origin {
+        StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+        StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+      };
+      crate::style::with_cascade_order_origin(cascade_origin, || {
+        for &decl_order in important_other_decl_orders[start..end].iter() {
+          let declaration = &decls[decl_order];
+          debug_assert!(declaration.important);
+          debug_assert!(!declaration.property.is_custom());
+          if declaration.property.as_str() == "color-scheme"
+            || declaration.property.as_str() == "writing-mode"
+          {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            is_dark_color_scheme,
+          );
         }
-        if declaration.property.as_str() == "writing-mode" {
-          continue;
-        }
-        if !filter(declaration) {
-          continue;
-        }
-        apply_declaration_with_base(
-          styles,
-          declaration,
-          parent_styles,
-          revert_base,
-          revert_layer_base,
-          parent_font_size,
-          root_font_size,
-          viewport,
-          is_dark_color_scheme,
-        );
-      }
+      });
     }
   }
   resolve_pending_logical_properties(styles);

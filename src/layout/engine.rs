@@ -47,6 +47,7 @@ use crate::tree::fragment_tree::FragmentTree;
 use lru::LruCache;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
+use selectors::context::QuirksMode;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -524,6 +525,11 @@ pub struct LayoutConfig {
   /// layout should use the reduced viewport while viewport-fixed elements continue to be sized
   /// against the full visual viewport.
   pub viewport_fixed_containing_block: Size,
+  /// HTML document quirks mode (from the HTML parser).
+  ///
+  /// Certain web-compat layout behaviors depend on quirks mode (e.g. margin collapsing at the
+  /// top/bottom of the document).
+  pub quirks_mode: QuirksMode,
 
   /// Scroll offset applied to the viewport when evaluating viewport-dependent layout features.
   ///
@@ -568,6 +574,7 @@ impl LayoutConfig {
     Self {
       initial_containing_block,
       viewport_fixed_containing_block: initial_containing_block,
+      quirks_mode: QuirksMode::NoQuirks,
       viewport_scroll: Point::ZERO,
       enable_cache: false,
       enable_incremental: false,
@@ -859,6 +866,7 @@ impl LayoutEngine {
       .with_viewport_fixed_size(config.viewport_fixed_containing_block)
       .with_image_cache(image_cache)
       .with_viewport_scroll(config.viewport_scroll)
+      .with_quirks_mode(config.quirks_mode)
       .with_parallelism(config.parallelism);
     let parallel_pool = config
       .parallelism

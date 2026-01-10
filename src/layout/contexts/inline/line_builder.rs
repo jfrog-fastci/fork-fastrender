@@ -6344,6 +6344,19 @@ mod tests {
   }
 
   #[test]
+  fn breakable_text_that_overflows_by_subpixel_stays_on_one_line() {
+    let mut builder = make_builder(100.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("Compare Now", 100.25)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].items.len(), 1);
+    assert_eq!(flatten_text(&lines[0].items[0].item), "Compare Now");
+  }
+
+  #[test]
   fn test_line_builder_force_break() {
     let mut builder = make_builder(200.0);
 

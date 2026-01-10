@@ -1672,6 +1672,21 @@ impl InlineFormattingContext {
             continue;
           }
           self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          // If the inline flow ends with a hard break (`<br>`) and the next in-flow child is a
+          // block-level box, browsers do not create an extra empty line box between the inline
+          // content and the following block. The block starts on the line immediately after the
+          // break, so drop the final hard break before flushing this inline segment.
+          if matches!(current_items.last(), Some(InlineItem::HardBreak)) {
+            // A leading `<br>` (e.g. `<div><br><div>block</div></div>`) should still create an
+            // empty line, so only drop the trailing hard break when the inline segment contains
+            // real in-flow content before it.
+            let has_non_break_content = current_items.iter().any(|item| {
+              !matches!(item, InlineItem::HardBreak | InlineItem::StaticPositionAnchor(_))
+            });
+            if has_non_break_content {
+              current_items.pop();
+            }
+          }
           flush_current(&mut segments, &mut current_items);
           whitespace.reset();
           segments.push(InlineFlowSegment::Block(BoxNodeRef::new(child)));
@@ -6787,6 +6802,7 @@ impl InlineFormattingContext {
             compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
           let mut child_x = box_item.start_edge;
           let mut children = Vec::with_capacity(box_item.children.len());
+          let paint_origin_y = block_pos - box_item.content_offset_y;
           for (idx, child) in box_item.children.iter().enumerate() {
             let child_y = box_item.content_offset_y + baseline + child_offsets[idx]
               - child.baseline_metrics().baseline_offset;
@@ -6796,7 +6812,7 @@ impl InlineFormattingContext {
               child_x,
               inline_vertical,
               line_origin,
-              parent_offset_in_line.translate(Point::new(inline_pos, block_pos)),
+              parent_offset_in_line.translate(Point::new(inline_pos, paint_origin_y)),
               relative_cb,
               anchor_positions.as_deref_mut(),
               positioned_containing_blocks.as_deref_mut(),
@@ -6807,9 +6823,9 @@ impl InlineFormattingContext {
 
           let bounds = Rect::from_xywh(
             inline_pos,
-            block_pos,
+            paint_origin_y,
             box_item.width(),
-            box_item.metrics.height,
+            box_item.metrics.height + box_item.content_offset_y + box_item.bottom_inset,
           );
           record_containing_block(
             bounds,
@@ -7131,6 +7147,7 @@ impl InlineFormattingContext {
         let (baseline, _height, child_offsets) =
           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
         let mut child_x = box_item.start_edge;
+        let paint_origin_y = y - box_item.content_offset_y;
         let children: Vec<_> = box_item
           .children
           .iter()
@@ -7144,7 +7161,12 @@ impl InlineFormattingContext {
           })
           .collect();
 
-        let bounds = Rect::from_xywh(x, y, box_item.width(), box_item.metrics.height);
+        let bounds = Rect::from_xywh(
+          x,
+          paint_origin_y,
+          box_item.width(),
+          box_item.metrics.height + box_item.content_offset_y + box_item.bottom_inset,
+        );
         let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
         FragmentNode::new_with_style(
           bounds,
@@ -8092,25 +8114,71 @@ fn compute_inline_items_single_line_layout(
 
 fn compute_inline_box_metrics(
   children: &[InlineItem],
-  content_offset_y: f32,
-  bottom_inset: f32,
+  _content_offset_y: f32,
+  _bottom_inset: f32,
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  let (baseline, line_height, _) = compute_inline_items_single_line_layout(children, fallback);
+  let effective_children: Vec<&InlineItem> = children
+    .iter()
+    .filter(|child| {
+      !matches!(
+        child,
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+      )
+    })
+    .collect();
 
-  let baseline_offset = content_offset_y + baseline;
-  let height = content_offset_y + line_height + bottom_inset;
+  if effective_children.is_empty() {
+    // Per CSS 2.1 §10.8, the inline box used for line box sizing is based on `line-height` and
+    // font metrics. Border/padding are painted around the inline box but do not affect the
+    // line-height strut, so ignore them here (they are accounted for when constructing fragment
+    // bounds for painting).
+    let baseline_offset = fallback.baseline_offset;
+    let ascent = fallback.ascent;
+    let height = fallback.height;
+    let descent = fallback.descent;
+    return BaselineMetrics {
+      baseline_offset,
+      height,
+      ascent,
+      descent,
+      line_gap: fallback.line_gap,
+      // Preserve the authored line-height for vertical-align percentage/length resolution.
+      line_height: fallback.line_height,
+      x_height: fallback.x_height,
+    };
+  }
+
+  let mut content_height: f32 = 0.0;
+  for child in &effective_children {
+    let child_metrics = child.baseline_metrics();
+    content_height = content_height.max(child_metrics.height);
+  }
+
+  let baseline_child = effective_children
+    .iter()
+    .copied()
+    .find(|c| c.vertical_align().is_baseline_relative())
+    .unwrap_or(effective_children[0]);
+  let child_metrics = baseline_child.baseline_metrics();
+
+  // Baseline metrics are expressed in the coordinate space of the inline box's *content strut*
+  // (i.e. the box defined by `line-height`). Border/padding are handled separately when producing
+  // fragments so they can overflow without inflating the line box.
+  let baseline_offset = child_metrics.baseline_offset;
+  let ascent = child_metrics.ascent;
+  let height = content_height;
   let descent = (height - baseline_offset).max(0.0);
 
   BaselineMetrics {
     baseline_offset,
     height,
-    ascent: baseline_offset,
+    ascent,
     descent,
-    line_gap: fallback.line_gap,
+    line_gap: child_metrics.line_gap,
     // Preserve the authored line-height for vertical-align percentage/length resolution.
     line_height: fallback.line_height,
-    x_height: fallback.x_height,
+    x_height: child_metrics.x_height,
   }
 }
 
@@ -8118,8 +8186,44 @@ fn compute_inline_box_line_metrics(
   children: &[InlineItem],
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  let (baseline, height, _) = compute_inline_items_single_line_layout(children, fallback);
-  let baseline_offset = baseline.min(height).max(0.0);
+  fn metrics_for_item(item: &InlineItem) -> BaselineMetrics {
+    match item {
+      InlineItem::InlineBox(b) => compute_inline_box_line_metrics(&b.children, b.strut_metrics),
+      _ => item.baseline_metrics(),
+    }
+  }
+
+  let effective_children: Vec<&InlineItem> = children
+    .iter()
+    .filter(|child| {
+      !matches!(
+        child,
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+      )
+    })
+    .collect();
+
+  if effective_children.is_empty() {
+    return fallback;
+  }
+
+  let mut content_height: f32 = fallback.height.max(0.0);
+  for child in &effective_children {
+    content_height = content_height.max(metrics_for_item(child).height);
+  }
+
+  let baseline_child = effective_children
+    .iter()
+    .copied()
+    .find(|c| c.vertical_align().is_baseline_relative())
+    .unwrap_or(effective_children[0]);
+  let child_metrics = metrics_for_item(baseline_child);
+
+  let baseline_offset = child_metrics
+    .baseline_offset
+    .max(fallback.baseline_offset)
+    .min(content_height);
+  let height = content_height;
   let descent = (height - baseline_offset).max(0.0);
 
   BaselineMetrics {
@@ -8127,10 +8231,10 @@ fn compute_inline_box_line_metrics(
     height,
     ascent: baseline_offset,
     descent,
-    line_gap: fallback.line_gap,
+    line_gap: child_metrics.line_gap,
     // Preserve the authored line-height for vertical-align percentage/length resolution.
     line_height: fallback.line_height,
-    x_height: fallback.x_height,
+    x_height: child_metrics.x_height,
   }
 }
 
@@ -24858,6 +24962,26 @@ mod tests {
     assert!(
       (min_width - expected).abs() < 0.5,
       "min_width={min_width}, expected={expected}"
+    );
+  }
+
+  #[test]
+  fn max_content_treats_adjacent_text_as_single_run() {
+    let ifc = InlineFormattingContext::new();
+    let hel = make_text_box("Hel");
+    let lo = make_text_box("lo");
+    let hel_width = ifc.create_text_item(&hel, "Hel").unwrap().advance;
+    let lo_width = ifc.create_text_item(&lo, "lo").unwrap().advance;
+
+    let root = make_inline_container(vec![hel, lo]);
+    let max_width = ifc
+      .compute_intrinsic_inline_size(&root, IntrinsicSizingMode::MaxContent)
+      .unwrap();
+
+    let expected = hel_width + lo_width;
+    assert!(
+      (max_width - expected).abs() < 0.5,
+      "max_width={max_width}, expected={expected}"
     );
   }
 

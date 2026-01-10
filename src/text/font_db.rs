@@ -2173,24 +2173,14 @@ fn apply_face_variations(face: &mut ttf_parser::Face<'_>, variations: &[(Tag, f3
 
 #[inline]
 fn select_css_line_metrics(face: &ttf_parser::Face<'_>) -> (i16, i16, i16) {
-  // CSS2/CSS Inline 3 prefer OS/2 "typographic" metrics (sTypo*) when present, regardless of the
-  // OS/2.fsSelection.USE_TYPO_METRICS bit. `ttf-parser`'s `Face::ascender/descender/line_gap`
-  // follow FreeType's selection logic (which depends on that bit), so we bypass it here.
+  // Use the same line metric selection as the shaping backend (FreeType).
   //
-  // `ttf-parser` applies MVAR deltas to the `typographic_*` accessors when variation coordinates
-  // are set on the face, so variable fonts continue to produce instance-specific line metrics.
-
-  let ascent = match face.typographic_ascender() {
-    Some(value) if value != 0 => value,
-    _ => face.ascender(),
-  };
-  let descent = match face.typographic_descender() {
-    Some(value) if value != 0 => value,
-    _ => face.descender(),
-  };
-  let mut line_gap = face
-    .typographic_line_gap()
-    .unwrap_or_else(|| face.line_gap());
+  // In particular, when the OS/2 `USE_TYPO_METRICS` bit is unset, FreeType prefers `hhea` line
+  // metrics over OS/2 typographic metrics. This matches browser behavior in practice, and avoids
+  // surprising line-height differences for common system fonts.
+  let ascent = face.ascender();
+  let descent = face.descender();
+  let mut line_gap = face.line_gap();
 
   // CSS Inline 3 § Line Gap Metrics: negative line-gap values are treated as 0.
   if line_gap < 0 {
@@ -2515,6 +2505,20 @@ mod tests {
     assert_eq!(FontStretch::from_percentage(100.0), FontStretch::Normal);
     assert_eq!(FontStretch::from_percentage(75.0), FontStretch::Condensed);
     assert_eq!(FontStretch::from_percentage(125.0), FontStretch::Expanded);
+  }
+
+  #[test]
+  fn font_metrics_respect_use_typo_metrics_bit() {
+    // The fixture font explicitly sets different OS/2 typographic metrics vs hhea metrics while
+    // leaving USE_TYPO_METRICS unset. We should follow the same selection logic as browsers /
+    // FreeType and use the hhea values.
+    let data = include_bytes!("../../tests/fixtures/fonts/line-metrics-selection-test.ttf");
+    let metrics = FontMetrics::from_data(data, 0).expect("parse metrics");
+    assert_eq!(metrics.units_per_em, 1000);
+    assert_eq!(metrics.ascent, 900);
+    assert_eq!(metrics.descent, -300);
+    assert_eq!(metrics.line_gap, 100);
+    assert_eq!(metrics.line_height, 1300);
   }
 
   #[test]

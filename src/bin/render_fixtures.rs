@@ -2,7 +2,7 @@
 //!
 //! This binary is intended for deterministic, offline rendering of imported page fixtures.
 //! Network access is denied via `ResourcePolicy` (http/https disabled) and the renderer defaults
-//! to bundled fonts.
+//! to system fonts (with bundled fallbacks enabled).
 
 use fastrender::cli_utils as common;
 
@@ -454,7 +454,11 @@ fn run(cli: Cli) -> io::Result<()> {
   let soft_timeout_ms = compute_soft_timeout_ms(hard_timeout, None);
 
   let font_config = {
-    let mut config = FontConfig::bundled_only();
+    // Prefer matching Chrome/system rendering for fixture diffs. Keep bundled fonts enabled so
+    // common script/emoji fallbacks remain deterministic even if the host's font set is sparse.
+    let mut config = FontConfig::new()
+      .with_system_fonts(true)
+      .with_bundled_fonts(true);
     if !cli.font_dir.is_empty() {
       config = config.with_font_dirs(cli.font_dir.clone());
     }

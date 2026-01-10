@@ -51,6 +51,7 @@ use font_palette::FontPaletteRegistry;
 use position_try::PositionTryRegistry;
 use position::Position;
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use types::AccentColor;
@@ -663,6 +664,76 @@ pub struct PendingLogical {
   pub property: LogicalProperty,
 }
 
+/// Simplified cascade origin classification for tracking which declarations came from the
+/// user-agent stylesheet.
+///
+/// This is used internally to emulate web-compat quirks (e.g. margin collapsing differences in
+/// quirks mode) without exposing the full cascade rule metadata to layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CascadeOrderOrigin {
+  UserAgent = 0,
+  Author = 1,
+}
+
+const CASCADE_ORDER_ORIGIN_BITS: i32 = 2;
+const CASCADE_ORDER_ORIGIN_MASK: i32 = (1 << CASCADE_ORDER_ORIGIN_BITS) - 1;
+
+thread_local! {
+  static CASCADE_ORDER_ORIGIN: Cell<u8> = const { Cell::new(CascadeOrderOrigin::Author as u8) };
+}
+
+/// Execute `f` with the given cascade origin set for `LogicalState` order tracking.
+pub(crate) fn with_cascade_order_origin<R>(
+  origin: CascadeOrderOrigin,
+  f: impl FnOnce() -> R,
+) -> R {
+  struct Guard(u8);
+  impl Drop for Guard {
+    fn drop(&mut self) {
+      CASCADE_ORDER_ORIGIN.with(|cell| cell.set(self.0));
+    }
+  }
+
+  let prev = CASCADE_ORDER_ORIGIN.with(|cell| {
+    let prev = cell.get();
+    cell.set(origin as u8);
+    prev
+  });
+  let _guard = Guard(prev);
+  f()
+}
+
+fn current_cascade_order_origin() -> CascadeOrderOrigin {
+  match CASCADE_ORDER_ORIGIN.with(|cell| cell.get()) {
+    0 => CascadeOrderOrigin::UserAgent,
+    _ => CascadeOrderOrigin::Author,
+  }
+}
+
+#[inline]
+fn encode_cascade_order(order_index: i32, origin: CascadeOrderOrigin) -> i32 {
+  debug_assert!(
+    order_index >= 0,
+    "cascade order indices must be non-negative; got {}",
+    order_index
+  );
+  (order_index << CASCADE_ORDER_ORIGIN_BITS) | (origin as i32)
+}
+
+/// Returns the cascade origin encoded into an order value, if any.
+///
+/// Order values are `-1` when a property was never written by the cascade; those return `None`.
+pub(crate) fn cascade_order_origin(order: i32) -> Option<CascadeOrderOrigin> {
+  if order < 0 {
+    return None;
+  }
+  match (order & CASCADE_ORDER_ORIGIN_MASK) as u8 {
+    0 => Some(CascadeOrderOrigin::UserAgent),
+    1 => Some(CascadeOrderOrigin::Author),
+    _ => None,
+  }
+}
+
 /// Tracks cascade ordering and deferred logical properties while computing styles.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicalState {
@@ -719,7 +790,7 @@ impl LogicalState {
   pub fn next_order(&mut self) -> i32 {
     let order = self.next_order;
     self.next_order += 1;
-    order
+    encode_cascade_order(order, current_cascade_order_origin())
   }
 
   pub fn next_order_value(&self) -> i32 {

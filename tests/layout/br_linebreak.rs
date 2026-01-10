@@ -133,3 +133,15 @@ fn nowrap_inline_box_does_not_soft_wrap_across_pseudo_element() {
   let lines = line_texts(html);
   assert_eq!(lines, ["NASA+Live"]);
 }
+
+#[test]
+fn br_before_block_does_not_create_trailing_empty_line() {
+  let lines = line_texts("<div>hello<br><div>block</div></div>");
+  assert_eq!(lines, ["hello"]);
+}
+
+#[test]
+fn leading_br_before_block_still_creates_empty_line() {
+  let lines = line_texts("<div><br><div>block</div></div>");
+  assert_eq!(lines, ["", ""]);
+}

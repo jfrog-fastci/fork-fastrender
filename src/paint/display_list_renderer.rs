@@ -4553,6 +4553,82 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn is_near_integer(value: f32) -> bool {
+    (value - value.round()).abs() < 1e-3
+  }
+
+  #[inline]
+  fn snap_rect_origin_to_device_pixels(rect: Rect) -> Rect {
+    Rect::from_xywh(rect.x().trunc(), rect.y().trunc(), rect.width(), rect.height())
+  }
+
+  #[inline]
+  fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect, radii: Option<BorderRadii>) -> Rect {
+    // tiny-skia uses floating-point transforms for `draw_pixmap` / mask rasterization. For
+    // axis-aligned integer-sized clips, snapping the origin to integer device pixels matches
+    // the legacy painter (which truncates to `i32`) and tends to align better with Chrome's
+    // pixel grid behavior.
+    if self.canvas.transform() != Transform::identity() {
+      return rect;
+    }
+    if radii.is_some_and(|r| !r.is_zero()) {
+      return rect;
+    }
+    if rect.width() <= 0.0
+      || rect.height() <= 0.0
+      || !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return rect;
+    }
+    if !Self::is_near_integer(rect.width()) || !Self::is_near_integer(rect.height()) {
+      return rect;
+    }
+    Self::snap_rect_origin_to_device_pixels(rect)
+  }
+
+  #[inline]
+  fn maybe_snap_unscaled_image_dest_rect(
+    &self,
+    dest_rect: Rect,
+    pixmap: &Pixmap,
+  ) -> Rect {
+    if self.canvas.transform() != Transform::identity() {
+      return dest_rect;
+    }
+    if dest_rect.width() <= 0.0
+      || dest_rect.height() <= 0.0
+      || !dest_rect.x().is_finite()
+      || !dest_rect.y().is_finite()
+      || !dest_rect.width().is_finite()
+      || !dest_rect.height().is_finite()
+    {
+      return dest_rect;
+    }
+
+    let (src_w, src_h) = (pixmap.width() as f32, pixmap.height() as f32);
+    if src_w <= 0.0 || src_h <= 0.0 {
+      return dest_rect;
+    }
+
+    let scale_x = dest_rect.width() / src_w;
+    let scale_y = dest_rect.height() / src_h;
+    if !scale_x.is_finite() || !scale_y.is_finite() {
+      return dest_rect;
+    }
+
+    // Only snap 1:1 draws. This avoids impacting down/upscaled content where subpixel translation
+    // can be more visible (and where we may intentionally preserve fractional offsets).
+    if (scale_x - 1.0).abs() > 1e-6 || (scale_y - 1.0).abs() > 1e-6 {
+      return dest_rect;
+    }
+
+    Self::snap_rect_origin_to_device_pixels(dest_rect)
+  }
+
+  #[inline]
   fn ds_radii(&self, radii: BorderRadii) -> BorderRadii {
     BorderRadii {
       top_left: radii.top_left * self.scale,
@@ -14097,7 +14173,47 @@ impl DisplayListRenderer {
             clip_device.width() * inv_scale,
             clip_device.height() * inv_scale,
           );
-          let dest_css = item.dest_rect;
+          // When both the clip and the image are axis-aligned and unscaled (1:1), we snap their
+          // origins to integer device pixels. `clip_css` is already derived from the snapped clip
+          // bounds, but the image snap happens later once the pixmap is resolved. Use the snapped
+          // image origin here when deciding whether we need the overflow-hidden cropping fallback,
+          // otherwise we'd incorrectly think only part of the image is visible and introduce
+          // unintended scaling.
+          let dest_css = if item.src_rect.is_none()
+            && Self::is_near_integer(clip_device.width())
+            && Self::is_near_integer(clip_device.height())
+            && Self::is_near_integer(clip_device.x())
+            && Self::is_near_integer(clip_device.y())
+          {
+            let dest_device = self.ds_rect(item.dest_rect);
+            let src_w = item.image.width as f32;
+            let src_h = item.image.height as f32;
+            if src_w > 0.0
+              && src_h > 0.0
+              && src_w.is_finite()
+              && src_h.is_finite()
+              && dest_device.width().is_finite()
+              && dest_device.height().is_finite()
+            {
+              let scale_x = dest_device.width() / src_w;
+              let scale_y = dest_device.height() / src_h;
+              if (scale_x - 1.0).abs() <= 1e-6 && (scale_y - 1.0).abs() <= 1e-6 {
+                let snapped = Self::snap_rect_origin_to_device_pixels(dest_device);
+                Rect::from_xywh(
+                  snapped.x() * inv_scale,
+                  snapped.y() * inv_scale,
+                  item.dest_rect.width(),
+                  item.dest_rect.height(),
+                )
+              } else {
+                item.dest_rect
+              }
+            } else {
+              item.dest_rect
+            }
+          } else {
+            item.dest_rect
+          };
           let Some(visible_css) = dest_css.intersection(clip_css) else {
             return Ok(());
           };
@@ -14188,6 +14304,8 @@ impl DisplayListRenderer {
         snapped_h,
       );
     }
+
+    dest_rect = self.maybe_snap_unscaled_image_dest_rect(dest_rect, pixmap.as_ref());
 
     let paint = tiny_skia::PixmapPaint {
       opacity: self.canvas.opacity(),
@@ -14548,9 +14666,8 @@ impl DisplayListRenderer {
     match &clip.shape {
       ClipShape::Rect { rect, radii } => {
         let radii = radii.map(|r| self.ds_radii(r));
-        self
-          .canvas
-          .set_clip_with_radii(self.ds_rect(*rect), radii)?;
+        let rect = self.maybe_snap_axis_aligned_clip_rect(self.ds_rect(*rect), radii);
+        self.canvas.set_clip_with_radii(rect, radii)?;
       }
       ClipShape::Path { path } => {
         self.canvas.set_clip_path(path, self.scale)?;
@@ -20526,6 +20643,41 @@ mod tests {
     let pixmap = renderer.render(&list).unwrap();
     assert_eq!(pixel(&pixmap, 10, 0), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 0, 0), (0, 255, 0, 255));
+  }
+
+  #[test]
+  fn image_and_clip_snap_fractional_offsets_for_unscaled_draws() {
+    // Draw a 2x2 image at a fractional y offset. For a 1:1 draw we snap the origin to integer
+    // device pixels so the image lands on the same pixel grid as the clip mask.
+    let pixels = vec![
+      255, 0, 0, 255, // red
+      0, 255, 0, 255, // green
+      0, 0, 255, 255, // blue
+      255, 255, 0, 255, // yellow
+    ];
+    let image = Arc::new(ImageData::new_pixels(2, 2, pixels));
+    let rect = Rect::from_xywh(0.0, 0.9, 2.0, 2.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect, radii: None },
+    }));
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: rect,
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+    list.push(DisplayItem::PopClip);
+
+    let pixmap = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(pixel(&pixmap, 0, 0), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 0, 1), (0, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 0, 2), (255, 255, 255, 255));
   }
 
   #[test]

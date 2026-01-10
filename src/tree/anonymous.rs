@@ -729,6 +729,30 @@ impl AnonymousBoxCreator {
         inline_run.push(child);
       } else {
         // Block box encountered - flush any inline run
+        // If the inline run ends with a `<br>` (BoxType::LineBreak) and is immediately followed by
+        // a block-level box, browsers do not create an extra empty line box between the inline
+        // content and the block. The following block starts at the beginning of the line after
+        // the break, so drop exactly one trailing line break in this boundary case.
+        //
+        // Note: trailing collapsible whitespace text nodes are trimmed first so markup like
+        // `text<br>\n  <div>block</div>` is treated the same as `text<br><div>block</div>`.
+        if !inline_run.is_empty() {
+          while inline_run
+            .last()
+            .is_some_and(|node| Self::is_collapsible_whitespace_text_node(node))
+          {
+            inline_run.pop();
+          }
+          if matches!(inline_run.last().map(|n| &n.box_type), Some(BoxType::LineBreak(_))) {
+            let has_non_break_content = inline_run.iter().any(|node| {
+              !matches!(node.box_type, BoxType::LineBreak(_))
+                && !Self::is_collapsible_whitespace_text_node(node)
+            });
+            if has_non_break_content {
+              inline_run.pop();
+            }
+          }
+        }
         flush_inline_run(&mut result, &mut inline_run);
         result.push(child);
       }
@@ -1025,12 +1049,12 @@ mod tests {
   use super::*;
   use crate::style::color::Rgba;
   use crate::style::display::{Display, FormattingContextType};
+  use crate::style::float::Float;
   use crate::style::position::Position;
   use crate::style::types::BorderStyle;
   use crate::style::values::Length;
   use crate::tree::box_tree::MarkerContent;
   use crate::tree::table_fixup::TableStructureFixer;
-  use crate::Float;
 
   fn default_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())

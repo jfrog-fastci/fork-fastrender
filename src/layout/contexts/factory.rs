@@ -40,6 +40,7 @@ use crate::style::display::FormattingContextType;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::BoxNode;
+use selectors::context::QuirksMode;
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
 use std::sync::Arc;
@@ -107,6 +108,7 @@ pub struct FormattingContextFactory {
   image_cache: ImageCache,
   viewport_size: crate::geometry::Size,
   viewport_scroll: Point,
+  quirks_mode: QuirksMode,
   nearest_positioned_cb: ContainingBlock,
   viewport_fixed_cb: ContainingBlock,
   nearest_fixed_cb: ContainingBlock,
@@ -246,6 +248,7 @@ impl FormattingContextFactory {
       image_cache: ImageCache::new(),
       viewport_size,
       viewport_scroll: Point::ZERO,
+      quirks_mode: QuirksMode::NoQuirks,
       nearest_positioned_cb,
       viewport_fixed_cb,
       nearest_fixed_cb: viewport_fixed_cb,
@@ -328,6 +331,16 @@ impl FormattingContextFactory {
     clone.nearest_fixed_cb = translated_fixed_cb;
     clone.reset_cached_contexts();
     clone
+  }
+
+  /// Returns a copy of this factory with an updated document quirks mode.
+  pub fn with_quirks_mode(mut self, quirks_mode: QuirksMode) -> Self {
+    if self.quirks_mode == quirks_mode {
+      return self;
+    }
+    self.quirks_mode = quirks_mode;
+    self.reset_cached_contexts();
+    self
   }
 
   /// Returns a copy of this factory with an updated nearest positioned containing block.
@@ -414,6 +427,11 @@ impl FormattingContextFactory {
   /// Returns the active layout parallelism configuration.
   pub fn parallelism(&self) -> LayoutParallelism {
     self.parallelism
+  }
+
+  /// Returns the document quirks mode driving layout behavior.
+  pub fn quirks_mode(&self) -> QuirksMode {
+    self.quirks_mode
   }
 
   pub(crate) fn flex_measure_cache(&self) -> std::sync::Arc<ShardedFlexCache> {
