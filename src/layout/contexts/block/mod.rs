@@ -2951,6 +2951,7 @@ impl BlockFormattingContext {
 
     let mut fragments = Vec::with_capacity(parallel_results.len());
     let mut content_height: f32 = 0.0;
+    let mut content_height_before_last_cursor: f32 = 0.0;
     let mut current_y = 0.0;
     let mut margin_ctx = margin_ctx;
     let child_margin_mode = if parent.id == 1 && self.factory.quirks_mode() == QuirksMode::Quirks {
@@ -2992,6 +2993,7 @@ impl BlockFormattingContext {
 
       let block_extent = fragment.bounds.height();
       let next_y = box_y + block_extent;
+      content_height_before_last_cursor = content_height;
       content_height = content_height.max(next_y);
       current_y = next_y;
 
@@ -3035,10 +3037,20 @@ impl BlockFormattingContext {
       ) > 0.0;
 
     if !allow_collapse_last || parent_has_bottom_separation {
-      // Trailing margins extend the BFC height only relative to the in-flow cursor. If floats (or
-      // overlapping negative margins) already extend `content_height` past the in-flow end, don't
-      // double-count the margin after the float bottom.
-      content_height = content_height.max(current_y + trailing_margin.max(0.0));
+      // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). They must be
+      // applied relative to `current_y` (the last cursor position), not `content_height` (which can
+      // be extended by earlier overlapping siblings), otherwise we'd double-count.
+      //
+      // Negative trailing margins can legitimately reduce the auto-height when the final in-flow
+      // cursor is also the deepest content; in that case the last child's bottom margin edge sits
+      // above its border-box edge and the box overflows (overflow:visible by default).
+      let end_y = current_y + trailing_margin;
+      let base_height = if (content_height - current_y).abs() < 0.01 {
+        content_height_before_last_cursor
+      } else {
+        content_height
+      };
+      content_height = base_height.max(end_y).max(0.0);
     }
 
     Some(Ok((fragments, content_height, Vec::new())))
@@ -3735,6 +3747,7 @@ impl BlockFormattingContext {
     // in-flow stacking position.
     let mut float_cursor_y: f32 = 0.0;
     let mut content_height: f32 = 0.0;
+    let mut content_height_before_last_cursor: f32 = 0.0;
     let mut margin_ctx = MarginCollapseContext::new();
     let mut inline_buffer: Vec<BoxNode> = Vec::new();
     let mut positioned_children: Vec<PositionedCandidate> = Vec::new();
@@ -4183,6 +4196,7 @@ impl BlockFormattingContext {
                                fragments: &mut Vec<FragmentNode>,
                                current_y: &mut f32,
                                content_height: &mut f32,
+                               content_height_before_last_cursor: &mut f32,
                                margin_ctx: &mut MarginCollapseContext,
                                float_ctx_ref: &mut FloatContext,
                                deadline_counter: &mut usize,
@@ -4286,6 +4300,7 @@ impl BlockFormattingContext {
             let next_y = box_y + block_extent;
             (fragment, next_y)
           };
+          *content_height_before_last_cursor = *content_height;
           *content_height = content_height.max(next_y);
           *current_y = next_y;
           let mut fragment = fragment;
@@ -4858,6 +4873,7 @@ impl BlockFormattingContext {
           &mut fragments,
           &mut current_y,
           &mut content_height,
+          &mut content_height_before_last_cursor,
           &mut margin_ctx,
           float_ctx,
           &mut deadline_counter,
@@ -5216,6 +5232,7 @@ impl BlockFormattingContext {
           &mut fragments,
           &mut current_y,
           &mut content_height,
+          &mut content_height_before_last_cursor,
           &mut margin_ctx,
           float_ctx,
           &mut deadline_counter,
@@ -5277,6 +5294,7 @@ impl BlockFormattingContext {
                     );
         }
 
+        content_height_before_last_cursor = content_height;
         content_height = content_height.max(next_y);
         current_y = next_y;
         let mut fragment = fragment;
@@ -5302,6 +5320,7 @@ impl BlockFormattingContext {
             &mut fragments,
             &mut current_y,
             &mut content_height,
+            &mut content_height_before_last_cursor,
             &mut margin_ctx,
             float_ctx,
             &mut deadline_counter,
@@ -5309,6 +5328,7 @@ impl BlockFormattingContext {
           )?;
            let (fragment, next_y) =
              layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
+           content_height_before_last_cursor = content_height;
            content_height = content_height.max(next_y);
            current_y = next_y;
            let mut fragment = fragment;
@@ -5335,6 +5355,7 @@ impl BlockFormattingContext {
       &mut fragments,
       &mut current_y,
       &mut content_height,
+      &mut content_height_before_last_cursor,
       &mut margin_ctx,
       float_ctx,
       &mut deadline_counter,
@@ -5364,9 +5385,20 @@ impl BlockFormattingContext {
       ) > 0.0;
 
     if !allow_collapse_last || parent_has_bottom_separation {
-      // Trailing margins apply after the last in-flow cursor; avoid over-counting when earlier
-      // siblings extend the maximum height (e.g. due to overlaps/negative margins).
-      content_height = content_height.max(current_y + trailing_margin.max(0.0));
+      // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). Apply them
+      // relative to `current_y` (the last cursor position), not `content_height` (which can be
+      // extended by earlier overlapping siblings), otherwise we'd double-count.
+      //
+      // Negative trailing margins can legitimately reduce the auto-height when the final in-flow
+      // cursor is also the deepest content; in that case the last child's bottom margin edge sits
+      // above its border-box edge and the box overflows (overflow:visible by default).
+      let end_y = current_y + trailing_margin;
+      let base_height = if (content_height - current_y).abs() < 0.01 {
+        content_height_before_last_cursor
+      } else {
+        content_height
+      };
+      content_height = base_height.max(end_y).max(0.0);
     }
 
     // Float boxes extend the formatting context height for BFC roots.
@@ -10149,6 +10181,52 @@ mod tests {
     assert!(
       !margins.collapsible_through,
       "A block that contains a float and a later clearing block should not be treated as collapsible-through"
+    );
+  }
+
+  #[test]
+  fn block_auto_height_respects_negative_trailing_margins() {
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    // Prevent parent/last-child margin collapsing so the child's negative bottom margin affects the
+    // parent's used height.
+    parent_style.border_bottom_style = BorderStyle::Solid;
+    parent_style.border_bottom_width = Length::px(1.0);
+    let parent_style = Arc::new(parent_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(50.0));
+    child_style.height_keyword = None;
+    child_style.margin_bottom = Some(Length::px(-8.0));
+    let child_style = Arc::new(child_style);
+
+    let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
+    child.id = 3;
+
+    let mut parent = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![child]);
+    parent.id = 2;
+
+    let mut root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![parent]);
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let parent_fragment = find_block_fragment(&fragment, 2).expect("parent fragment");
+    assert!(
+      (parent_fragment.bounds.height() - 43.0).abs() < 0.5,
+      "expected parent border-box height ≈43px (50px child, -8px margin, 1px border), got {:.2}",
+      parent_fragment.bounds.height()
     );
   }
 

@@ -3966,40 +3966,78 @@ impl FormattingContext for FlexFormattingContext {
     // intentionally allows in-flow children to overflow and be clipped by `overflow`, so we must
     // not "grow to fit" past the computed `max-height`.
     if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
+      let cb_width = fragment.bounds.width().max(0.0);
+      let containing_block_height = constraints
+        .height()
+        .filter(|h| h.is_finite())
+        .map(|h| h.max(0.0));
+      // Padding percentages resolve against the physical width, even for vertical edges.
+      let padding_top =
+        self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+      let padding_bottom =
+        self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+      let padding_left =
+        self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+      let padding_right =
+        self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
+      let border_top = self.resolve_length_for_width(
+        box_node.style.used_border_top_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_bottom = self.resolve_length_for_width(
+        box_node.style.used_border_bottom_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_left = self.resolve_length_for_width(
+        box_node.style.used_border_left_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_right = self.resolve_length_for_width(
+        box_node.style.used_border_right_width(),
+        cb_width,
+        &box_node.style,
+      );
+
+      // Flex items are positioned inside the flex container's content box; percentage vertical
+      // margins also resolve against that inline-size. Use the same base when computing margin box
+      // extents so negative margins do not artificially inflate the container's block-size.
+      let content_width =
+        (cb_width - border_left - border_right - padding_left - padding_right).max(0.0);
+      let child_percentage_base = if content_width.is_finite() {
+        content_width
+      } else {
+        cb_width
+      };
+
       let mut max_child_bottom = 0.0f32;
       let mut deadline_counter = 0usize;
       for child in fragment.children.iter() {
         check_layout_deadline(&mut deadline_counter)?;
+        let mut bottom = child.bounds.max_y();
         if let Some(style) = child.style.as_deref() {
           if style.running_position.is_some()
             || matches!(style.position, Position::Absolute | Position::Fixed)
           {
             continue;
           }
+          // Use the flex item's margin box edge rather than its border-box edge. Patterns like
+          // `align-items:center` with negative margins (common for vertically centered logos) can
+          // legitimately overflow the container without affecting its used cross size.
+          if let Some(margin_bottom) = style.margin_bottom {
+            let margin = self.resolve_length_for_width(margin_bottom, child_percentage_base, style);
+            if margin.is_finite() {
+              bottom += margin;
+            }
+          }
         }
-        let bottom = child.bounds.max_y();
         if bottom.is_finite() {
           max_child_bottom = max_child_bottom.max(bottom);
         }
       }
       if max_child_bottom.is_finite() {
-        let cb_width = fragment.bounds.width().max(0.0);
-        let containing_block_height = constraints.height().filter(|h| h.is_finite()).map(|h| h.max(0.0));
-        // Padding percentages resolve against the physical width, even for vertical edges.
-        let padding_top =
-          self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-        let padding_bottom =
-          self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
-        let border_top = self.resolve_length_for_width(
-          box_node.style.used_border_top_width(),
-          cb_width,
-          &box_node.style,
-        );
-        let border_bottom = self.resolve_length_for_width(
-          box_node.style.used_border_bottom_width(),
-          cb_width,
-          &box_node.style,
-        );
         let required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
 
         let vertical_edges = (padding_top + padding_bottom + border_top + border_bottom).max(0.0);
@@ -15478,6 +15516,59 @@ mod tests {
     assert_eq!(fragment.children[0].bounds.y(), 25.0); // (100 - 50) / 2
     assert_eq!(fragment.children[1].bounds.y(), 0.0); // Tallest, at top
     assert_eq!(fragment.children[2].bounds.y(), 13.0); // (100 - 74) / 2 = 13
+  }
+
+  #[test]
+  fn flex_auto_height_does_not_expand_for_negative_margins() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.align_items = AlignItems::Center;
+
+    let mut item_a_style = ComputedStyle::default();
+    item_a_style.width = Some(Length::px(10.0));
+    item_a_style.height = Some(Length::px(96.0));
+    item_a_style.width_keyword = None;
+    item_a_style.height_keyword = None;
+    item_a_style.margin_top = Some(Length::px(-8.0));
+    item_a_style.margin_bottom = Some(Length::px(-8.0));
+    let item_a = BoxNode::new_block(Arc::new(item_a_style), FormattingContextType::Block, vec![]);
+
+    let mut item_b_style = ComputedStyle::default();
+    item_b_style.width = Some(Length::px(10.0));
+    item_b_style.height = Some(Length::px(88.0));
+    item_b_style.width_keyword = None;
+    item_b_style.height_keyword = None;
+    let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item_a, item_b],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    // The flex line's cross size is based on the max outer size (including margins). Negative
+    // margins legitimately create overflow but must not increase the container's used size.
+    assert!(
+      (fragment.bounds.height() - 88.0).abs() < 0.5,
+      "expected container height≈88, got {}",
+      fragment.bounds.height()
+    );
+    assert!(
+      (fragment.children[0].bounds.y() - (-4.0)).abs() < 0.5,
+      "expected negative-margin item y≈-4, got {}",
+      fragment.children[0].bounds.y()
+    );
+    assert!(
+      fragment.children[1].bounds.y().abs() < 0.5,
+      "expected item y≈0, got {}",
+      fragment.children[1].bounds.y()
+    );
   }
 
   #[test]
