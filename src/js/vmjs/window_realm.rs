@@ -39,7 +39,7 @@ use vm_js::{
   PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost,
   VmHostHooks, VmOptions,
 };
-use webidl_vm_js::WebIdlBindingsHost;
+use webidl_vm_js::{VmJsHostHooksPayload, WebIdlBindingsHost};
 
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -512,6 +512,7 @@ impl WindowRealm {
 
     struct WindowRealmDomShimHooks<'a> {
       microtasks: &'a mut vm_js::MicrotaskQueue,
+      any: VmJsHostHooksPayload,
     }
 
     impl vm_js::VmHostHooks for WindowRealmDomShimHooks<'_> {
@@ -569,8 +570,7 @@ impl WindowRealm {
       }
 
       fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        // Preserve the existing behaviour of exposing the microtask queue for downcasting.
-        Some(self.microtasks)
+        Some(&mut self.any)
       }
     }
 
@@ -581,11 +581,16 @@ impl WindowRealm {
       // - expose DOM shim exotic hooks to the evaluator, and
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
+      let mut dummy_host = ();
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
+        any: {
+          let mut any = VmJsHostHooksPayload::default();
+          any.set_vm_host(&mut dummy_host);
+          any
+        },
       };
 
-      let mut dummy_host = ();
       rt.exec_script_source_with_host_and_hooks(&mut dummy_host, &mut hooks, source)
     })
   }

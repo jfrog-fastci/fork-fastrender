@@ -150,9 +150,8 @@ impl VmJsModuleLoader {
     let max_module_bytes = *max_module_bytes;
 
     with_event_loop(event_loop, move || {
-      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       let mut hooks = VmJsModuleHooks::<Host> {
-        inner: VmJsEventLoopHooks::<Host>::new(&mut *host_ctx),
+        inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
         fetcher,
         document_url: document_url.as_str(),
         max_module_bytes,
@@ -163,6 +162,7 @@ impl VmJsModuleLoader {
       };
 
       // Borrow-split: the VM needs `&mut ModuleGraph`, while module loading uses the hooks' maps.
+      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       let budget = window_realm.vm_budget_now();
       let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
       let mut vm = vm.push_budget(budget);
