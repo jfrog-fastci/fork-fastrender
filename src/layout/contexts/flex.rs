@@ -8786,6 +8786,7 @@ impl FlexFormattingContext {
       Size::new(layout.size.width, layout.size.height),
     );
     if taffy_node == root_id {
+      let rect_eps = 0.01;
       // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
       // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
       let rect_eps = 0.01;
