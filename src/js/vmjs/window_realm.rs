@@ -3718,20 +3718,19 @@ fn document_get_element_by_id_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(document_obj) = this else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-  let source_id = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &id_key)?
-  {
-    Some(Value::Number(n)) => n as u64,
-    _ => return Ok(Value::Null),
+  // Brand check: `Document.prototype.getElementById` must only be callable on real Document
+  // wrappers, not arbitrary DOM-backed nodes (e.g. Elements) that happen to have a source id.
+  let source_id = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.dom_source_id()
   };
 
   let Some(dom_ptr) = dom_for_source(source_id) else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -3804,20 +3803,17 @@ fn document_query_selector_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(document_obj) = this else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-  let source_id = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &id_key)?
-  {
-    Some(Value::Number(n)) => n as u64,
-    _ => return Ok(Value::Null),
+  let source_id = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.dom_source_id()
   };
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -3862,20 +3858,17 @@ fn document_query_selector_all_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(document_obj) = this else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-  let source_id = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &id_key)?
-  {
-    Some(Value::Number(n)) => n as u64,
-    _ => return Ok(Value::Null),
+  let source_id = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+    platform.dom_source_id()
   };
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
-    return Ok(Value::Null);
+    return Err(VmError::TypeError("Illegal invocation"));
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
@@ -16366,6 +16359,33 @@ mod tests {
         return true;\n\
       })()",
     )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_methods_throw_type_error_on_illegal_invocation() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+      let ok = realm.exec_script(
+        "(() => {\n\
+          const bogus = document.createElement('div');\n\
+          try { document.getElementById.call(bogus, 'x'); return false; }\n\
+          catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }\n\
+          try { document.querySelector.call(bogus, 'body'); return false; }\n\
+          catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }\n\
+          try { document.querySelectorAll.call(bogus, 'body'); return false; }\n\
+          catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }\n\
+          return true;\n\
+        })()",
+      )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
