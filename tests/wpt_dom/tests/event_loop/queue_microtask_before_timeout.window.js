@@ -5,25 +5,30 @@
 
 var microtask_ran = false;
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
+function queue_microtask_and_timeout_apis_exist_test() {
+  queueMicrotask;
+  setTimeout;
 }
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
+test(queue_microtask_and_timeout_apis_exist_test, "queueMicrotask and setTimeout APIs exist");
 
 function on_microtask() {
   microtask_ran = true;
 }
 
-function on_timeout() {
+function check_microtask_before_timeout() {
   if (microtask_ran !== true) {
-    report_fail("queueMicrotask did not run before setTimeout");
-    return;
+    throw "queueMicrotask did not run before setTimeout";
   }
-  report_pass();
 }
 
-queueMicrotask(on_microtask);
-setTimeout(on_timeout, 0);
+function run_queue_microtask_before_timeout_test(t) {
+  microtask_ran = false;
+  queueMicrotask(on_microtask);
+  setTimeout(t.step_func_done(check_microtask_before_timeout), 0);
+}
+
+async_test(
+  run_queue_microtask_before_timeout_test,
+  "queueMicrotask microtasks run before timers"
+);

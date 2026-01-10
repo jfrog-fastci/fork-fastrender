@@ -5,18 +5,17 @@
 // microtask checkpoint must run before timers.
 
 var step = 0;
+var error = "";
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
+function queue_microtask_api_exists_test() {
+  queueMicrotask;
 }
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
+test(queue_microtask_api_exists_test, "queueMicrotask API exists");
 
 function microtask_first() {
   if (step !== 0) {
-    report_fail("first microtask ran out of order");
+    if (error === "") error = "first microtask ran out of order";
     return;
   }
   step = 1;
@@ -24,21 +23,28 @@ function microtask_first() {
 
 function microtask_second() {
   if (step !== 1) {
-    report_fail("second microtask ran out of order");
+    if (error === "") error = "second microtask ran out of order";
     return;
   }
   step = 2;
 }
 
-function on_timeout() {
-  if (step !== 2) {
-    report_fail("microtasks did not complete before setTimeout");
-    return;
+function check_microtask_order_and_checkpoint() {
+  if (error !== "") {
+    throw error;
   }
-  report_pass();
+  if (step !== 2) {
+    throw "microtasks did not complete before setTimeout";
+  }
 }
 
-queueMicrotask(microtask_first);
-queueMicrotask(microtask_second);
-setTimeout(on_timeout, 0);
+function run_queue_microtask_order_test(t) {
+  step = 0;
+  error = "";
 
+  queueMicrotask(microtask_first);
+  queueMicrotask(microtask_second);
+  setTimeout(t.step_func_done(check_microtask_order_and_checkpoint), 0);
+}
+
+async_test(run_queue_microtask_order_test, "queueMicrotask runs FIFO and completes before timers");

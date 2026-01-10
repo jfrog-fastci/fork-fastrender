@@ -6,25 +6,26 @@
 
 var then_ran = false;
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
+function promise_api_exists_test() {
+  Promise.resolve(1);
 }
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
+test(promise_api_exists_test, "Promise API exists");
 
 function on_then(_value) {
   then_ran = true;
 }
 
-function on_timeout() {
+function check_then_before_timeout() {
   if (then_ran !== true) {
-    report_fail("Promise.then did not run before setTimeout");
-    return;
+    throw "Promise.then did not run before setTimeout";
   }
-  report_pass();
 }
 
-Promise.resolve(1).then(on_then);
-setTimeout(on_timeout, 0);
+function run_then_before_timeout_test(t) {
+  then_ran = false;
+  Promise.resolve(1).then(on_then);
+  setTimeout(t.step_func_done(check_then_before_timeout), 0);
+}
+
+async_test(run_then_before_timeout_test, "Promise.then microtasks run before timers");
