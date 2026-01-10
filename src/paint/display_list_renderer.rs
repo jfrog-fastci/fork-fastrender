@@ -6917,7 +6917,14 @@ impl DisplayListRenderer {
 
     match side.style {
       CssBorderStyle::Dotted => {
-        stroke.dash = StrokeDash::new(vec![side.width, side.width], 0.0);
+        // CSS `dotted` borders are round dots with diameter equal to the border width.
+        //
+        // A dash length equal to the stroke width with round caps causes adjacent dashes to touch
+        // (caps extend by half the stroke width), producing a solid line. Use a gap that is larger
+        // than the stroke width so caps don't overlap.
+        // Use a relatively large gap so anti-aliased round caps don't visually merge into a
+        // continuous line at small border widths.
+        stroke.dash = StrokeDash::new(vec![side.width, 3.0 * side.width], 0.0);
       }
       CssBorderStyle::Dashed => {
         stroke.dash = StrokeDash::new(vec![3.0 * side.width, side.width], 0.0);

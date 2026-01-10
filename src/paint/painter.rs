@@ -6571,7 +6571,14 @@ impl Painter {
     // Dash patterns per CSS styles
     match style {
       CssBorderStyle::Dotted => {
-        stroke.dash = tiny_skia::StrokeDash::new(vec![width, width], 0.0);
+        // CSS `dotted` borders are rendered as round dots with diameter equal to the border width.
+        //
+        // Using a dash length equal to the stroke width with round caps causes adjacent dashes to
+        // touch (each cap extends by half the stroke width), producing a solid line. Use a gap that
+        // is larger than the stroke width so caps don't overlap.
+        // Use a relatively large gap so anti-aliased round caps don't visually merge into a
+        // continuous line at small border widths.
+        stroke.dash = tiny_skia::StrokeDash::new(vec![width, 3.0 * width], 0.0);
       }
       CssBorderStyle::Dashed => {
         stroke.dash = tiny_skia::StrokeDash::new(vec![3.0 * width, width], 0.0);

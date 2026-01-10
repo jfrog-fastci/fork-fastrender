@@ -8,6 +8,7 @@ mod backface_culling_test;
 mod backface_culling_non_stacking_context;
 mod backface_visibility_does_not_create_stacking_context;
 mod abspos_containing_block_rebase_test;
+mod border_dotted;
 mod border_image_outset_bounds;
 mod fieldset_legend_border_gap;
 mod box_shadow_outset_transparent_interior;
