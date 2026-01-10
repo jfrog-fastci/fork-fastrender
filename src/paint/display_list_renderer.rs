@@ -6450,6 +6450,81 @@ impl DisplayListRenderer {
       }
     }
 
+    // Fast path for simple solid borders without radii/gaps/images.
+    //
+    // The generic edge-stroke logic below uses anti-aliased strokes. For axis-aligned content this
+    // can introduce subtle subpixel blending at border edges when layout coordinates are
+    // fractional, which tends to diverge from Chrome/Skia's border rasterization. The `Canvas`
+    // rectangle fill path includes snap-to-device-pixel and source-over compositing behavior tuned
+    // against Chrome; reuse it here when the border can be expressed as a set of non-overlapping
+    // rect fills.
+    if item.image.is_none()
+      && gap.is_none()
+      && !radii.has_radius()
+      && blend_mode == tiny_skia::BlendMode::SourceOver
+      && transform.kx.abs() < 1e-6
+      && transform.ky.abs() < 1e-6
+    {
+      let sides = [&top, &right, &bottom, &left];
+      let mut solid_color: Option<Rgba> = None;
+      let mut ok = true;
+      for side in sides {
+        if side.width <= 0.0 {
+          continue;
+        }
+        if side.style != CssBorderStyle::Solid || side.color.is_transparent() {
+          ok = false;
+          break;
+        }
+        match solid_color {
+          Some(existing) if existing != side.color => {
+            ok = false;
+            break;
+          }
+          Some(_) => {}
+          None => solid_color = Some(side.color),
+        }
+      }
+
+      if ok && solid_color.is_some() {
+        let x = rect.x();
+        let y = rect.y();
+        let w = rect.width();
+        let h = rect.height();
+
+        // Fill non-overlapping strips so opacity < 1 does not double-blend at the corners.
+        if top.width > 0.0 {
+          self
+            .canvas
+            .draw_rect(Rect::from_xywh(x, y, w, top.width), top.color);
+        }
+        if bottom.width > 0.0 {
+          self.canvas.draw_rect(
+            Rect::from_xywh(x, y + h - bottom.width, w, bottom.width),
+            bottom.color,
+          );
+        }
+
+        let mid_y = y + top.width;
+        let mid_h = (h - top.width - bottom.width).max(0.0);
+        if mid_h > 0.0 {
+          if left.width > 0.0 {
+            self
+              .canvas
+              .draw_rect(Rect::from_xywh(x, mid_y, left.width, mid_h), left.color);
+          }
+          if right.width > 0.0 {
+            self.canvas.draw_rect(
+              Rect::from_xywh(x + w - right.width, mid_y, right.width, mid_h),
+              right.color,
+            );
+          }
+        }
+
+        return Ok(());
+      }
+    }
+
     // For solid borders with square corners, CSS border geometry is a set of trapezoids/triangles
     // meeting at diagonal miters. Stroking each edge paints rectangles, which is incorrect when
     // border widths/colors differ (e.g. CSS border triangles that rely on transparent borders).
