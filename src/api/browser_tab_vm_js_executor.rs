@@ -1079,7 +1079,7 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::api::{FastRender, RenderOptions};
+  use crate::api::{BrowserTab, FastRender, RenderOptions};
   use crate::js::ImportMapLimits;
   use crate::resource::{FetchRequest, FetchedResource};
   use crate::text::font_db::FontConfig;
@@ -1474,6 +1474,24 @@ mod tests {
       !executor.import_map_state.import_map.imports.contains_key("b"),
       "expected import map merge to be blocked by max_total_entries"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_executor_drains_promise_jobs_after_script_execution() -> Result<()> {
+    let html = "<!doctype html><html><head><script>\
+      document.documentElement.className = 'y';\
+      Promise.resolve().then(function () { document.documentElement.className = 'x'; });\
+      </script></head><body></body></html>";
+
+    let tab = BrowserTab::from_html(html, RenderOptions::default(), VmJsBrowserTabExecutor::new())?;
+
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("document element");
+    let class = dom
+      .get_attribute(document_element, "class")
+      .expect("get class attribute");
+    assert_eq!(class, Some("x"));
     Ok(())
   }
 }
