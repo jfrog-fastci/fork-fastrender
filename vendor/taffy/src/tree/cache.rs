@@ -392,6 +392,38 @@ mod tests {
   }
 
   #[test]
+  fn perform_layout_cache_does_not_promote_intrinsic_measurements_to_known_dimensions() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::MaxContent,
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    let hit = cache.get(
+      Size {
+        width: Some(100.0),
+        height: None,
+      },
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+    );
+
+    assert!(hit.is_none());
+  }
+
+  #[test]
   fn compute_size_cache_store_keeps_intrinsic_and_definite_entries_separate() {
     let mut cache = Cache::new();
 
