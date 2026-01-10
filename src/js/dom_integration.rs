@@ -10,10 +10,6 @@ use super::{
 };
 use super::trim_ascii_whitespace;
 
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| c.is_ascii_whitespace())
-}
-
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
 ///
