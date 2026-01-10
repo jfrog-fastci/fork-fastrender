@@ -29184,6 +29184,25 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn replaced_dimensions_parse_legacy_px_suffix() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "img".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("width".to_string(), "320px".to_string()),
+          ("height".to_string(), "240px".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert_eq!(styled.styles.width, Some(Length::px(320.0)));
+    assert_eq!(styled.styles.height, Some(Length::px(240.0)));
+  }
+
+  #[test]
   fn author_css_overrides_replaced_presentational_dimensions() {
     let dom = DomNode {
       node_type: DomNodeType::Element {

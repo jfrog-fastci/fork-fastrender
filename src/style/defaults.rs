@@ -322,6 +322,7 @@ mod tests {
   fn parse_dimension_attribute_accepts_px_suffix() {
     assert_eq!(parse_dimension_attribute("90px"), Some(Length::px(90.0)));
     assert_eq!(parse_dimension_attribute("  50px "), Some(Length::px(50.0)));
+    assert_eq!(parse_dimension_attribute("  50PX  "), Some(Length::px(50.0)));
     assert_eq!(parse_dimension_attribute("85%"), Some(Length::percent(85.0)));
   }
 
