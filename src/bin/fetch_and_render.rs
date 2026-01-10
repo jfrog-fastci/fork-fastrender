@@ -22,9 +22,11 @@ use common::render_pipeline::{
   follow_client_redirects_resource, format_error_with_chain, log_diagnostics, read_cached_document,
   render_fetched_document, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
+use encoding_rs::{Encoding, UTF_8};
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
 use fastrender::dom::DomParseOptions;
 use fastrender::dom2::{Document as Dom2Document, NodeKind as Dom2NodeKind};
+use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::image_output::encode_image;
 use fastrender::js::{
   determine_script_type_dom2, CurrentScriptHost, EventLoop, RunLimits, RunUntilIdleOutcome,
@@ -38,6 +40,7 @@ use fastrender::resource::CachingFetcher;
 use fastrender::resource::CachingFetcherConfig;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
+use fastrender::resource::FetchDestination;
 use fastrender::resource::FetchRequest;
 use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
@@ -97,6 +100,108 @@ fn js_budget_for_script(run_limits: RunLimits) -> Budget {
     deadline,
     check_time_every: DEFAULT_JS_CHECK_TIME_EVERY,
   }
+}
+
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn charset_from_content_type(content_type: &str) -> Option<&str> {
+  for param in content_type.split(';').skip(1) {
+    let mut parts = param.splitn(2, '=');
+    let name = trim_ascii_whitespace(parts.next()?);
+    if !name.eq_ignore_ascii_case("charset") {
+      continue;
+    }
+    let value = trim_ascii_whitespace(parts.next()?);
+    let value = value.trim_matches('"').trim_matches('\'');
+    if !value.is_empty() {
+      return Some(value);
+    }
+  }
+  None
+}
+
+/// Decode an external classic script resource into UTF-8 source text.
+///
+/// Best-effort HTML-shaped decoding:
+/// - BOM wins when present.
+/// - `charset` attribute on the `<script>` element takes priority.
+/// - Otherwise, honor HTTP `Content-Type` charset when present.
+/// - Otherwise, default to UTF-8 (scripts do not use the HTML Windows-1252 fallback).
+fn decode_external_classic_script_bytes(
+  bytes: &[u8],
+  content_type: Option<&str>,
+  charset_attr: Option<&str>,
+) -> String {
+  if bytes.is_empty() {
+    return String::new();
+  }
+
+  if let Some((enc, bom_len)) = Encoding::for_bom(bytes) {
+    return enc
+      .decode_without_bom_handling(&bytes[bom_len..])
+      .0
+      .into_owned();
+  }
+
+  if let Some(label) = charset_attr.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) {
+    let label = label.trim_matches('"').trim_matches('\'');
+    if let Some(enc) = Encoding::for_label(label.as_bytes()) {
+      return enc.decode_with_bom_removal(bytes).0.into_owned();
+    }
+  }
+
+  if let Some(label) = content_type.and_then(charset_from_content_type) {
+    if let Some(enc) = Encoding::for_label(label.as_bytes()) {
+      return enc.decode_with_bom_removal(bytes).0.into_owned();
+    }
+  }
+
+  UTF_8.decode_with_bom_removal(bytes).0.into_owned()
+}
+
+fn queue_classic_script_task(
+  event_loop: &mut EventLoop<WindowHostState>,
+  run_limits: RunLimits,
+  script_node: fastrender::dom2::NodeId,
+  script_name: Arc<str>,
+  script_text: Arc<str>,
+) -> Result<()> {
+  let script_node_for_task = script_node;
+  let script_name_for_task = script_name.clone();
+  let script_text_for_task = script_text.clone();
+  event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+    let prev = host.current_script_state().borrow().current_script;
+    host.current_script_state().borrow_mut().current_script = Some(script_node_for_task);
+
+    // Execute scripts through the `WindowHostState` helper so Promise jobs are routed into the
+    // host-owned HTML-like event loop microtask queue.
+    {
+      let window = host.window_mut();
+      window.reset_interrupt();
+      window.vm_mut().set_budget(js_budget_for_script(run_limits));
+    }
+    let result = host.exec_script_with_name_in_event_loop(
+      event_loop,
+      script_name_for_task.clone(),
+      script_text_for_task.clone(),
+    );
+    {
+      let window = host.window_mut();
+      window
+        .vm_mut()
+        .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+    }
+
+    host.current_script_state().borrow_mut().current_script = prev;
+
+    result
+      .map(|_| ())
+      .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name_for_task)))
+  })?;
+  Ok(())
 }
 
 /// Fetch a single page and render it to an image
@@ -316,83 +421,176 @@ fn render_page(
     let mut event_loop = EventLoop::<WindowHostState>::new();
     let mut scripts_queued = 0usize;
 
+    #[derive(Clone, Copy)]
+    struct DomScanState {
+      in_head: bool,
+      in_foreign_namespace: bool,
+      in_template: bool,
+      in_shadow_root: bool,
+    }
+
     let dom = host.dom();
-    for script_id in dom.subtree_preorder(dom.root()) {
-      let node = dom.node(script_id);
-      let Dom2NodeKind::Element { tag_name, namespace, .. } = &node.kind else {
-        continue;
+    let mut base_url_tracker = BaseUrlTracker::new(Some(&base_hint));
+    let mut stack: Vec<(fastrender::dom2::NodeId, DomScanState)> = Vec::new();
+    stack.push((
+      dom.root(),
+      DomScanState {
+        in_head: false,
+        in_foreign_namespace: false,
+        in_template: false,
+        in_shadow_root: false,
+      },
+    ));
+
+    while let Some((node_id, state)) = stack.pop() {
+      let node = dom.node(node_id);
+
+      let (next_in_head, next_in_foreign_namespace, next_in_shadow_root) = match &node.kind {
+        Dom2NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+        } => {
+          // Track parse-time base URL updates best-effort in document order.
+          base_url_tracker.on_element_inserted(
+            tag_name,
+            namespace,
+            attributes,
+            state.in_head,
+            state.in_foreign_namespace,
+            state.in_template || state.in_shadow_root,
+          );
+
+          // Execute classic HTML <script> elements.
+          if tag_name.eq_ignore_ascii_case("script")
+            && (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
+            && dom.is_connected_for_scripting(node_id)
+          {
+            if determine_script_type_dom2(dom, node_id) != ScriptType::Classic {
+              log("JavaScript: skipping non-classic <script> (only classic scripts supported)");
+            } else {
+              let src_attr_present = dom.has_attribute(node_id, "src").unwrap_or(false);
+              if src_attr_present {
+                // HTML semantics: presence of `src` suppresses inline execution, even if empty/invalid.
+                let raw_src = dom.get_attribute(node_id, "src").ok().flatten().unwrap_or("");
+                if let Some(resolved_src) = base_url_tracker.resolve_script_src(raw_src) {
+                  let charset_attr = dom.get_attribute(node_id, "charset").ok().flatten();
+                  let req = FetchRequest::new(resolved_src.as_str(), FetchDestination::Other)
+                    .with_referrer_url(base_hint.as_str());
+
+                  let fetched = if max_script_bytes == usize::MAX {
+                    fetcher.fetch_with_request(req)
+                  } else {
+                    // Fetch at most `max_script_bytes + 1` so we can deterministically decide whether
+                    // the script exceeds the configured budget without downloading arbitrary amounts.
+                    fetcher.fetch_partial_with_request(req, max_script_bytes.saturating_add(1))
+                  };
+
+                  match fetched {
+                    Ok(fetched) => {
+                      if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                        log(&format!(
+                          "JavaScript: skipping external script ({} bytes > max {}) ({resolved_src})",
+                          fetched.bytes.len(),
+                          max_script_bytes
+                        ));
+                      } else {
+                        let script_text = decode_external_classic_script_bytes(
+                          &fetched.bytes,
+                          fetched.content_type.as_deref(),
+                          charset_attr,
+                        );
+                        let script_name: Arc<str> =
+                          Arc::from(fetched.final_url.clone().unwrap_or(resolved_src));
+                        let script_text: Arc<str> = Arc::from(script_text);
+
+                        if let Err(err) = queue_classic_script_task(
+                          &mut event_loop,
+                          run_limits,
+                          node_id,
+                          script_name,
+                          script_text,
+                        ) {
+                          log(&format!("JavaScript: failed to queue script task: {err}"));
+                          break;
+                        }
+                        scripts_queued += 1;
+                      }
+                    }
+                    Err(err) => {
+                      log(&format!(
+                        "JavaScript: failed to fetch external script {resolved_src} (continuing): {err}"
+                      ));
+                      // Fetch failures should not crash the render; skip and keep going.
+                    }
+                  }
+                } else {
+                  log("JavaScript: skipping <script src> with empty/invalid/unresolvable src");
+                }
+              } else {
+                // Inline script.
+                let mut inline_text = String::new();
+                for &child_id in &node.children {
+                  if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
+                    inline_text.push_str(content);
+                  }
+                }
+
+                if inline_text.as_bytes().len() > max_script_bytes {
+                  log(&format!(
+                    "JavaScript: skipping inline script ({} bytes > max {})",
+                    inline_text.as_bytes().len(),
+                    max_script_bytes
+                  ));
+                } else {
+                  let script_name: Arc<str> =
+                    Arc::from(format!("<inline script {}>", node_id.index()));
+                  let script_text: Arc<str> = Arc::from(inline_text);
+
+                  if let Err(err) = queue_classic_script_task(
+                    &mut event_loop,
+                    run_limits,
+                    node_id,
+                    script_name,
+                    script_text,
+                  ) {
+                    log(&format!("JavaScript: failed to queue script task: {err}"));
+                    break;
+                  }
+                  scripts_queued += 1;
+                }
+              }
+            }
+          }
+
+          let is_head = tag_name.eq_ignore_ascii_case("head")
+            && (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE);
+          let next_in_head = state.in_head || is_head;
+          let next_in_foreign_namespace = state.in_foreign_namespace
+            || !(namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE);
+          (next_in_head, next_in_foreign_namespace, state.in_shadow_root)
+        }
+        Dom2NodeKind::ShadowRoot { .. } => (
+          state.in_head,
+          state.in_foreign_namespace,
+          /* next_in_shadow_root */ true,
+        ),
+        _ => (state.in_head, state.in_foreign_namespace, state.in_shadow_root),
       };
-      if !tag_name.eq_ignore_ascii_case("script")
-        || !(namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
-      {
-        continue;
+
+      let next_in_template = state.in_template || node.inert_subtree;
+
+      let next_state = DomScanState {
+        in_head: next_in_head,
+        in_foreign_namespace: next_in_foreign_namespace,
+        in_template: next_in_template,
+        in_shadow_root: next_in_shadow_root,
+      };
+
+      // Push children in reverse so we traverse left-to-right in document order.
+      for &child in node.children.iter().rev() {
+        stack.push((child, next_state));
       }
-      if !dom.is_connected_for_scripting(script_id) {
-        continue;
-      }
-
-      // External scripts are out of scope for the CLI MVP.
-      if dom.has_attribute(script_id, "src").unwrap_or(false) {
-        log("JavaScript: skipping external <script src=...> (not supported yet)");
-        continue;
-      }
-
-      if determine_script_type_dom2(dom, script_id) != ScriptType::Classic {
-        log("JavaScript: skipping non-classic <script> (only classic scripts supported)");
-        continue;
-      }
-
-      let mut inline_text = String::new();
-      for &child_id in &node.children {
-        if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
-          inline_text.push_str(content);
-        }
-      }
-
-      if inline_text.as_bytes().len() > max_script_bytes {
-        log(&format!(
-          "JavaScript: skipping inline script ({} bytes > max {})",
-          inline_text.as_bytes().len(),
-          max_script_bytes
-        ));
-        continue;
-      }
-
-      // Queue execution as tasks so microtask checkpoints are respected by the event loop.
-      let script_id_for_task = script_id;
-      let script_name: Arc<str> = Arc::from(format!("<inline script {}>", script_id.index()));
-      let script_text: Arc<str> = Arc::from(inline_text);
-      if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-        let prev = host.current_script_state().borrow().current_script;
-        host.current_script_state().borrow_mut().current_script = Some(script_id_for_task);
-
-        // Execute scripts through the `WindowHostState` helper so Promise jobs are routed into the
-        // host-owned HTML-like event loop microtask queue.
-        {
-          let window = host.window_mut();
-          window.reset_interrupt();
-          window.vm_mut().set_budget(js_budget_for_script(run_limits));
-        }
-        let result =
-          host.exec_script_with_name_in_event_loop(event_loop, script_name.clone(), script_text.clone());
-        {
-          let window = host.window_mut();
-          window
-            .vm_mut()
-            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-        }
-
-        host.current_script_state().borrow_mut().current_script = prev;
-
-        result
-          .map(|_| ())
-          .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
-      }) {
-        log(&format!("JavaScript: failed to queue script task: {err}"));
-        break;
-      }
-
-      scripts_queued += 1;
     }
 
     if scripts_queued > 0 {
