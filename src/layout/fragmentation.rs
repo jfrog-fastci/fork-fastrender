@@ -3048,12 +3048,29 @@ fn inject_table_headers_and_footers(
             }
           }
 
+          let starts_with_header_rows = match orig_borders.header_rows {
+            Some((start, end)) if start < end => row_map.first().map_or(false, |r| *r < end),
+            _ => false,
+          };
+          let ends_with_footer_rows = match orig_borders.footer_rows {
+            Some((start, end)) if start < end => row_map.last().map_or(false, |r| *r >= start),
+            _ => false,
+          };
+
           let mut boundary_source: Vec<Option<usize>> = Vec::with_capacity(new_row_count + 1);
           for boundary in 0..=new_row_count {
             let source = if boundary == 0 {
-              (clipped.slice_info.is_first && !header_injected).then_some(0)
+              if starts_with_header_rows {
+                Some(0)
+              } else {
+                Some(body_start_row)
+              }
             } else if boundary == new_row_count {
-              (clipped.slice_info.is_last && !footer_injected).then_some(orig_borders.row_count)
+              if ends_with_footer_rows {
+                Some(orig_borders.row_count)
+              } else {
+                Some(body_end_row)
+              }
             } else if header_injected && header_len > 0 && body_len > 0 && boundary == header_len {
               Some(header_range.1)
             } else if footer_injected

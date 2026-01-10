@@ -783,3 +783,93 @@ fn collapsed_table_borders_align_with_repeated_headers_and_footers_in_multicol()
     );
   }
 }
+
+#[test]
+fn collapsed_table_borders_keep_horizontal_edges_visible_with_repeated_headers() {
+  const EPSILON: f32 = 0.1;
+
+  let body_rows = (0..6)
+    .map(|_| "<tr><td></td></tr>")
+    .collect::<Vec<_>>()
+    .join("");
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 80px; margin: 0; }}
+          html, body {{ margin: 0; padding: 0; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ border: 2px solid black; height: 30px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead><tr><th>H</th></tr></thead>
+          <tbody>{body_rows}</tbody>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 3,
+    "table should span at least three pages to cover an intermediate continuation fragment"
+  );
+
+  let mut saw_intermediate = false;
+  for (page_idx, page_root) in page_roots.iter().enumerate() {
+    let page_offset = Point::new(-page_root.bounds.origin.x, -page_root.bounds.origin.y);
+    let translated_page = page_root.translate(page_offset);
+
+    let (table_fragment, _) = find_table_fragment(&translated_page, Point::ZERO)
+      .expect("table fragment with border metadata");
+    let list = DisplayListBuilder::new().build(&translated_page);
+    let items = list.items();
+    let table_indices: Vec<usize> = items
+      .iter()
+      .enumerate()
+      .filter_map(|(idx, item)| matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx))
+      .collect();
+    assert_eq!(
+      table_indices.len(),
+      1,
+      "expected exactly one TableCollapsedBorders display item on page {page_idx}"
+    );
+    let DisplayItem::TableCollapsedBorders(item) = &items[table_indices[0]] else {
+      unreachable!();
+    };
+
+    if table_fragment.slice_info.slice_offset > EPSILON && !table_fragment.slice_info.is_last {
+      saw_intermediate = true;
+      assert!(
+        item
+          .borders
+          .horizontal_segment(0, 0)
+          .expect("expected top horizontal segment")
+          .is_visible(),
+        "expected top border line to be visible on page {page_idx}"
+      );
+      assert!(
+        item
+          .borders
+          .horizontal_segment(item.borders.row_count, 0)
+          .expect("expected bottom horizontal segment")
+          .is_visible(),
+        "expected bottom border line to be visible on page {page_idx}"
+      );
+    }
+  }
+
+  assert!(
+    saw_intermediate,
+    "expected to find an intermediate continuation fragment with a non-zero slice_offset"
+  );
+}
