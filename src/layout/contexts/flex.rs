@@ -6127,9 +6127,20 @@ impl FlexFormattingContext {
         &mut resolved_style,
       );
       // CSS2.1 §10.5 / Flexbox percentage resolution:
-      // If the flex container's height is indefinite, percentage heights on flex items behave as
-      // `auto`. Passing them through to Taffy causes it to resolve 100% against a fallback base
-      // (often the viewport), producing runaway sizes (e.g. NatGeo promo tiles).
+      // When the flex container's size in an axis is indefinite, percentage sizes in that axis on
+      // flex items behave as `auto`. Passing them through to Taffy causes it to resolve percentages
+      // against an arbitrary fallback (often 0 or the viewport), which can collapse or inflate flex
+      // items.
+      if container_inner_size.width.is_none()
+        && resolved_style.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
+      {
+        resolved_style.size.width = Dimension::auto();
+      }
+      if container_inner_size.width.is_none()
+        && resolved_style.max_size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
+      {
+        resolved_style.max_size.width = Dimension::auto();
+      }
       if container_inner_size.height.is_none()
         && resolved_style.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG
       {
@@ -17311,6 +17322,80 @@ mod tests {
       (replaced_fragment.bounds.height() - expected_height).abs() < 0.1,
       "expected percentage-sized replaced element height {expected_height}, got {:.2}",
       replaced_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn inline_flex_percent_max_width_does_not_collapse_when_container_width_indefinite() {
+    // Regression test for yelp.com:
+    // The "Log In"/"Sign Up" header buttons are `display:inline-flex` with a child label that sets
+    // `max-width:100%` + `overflow:hidden` for ellipsis handling. When the inline-flex container is
+    // shrink-to-fit sized, the percentage base is indefinite; per CSS sizing, the percentage
+    // max-width behaves as `none` and must not clamp to 0.
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+
+    let mut button_style = ComputedStyle::default();
+    button_style.display = Display::InlineFlex;
+    button_style.overflow_x = Overflow::Hidden;
+    button_style.overflow_y = Overflow::Hidden;
+    button_style.padding_left = Length::px(16.0);
+    button_style.padding_right = Length::px(16.0);
+    button_style.padding_top = Length::px(10.0);
+    button_style.padding_bottom = Length::px(10.0);
+    button_style.border_left_width = Length::px(2.0);
+    button_style.border_right_width = Length::px(2.0);
+    button_style.border_top_width = Length::px(2.0);
+    button_style.border_bottom_width = Length::px(2.0);
+    button_style.border_left_style = BorderStyle::Solid;
+    button_style.border_right_style = BorderStyle::Solid;
+    button_style.border_top_style = BorderStyle::Solid;
+    button_style.border_bottom_style = BorderStyle::Solid;
+
+    let mut label_style = ComputedStyle::default();
+    label_style.max_width = Some(Length::percent(100.0));
+    label_style.max_width_keyword = None;
+    label_style.overflow_x = Overflow::Hidden;
+    label_style.overflow_y = Overflow::Hidden;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let text = BoxNode::new_text(text_style.clone(), "Log In".to_string());
+    let inline = BoxNode::new_inline(text_style.clone(), vec![text]);
+    let mut label = BoxNode::new_block(Arc::new(label_style), FormattingContextType::Block, vec![inline]);
+    label.id = 96;
+
+    let mut button =
+      BoxNode::new_inline_block(Arc::new(button_style), FormattingContextType::Flex, vec![label]);
+    button.id = 95;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![button],
+    );
+
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite_width(400.0))
+      .expect("layout should succeed");
+
+    let button_fragment = find_fragment_by_box_id(&fragment, 95).expect("button fragment");
+    let label_fragment = find_fragment_by_box_id(&fragment, 96).expect("label fragment");
+
+    assert!(
+      label_fragment.bounds.width() > 1.0,
+      "expected label width to include its text, got {:.2}",
+      label_fragment.bounds.width()
+    );
+    assert!(
+      button_fragment.bounds.width() > 36.0 + 1.0,
+      "expected inline-flex button width to include its label (not just padding/borders), got {:.2}",
+      button_fragment.bounds.width()
     );
   }
 

@@ -3521,6 +3521,10 @@ impl<'a> LineBuilder<'a> {
       // Allow a small epsilon for items that can legitimately accumulate subpixel width differences
       // (text shaping + atomic inline boxes). This avoids "almost fits" overflow flipping a line
       // wrap decision and drastically changing layout (e.g. footer nav links wrapping).
+      //
+      // NOTE: `current_x` can exceed `line_width` when non-wrapping content overflows a line.
+      // Zero-width items like `StaticPositionAnchor` must not trigger a new line in that case
+      // (e.g. absolutely positioned placeholders at the end of a `white-space: nowrap` list).
       let fit_eps = if resolved.is_breakable()
         || matches!(
           resolved,
@@ -3530,7 +3534,8 @@ impl<'a> LineBuilder<'a> {
       } else {
         0.0
       };
-      if self.current_x + item_width <= line_width + fit_eps {
+      let remaining_width = (line_width - self.current_x).max(0.0);
+      if item_width <= remaining_width + fit_eps {
         self.place_item_with_width(resolved, item_width);
         return Ok(());
       }
@@ -7307,6 +7312,88 @@ mod tests {
       lines[0].width > 100.0,
       "line width should reflect overflow (got {})",
       lines[0].width
+    );
+  }
+
+  #[test]
+  fn static_position_anchor_does_not_create_new_line_after_overflowing_nowrap_content() {
+    // Regression test for yelp.com:
+    // The header nav ends with an absolutely positioned overflow placeholder. We insert a
+    // `StaticPositionAnchor` for it, but that anchor must not force a new line when the
+    // `white-space: nowrap` nav items already overflow the line width.
+    let mut builder = make_builder(100.0);
+
+    let nowrap_style = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.white_space = WhiteSpace::Nowrap;
+      style
+    });
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      nowrap_style.clone(),
+    );
+    let inline_block = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      true,
+    );
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      nowrap_style,
+    );
+    let inline_block2 = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      true,
+    );
+
+    builder
+      .add_item(InlineItem::InlineBlock(inline_block))
+      .unwrap();
+    builder
+      .add_item(InlineItem::InlineBlock(inline_block2))
+      .unwrap();
+
+    builder
+      .add_item(InlineItem::StaticPositionAnchor(StaticPositionAnchor::new(
+        1,
+        Direction::Ltr,
+        UnicodeBidi::Normal,
+      )))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(
+      lines.len(),
+      1,
+      "static position anchors must not introduce a new line after overflow"
+    );
+    assert!(
+      lines[0].width > 100.0,
+      "line width should reflect overflow (got {})",
+      lines[0].width
+    );
+    assert!(
+      lines[0]
+        .items
+        .iter()
+        .any(|pos| matches!(pos.item, InlineItem::StaticPositionAnchor(_))),
+      "expected anchor to be placed on the overflowing line"
     );
   }
 

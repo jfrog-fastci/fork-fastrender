@@ -30396,11 +30396,28 @@ mod tests {
       16.0,
       16.0,
     );
-    assert_eq!(style.grid_row_raw.as_deref(), Some("hero-start / hero-end"));
-    assert_eq!(
-      style.grid_column_raw.as_deref(),
-      Some("hero-start / hero-end")
+    assert_eq!(style.grid_row_raw.as_deref(), Some("hero / hero"));
+    assert_eq!(style.grid_column_raw.as_deref(), Some("hero / hero"));
+  }
+
+  #[test]
+  fn parses_grid_area_single_number_sets_column_auto() {
+    let mut style = ComputedStyle::default();
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "grid-area".into(),
+        value: PropertyValue::Number(2.0),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
     );
+    assert_eq!(style.grid_row_raw.as_deref(), Some("2 / auto"));
+    assert_eq!(style.grid_column_raw.as_deref(), Some("auto / auto"));
   }
 
   #[test]

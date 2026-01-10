@@ -7916,14 +7916,38 @@ impl BlockFormattingContext {
     let mut min_width = min_content_width + edges;
     let mut max_width = max_content_width + edges;
 
+    // Intrinsic size computations do not have a definite percentage base. Percentages in
+    // `min-width` and `max-width` therefore behave as `auto`/`none` per CSS sizing rules:
+    // - `min-width: <percentage>` -> 0
+    // - `max-width: <percentage>` -> none (∞)
     let min_constraint = style
       .min_width
-      .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
+      .and_then(|l| {
+        resolve_length_with_percentage_metrics(
+          l,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        )
+      })
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(0.0);
     let max_constraint = style
       .max_width
-      .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
+      .and_then(|l| {
+        resolve_length_with_percentage_metrics(
+          l,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        )
+      })
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(f32::INFINITY);
     let (min_constraint, max_constraint) = if max_constraint < min_constraint {
@@ -8575,13 +8599,16 @@ impl FormattingContext for BlockFormattingContext {
       style_for_width
         .max_width
         .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
+        .and_then(|l| {
+          let percentage_base = containing_width.is_finite().then_some(containing_width);
+          resolve_length_with_percentage_metrics(
             *l,
-            containing_width,
-            style_for_width,
-            &self.font_context,
+            percentage_base,
             self.viewport_size,
+            style_for_width.font_size,
+            style_for_width.root_font_size,
+            Some(style_for_width),
+            Some(&self.font_context),
           )
         })
         .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
@@ -10611,7 +10638,17 @@ impl FormattingContext for BlockFormattingContext {
       style.min_height
     };
     let min_constraint = min_inline_constraint
-      .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
+      .and_then(|l| {
+        resolve_length_with_percentage_metrics(
+          l,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style.as_ref()),
+          Some(&self.font_context),
+        )
+      })
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(0.0);
     let max_inline_constraint = if inline_is_horizontal {
@@ -10620,7 +10657,17 @@ impl FormattingContext for BlockFormattingContext {
       style.max_height
     };
     let max_constraint = max_inline_constraint
-      .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
+      .and_then(|l| {
+        resolve_length_with_percentage_metrics(
+          l,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style.as_ref()),
+          Some(&self.font_context),
+        )
+      })
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(f32::INFINITY);
     let (min_constraint, max_constraint) = if max_constraint < min_constraint {

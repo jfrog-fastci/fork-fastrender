@@ -3607,12 +3607,14 @@ impl GridFormattingContext {
 
     // Grid item properties using raw line numbers.
     let css_grid_column = self.convert_grid_placement(
+      CssGridAxis::Column,
       style.grid_column_raw.as_deref(),
       style.grid_column_start,
       style.grid_column_end,
       containing_grid,
     );
     let css_grid_row = self.convert_grid_placement(
+      CssGridAxis::Row,
       style.grid_row_raw.as_deref(),
       style.grid_row_start,
       style.grid_row_end,
@@ -4646,6 +4648,7 @@ impl GridFormattingContext {
   /// Converts grid placements (with optional named lines) to Taffy Line<GridPlacement>
   fn convert_grid_placement(
     &self,
+    axis: CssGridAxis,
     raw: Option<&str>,
     start: i32,
     end: i32,
@@ -4658,7 +4661,7 @@ impl GridFormattingContext {
     // synthesized `<name>-start` / `<name>-end` line names. Area names take precedence over
     // explicitly named lines of the same spelling.
     //
-    // Spec: https://www.w3.org/TR/css-grid-1/#grid-placement-slot
+    // Spec: https://www.w3.org/TR/css-grid-2/#grid-placement-slot
     let map_named_area = |placement: TaffyGridPlacement<String>, is_start: bool| {
       let Some(grid) = containing_grid else {
         return placement;
@@ -4693,8 +4696,10 @@ impl GridFormattingContext {
       }
     };
 
+    let line_names = containing_grid.map(|grid| axis.line_names(grid));
+
     let mut placement = if let Some(raw_str) = raw {
-      parse_grid_line_placement_raw(raw_str, None)
+      parse_grid_line_placement_raw(raw_str, line_names)
     } else {
       Line {
         start: if start == 0 {
@@ -4712,6 +4717,7 @@ impl GridFormattingContext {
 
     placement.start = map_named_area(placement.start, true);
     placement.end = map_named_area(placement.end, false);
+    normalize_grid_placement_conflicts(&mut placement);
     placement
   }
 
@@ -10917,6 +10923,25 @@ fn parse_grid_line_placement_raw(
   Line {
     start: parse_grid_line_component(&start),
     end: parse_grid_line_component(&end),
+  }
+}
+
+fn normalize_grid_placement_conflicts(line: &mut Line<TaffyGridPlacement<String>>) {
+  // Grid Placement Conflict Handling:
+  // https://www.w3.org/TR/css-grid-2/#grid-placement-errors
+  //
+  // If placement contains two lines and they resolve to the same line, drop the end line so the
+  // item defaults to a span of 1.
+  let start_is_line = matches!(
+    line.start,
+    TaffyGridPlacement::Line(_) | TaffyGridPlacement::NamedLine(_, _)
+  );
+  let end_is_line = matches!(
+    line.end,
+    TaffyGridPlacement::Line(_) | TaffyGridPlacement::NamedLine(_, _)
+  );
+  if start_is_line && end_is_line && line.start == line.end {
+    line.end = TaffyGridPlacement::Auto;
   }
 }
 
@@ -18590,6 +18615,121 @@ mod tests {
       }
       other => panic!("expected named span, got {:?}", other),
     }
+  }
+
+  #[test]
+  fn grid_area_custom_ident_can_target_named_lines() {
+    let fc = GridFormattingContext::new();
+
+    // Mimic yelp.com's hero grid:
+    //   grid-template-columns: [slide-selection] 24px [slides] 1fr;
+    //   grid-gap: 0 24px;
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_template_columns = vec![GridTrack::Length(Length::px(24.0)), GridTrack::Fr(1.0)];
+    container_style.grid_column_line_names = vec![
+      vec!["slide-selection".to_string()],
+      vec!["slides".to_string()],
+      Vec::new(),
+    ];
+    container_style.grid_column_gap = Length::px(24.0);
+    let container_style = Arc::new(container_style);
+
+    let mut item1_style = ComputedStyle::default();
+    item1_style.grid_row_raw = Some("slide-selection".to_string());
+    item1_style.grid_column_raw = Some("slide-selection".to_string());
+    let item1_style = Arc::new(item1_style);
+    let mut item1 = BoxNode::new_block(item1_style, FormattingContextType::Block, vec![]);
+    item1.id = 101;
+    let item1_id = item1.id;
+
+    let mut item2_style = ComputedStyle::default();
+    item2_style.grid_row_raw = Some("slides".to_string());
+    item2_style.grid_column_raw = Some("slides".to_string());
+    let item2_style = Arc::new(item2_style);
+    let mut item2 = BoxNode::new_block(item2_style, FormattingContextType::Block, vec![]);
+    item2.id = 102;
+    let item2_id = item2.id;
+
+    let grid = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Grid,
+      vec![item1, item2],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 50.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    let item1_fragment = find_block_fragment(&fragment, item1_id);
+    let item2_fragment = find_block_fragment(&fragment, item2_id);
+
+    // First column is 24px wide and there is a 24px column gap.
+    assert!(
+      (item1_fragment.bounds.x() - 0.0).abs() < 0.05,
+      "expected item1.x≈0, got {}",
+      item1_fragment.bounds.x()
+    );
+    assert!(
+      (item2_fragment.bounds.x() - 48.0).abs() < 0.05,
+      "expected item2.x≈48, got {}",
+      item2_fragment.bounds.x()
+    );
+  }
+
+  #[test]
+  fn grid_area_custom_ident_maps_to_area_start_end_lines() {
+    let fc = GridFormattingContext::new();
+
+    // Create explicit "hero-start"/"hero-end" line names and place an item with `grid-area: hero`.
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_template_columns = vec![GridTrack::Length(Length::px(10.0)), GridTrack::Length(Length::px(20.0))];
+    container_style.grid_column_line_names = vec![
+      vec!["hero-start".to_string()],
+      vec!["hero-end".to_string()],
+      Vec::new(),
+    ];
+    container_style.grid_template_rows = vec![GridTrack::Length(Length::px(5.0)), GridTrack::Length(Length::px(15.0))];
+    container_style.grid_row_line_names = vec![
+      vec!["hero-start".to_string()],
+      vec!["hero-end".to_string()],
+      Vec::new(),
+    ];
+    let container_style = Arc::new(container_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.grid_row_raw = Some("hero".to_string());
+    item_style.grid_column_raw = Some("hero".to_string());
+    let item_style = Arc::new(item_style);
+    let mut item = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+    item.id = 201;
+    let item_id = item.id;
+
+    let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![item]);
+    let constraints = LayoutConstraints::definite(30.0, 20.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    let item_fragment = find_block_fragment(&fragment, item_id);
+    assert!(
+      (item_fragment.bounds.x() - 0.0).abs() < 0.05,
+      "expected x≈0, got {}",
+      item_fragment.bounds.x()
+    );
+    assert!(
+      (item_fragment.bounds.y() - 0.0).abs() < 0.05,
+      "expected y≈0, got {}",
+      item_fragment.bounds.y()
+    );
+    assert!(
+      (item_fragment.bounds.width() - 10.0).abs() < 0.05,
+      "expected width≈10, got {}",
+      item_fragment.bounds.width()
+    );
+    assert!(
+      (item_fragment.bounds.height() - 5.0).abs() < 0.05,
+      "expected height≈5, got {}",
+      item_fragment.bounds.height()
+    );
   }
 
   // Test 20: Grid with both row and column gaps

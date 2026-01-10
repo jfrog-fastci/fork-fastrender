@@ -5517,6 +5517,53 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    // Fast path: when the destination rect falls entirely within a single tile, we can render the
+    // gradient directly without rasterizing a tile pixmap and sampling it through a scaled
+    // repeating pattern. This avoids resampling artifacts when the tile size is fractional at
+    // device scale (common for `background-size` / `repeat-round`).
+    let tile_w_css = item.tile_size.width;
+    let tile_h_css = item.tile_size.height;
+    let dest_w_css = item.dest_rect.width();
+    let dest_h_css = item.dest_rect.height();
+    if tile_w_css > 0.0
+      && tile_h_css > 0.0
+      && dest_w_css > 0.0
+      && dest_h_css > 0.0
+      && tile_w_css.is_finite()
+      && tile_h_css.is_finite()
+      && dest_w_css.is_finite()
+      && dest_h_css.is_finite()
+      && item.dest_rect.x().is_finite()
+      && item.dest_rect.y().is_finite()
+      && item.origin.x.is_finite()
+      && item.origin.y.is_finite()
+    {
+      let mut phase_x = (item.dest_rect.x() - item.origin.x).rem_euclid(tile_w_css);
+      let mut phase_y = (item.dest_rect.y() - item.origin.y).rem_euclid(tile_h_css);
+      // Floating-point rounding can occasionally produce a remainder equal to the divisor for
+      // large values; clamp that back to 0 so we keep the phase in `[0, tile)` as intended.
+      const PHASE_EPS: f32 = 1e-4;
+      if phase_x >= tile_w_css || phase_x.abs() <= PHASE_EPS {
+        phase_x = 0.0;
+      }
+      if phase_y >= tile_h_css || phase_y.abs() <= PHASE_EPS {
+        phase_y = 0.0;
+      }
+
+      let single_tile_x = phase_x + dest_w_css <= tile_w_css + PHASE_EPS;
+      let single_tile_y = phase_y + dest_h_css <= tile_h_css + PHASE_EPS;
+      if single_tile_x && single_tile_y {
+        let direct = LinearGradientItem {
+          rect: item.dest_rect,
+          start: Point::new(item.start.x - phase_x, item.start.y - phase_y),
+          end: Point::new(item.end.x - phase_x, item.end.y - phase_y),
+          stops: item.stops.clone(),
+          spread: item.spread,
+        };
+        return self.render_linear_gradient(&direct);
+      }
+    }
+
     let dest_rect = self.ds_rect(item.dest_rect);
     let visible_rect = match self.gradient_visible_rect(dest_rect) {
       Some(r) => r,
@@ -23828,6 +23875,97 @@ mod tests {
 
       panic!(
         "pattern-based gradient rendering should match explicit tiling; first mismatch at ({x},{y}): explicit={a:?} pattern={b:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn linear_gradient_pattern_single_tile_matches_direct_gradient() {
+    // The pattern renderer rasterizes a tile pixmap at an integer size and can then scale it back
+    // to the intended tile size. When the tile size is fractional, sampling can diverge from
+    // directly evaluating the gradient. For destination rects that fall entirely within a single
+    // tile, the correct behavior is equivalent to rendering the gradient directly with the tile
+    // phase applied.
+    let tile_size = Size::new(10.0, 3.5);
+    let origin = Point::new(0.0, 0.0);
+    // Pick a destination rect that is wholly contained within one tile and aligned to integer
+    // device pixels so any mismatch is due to gradient evaluation, not edge coverage.
+    let dest_rect = Rect::from_xywh(1.0, 1.0, 4.0, 2.0);
+
+    let stops = vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::rgb(0, 0, 0),
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::rgb(255, 255, 255),
+      },
+    ];
+
+    let tile_start = Point::new(0.0, 0.0);
+    let tile_end = Point::new(0.0, tile_size.height);
+
+    let phase_x = (dest_rect.x() - origin.x).rem_euclid(tile_size.width);
+    let phase_y = (dest_rect.y() - origin.y).rem_euclid(tile_size.height);
+    let direct_start = Point::new(tile_start.x - phase_x, tile_start.y - phase_y);
+    let direct_end = Point::new(tile_end.x - phase_x, tile_end.y - phase_y);
+
+    let mut patterned = DisplayList::new();
+    patterned.push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
+      dest_rect,
+      tile_size,
+      origin,
+      start: tile_start,
+      end: tile_end,
+      stops: stops.clone(),
+      spread: GradientSpread::Pad,
+    }));
+
+    let mut direct = DisplayList::new();
+    direct.push(DisplayItem::LinearGradient(LinearGradientItem {
+      rect: dest_rect,
+      start: direct_start,
+      end: direct_end,
+      stops,
+      spread: GradientSpread::Pad,
+    }));
+
+    let font_ctx = FontContext::new();
+    let pixmap_pattern = DisplayListRenderer::new(16, 8, Rgba::WHITE, font_ctx.clone())
+      .expect("renderer")
+      .render(&patterned)
+      .expect("render pattern");
+    let pixmap_direct = DisplayListRenderer::new(16, 8, Rgba::WHITE, font_ctx)
+      .expect("renderer")
+      .render(&direct)
+      .expect("render direct");
+
+    if pixmap_direct.data() != pixmap_pattern.data() {
+      let (width, height) = (pixmap_direct.width(), pixmap_direct.height());
+      assert_eq!(
+        (width, height),
+        (pixmap_pattern.width(), pixmap_pattern.height()),
+        "pixmap sizes must match"
+      );
+      let mut mismatch = None;
+      for y in 0..height {
+        for x in 0..width {
+          let idx = ((y * width + x) * 4) as usize;
+          let a = &pixmap_direct.data()[idx..idx + 4];
+          let b = &pixmap_pattern.data()[idx..idx + 4];
+          if a != b {
+            mismatch = Some((x, y, [a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]]));
+            break;
+          }
+        }
+        if mismatch.is_some() {
+          break;
+        }
+      }
+      let (x, y, a, b) = mismatch.expect("pixmaps differ but no mismatch located");
+      panic!(
+        "single-tile pattern gradient should match direct gradient; first mismatch at ({x},{y}): direct={a:?} pattern={b:?}"
       );
     }
   }
