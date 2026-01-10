@@ -10034,139 +10034,19 @@ impl FlexFormattingContext {
       .usize_list("FASTR_LOG_FLEX_OVERFLOW_IDS")
       .unwrap_or_default();
     if main_axis_is_horizontal {
-      // Re-run manual row placement when Taffy positions items beyond the container width.
-      // Even when overflow is expected (wide items), their starting position should remain
-      // at the row origin rather than drifting far to the right.
+      // Note: in-flow flex items are allowed to overflow. This post-pass must never clamp item
+      // widths/heights (overflow is handled at paint-time). The only adjustments here are
+      // conservative drift guards and optional debug logging.
       let container_w = if rect.width().is_finite() && rect.width() > wrap_eps {
         rect.width()
       } else {
         self.viewport_size.width
       };
-      let mut max_child_x = 0.0f32;
+      let mut max_child_x = f32::NEG_INFINITY;
       for child in &children {
         check_layout_deadline(&mut deadline_counter)?;
         max_child_x = max_child_x.max(child.bounds.max_x());
       }
-      let log_shrink_ids = toggles
-        .usize_list("FASTR_LOG_FLEX_SHRINK_IDS")
-        .unwrap_or_default();
-      let log_this_shrink = !log_shrink_ids.is_empty() && log_shrink_ids.contains(&box_node.id);
-
-      if allow_overflow_fallback && max_child_x > container_w + 0.5 {
-        let available = container_w.max(1.0);
-        // Apply flex-shrink distribution to bring the total width back to the available span.
-        let mut total_main = 0.0;
-        let mut total_weight = 0.0;
-        let mut child_count = 0usize;
-        let mut box_lookup: FxHashMap<usize, &BoxNode> =
-          FxHashMap::with_capacity_and_hasher(box_node.children.len(), Default::default());
-        for child in &box_node.children {
-          check_layout_deadline(&mut deadline_counter)?;
-          box_lookup.insert(child.id, child);
-        }
-        let mut frag_box_ids: Vec<(usize, usize)> = Vec::new();
-        for (idx, frag) in children.iter().enumerate() {
-          check_layout_deadline(&mut deadline_counter)?;
-          if let Some(box_id) = match &frag.content {
-            FragmentContent::Block { box_id }
-            | FragmentContent::Inline { box_id, .. }
-            | FragmentContent::Text { box_id, .. }
-            | FragmentContent::Replaced { box_id, .. } => *box_id,
-            FragmentContent::RunningAnchor { .. } => None,
-            FragmentContent::Line { .. } => None,
-            FragmentContent::FootnoteAnchor { .. } => None,
-          } {
-            frag_box_ids.push((idx, box_id));
-          }
-        }
-        for (frag_idx, box_id) in &frag_box_ids {
-          check_layout_deadline(&mut deadline_counter)?;
-          if let Some(child_node) = box_lookup.get(box_id) {
-            let child_fragment = &children[*frag_idx];
-            let base = child_fragment.bounds.width();
-            let weight = child_node.style.flex_shrink.max(0.0) * base;
-            total_main += base;
-            total_weight += weight;
-            child_count += 1;
-          }
-        }
-        if log_this_shrink {
-          let widths: Vec<f32> = children.iter().map(|c| c.bounds.width()).collect();
-          eprintln!(
-            "[flex-shrink-pre] id={} avail_w={:.1} total={:.1} widths={:?}",
-            box_node.id, available, total_main, widths
-          );
-        }
-
-        if total_main > available + 0.01 {
-          let deficit = total_main - available;
-          let count = child_count.max(1) as f32;
-          let mut cursor_x = 0.0;
-          let mut cursor_y = 0.0;
-          let mut row_h = 0.0;
-          for (frag_idx, box_id) in &frag_box_ids {
-            if let Some(child_node) = box_lookup.get(box_id) {
-              let child_fragment = &mut children[*frag_idx];
-              let base = child_fragment.bounds.width();
-              let weight = child_node.style.flex_shrink.max(0.0) * base;
-              let share = if total_weight > 0.0 {
-                deficit * (weight / total_weight)
-              } else {
-                deficit / count
-              };
-              let w = (base - share).max(0.0).min(available);
-              let h = child_fragment.bounds.height();
-              if cursor_x + w > available + 0.1
-                && cursor_x > 0.0
-                && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-              {
-                cursor_x = 0.0;
-                cursor_y += row_h;
-                row_h = 0.0;
-              }
-              child_fragment.bounds = Rect::new(Point::new(cursor_x, cursor_y), Size::new(w, h));
-              cursor_x += w;
-              row_h = row_h.max(h);
-            }
-          }
-        } else {
-          // Even without shrink, ensure sequential placement within the line.
-          let mut cursor_x = 0.0;
-          let mut cursor_y = 0.0;
-          let mut row_h = 0.0;
-          for child in &mut children {
-            let w = child.bounds.width().min(available);
-            let h = child.bounds.height();
-            if cursor_x + w > available + 0.1
-              && cursor_x > 0.0
-              && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-            {
-              cursor_x = 0.0;
-              cursor_y += row_h;
-              row_h = 0.0;
-            }
-            child.bounds = Rect::new(Point::new(cursor_x, cursor_y), Size::new(w, h));
-            cursor_x += w;
-            row_h = row_h.max(h);
-          }
-        }
-
-        if log_this_shrink {
-          let widths: Vec<f32> = children.iter().map(|c| c.bounds.width()).collect();
-          eprintln!(
-            "[flex-shrink-post] id={} avail_w={:.1} total={:.1} widths={:?}",
-            box_node.id,
-            available,
-            widths.iter().sum::<f32>(),
-            widths
-          );
-        }
-      }
-      // Log overflow after any redistribution/reflow so diagnostics reflect final placement.
-      max_child_x = children
-        .iter()
-        .map(|c| c.bounds.max_x())
-        .fold(0.0, f32::max);
       // If all children have been pushed far to the left (beyond 2× the container width),
       // shift them back so the leftmost child starts at the origin. This guards against
       // runaway negative positions from broken intrinsic sizing or cached fragments.
@@ -10187,7 +10067,7 @@ impl FlexFormattingContext {
           max_child_x = children
             .iter()
             .map(|c| c.bounds.max_x())
-            .fold(0.0, f32::max);
+            .fold(f32::NEG_INFINITY, f32::max);
         }
       }
       let should_log =
@@ -10486,52 +10366,6 @@ impl FlexFormattingContext {
             }
           }
         }
-      }
-    }
-
-    // If a wrapping row still overflows the container (e.g., items sized to 100% that Taffy
-    // keeps on the same line), reflow the children into sequential rows within the container
-    // width. This mirrors flex-wrap behaviour when items exceed the line length.
-    if main_axis_is_horizontal
-      && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-      && rect.width().is_finite()
-      && rect.width() > 0.0
-    {
-      let max_child_x = children
-        .iter()
-        .map(|c| c.bounds.max_x())
-        .fold(f32::NEG_INFINITY, f32::max);
-      let min_child_x = children
-        .iter()
-        .map(|c| c.bounds.x())
-        .fold(f32::INFINITY, f32::min);
-      if max_child_x > rect.width() + 0.5 || min_child_x < -0.5 {
-        let avail = rect.width();
-        let start_y = children
-          .iter()
-          .map(|c| c.bounds.y())
-          .fold(f32::INFINITY, f32::min);
-        let start_y = if start_y.is_finite() { start_y } else { 0.0 };
-        let mut cursor_x = 0.0;
-        let mut cursor_y = start_y;
-        let mut row_height: f32 = 0.0;
-        for child in &mut children {
-          let mut w = child.bounds.width().min(avail);
-          let h = child.bounds.height();
-          if cursor_x + w > avail + 0.01 {
-            cursor_y += row_height;
-            cursor_x = 0.0;
-            row_height = 0.0;
-          }
-          if w <= 0.0 {
-            w = 0.0;
-          }
-          child.bounds = Rect::new(Point::new(cursor_x, cursor_y), Size::new(w, h));
-          cursor_x += w;
-          row_height = row_height.max(h);
-        }
-        let new_height = (cursor_y + row_height - rect.origin.y).max(rect.height());
-        rect = Rect::new(rect.origin, Size::new(rect.width(), new_height));
       }
     }
 
