@@ -1866,6 +1866,50 @@ mod tests {
     assert_eq!(after, expected);
   }
 
+  #[test]
+  fn linear_gradient_dither_matrix_matches_expected() {
+    // Guardrail: ordered-dither orientation/phase should remain stable.
+    //
+    // This 4×4 case is small enough to be easy to reason about while still exercising every entry
+    // in the dither matrix. The expected values were computed directly from the current quantization
+    // formula: `floor(lerp(black, white, t) + dither)`, with `t = (x + 0.5) / width` and the
+    // per-pixel dither value derived from the matrix at `(x & 3, y & 3)`.
+    let stops = vec![(0.0, Rgba::BLACK), (1.0, Rgba::WHITE)];
+    let cache = GradientLutCache::default();
+    let width = 4;
+    let height = 4;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      gradient_bucket(width.max(height)),
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+
+    let expected: [[u8; 4]; 4] = [
+      [31, 96, 159, 224],
+      [32, 95, 160, 223],
+      [32, 96, 159, 223],
+      [32, 96, 159, 223],
+    ];
+    let stride = width as usize;
+    let pixels = pixmap.pixels();
+    for (y, row) in expected.iter().enumerate() {
+      for (x, v) in row.iter().enumerate() {
+        let expected_px =
+          PremultipliedColorU8::from_rgba(*v, *v, *v, 255).expect("valid premultiplied color");
+        assert_eq!(pixels[y * stride + x], expected_px, "pixel {x},{y}");
+      }
+    }
+  }
+
   fn naive_conic(
     width: u32,
     height: u32,
