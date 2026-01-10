@@ -3901,6 +3901,221 @@ pub fn string_prototype_to_string(
   }
 }
 
+/// `%String.prototype%[@@iterator]` (ECMA-262).
+///
+/// This returns an iterator object with internal slots:
+/// - `[[IteratedString]]`: stored as a non-enumerable symbol-keyed data property
+/// - `[[NextIndex]]`: stored as a non-enumerable symbol-keyed data property
+///
+/// The iterator object's `next` method is a shared native builtin captured in the iterator method's
+/// native slots.
+pub fn string_prototype_iterator(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if matches!(this, Value::Null | Value::Undefined) {
+    return Err(VmError::TypeError(
+      "String.prototype[Symbol.iterator] called on null or undefined",
+    ));
+  }
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 3 {
+    return Err(VmError::InvariantViolation(
+      "String.prototype[Symbol.iterator] has wrong native slot count",
+    ));
+  }
+  let Value::Object(next_fn) = slots[0] else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype[Symbol.iterator] next slot is not an object",
+    ));
+  };
+  let Value::Symbol(iterated_sym) = slots[1] else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype[Symbol.iterator] iteratedString slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(next_index_sym) = slots[2] else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype[Symbol.iterator] nextIndex slot is not a symbol",
+    ));
+  };
+
+  let intr = require_intrinsics(vm)?;
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let iter = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(iterated_sym),
+    data_desc(Value::String(s), true, false, false),
+  )?;
+  scope.define_property(
+    iter,
+    PropertyKey::from_symbol(next_index_sym),
+    data_desc(Value::Number(0.0), true, false, false),
+  )?;
+
+  let next_key = string_key(scope, "next")?;
+  scope.define_property(iter, next_key, data_desc(Value::Object(next_fn), true, false, true))?;
+
+  Ok(Value::Object(iter))
+}
+
+/// `%StringIteratorPrototype%.next` (ECMA-262).
+pub fn string_iterator_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(iter) = this else {
+    return Err(VmError::TypeError(
+      "String iterator next called on non-object",
+    ));
+  };
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 2 {
+    return Err(VmError::InvariantViolation(
+      "String iterator next has wrong native slot count",
+    ));
+  }
+  let Value::Symbol(iterated_sym) = slots[0] else {
+    return Err(VmError::InvariantViolation(
+      "String iterator next iteratedString slot is not a symbol",
+    ));
+  };
+  let Value::Symbol(next_index_sym) = slots[1] else {
+    return Err(VmError::InvariantViolation(
+      "String iterator next nextIndex slot is not a symbol",
+    ));
+  };
+
+  let iterated_key = PropertyKey::from_symbol(iterated_sym);
+  let Some(Value::String(iterated)) = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &iterated_key)?
+  else {
+    // Once `[[IteratedString]]` is `undefined`, the iterator is complete.
+    let result = scope.alloc_object()?;
+    scope.push_root(Value::Object(result))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(result, Some(intr.object_prototype()))?;
+    let value_key = string_key(scope, "value")?;
+    scope.define_property(result, value_key, data_desc(Value::Undefined, true, true, true))?;
+    let done_key = string_key(scope, "done")?;
+    scope.define_property(result, done_key, data_desc(Value::Bool(true), true, true, true))?;
+    return Ok(Value::Object(result));
+  };
+
+  let next_index_key = PropertyKey::from_symbol(next_index_sym);
+  let next_index_val = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &next_index_key)?
+    .unwrap_or(Value::Number(0.0));
+  let Value::Number(n) = next_index_val else {
+    return Err(VmError::InvariantViolation(
+      "String iterator nextIndex is not a number",
+    ));
+  };
+  if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+    return Err(VmError::InvariantViolation(
+      "String iterator nextIndex is not a non-negative integer",
+    ));
+  }
+  let idx = n as usize;
+
+  let len = {
+    let string = scope.heap().get_string(iterated)?;
+    string.len_code_units()
+  };
+
+  // End-of-iteration: clear `[[IteratedString]]` so the underlying string can be collected if this
+  // iterator is retained.
+  if idx >= len {
+    scope.define_property(
+      iter,
+      iterated_key,
+      data_desc(Value::Undefined, true, false, false),
+    )?;
+
+    let result = scope.alloc_object()?;
+    scope.push_root(Value::Object(result))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(result, Some(intr.object_prototype()))?;
+    let value_key = string_key(scope, "value")?;
+    scope.define_property(result, value_key, data_desc(Value::Undefined, true, true, true))?;
+    let done_key = string_key(scope, "done")?;
+    scope.define_property(result, done_key, data_desc(Value::Bool(true), true, true, true))?;
+    return Ok(Value::Object(result));
+  }
+
+  // Extract the next code point (1-2 UTF-16 code units), per `StringIteratorNext`.
+  let (end, units) = {
+    let string = scope.heap().get_string(iterated)?;
+    let code_units = string.as_code_units();
+    let first = code_units
+      .get(idx)
+      .copied()
+      .ok_or(VmError::InvariantViolation(
+        "String iterator index out of bounds",
+      ))?;
+    let mut take = 1usize;
+    if (0xD800..=0xDBFF).contains(&first) && idx + 1 < len {
+      let second = code_units[idx + 1];
+      if (0xDC00..=0xDFFF).contains(&second) {
+        take = 2;
+      }
+    }
+    let end = idx + take;
+    (end, code_units[idx..end].to_vec())
+  };
+
+  // Root the iterator + iterated string while allocating the substring/result object.
+  let mut out_scope = scope.reborrow();
+  out_scope.push_roots(&[Value::Object(iter), Value::String(iterated)])?;
+
+  let value_s = out_scope.alloc_string_from_u16_vec(units)?;
+  out_scope.push_root(Value::String(value_s))?;
+
+  // Advance `[[NextIndex]]`.
+  out_scope.define_property(
+    iter,
+    next_index_key,
+    data_desc(Value::Number(end as f64), true, false, false),
+  )?;
+
+  // Create `{ value, done: false }`.
+  let result = out_scope.alloc_object()?;
+  out_scope.push_root(Value::Object(result))?;
+  out_scope
+    .heap_mut()
+    .object_set_prototype(result, Some(intr.object_prototype()))?;
+  let value_key = string_key(&mut out_scope, "value")?;
+  out_scope.define_property(result, value_key, data_desc(Value::String(value_s), true, true, true))?;
+  let done_key = string_key(&mut out_scope, "done")?;
+  out_scope.define_property(result, done_key, data_desc(Value::Bool(false), true, true, true))?;
+
+  Ok(Value::Object(result))
+}
+
 /// `Number` constructor called as a function.
 pub fn number_constructor_call(
   vm: &mut Vm,

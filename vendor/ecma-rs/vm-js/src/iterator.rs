@@ -1,6 +1,6 @@
 use crate::property::PropertyKey;
 use crate::error_object::new_type_error_object;
-use crate::{GcObject, GcSymbol, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 ///
@@ -27,11 +27,6 @@ enum IteratorKind {
 
 fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
   Ok(PropertyKey::from_string(scope.alloc_string(s)?))
-}
-
-fn symbol_for(scope: &mut Scope<'_>, description: &str) -> Result<GcSymbol, VmError> {
-  let key = scope.alloc_string(description)?;
-  scope.heap_mut().symbol_for(key)
 }
 
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
@@ -139,7 +134,11 @@ pub fn get_iterator(
   }
 
   // Fall back to iterator protocol: `GetMethod(iterable, @@iterator)`.
-  let iterator_sym = symbol_for(scope, "Symbol.iterator")?;
+  let iterator_sym = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
+    .well_known_symbols()
+    .iterator;
   let Some(method) =
     get_method(vm, host, hooks, scope, iterable, PropertyKey::from_symbol(iterator_sym))?
   else {

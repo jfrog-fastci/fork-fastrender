@@ -6,6 +6,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+  assert_eq!(actual, expected);
+}
+
 #[test]
 fn for_of_over_array() {
   let mut rt = new_runtime();
@@ -13,6 +21,15 @@ fn for_of_over_array() {
     .exec_script(r#"var s=0; for (var x of [1,2,3]) { s = s + x; } s"#)
     .unwrap();
   assert_eq!(value, Value::Number(6.0));
+}
+
+#[test]
+fn for_of_over_string() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var s=""; for (var c of "ab") { s = s + c; } s"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ab");
 }
 
 #[test]
@@ -25,10 +42,30 @@ fn array_spread() {
 }
 
 #[test]
+fn string_spread_iterates_code_points() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[..."a\uD834\uDF06b"]; a.length===3 && a[0]==="a" && a[1]==="\uD834\uDF06" && a[2]==="b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn call_spread() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(r#"function add(a,b,c){ return a+b+c; } add(...[1,2,3])"#)
     .unwrap();
   assert_eq!(value, Value::Number(6.0));
+}
+
+#[test]
+fn call_spread_over_string() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"function join(a,b){ return a+b; } join(...("ab"))"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ab");
 }

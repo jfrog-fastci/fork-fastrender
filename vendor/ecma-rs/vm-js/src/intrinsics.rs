@@ -402,6 +402,8 @@ impl Intrinsics {
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
+    let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
+    let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let bigint_prototype_value_of = vm.register_native_call(builtins::bigint_prototype_value_of)?;
@@ -690,6 +692,50 @@ impl Intrinsics {
         string_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // String.prototype[@@iterator]
+    {
+      // Internal symbols used to model `[[IteratedString]]` / `[[NextIndex]]` slots on string
+      // iterator objects.
+      let iterated_key_s = scope.alloc_string("vm-js.internal.StringIteratorIteratedString")?;
+      scope.push_root(Value::String(iterated_key_s))?;
+      let iterated_sym = scope.heap_mut().symbol_for(iterated_key_s)?;
+      scope.push_root(Value::Symbol(iterated_sym))?;
+
+      let next_index_key_s = scope.alloc_string("vm-js.internal.StringIteratorNextIndex")?;
+      scope.push_root(Value::String(next_index_key_s))?;
+      let next_index_sym = scope.heap_mut().symbol_for(next_index_key_s)?;
+      scope.push_root(Value::Symbol(next_index_sym))?;
+
+      // Shared `%StringIteratorPrototype%.next` builtin, parameterized by the internal symbol keys.
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_slots = [Value::Symbol(iterated_sym), Value::Symbol(next_index_sym)];
+      let next_fn = scope.alloc_native_function_with_slots(string_iterator_next, None, next_name, 0, &next_slots)?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(function_prototype))?;
+
+      let iter_name = scope.alloc_string("[Symbol.iterator]")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_slots = [
+        Value::Object(next_fn),
+        Value::Symbol(iterated_sym),
+        Value::Symbol(next_index_sym),
+      ];
+      let iter_fn =
+        scope.alloc_native_function_with_slots(string_prototype_iterator, None, iter_name, 0, &iter_slots)?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(function_prototype))?;
+      scope.define_property(
+        string_prototype,
+        PropertyKey::Symbol(well_known_symbols.iterator),
+        data_desc(Value::Object(iter_fn), true, false, true),
       )?;
     }
 
