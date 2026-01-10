@@ -230,6 +230,10 @@ mod tests {
     assert!(supports_declaration("box-direction", "normal"));
     assert!(!supports_declaration("box-direction", "sideways"));
 
+    assert!(supports_declaration("-webkit-box-lines", "multiple"));
+    assert!(supports_declaration("box-lines", "single"));
+    assert!(!supports_declaration("box-lines", "wrap"));
+
     assert!(supports_declaration("-webkit-box-flex", "1"));
     assert!(supports_declaration("box-flex", "calc(1 + 1)"));
     assert!(!supports_declaration("box-flex", "-1"));

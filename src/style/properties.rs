@@ -5136,6 +5136,7 @@ pub(crate) fn apply_property_from_source(
     "box-pack" => styles.justify_content = source.justify_content,
     "box-align" => styles.align_items = source.align_items,
     "box-flex-wrap" => styles.flex_wrap = source.flex_wrap,
+    "box-lines" => styles.flex_wrap = source.flex_wrap,
     "box-flex" => styles.flex_grow = source.flex_grow,
     "box-ordinal-group" => styles.order = source.order,
     "visibility" => {
@@ -9881,6 +9882,17 @@ fn apply_declaration_with_base_internal_with_order(
           FlexWrap::Wrap
         } else if kw.eq_ignore_ascii_case("wrap-reverse") {
           FlexWrap::WrapReverse
+        } else {
+          styles.flex_wrap
+        };
+      }
+    }
+    "box-lines" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.flex_wrap = if kw.eq_ignore_ascii_case("single") {
+          FlexWrap::NoWrap
+        } else if kw.eq_ignore_ascii_case("multiple") {
+          FlexWrap::Wrap
         } else {
           styles.flex_wrap
         };
@@ -24143,6 +24155,21 @@ mod tests {
 
     apply_declaration(&mut styles, &decls[5], &parent, 16.0, 16.0);
     assert_eq!(styles.align_items, AlignItems::Stretch);
+  }
+
+  #[test]
+  fn legacy_webkit_box_lines_maps_to_flex_wrap() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("box-lines: multiple; box-lines: single;");
+    assert_eq!(decls.len(), 2);
+
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.flex_wrap, FlexWrap::Wrap);
+
+    apply_declaration(&mut styles, &decls[1], &parent, 16.0, 16.0);
+    assert_eq!(styles.flex_wrap, FlexWrap::NoWrap);
   }
 
   #[test]

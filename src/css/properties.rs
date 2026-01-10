@@ -217,6 +217,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "box-direction",
   "box-flex",
   "box-flex-wrap",
+  "box-lines",
   "box-ordinal-group",
   "box-orient",
   "box-pack",
@@ -3009,6 +3010,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "box-direction" => return keyword_in_list(parsed, &["normal", "reverse"]),
     "box-flex-wrap" => return keyword_in_list(parsed, &["nowrap", "wrap", "wrap-reverse"]),
+    "box-lines" => return keyword_in_list(parsed, &["single", "multiple"]),
     "box-flex" => {
       return match parsed {
         PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
