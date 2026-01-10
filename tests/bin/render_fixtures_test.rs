@@ -1,7 +1,8 @@
 use image::GenericImageView;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
@@ -238,6 +239,62 @@ fn render_fixtures_help_mentions_determinism_flags() {
       && help.contains("--save-variants")
       && help.contains("--reset-paint-scratch"),
     "help output should mention determinism flags; got:\n{help}"
+  );
+}
+
+#[test]
+fn render_fixtures_exits_successfully_when_stdout_is_closed() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "basic",
+    "<!doctype html><html><body>ok</body></html>",
+  );
+
+  let mut child = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "basic",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn render_fixtures");
+
+  // Drop the stdout read end to simulate a broken pipe (e.g. piped to `head`).
+  drop(child.stdout.take());
+
+  let status = child.wait().expect("wait for render_fixtures");
+
+  let mut stderr = String::new();
+  if let Some(mut handle) = child.stderr.take() {
+    handle.read_to_string(&mut stderr).expect("read stderr");
+  }
+
+  assert!(
+    status.success(),
+    "expected render_fixtures to exit successfully when stdout is closed; status={status} stderr:\n{stderr}"
+  );
+  assert!(
+    !stderr.contains("panicked at"),
+    "did not expect panic output when stdout is closed; got stderr:\n{stderr}"
   );
 }
 

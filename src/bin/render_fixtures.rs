@@ -305,11 +305,29 @@ struct DiagnosticsFile {
 }
 
 fn main() {
+  exit_silently_on_broken_pipe_panic();
   let cli = Cli::parse();
   if let Err(err) = run(cli) {
     eprintln!("{err}");
     std::process::exit(1);
   }
+}
+
+fn exit_silently_on_broken_pipe_panic() {
+  // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    let mut msg = info.to_string();
+    if let Some(s) = info.payload().downcast_ref::<&str>() {
+      msg = (*s).to_string();
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+      msg = s.clone();
+    }
+    if msg.contains("Broken pipe") {
+      std::process::exit(0);
+    }
+    default_hook(info);
+  }));
 }
 
 fn fixture_runtime_toggles(patch_html_for_chrome_baseline: bool) -> RuntimeToggles {
