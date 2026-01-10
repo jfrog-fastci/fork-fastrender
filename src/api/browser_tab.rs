@@ -5637,18 +5637,12 @@ html, body { margin: 0; padding: 0; }
       fn execute_module_script(
         &mut self,
         script_text: &str,
-        _spec: &ScriptElementSpec,
-        _current_script: Option<NodeId>,
-        _document: &mut BrowserDocumentDom2,
-        _event_loop: &mut EventLoop<BrowserTabHost>,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
-        if script_text == "NAVIGATE" && self.pending.is_none() {
-          self.pending = Some(LocationNavigationRequest {
-            url: self.target_url.clone(),
-            replace: self.replace,
-          });
-        }
-        Ok(())
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -5712,18 +5706,12 @@ html, body { margin: 0; padding: 0; }
       fn execute_module_script(
         &mut self,
         script_text: &str,
-        _spec: &ScriptElementSpec,
-        _current_script: Option<NodeId>,
-        _document: &mut BrowserDocumentDom2,
-        _event_loop: &mut EventLoop<BrowserTabHost>,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
-        if script_text == "NAVIGATE" && self.pending.is_none() {
-          self.pending = Some(LocationNavigationRequest {
-            url: self.target_url.clone(),
-            replace: self.replace,
-          });
-        }
-        Ok(())
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
