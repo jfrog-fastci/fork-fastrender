@@ -26,6 +26,7 @@ mod js_fetch_bindings;
 mod js_url_bindings;
 mod vm_js_url_bindings;
 mod vm_js_generated_bindings_url_search_params_iterable;
+mod vm_js_sequence_domstring;
 mod pseudo_element_generated_content;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;

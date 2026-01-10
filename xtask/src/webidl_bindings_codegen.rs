@@ -3806,11 +3806,7 @@ fn emit_iterable_list_conversion_expr(
     return Err(rt.throw_type_error("expected object for {kind_label}"));
   }}
   rt.with_stack_roots(&[{value_ident}], |rt| {{
-    let iterator_key = rt.symbol_iterator()?;
-    let Some(method) = rt.get_method({value_ident}, iterator_key)? else {{
-      return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
-    }};
-    let mut iterator_record = rt.get_iterator_from_method(host, {value_ident}, method)?;
+    let mut iterator_record = rt.get_iterator(host, {value_ident})?;
     rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
       let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
       while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {{
