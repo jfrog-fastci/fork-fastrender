@@ -889,9 +889,9 @@ fn build_gradient_lut(
   let mut window = stops.windows(2).peekable();
   let mut segment_idx = 0u16;
   for i in 0..step_count {
-    let pos = offset + (i as f32 / max_idx) * span;
+    let pos = (i as f32 / max_idx) * span;
     while let Some(segment) = window.peek() {
-      if pos > segment[1].0 {
+      if pos > segment[1].0 - offset {
         window.next();
         segment_idx = segment_idx.saturating_add(1);
       } else {
@@ -904,6 +904,8 @@ fn build_gradient_lut(
     let (pr, pg, pb, a) = if let Some(segment) = window.peek() {
       let (p0, c0) = segment[0];
       let (p1, c1) = segment[1];
+      let p0 = p0 - offset;
+      let p1 = p1 - offset;
       let a0 = c0.a.clamp(0.0, 1.0);
       let a1 = c1.a.clamp(0.0, 1.0);
       let pr0 = c0.r as f32 * a0;

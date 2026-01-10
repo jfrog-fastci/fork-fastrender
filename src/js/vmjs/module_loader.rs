@@ -433,9 +433,8 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
         Err(err) => {
           let msg = match err {
             ImportMapError::TypeError(msg) => msg,
-            ImportMapError::LimitExceeded(msg) => format!("import map limit exceeded: {msg}"),
+            ImportMapError::LimitExceeded(detail) => format!("import map limit exceeded: {detail}"),
             ImportMapError::Json(err) => err.to_string(),
-            ImportMapError::LimitExceeded(msg) => msg,
           };
           Err(self.throw_type_error(vm, scope, msg.as_str()))
         }
