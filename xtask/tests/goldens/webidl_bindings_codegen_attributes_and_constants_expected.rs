@@ -7,27 +7,334 @@ use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 
 pub mod window {
   use std::collections::BTreeMap;
+  use std::sync::OnceLock;
 
-  use super::{binding_value_to_js, BindingValue, WebHostBindings};
-
+  use super::{BindingValue, WebHostBindings};
   use crate::js::webidl::DataPropertyAttributes;
+  use webidl_ir::{
+    DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
+    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
+  };
+  use webidl_js_runtime::{
+    convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
+    OverloadSig, WebIdlJsRuntime,
+  };
+
+  type RtJsValue<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::JsValue;
+  type RtPropertyKey<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::PropertyKey;
+  type RtError<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::Error;
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_throw_type_error<Host, R>(rt: &mut R, message: &str) -> RtError<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.throw_type_error(message)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_is_object<Host, R>(rt: &R, value: RtJsValue<Host, R>) -> bool
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.is_object(value)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_undefined<Host, R>(rt: &R) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_undefined()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_null<Host, R>(rt: &R) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_null()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_number<Host, R>(rt: &R, value: f64) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_number(value)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_symbol_iterator<Host, R>(rt: &mut R) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.symbol_iterator()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_symbol_async_iterator<Host, R>(
+    rt: &mut R,
+  ) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.symbol_async_iterator()
+  }
+
+  fn binding_value_to_js<Host, R>(
+    rt: &mut R,
+    value: BindingValue<RtJsValue<Host, R>>,
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    match value {
+      BindingValue::Undefined => Ok(rt.js_undefined()),
+      BindingValue::Null => Ok(rt.js_null()),
+      BindingValue::Bool(b) => Ok(rt.js_bool(b)),
+      BindingValue::Number(n) => Ok(rt.js_number(n)),
+      BindingValue::String(s) => rt.js_string(&s),
+      BindingValue::Object(v) => Ok(v),
+      BindingValue::Callback(_) => {
+        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
+      }
+      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
+        let obj = rt.create_array(values.len())?;
+        for (idx, item) in values.into_iter().enumerate() {
+          let key = idx.to_string();
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Dictionary(map) => {
+        let obj = rt.create_object()?;
+        for (key, item) in map {
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Record(entries) => {
+        let obj = rt.create_object()?;
+        for (key, item) in entries {
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Union { value, .. } => binding_value_to_js::<Host, R>(rt, *value),
+    }
+  }
+
+  fn type_context() -> &'static TypeContext {
+    static CTX: OnceLock<TypeContext> = OnceLock::new();
+    CTX.get_or_init(|| {
+      let mut ctx = TypeContext::default();
+
+      ctx
+    })
+  }
+
+  fn converted_value_to_binding_value<Host, R>(
+    rt: &mut R,
+    ctx: &TypeContext,
+    ty: &IdlType,
+    value: ConvertedValue<RtJsValue<Host, R>>,
+  ) -> Result<BindingValue<RtJsValue<Host, R>>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+  {
+    // Callback types are converted to raw JS values by `convert_arguments`, but the host expects
+    // rooted callback handles so it can store and invoke them later.
+    match ty {
+      IdlType::Annotated { inner, .. } => {
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);
+      }
+      IdlType::Nullable(inner) => {
+        if matches!(value, ConvertedValue::Null) {
+          return Ok(BindingValue::Null);
+        }
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);
+      }
+      IdlType::Named(NamedType {
+        kind: NamedTypeKind::CallbackFunction,
+        ..
+      }) => {
+        return match value {
+          ConvertedValue::Null => Ok(BindingValue::Null),
+          ConvertedValue::Any(v) | ConvertedValue::Object(v) => {
+            Ok(BindingValue::Callback(rt.root_callback_function(v)?))
+          }
+          _ => Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "expected callback function value",
+          )),
+        };
+      }
+      IdlType::Named(NamedType {
+        kind: NamedTypeKind::CallbackInterface,
+        ..
+      }) => {
+        return match value {
+          ConvertedValue::Null => Ok(BindingValue::Null),
+          ConvertedValue::Any(v) | ConvertedValue::Object(v) => {
+            Ok(BindingValue::Callback(rt.root_callback_interface(v)?))
+          }
+          _ => Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "expected callback interface value",
+          )),
+        };
+      }
+      _ => {}
+    }
+
+    Ok(match value {
+      ConvertedValue::Undefined => BindingValue::Undefined,
+      ConvertedValue::Null => BindingValue::Null,
+      ConvertedValue::Boolean(b) => BindingValue::Bool(b),
+      ConvertedValue::Byte(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Octet(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Short(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedShort(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Long(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::LongLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedLongLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Float(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnrestrictedFloat(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Double(n) => BindingValue::Number(n),
+      ConvertedValue::UnrestrictedDouble(n) => BindingValue::Number(n),
+      ConvertedValue::String(s) | ConvertedValue::Enum(s) => BindingValue::String(s),
+      ConvertedValue::Any(v) | ConvertedValue::Object(v) => BindingValue::Object(v),
+      ConvertedValue::PlatformObject(obj) => {
+        let Some(v) = rt.platform_object_to_js_value(&obj) else {
+          return Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "Unsupported platform object value for this runtime",
+          ));
+        };
+        BindingValue::Object(v)
+      }
+      ConvertedValue::Sequence { elem_ty, values } => {
+        let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> =
+          Vec::with_capacity(values.len());
+        for item in values {
+          out_values.push(converted_value_to_binding_value::<Host, R>(
+            rt, ctx, &elem_ty, item,
+          )?);
+        }
+        if matches!(ty, IdlType::FrozenArray(_)) {
+          BindingValue::FrozenArray(out_values)
+        } else {
+          BindingValue::Sequence(out_values)
+        }
+      }
+      ConvertedValue::Record {
+        value_ty, entries, ..
+      } => {
+        let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
+        for (k, v) in entries {
+          map.insert(
+            k,
+            converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?,
+          );
+        }
+        BindingValue::Dictionary(map)
+      }
+      ConvertedValue::Dictionary { name, members } => {
+        let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
+        let fallback = IdlType::Any;
+        let member_schemas = ctx.flattened_dictionary_members(&name).unwrap_or_default();
+        for (k, v) in members {
+          let member_ty = member_schemas
+            .iter()
+            .find(|m| m.name == k)
+            .map(|m| &m.ty)
+            .unwrap_or(&fallback);
+          map.insert(
+            k,
+            converted_value_to_binding_value::<Host, R>(rt, ctx, member_ty, v)?,
+          );
+        }
+        BindingValue::Dictionary(map)
+      }
+      ConvertedValue::Union { member_ty, value } => {
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value);
+      }
+    })
+  }
 
   #[allow(dead_code)]
   fn foo_do_it<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Foo", "doIt", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "doIt",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -41,8 +348,8 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "Foo", "href")?;
     binding_value_to_js::<Host, R>(rt, result)
@@ -52,27 +359,40 @@ pub mod window {
   fn foo_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
-    let v0 = if args.len() > 0 {
-      args[0]
-    } else {
-      rt.js_undefined()
-    };
-    let converted = {
-      let s = rt.to_string(host, v0)?;
-      BindingValue::String(rt.js_string_to_rust_string(s)?)
-    };
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::String(StringType::DomString),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "Foo", "href", converted)?;
-    Ok(rt.js_undefined())
+    Ok(rt_js_undefined::<Host, R>(rt))
   }
 
   #[allow(dead_code)]
@@ -86,8 +406,8 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "Foo", "size")?;
     binding_value_to_js::<Host, R>(rt, result)
@@ -121,9 +441,17 @@ pub mod window {
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
-  pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
+  pub fn install_window_bindings<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+  ) -> Result<(), RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
     let global = rt.global_object()?;
@@ -134,7 +462,7 @@ pub mod window {
     let set = rt.create_function("set href", 1, foo_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_foo, "href", get, set)?;
     let get = rt.create_function("get size", 0, foo_get_attribute_size::<Host, R>)?;
-    let set = rt.js_undefined();
+    let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_foo, "size", get, set)?;
     let ctor_foo = rt.create_constructor(
       "Foo",
@@ -144,10 +472,10 @@ pub mod window {
     )?;
     rt.define_constructor(global, "Foo", ctor_foo, proto_foo)?;
     let get = rt.create_function("get ok", 0, foo_get_static_attribute_ok::<Host, R>)?;
-    let set = rt.js_undefined();
+    let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(ctor_foo, "ok", get, set)?;
-    rt.define_constant(ctor_foo, "ANSWER", rt.js_number(42.0))?;
-    rt.define_constant(proto_foo, "ANSWER", rt.js_number(42.0))?;
+    rt.define_constant(ctor_foo, "ANSWER", rt_js_number::<Host, R>(rt, 42.0))?;
+    rt.define_constant(proto_foo, "ANSWER", rt_js_number::<Host, R>(rt, 42.0))?;
     let _ = host;
     Ok(())
   }

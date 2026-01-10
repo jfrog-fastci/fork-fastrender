@@ -9,6 +9,7 @@ publish = false
 [workspace]
 members = [
   "xtask",
+  "crates/webidl-bindings-core",
   "crates/webidl-ir",
   "crates/js-wpt-dom-runner",
   "crates/js-dom-bindings",

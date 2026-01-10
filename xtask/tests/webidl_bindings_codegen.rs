@@ -68,22 +68,16 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
   .unwrap();
   assert_eq!(out1, out2, "expected deterministic output across runs");
 
-  // Spot-check that the legacy backend keeps its (newer) overload resolution strategy. The vm-js
-  // backend will be migrated in follow-ups.
-  if backend == WebIdlBindingsBackend::Legacy {
-    assert!(
-      out1.contains("match argcount"),
-      "expected overload dispatch to group by argument count"
-    );
-    assert!(
-      out1.contains("rt.is_number("),
-      "expected overload dispatch to use a runtime type predicate"
-    );
-    assert!(
-      !out1.contains("args.len() >= 1 && args.len() <= 1"),
-      "expected old overload-dispatch heuristic to be absent"
-    );
-  }
+  // Spot-check that the codegen is using shared, spec-shaped overload resolution + conversions
+  // rather than bespoke, ad-hoc predicates.
+  assert!(
+    out1.contains("resolve_overload"),
+    "expected bindings to call shared overload resolution"
+  );
+  assert!(
+    out1.contains("convert_arguments"),
+    "expected bindings to call shared WebIDL conversions"
+  );
 
   if backend == WebIdlBindingsBackend::Vmjs {
     assert!(
@@ -156,8 +150,8 @@ fn vmjs_overload_dispatch_does_not_emit_usize_len_ge_zero_checks() {
     "vm-js backend should not emit useless `args.len() >= 0` checks (usize is always >= 0)"
   );
   assert!(
-    out.contains("args.is_empty()") || out.contains("args.len() == 0"),
-    "expected 0-arg overload dispatch to use an `args is empty` check"
+    out.contains("resolve_overload"),
+    "expected vm-js backend to use shared overload resolution instead of length-based heuristics"
   );
 }
 
@@ -302,32 +296,46 @@ fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
     "dictionary converters should not have an allow_missing flag; missing dictionaries are handled per WebIDL"
   );
 
-  // Default-handling for EventListenerOptions.capture.
+  // Schema should include dictionaries + defaults (conversion happens via shared WebIDL algorithms).
   assert!(
-    out.contains("out_dict.insert(\"capture\".to_string(), BindingValue::Bool(false))"),
-    "expected EventListenerOptions.capture default to be materialized"
+    out.contains("name: \"EventListenerOptions\".to_string()"),
+    "expected EventListenerOptions dictionary schema to be emitted into type_context()"
+  );
+  assert!(
+    out.contains("name: \"capture\".to_string()")
+      && out.contains("default: Some(DefaultValue::Boolean(false))"),
+    "expected EventListenerOptions.capture boolean default to be emitted in schema"
   );
 
-  // Inheritance flattening and deterministic member order:
-  // capture (base) then once/passive/signal (derived, lexicographical within dictionary).
-  let capture_pos = out
-    .find("rt.property_key(\"capture\")")
-    .expect("capture property access");
-  let once_pos = out.find("rt.property_key(\"once\")").expect("once access");
-  let passive_pos = out
-    .find("rt.property_key(\"passive\")")
-    .expect("passive property access");
-  let signal_pos = out
-    .find("rt.property_key(\"signal\")")
-    .expect("signal access");
   assert!(
-    capture_pos < once_pos && once_pos < passive_pos && passive_pos < signal_pos,
-    "expected deterministic member read order capture -> once -> passive -> signal"
+    out.contains("name: \"AddEventListenerOptions\".to_string()"),
+    "expected AddEventListenerOptions dictionary schema to be emitted into type_context()"
+  );
+  assert!(
+    out.contains("inherits: Some(\"EventListenerOptions\".to_string())"),
+    "expected AddEventListenerOptions to inherit EventListenerOptions"
+  );
+  assert!(
+    out.contains("name: \"once\".to_string()")
+      && out.contains("default: Some(DefaultValue::Boolean(false))"),
+    "expected AddEventListenerOptions.once boolean default to be emitted in schema"
   );
 
-  // Required-member errors should include the dictionary and member name.
+  // Optional argument default `{}` should be represented as an EmptyDictionary default value.
   assert!(
-    out.contains("Missing required dictionary member RequiredDict.x"),
-    "expected required member error message to include dictionary + member name"
+    out.contains("default: Some(DefaultValue::EmptyDictionary)"),
+    "expected optional parameter default `{{}}` to be emitted as DefaultValue::EmptyDictionary"
+  );
+
+  // Required member should be encoded into the schema.
+  assert!(
+    out.contains("name: \"RequiredDict\".to_string()"),
+    "expected RequiredDict dictionary schema to be emitted"
+  );
+  assert!(
+    out.contains("name: \"x\".to_string()")
+      && out.contains("required: true")
+      && out.contains("default: None"),
+    "expected RequiredDict.x to be emitted as a required dictionary member schema"
   );
 }

@@ -1471,19 +1471,283 @@ fn generate_bindings_module_for_target_unformatted(
   let is_global_iface = |name: &str| global_interfaces.iter().any(|g| *g == name);
 
   let selected = select_interfaces(resolved, analyzed, config)?;
-  let referenced_dicts = collect_referenced_dictionaries(resolved, type_ctx, &selected);
+  let referenced_ctx = collect_referenced_type_context_entries(type_ctx, &selected);
 
   let mut out = String::new();
 
-  out.push_str("use std::collections::BTreeMap;\n\n");
-  out.push_str("use super::{binding_value_to_js, BindingValue, WebHostBindings};\n\n");
-  out.push_str("use crate::js::webidl::conversions;\n\n");
-  out.push_str("use crate::js::webidl::DataPropertyAttributes;\n\n");
+  out.push_str("use std::collections::BTreeMap;\n");
+  out.push_str("use std::sync::OnceLock;\n\n");
+  out.push_str("use super::{BindingValue, WebHostBindings};\n");
+  out.push_str("use crate::js::webidl::DataPropertyAttributes;\n");
+  out.push_str(
+    "use webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
+  );
+  out.push_str(
+    "use webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
+  );
 
-  // Dictionary conversion helpers (sorted).
-  for dict_name in &referenced_dicts {
-    write_dictionary_converter(&mut out, resolved, type_ctx, dict_name)?;
+  // The bindings runtime trait (`crate::js::webidl::WebIdlBindingsRuntime`) and the core WebIDL
+  // runtime trait (`webidl_js_runtime::WebIdlJsRuntime`) both expose associated types named
+  // `JsValue`/`PropertyKey`/`Error`. The generated bindings frequently need both traits, so define
+  // disambiguating aliases based on the bindings runtime trait.
+  out.push_str(
+    "type RtJsValue<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::JsValue;\n",
+  );
+  out.push_str(
+    "type RtPropertyKey<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::PropertyKey;\n",
+  );
+  out.push_str(
+    "type RtError<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::Error;\n\n",
+  );
+
+  // Helper functions used to disambiguate method calls when both the bindings runtime trait
+  // (`crate::js::webidl::WebIdlBindingsRuntime`) and the core WebIDL runtime trait
+  // (`webidl_js_runtime::WebIdlJsRuntime`) are in scope. Both traits expose methods like
+  // `throw_type_error`, `js_number`, etc.
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_throw_type_error<Host, R>(\n  rt: &mut R,\n  message: &str,\n) -> RtError<Host, R>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.throw_type_error(message)\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_is_object<Host, R>(rt: &R, value: RtJsValue<Host, R>) -> bool\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.is_object(value)\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_js_undefined<Host, R>(rt: &R) -> RtJsValue<Host, R>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.js_undefined()\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_js_null<Host, R>(rt: &R) -> RtJsValue<Host, R>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.js_null()\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_js_number<Host, R>(rt: &R, value: f64) -> RtJsValue<Host, R>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.js_number(value)\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_symbol_iterator<Host, R>(\n  rt: &mut R,\n) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.symbol_iterator()\n}\n\n");
+  out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_symbol_async_iterator<Host, R>(\n  rt: &mut R,\n) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.symbol_async_iterator()\n}\n\n");
+
+  out.push_str("fn binding_value_to_js<Host, R>(\n");
+  out.push_str("  rt: &mut R,\n");
+  out.push_str("  value: BindingValue<RtJsValue<Host, R>>,\n");
+  out.push_str(") -> Result<RtJsValue<Host, R>, RtError<Host, R>>\n");
+  out.push_str("where\n");
+  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
+  out.push_str("{\n");
+  out.push_str("  match value {\n");
+  out.push_str("    BindingValue::Undefined => Ok(rt.js_undefined()),\n");
+  out.push_str("    BindingValue::Null => Ok(rt.js_null()),\n");
+  out.push_str("    BindingValue::Bool(b) => Ok(rt.js_bool(b)),\n");
+  out.push_str("    BindingValue::Number(n) => Ok(rt.js_number(n)),\n");
+  out.push_str("    BindingValue::String(s) => rt.js_string(&s),\n");
+  out.push_str("    BindingValue::Object(v) => Ok(v),\n");
+  out.push_str(
+    "    BindingValue::Callback(_) => Err(rt.throw_type_error(\"cannot return callback handles to JavaScript\")),\n",
+  );
+  out.push_str("    BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {\n");
+  out.push_str("      let obj = rt.create_array(values.len())?;\n");
+  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
+  out.push_str("        let key = idx.to_string();\n");
+  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
+  out.push_str("      }\n");
+  out.push_str("      Ok(obj)\n");
+  out.push_str("    }\n");
+  out.push_str("    BindingValue::Dictionary(map) => {\n");
+  out.push_str("      let obj = rt.create_object()?;\n");
+  out.push_str("      for (key, item) in map {\n");
+  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
+  out.push_str("      }\n");
+  out.push_str("      Ok(obj)\n");
+  out.push_str("    }\n");
+  out.push_str("    BindingValue::Record(entries) => {\n");
+  out.push_str("      let obj = rt.create_object()?;\n");
+  out.push_str("      for (key, item) in entries {\n");
+  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
+  out.push_str("      }\n");
+  out.push_str("      Ok(obj)\n");
+  out.push_str("    }\n");
+  out.push_str("    BindingValue::Union { value, .. } => binding_value_to_js::<Host, R>(rt, *value),\n");
+  out.push_str("  }\n");
+  out.push_str("}\n\n");
+
+  // Shared WebIDL type context (enums, dictionaries, typedefs) used by conversions.
+  out.push_str("fn type_context() -> &'static TypeContext {\n");
+  out.push_str("  static CTX: OnceLock<TypeContext> = OnceLock::new();\n");
+  out.push_str("  CTX.get_or_init(|| {\n");
+  out.push_str("    let mut ctx = TypeContext::default();\n");
+  out.push_str("\n");
+
+  // Enums.
+  for name in &referenced_ctx.enums {
+    let values = type_ctx
+      .enums
+      .get(name)
+      .with_context(|| format!("missing enum `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_enum({name_lit}, [{}]);\n",
+      values
+        .iter()
+        .map(|v| rust_string_literal(v))
+        .collect::<Vec<_>>()
+        .join(", "),
+      name_lit = rust_string_literal(name)
+    ));
   }
+
+  // Typedefs.
+  for name in &referenced_ctx.typedefs {
+    let ty = type_ctx
+      .typedefs
+      .get(name)
+      .with_context(|| format!("missing typedef `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_typedef({name_lit}, {ty_expr});\n",
+      name_lit = rust_string_literal(name),
+      ty_expr = render_webidl_ir_type(ty),
+    ));
+  }
+
+  // Dictionaries.
+  for name in &referenced_ctx.dictionaries {
+    let dict = type_ctx
+      .dictionaries
+      .get(name)
+      .with_context(|| format!("missing dictionary `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_dictionary(DictionarySchema {{ name: {name_lit}.to_string(), inherits: {inherits}, members: vec![\n",
+      name_lit = rust_string_literal(&dict.name),
+      inherits = dict
+        .inherits
+        .as_ref()
+        .map(|p| format!("Some({}.to_string())", rust_string_literal(p)))
+        .unwrap_or_else(|| "None".to_string()),
+    ));
+    for member in &dict.members {
+      out.push_str(&format!(
+        "      DictionaryMemberSchema {{ name: {member_name}.to_string(), required: {required}, ty: {ty}, default: {default} }},\n",
+        member_name = rust_string_literal(&member.name),
+        required = if member.required { "true" } else { "false" },
+        ty = render_webidl_ir_type(&member.ty),
+        default = member
+          .default
+          .as_ref()
+          .map(|d| format!("Some({})", render_webidl_ir_default_value(d)))
+          .unwrap_or_else(|| "None".to_string()),
+      ));
+    }
+    out.push_str("    ]});\n");
+  }
+
+  out.push_str("    ctx\n");
+  out.push_str("  })\n");
+  out.push_str("}\n\n");
+
+  // Convert a `ConvertedValue` (from core WebIDL conversions) into the host-facing `BindingValue`.
+  out.push_str("fn converted_value_to_binding_value<Host, R>(\n");
+  out.push_str("  rt: &mut R,\n");
+  out.push_str("  ctx: &TypeContext,\n");
+  out.push_str("  ty: &IdlType,\n");
+  out.push_str("  value: ConvertedValue<RtJsValue<Host, R>>,\n");
+  out.push_str(") -> Result<BindingValue<RtJsValue<Host, R>>, RtError<Host, R>>\n");
+  out.push_str("where\n");
+  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n");
+  out.push_str("{\n");
+  out.push_str("  // Callback types are converted to raw JS values by `convert_arguments`, but the host expects\n");
+  out.push_str("  // rooted callback handles so it can store and invoke them later.\n");
+  out.push_str("  match ty {\n");
+  out.push_str("    IdlType::Annotated { inner, .. } => {\n");
+  out.push_str("      return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);\n");
+  out.push_str("    }\n");
+  out.push_str("    IdlType::Nullable(inner) => {\n");
+  out.push_str("      if matches!(value, ConvertedValue::Null) {\n");
+  out.push_str("        return Ok(BindingValue::Null);\n");
+  out.push_str("      }\n");
+  out.push_str("      return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);\n");
+  out.push_str("    }\n");
+  out.push_str("    IdlType::Named(NamedType { kind: NamedTypeKind::CallbackFunction, .. }) => {\n");
+  out.push_str("      return match value {\n");
+  out.push_str("        ConvertedValue::Null => Ok(BindingValue::Null),\n");
+  out.push_str("        ConvertedValue::Any(v) | ConvertedValue::Object(v) => {\n");
+  out.push_str("          Ok(BindingValue::Callback(rt.root_callback_function(v)?))\n");
+  out.push_str("        }\n");
+  out.push_str(
+    "        _ => Err(rt_throw_type_error::<Host, R>(rt, \"expected callback function value\")),\n",
+  );
+  out.push_str("      };\n");
+  out.push_str("    }\n");
+  out.push_str("    IdlType::Named(NamedType { kind: NamedTypeKind::CallbackInterface, .. }) => {\n");
+  out.push_str("      return match value {\n");
+  out.push_str("        ConvertedValue::Null => Ok(BindingValue::Null),\n");
+  out.push_str("        ConvertedValue::Any(v) | ConvertedValue::Object(v) => {\n");
+  out.push_str("          Ok(BindingValue::Callback(rt.root_callback_interface(v)?))\n");
+  out.push_str("        }\n");
+  out.push_str(
+    "        _ => Err(rt_throw_type_error::<Host, R>(rt, \"expected callback interface value\")),\n",
+  );
+  out.push_str("      };\n");
+  out.push_str("    }\n");
+  out.push_str("    _ => {}\n");
+  out.push_str("  }\n");
+  out.push_str("\n");
+  out.push_str("  Ok(match value {\n");
+  out.push_str("    ConvertedValue::Undefined => BindingValue::Undefined,\n");
+  out.push_str("    ConvertedValue::Null => BindingValue::Null,\n");
+  out.push_str("    ConvertedValue::Boolean(b) => BindingValue::Bool(b),\n");
+  out.push_str("    ConvertedValue::Byte(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Octet(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Short(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedShort(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Long(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedLong(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::LongLong(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedLongLong(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Float(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnrestrictedFloat(n) => BindingValue::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Double(n) => BindingValue::Number(n),\n");
+  out.push_str("    ConvertedValue::UnrestrictedDouble(n) => BindingValue::Number(n),\n");
+  out.push_str("    ConvertedValue::String(s) | ConvertedValue::Enum(s) => BindingValue::String(s),\n");
+  out.push_str("    ConvertedValue::Any(v) | ConvertedValue::Object(v) => BindingValue::Object(v),\n");
+  out.push_str("    ConvertedValue::PlatformObject(obj) => {\n");
+  out.push_str("      let Some(v) = rt.platform_object_to_js_value(&obj) else {\n");
+  out.push_str(
+    "        return Err(rt_throw_type_error::<Host, R>(rt, \"Unsupported platform object value for this runtime\"));\n",
+  );
+  out.push_str("      };\n");
+  out.push_str("      BindingValue::Object(v)\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Sequence { elem_ty, values } => {\n");
+  out.push_str(
+    "      let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> = Vec::with_capacity(values.len());\n",
+  );
+  out.push_str("      for item in values {\n");
+  out.push_str(
+    "        out_values.push(converted_value_to_binding_value::<Host, R>(rt, ctx, &elem_ty, item)?);\n",
+  );
+  out.push_str("      }\n");
+  out.push_str("      if matches!(ty, IdlType::FrozenArray(_)) {\n");
+  out.push_str("        BindingValue::FrozenArray(out_values)\n");
+  out.push_str("      } else {\n");
+  out.push_str("        BindingValue::Sequence(out_values)\n");
+  out.push_str("      }\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Record { value_ty, entries, .. } => {\n");
+  out.push_str("      let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();\n");
+  out.push_str("      for (k, v) in entries {\n");
+  out.push_str(
+    "        map.insert(k, converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?);\n",
+  );
+  out.push_str("      }\n");
+  out.push_str("      BindingValue::Dictionary(map)\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Dictionary { name, members } => {\n");
+  out.push_str("      let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();\n");
+  out.push_str("      let fallback = IdlType::Any;\n");
+  out.push_str("      let member_schemas = ctx.flattened_dictionary_members(&name).unwrap_or_default();\n");
+  out.push_str("      for (k, v) in members {\n");
+  out.push_str("        let member_ty = member_schemas\n");
+  out.push_str("          .iter()\n");
+  out.push_str("          .find(|m| m.name == k)\n");
+  out.push_str("          .map(|m| &m.ty)\n");
+  out.push_str("          .unwrap_or(&fallback);\n");
+  out.push_str(
+    "        map.insert(k, converted_value_to_binding_value::<Host, R>(rt, ctx, member_ty, v)?);\n",
+  );
+  out.push_str("      }\n");
+  out.push_str("      BindingValue::Dictionary(map)\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Union { member_ty, value } => {\n");
+  out.push_str("      return converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value);\n");
+  out.push_str("    }\n");
+  out.push_str("  })\n");
+  out.push_str("}\n\n");
 
   // Operation shims.
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1572,7 +1836,7 @@ fn generate_bindings_module_for_target_unformatted(
             &attr.name,
             &attr.type_,
             false,
-          );
+          )?;
         }
       }
     }
@@ -1601,7 +1865,7 @@ fn generate_bindings_module_for_target_unformatted(
             &attr.name,
             &attr.type_,
             true,
-          );
+          )?;
         }
       }
     }
@@ -1638,10 +1902,10 @@ fn generate_bindings_module_for_target_unformatted(
 
   // Install entrypoint.
   out.push_str(&format!(
-    "pub fn {install_fn_name}<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>\n"
+    "pub fn {install_fn_name}<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), RtError<Host, R>>\n"
   ));
   out.push_str("where\n");
-  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
+  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n");
   out.push_str("  Host: WebHostBindings<R>,\n");
   out.push_str("{\n");
   out.push_str("  let global = rt.global_object()?;\n");
@@ -1724,12 +1988,12 @@ fn generate_bindings_module_for_target_unformatted(
       if iterable_iterator_alias.is_some_and(|target| target == op_name.as_str()) {
         if iface.iterable.as_ref().is_some_and(|it| it.async_) {
           out.push_str(&format!(
-            "  let iterator_key = rt.symbol_async_iterator()?;\n  rt.define_data_property({proto}, iterator_key, func, DataPropertyAttributes::METHOD)?;\n",
+            "  let iterator_key = rt_symbol_async_iterator::<Host, R>(rt)?;\n  <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::define_data_property(rt, {proto}, iterator_key, func, DataPropertyAttributes::METHOD)?;\n",
             proto = proto_var.as_str()
           ));
         } else {
           out.push_str(&format!(
-            "  let iterator_key = rt.symbol_iterator()?;\n  rt.define_data_property({proto}, iterator_key, func, DataPropertyAttributes::METHOD)?;\n",
+            "  let iterator_key = rt_symbol_iterator::<Host, R>(rt)?;\n  <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::define_data_property(rt, {proto}, iterator_key, func, DataPropertyAttributes::METHOD)?;\n",
             proto = proto_var.as_str()
           ));
         }
@@ -1744,7 +2008,7 @@ fn generate_bindings_module_for_target_unformatted(
         getter = attr_getter_fn_name(&iface.name, &attr.name, false)
       ));
       if attr.readonly {
-        out.push_str("  let set = rt.js_undefined();\n");
+        out.push_str("  let set = rt_js_undefined::<Host, R>(rt);\n");
       } else {
         out.push_str(&format!(
           "  let set = rt.create_function(\"set {name}\", 1, {setter}::<Host, R>)?;\n",
@@ -1823,7 +2087,7 @@ fn generate_bindings_module_for_target_unformatted(
         getter = attr_getter_fn_name(&iface.name, &attr.name, true)
       ));
       if attr.readonly {
-        out.push_str("  let set = rt.js_undefined();\n");
+        out.push_str("  let set = rt_js_undefined::<Host, R>(rt);\n");
       } else {
         out.push_str(&format!(
           "  let set = rt.create_function(\"set {name}\", 1, {setter}::<Host, R>)?;\n",
@@ -1878,31 +2142,172 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
   let selected = select_interfaces(resolved, analyzed, config)?;
   let type_ctx = build_type_context(resolved).context("build WebIDL type context")?;
-  let referenced_dicts = collect_referenced_dictionaries(resolved, &type_ctx, &selected);
+  let referenced_ctx = collect_referenced_type_context_entries(&type_ctx, &selected);
 
   let mut out = String::new();
 
+  out.push_str("use std::ptr::NonNull;\n");
+  out.push_str("use std::sync::OnceLock;\n\n");
+  out.push_str("use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};\n");
   let needs_accessor_property_attributes = selected
     .values()
     .any(|iface| !iface.attributes.is_empty() || !iface.static_attributes.is_empty());
-  let needs_iterable_kind = selected.values().any(|iface| iface.iterable.is_some());
-
-  out.push_str("use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};\n");
-  out.push_str(
-    "use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingValue, BindingsRuntime, DataPropertyAttributes, to_int32_f64, to_uint32_f64};\n",
-  );
-  if needs_iterable_kind {
-    out.push_str("use webidl_vm_js::{host_from_hooks, IterableKind};\n\n");
+  if needs_accessor_property_attributes {
+    out.push_str(
+      "use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes};\n",
+    );
   } else {
-    out.push_str("use webidl_vm_js::host_from_hooks;\n\n");
+    out.push_str("use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};\n");
+  }
+  out.push_str("use webidl_vm_js::{host_from_hooks, VmJsWebIdlCx};\n\n");
+  out.push_str(
+    "use webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, InterfaceId, JsRuntime as _, Optionality, OverloadArg, OverloadSig, WebIdlHooks, WebIdlJsRuntime as _, WebIdlLimits};\n",
+  );
+  out.push_str(
+    "use webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
+  );
+
+  out.push_str("struct NoHooks;\n\n");
+  out.push_str("impl WebIdlHooks<Value> for NoHooks {\n");
+  out.push_str("  fn is_platform_object(&self, _value: Value) -> bool {\n");
+  out.push_str("    false\n");
+  out.push_str("  }\n\n");
+  out.push_str("  fn implements_interface(&self, _value: Value, _interface: InterfaceId) -> bool {\n");
+  out.push_str("    false\n");
+  out.push_str("  }\n");
+  out.push_str("}\n\n");
+  out.push_str("static NO_HOOKS: NoHooks = NoHooks;\n\n");
+
+  // Shared WebIDL type context (enums, dictionaries, typedefs) used by conversions.
+  out.push_str("fn type_context() -> &'static TypeContext {\n");
+  out.push_str("  static CTX: OnceLock<TypeContext> = OnceLock::new();\n");
+  out.push_str("  CTX.get_or_init(|| {\n");
+  out.push_str("    let mut ctx = TypeContext::default();\n");
+  out.push_str("\n");
+
+  // Enums.
+  for name in &referenced_ctx.enums {
+    let values = type_ctx
+      .enums
+      .get(name)
+      .with_context(|| format!("missing enum `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_enum({name_lit}, [{}]);\n",
+      values
+        .iter()
+        .map(|v| rust_string_literal(v))
+        .collect::<Vec<_>>()
+        .join(", "),
+      name_lit = rust_string_literal(name)
+    ));
   }
 
-  // Dictionary conversion helpers (sorted).
-  for dict_name in &referenced_dicts {
-    if let Some(dict) = resolved.dictionaries.get(dict_name) {
-      write_dictionary_converter_vmjs(&mut out, resolved, dict);
-    }
+  // Typedefs.
+  for name in &referenced_ctx.typedefs {
+    let ty = type_ctx
+      .typedefs
+      .get(name)
+      .with_context(|| format!("missing typedef `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_typedef({name_lit}, {ty_expr});\n",
+      name_lit = rust_string_literal(name),
+      ty_expr = render_webidl_ir_type(ty),
+    ));
   }
+
+  // Dictionaries.
+  for name in &referenced_ctx.dictionaries {
+    let dict = type_ctx
+      .dictionaries
+      .get(name)
+      .with_context(|| format!("missing dictionary `{name}` in TypeContext"))?;
+    out.push_str(&format!(
+      "    ctx.add_dictionary(DictionarySchema {{ name: {name_lit}.to_string(), inherits: {inherits}, members: vec![\n",
+      name_lit = rust_string_literal(&dict.name),
+      inherits = dict
+        .inherits
+        .as_ref()
+        .map(|p| format!("Some({}.to_string())", rust_string_literal(p)))
+        .unwrap_or_else(|| "None".to_string()),
+    ));
+    for member in &dict.members {
+      out.push_str(&format!(
+        "      DictionaryMemberSchema {{ name: {member_name}.to_string(), required: {required}, ty: {ty}, default: {default} }},\n",
+        member_name = rust_string_literal(&member.name),
+        required = if member.required { "true" } else { "false" },
+        ty = render_webidl_ir_type(&member.ty),
+        default = member
+          .default
+          .as_ref()
+          .map(|d| format!("Some({})", render_webidl_ir_default_value(d)))
+          .unwrap_or_else(|| "None".to_string()),
+      ));
+    }
+    out.push_str("    ]});\n");
+  }
+
+  out.push_str("    ctx\n");
+  out.push_str("  })\n");
+  out.push_str("}\n\n");
+
+  // Convert a `ConvertedValue` (from core WebIDL conversions) back into a `vm-js` value for host dispatch.
+  out.push_str("fn converted_value_to_js(\n");
+  out.push_str("  cx: &mut VmJsWebIdlCx<'_>,\n");
+  out.push_str("  value: ConvertedValue<Value>,\n");
+  out.push_str(") -> Result<Value, VmError> {\n");
+  out.push_str("  Ok(match value {\n");
+  out.push_str("    ConvertedValue::Undefined => Value::Undefined,\n");
+  out.push_str("    ConvertedValue::Null => Value::Null,\n");
+  out.push_str("    ConvertedValue::Boolean(b) => Value::Bool(b),\n");
+  out.push_str("    ConvertedValue::Byte(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Octet(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Short(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedShort(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Long(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedLong(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::LongLong(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnsignedLongLong(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Float(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::UnrestrictedFloat(n) => Value::Number(n as f64),\n");
+  out.push_str("    ConvertedValue::Double(n) => Value::Number(n),\n");
+  out.push_str("    ConvertedValue::UnrestrictedDouble(n) => Value::Number(n),\n");
+  out.push_str("    ConvertedValue::String(s) | ConvertedValue::Enum(s) => cx.alloc_string(&s)?,\n");
+  out.push_str("    ConvertedValue::Any(v) | ConvertedValue::Object(v) => v,\n");
+  out.push_str("    ConvertedValue::PlatformObject(obj) => cx\n");
+  out.push_str("      .platform_object_to_js_value(&obj)\n");
+  out.push_str("      .ok_or_else(|| cx.throw_type_error(\"Unsupported platform object value for this runtime\"))?,\n");
+  out.push_str("    ConvertedValue::Sequence { values, .. } => {\n");
+  out.push_str("      let arr = cx.alloc_array()?;\n");
+  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
+  out.push_str("        let key = cx.property_key_from_u32(idx as u32)?;\n");
+  out.push_str("        let value = converted_value_to_js(cx, item)?;\n");
+  out.push_str("        cx.define_data_property(arr, key, value, true)?;\n");
+  out.push_str("      }\n");
+  out.push_str("      arr\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Record { entries, .. } => {\n");
+  out.push_str("      let obj = cx.alloc_object()?;\n");
+  out.push_str("      for (k, v) in entries {\n");
+  out.push_str("        let key = cx.property_key_from_str(&k)?;\n");
+  out.push_str("        let value = converted_value_to_js(cx, v)?;\n");
+  out.push_str("        cx.define_data_property(obj, key, value, true)?;\n");
+  out.push_str("      }\n");
+  out.push_str("      obj\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Dictionary { members, .. } => {\n");
+  out.push_str("      let obj = cx.alloc_object()?;\n");
+  out.push_str("      for (k, v) in members {\n");
+  out.push_str("        let key = cx.property_key_from_str(&k)?;\n");
+  out.push_str("        let value = converted_value_to_js(cx, v)?;\n");
+  out.push_str("        cx.define_data_property(obj, key, value, true)?;\n");
+  out.push_str("      }\n");
+  out.push_str("      obj\n");
+  out.push_str("    }\n");
+  out.push_str("    ConvertedValue::Union { value, .. } => {\n");
+  out.push_str("      return converted_value_to_js(cx, *value);\n");
+  out.push_str("    }\n");
+  out.push_str("  })\n");
+  out.push_str("}\n\n");
 
   // Operation shims.
   for iface in selected.values() {
@@ -1911,25 +2316,27 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
       write_operation_wrapper_vmjs(
         &mut out,
         resolved,
+        &type_ctx,
         &iface.name,
         op_name,
         iface.iterable.as_ref(),
         overloads,
         false,
         global,
-      );
+      )?;
     }
     for (op_name, overloads) in &iface.static_operations {
       write_operation_wrapper_vmjs(
         &mut out,
         resolved,
+        &type_ctx,
         &iface.name,
         op_name,
         None,
         overloads,
         true,
         global,
-      );
+      )?;
     }
     for attr in iface.attributes.values() {
       write_attribute_getter_wrapper_vmjs(&mut out, &iface.name, attr, false, global);
@@ -1944,7 +2351,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
       }
     }
     if !global {
-      write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
+      write_constructor_wrapper_vmjs(&mut out, resolved, &type_ctx, &iface.name, &iface.constructors)?;
     }
   }
 
@@ -2528,6 +2935,85 @@ fn render_idl_type(ty: &IdlType) -> String {
       format!("record<{}, {}>", render_idl_type(key), render_idl_type(value))
     }
   }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReferencedTypeContextEntries {
+  dictionaries: BTreeSet<String>,
+  enums: BTreeSet<String>,
+  typedefs: BTreeSet<String>,
+}
+
+fn collect_referenced_type_context_entries(
+  ctx: &TypeContext,
+  interfaces: &BTreeMap<String, SelectedInterface>,
+) -> ReferencedTypeContextEntries {
+  // Seed with named types referenced directly by selected signatures.
+  let mut pending = Vec::<String>::new();
+  {
+    let mut named = BTreeSet::<String>::new();
+    for iface in interfaces.values() {
+      for ctor in &iface.constructors {
+        for arg in &ctor.arguments {
+          collect_named_types(&arg.type_, &mut named);
+        }
+      }
+      for overloads in iface.operations.values().chain(iface.static_operations.values()) {
+        for sig in overloads {
+          collect_named_types(&sig.return_type, &mut named);
+          for arg in &sig.arguments {
+            collect_named_types(&arg.type_, &mut named);
+          }
+        }
+      }
+      for attr in iface
+        .attributes
+        .values()
+        .chain(iface.static_attributes.values())
+      {
+        collect_named_types(&attr.type_, &mut named);
+      }
+    }
+    pending.extend(named);
+  }
+
+  let mut out = ReferencedTypeContextEntries::default();
+
+  while let Some(name) = pending.pop() {
+    if ctx.dictionaries.contains_key(&name) {
+      if !out.dictionaries.insert(name.clone()) {
+        continue;
+      }
+
+      let dict = &ctx.dictionaries[&name];
+      if let Some(parent) = &dict.inherits {
+        pending.push(parent.clone());
+      }
+      for member in &dict.members {
+        let mut names = BTreeSet::<String>::new();
+        collect_named_types_ir(&member.ty, &mut names);
+        pending.extend(names);
+      }
+      continue;
+    }
+
+    if ctx.enums.contains_key(&name) {
+      out.enums.insert(name);
+      continue;
+    }
+
+    if let Some(td) = ctx.typedefs.get(&name) {
+      if !out.typedefs.insert(name.clone()) {
+        continue;
+      }
+      let mut names = BTreeSet::<String>::new();
+      collect_named_types_ir(td, &mut names);
+      pending.extend(names);
+      continue;
+    }
+  }
+
+  out
 }
 
 fn collect_referenced_dictionaries(
@@ -3621,6 +4107,136 @@ fn idl_literal_to_webidl_ir_default_value(lit: &IdlLiteral) -> Option<webidl_ir:
   }
 }
 
+fn render_webidl_ir_default_value(value: &webidl_ir::DefaultValue) -> String {
+  use webidl_ir::{DefaultValue, NumericLiteral};
+  match value {
+    DefaultValue::Boolean(b) => format!("DefaultValue::Boolean({})", if *b { "true" } else { "false" }),
+    DefaultValue::Null => "DefaultValue::Null".to_string(),
+    DefaultValue::Undefined => "DefaultValue::Undefined".to_string(),
+    DefaultValue::Number(n) => match n {
+      NumericLiteral::Integer(s) => format!(
+        "DefaultValue::Number(NumericLiteral::Integer({}))",
+        format!("{}.to_string()", rust_string_literal(s))
+      ),
+      NumericLiteral::Decimal(s) => format!(
+        "DefaultValue::Number(NumericLiteral::Decimal({}))",
+        format!("{}.to_string()", rust_string_literal(s))
+      ),
+      NumericLiteral::Infinity { negative } => format!(
+        "DefaultValue::Number(NumericLiteral::Infinity {{ negative: {} }})",
+        if *negative { "true" } else { "false" }
+      ),
+      NumericLiteral::NaN => "DefaultValue::Number(NumericLiteral::NaN)".to_string(),
+    },
+    DefaultValue::String(s) => {
+      format!("DefaultValue::String({}.to_string())", rust_string_literal(s))
+    }
+    DefaultValue::EmptySequence => "DefaultValue::EmptySequence".to_string(),
+    DefaultValue::EmptyDictionary => "DefaultValue::EmptyDictionary".to_string(),
+  }
+}
+
+fn render_webidl_ir_type(ty: &webidl_ir::IdlType) -> String {
+  use webidl_ir::{IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeAnnotation};
+
+  match ty {
+    IdlType::Any => "IdlType::Any".to_string(),
+    IdlType::Undefined => "IdlType::Undefined".to_string(),
+    IdlType::Boolean => "IdlType::Boolean".to_string(),
+    IdlType::Numeric(n) => {
+      let v = match n {
+        NumericType::Byte => "Byte",
+        NumericType::Octet => "Octet",
+        NumericType::Short => "Short",
+        NumericType::UnsignedShort => "UnsignedShort",
+        NumericType::Long => "Long",
+        NumericType::UnsignedLong => "UnsignedLong",
+        NumericType::LongLong => "LongLong",
+        NumericType::UnsignedLongLong => "UnsignedLongLong",
+        NumericType::Float => "Float",
+        NumericType::UnrestrictedFloat => "UnrestrictedFloat",
+        NumericType::Double => "Double",
+        NumericType::UnrestrictedDouble => "UnrestrictedDouble",
+      };
+      format!("IdlType::Numeric(NumericType::{v})")
+    }
+    IdlType::BigInt => "IdlType::BigInt".to_string(),
+    IdlType::String(s) => {
+      let v = match s {
+        StringType::DomString => "DomString",
+        StringType::ByteString => "ByteString",
+        StringType::UsvString => "UsvString",
+      };
+      format!("IdlType::String(StringType::{v})")
+    }
+    IdlType::Object => "IdlType::Object".to_string(),
+    IdlType::Symbol => "IdlType::Symbol".to_string(),
+    IdlType::Named(NamedType { name, kind }) => {
+      let kind_expr = match kind {
+        NamedTypeKind::Unresolved => "NamedTypeKind::Unresolved",
+        NamedTypeKind::Interface => "NamedTypeKind::Interface",
+        NamedTypeKind::Dictionary => "NamedTypeKind::Dictionary",
+        NamedTypeKind::Enum => "NamedTypeKind::Enum",
+        NamedTypeKind::Typedef => "NamedTypeKind::Typedef",
+        NamedTypeKind::CallbackFunction => "NamedTypeKind::CallbackFunction",
+        NamedTypeKind::CallbackInterface => "NamedTypeKind::CallbackInterface",
+      };
+      format!(
+        "IdlType::Named(NamedType {{ name: {}.to_string(), kind: {kind_expr} }})",
+        rust_string_literal(name)
+      )
+    }
+    IdlType::Nullable(inner) => format!("IdlType::Nullable(Box::new({}))", render_webidl_ir_type(inner)),
+    IdlType::Union(members) => format!(
+      "IdlType::Union(vec![{}])",
+      members
+        .iter()
+        .map(render_webidl_ir_type)
+        .collect::<Vec<_>>()
+        .join(", ")
+    ),
+    IdlType::Sequence(inner) => format!("IdlType::Sequence(Box::new({}))", render_webidl_ir_type(inner)),
+    IdlType::FrozenArray(inner) => {
+      format!("IdlType::FrozenArray(Box::new({}))", render_webidl_ir_type(inner))
+    }
+    IdlType::AsyncSequence(inner) => {
+      format!("IdlType::AsyncSequence(Box::new({}))", render_webidl_ir_type(inner))
+    }
+    IdlType::Record(key, value) => format!(
+      "IdlType::Record(Box::new({}), Box::new({}))",
+      render_webidl_ir_type(key),
+      render_webidl_ir_type(value)
+    ),
+    IdlType::Promise(inner) => format!("IdlType::Promise(Box::new({}))", render_webidl_ir_type(inner)),
+    IdlType::Annotated { annotations, inner } => {
+      let annotations_expr = annotations
+        .iter()
+        .map(|ann| match ann {
+          TypeAnnotation::Clamp => "TypeAnnotation::Clamp".to_string(),
+          TypeAnnotation::EnforceRange => "TypeAnnotation::EnforceRange".to_string(),
+          TypeAnnotation::LegacyNullToEmptyString => "TypeAnnotation::LegacyNullToEmptyString".to_string(),
+          TypeAnnotation::LegacyTreatNonObjectAsNull => "TypeAnnotation::LegacyTreatNonObjectAsNull".to_string(),
+          TypeAnnotation::AllowShared => "TypeAnnotation::AllowShared".to_string(),
+          TypeAnnotation::AllowResizable => "TypeAnnotation::AllowResizable".to_string(),
+          TypeAnnotation::Other { name, rhs } => format!(
+            "TypeAnnotation::Other {{ name: {}.to_string(), rhs: {} }}",
+            rust_string_literal(name),
+            rhs
+              .as_ref()
+              .map(|rhs| format!("Some({}.to_string())", rust_string_literal(rhs)))
+              .unwrap_or_else(|| "None".to_string())
+          ),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+      format!(
+        "IdlType::Annotated {{ annotations: vec![{annotations_expr}], inner: Box::new({inner_expr}) }}",
+        inner_expr = render_webidl_ir_type(inner),
+      )
+    }
+  }
+}
+
 fn build_overload_ir_operation_set(
   resolved: &ResolvedWebIdlWorld,
   type_ctx: &webidl_ir::TypeContext,
@@ -3975,8 +4591,8 @@ fn write_attribute_getter_wrapper(out: &mut String, interface: &str, attr_name: 
     "Some(this)"
   };
   if receiver_expr == "Some(this)" {
-    out.push_str("  if !rt.is_object(this) {\n");
-    out.push_str("    return Err(rt.throw_type_error(\"Illegal invocation\"));\n");
+    out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
+    out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
     out.push_str("  }\n");
   }
 
@@ -3997,10 +4613,17 @@ fn write_attribute_setter_wrapper(
   attr_name: &str,
   ty: &IdlType,
   is_static: bool,
-) {
+) -> Result<()> {
+  let ty_ir = crate::webidl::type_resolution::parse_type_with_world(
+    resolved,
+    &render_idl_type(ty),
+    &[],
+  )
+  .with_context(|| format!("parse attribute type for {interface}.{attr_name}"))?;
+
   let fn_name = attr_setter_fn_name(interface, attr_name, is_static);
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   let receiver_expr = if interface == "Window" || is_static {
@@ -4009,24 +4632,33 @@ fn write_attribute_setter_wrapper(
     "Some(this)"
   };
   if receiver_expr == "Some(this)" {
-    out.push_str("  if !rt.is_object(this) {\n");
-    out.push_str("    return Err(rt.throw_type_error(\"Illegal invocation\"));\n");
+    out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
+    out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
     out.push_str("  }\n");
   }
 
-  out.push_str("  let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };\n");
+  out.push_str("  static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();\n");
+  out.push_str("  let schemas = SCHEMAS.get_or_init(|| {\n");
   out.push_str(&format!(
-    "  let converted = {};\n",
-    emit_conversion_expr(resolved, ty, &[], "v0")
+    "    vec![ArgumentSchema {{ name: \"value\", ty: {ty}, optional: false, variadic: false, default: None }}]\n",
+    ty = render_webidl_ir_type(&ty_ir)
   ));
+  out.push_str("  });\n");
+  out.push_str("  let ctx = type_context();\n");
+  out.push_str("  let converted = convert_arguments(rt, args, schemas, ctx)?;\n");
+  out.push_str(
+    "  let value = converted\n    .into_iter()\n    .next()\n    .unwrap_or(ConvertedValue::Undefined);\n",
+  );
+  out.push_str("  let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;\n");
   out.push_str(&format!(
     "  host.set_attribute(rt, {receiver_expr}, {iface_lit}, {attr_lit}, converted)?;\n",
     receiver_expr = receiver_expr,
     iface_lit = rust_string_literal(interface),
     attr_lit = rust_string_literal(attr_name),
   ));
-  out.push_str("  Ok(rt.js_undefined())\n");
+  out.push_str("  Ok(rt_js_undefined::<Host, R>(rt))\n");
   out.push_str("}\n\n");
+  Ok(())
 }
 
 fn write_operation_wrapper(
@@ -4036,6 +4668,136 @@ fn write_operation_wrapper(
   interface: &str,
   op_name: &str,
   iterable: Option<&IterableInfo>,
+  overloads: &[OperationSig],
+  is_static: bool,
+  is_global: bool,
+  _config: &WebIdlBindingsCodegenConfig,
+) -> Result<()> {
+  // Build schemas for `resolve_overload` and `convert_arguments`.
+  let mut overload_sigs = Vec::<String>::new();
+  let mut arg_schemas = Vec::<String>::new();
+
+  for (decl_index, sig) in overloads.iter().enumerate() {
+    let mut ol_args = Vec::<String>::new();
+    let mut params = Vec::<String>::new();
+
+    for arg in &sig.arguments {
+      let schema_ty = type_resolution::parse_type_with_world(
+        resolved,
+        &ast_idl_type_to_webidl_ir_src(&arg.type_),
+        &arg.ext_attrs,
+      )
+      .with_context(|| format!("parse argument type for {interface}.{op_name} argument `{}`", arg.name))?;
+
+      let overload_ty = expand_typedefs_in_type(type_ctx, &schema_ty).with_context(|| {
+        format!(
+          "expand typedefs in overload type for {interface}.{op_name} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let optionality = if arg.variadic {
+        "Optionality::Variadic"
+      } else if arg.optional || arg.default.is_some() {
+        "Optionality::Optional"
+      } else {
+        "Optionality::Required"
+      };
+
+      ol_args.push(format!(
+        "        OverloadArg {{ ty: {ty}, optionality: {optionality}, default: None }},\n",
+        ty = render_webidl_ir_type(&overload_ty),
+        optionality = optionality
+      ));
+
+      let default_expr = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      params.push(format!(
+        "        ArgumentSchema {{ name: {name}, ty: {ty}, optional: {optional}, variadic: {variadic}, default: {default} }},\n",
+        name = rust_string_literal(&arg.name),
+        ty = render_webidl_ir_type(&schema_ty),
+        optional = if arg.optional { "true" } else { "false" },
+        variadic = if arg.variadic { "true" } else { "false" },
+        default = default_expr,
+      ));
+    }
+
+    overload_sigs.push(format!(
+      "      OverloadSig {{\n        args: vec![\n{args}        ],\n        decl_index: {decl_index},\n        distinguishing_arg_index_by_arg_count: None,\n      }},\n",
+      args = ol_args.concat(),
+      decl_index = decl_index
+    ));
+
+    arg_schemas.push(format!(
+      "      vec![\n{params}      ],\n",
+      params = params.concat()
+    ));
+  }
+
+  let fn_name = op_wrapper_fn_name(interface, op_name);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
+
+  let receiver_expr = if is_global || is_static {
+    "None"
+  } else {
+    "Some(this)"
+  };
+  if receiver_expr == "Some(this)" {
+    out.push_str("  if !rt_is_object::<Host, R>(rt, this) {\n");
+    out.push_str("    return Err(rt_throw_type_error::<Host, R>(rt, \"Illegal invocation\"));\n");
+    out.push_str("  }\n");
+  }
+
+  out.push_str("  static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();\n");
+  out.push_str("  let arg_schemas = ARG_SCHEMAS.get_or_init(|| {\n    vec![\n");
+  out.push_str(&arg_schemas.concat());
+  out.push_str("    ]\n  });\n");
+
+  out.push_str("  let overload_index: usize = {\n");
+  if overloads.len() == 1 {
+    out.push_str("    0\n");
+  } else {
+    out.push_str("    static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();\n");
+    out.push_str("    let overloads = OVERLOADS.get_or_init(|| {\n      vec![\n");
+    out.push_str(&overload_sigs.concat());
+    out.push_str("      ]\n    });\n");
+    out.push_str("    resolve_overload(rt, overloads, args)?.overload_index\n");
+  }
+  out.push_str("  };\n");
+
+  out.push_str("  let params = &arg_schemas[overload_index];\n");
+  out.push_str("  let ctx = type_context();\n");
+  out.push_str("  let converted_args = convert_arguments(rt, args, params, ctx)?;\n");
+  out.push_str(
+    "  let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> = Vec::with_capacity(converted_args.len());\n",
+  );
+  out.push_str("  for (schema, value) in params.iter().zip(converted_args.into_iter()) {\n");
+  out.push_str("    converted_binding_args.push(converted_value_to_binding_value::<Host, R>(rt, ctx, &schema.ty, value)?);\n");
+  out.push_str("  }\n");
+  out.push_str(&format!(
+    "  let result = host.call_operation(rt, {receiver_expr}, {iface_lit}, {op_lit}, overload_index, converted_binding_args)?;\n",
+    receiver_expr = receiver_expr,
+    iface_lit = rust_string_literal(interface),
+    op_lit = rust_string_literal(op_name),
+  ));
+  out.push_str("  binding_value_to_js::<Host, R>(rt, result)\n");
+  out.push_str("}\n\n");
+  Ok(())
+}
+
+fn write_operation_wrapper_old(
+  out: &mut String,
+  resolved: &ResolvedWebIdlWorld,
+  type_ctx: &webidl_ir::TypeContext,
+  interface: &str,
+  op_name: &str,
   overloads: &[OperationSig],
   is_static: bool,
   is_global: bool,
@@ -4058,8 +4820,6 @@ fn write_operation_wrapper(
   } else {
     "Some(this)"
   };
-
-  let _ = iterable;
 
   if overloads.len() == 1 {
     out.push_str(&indent_lines(
@@ -4666,15 +5426,17 @@ fn emit_constant_js_value_expr(lit: &IdlLiteral) -> String {
   }
 
   match lit {
-    IdlLiteral::Undefined => "rt.js_undefined()".to_string(),
-    IdlLiteral::Null => "rt.js_null()".to_string(),
+    IdlLiteral::Undefined => "rt_js_undefined::<Host, R>(rt)".to_string(),
+    IdlLiteral::Null => "rt_js_null::<Host, R>(rt)".to_string(),
     IdlLiteral::Boolean(b) => format!("rt.js_bool({})", if *b { "true" } else { "false" }),
     IdlLiteral::Number(n) => {
       let v = parse_idl_number_literal(n).unwrap_or(0.0);
-      format!("rt.js_number({v:?})")
+      format!("rt_js_number::<Host, R>(rt, {v:?})")
     }
     IdlLiteral::String(s) => format!("rt.js_string({})?", rust_string_literal(s)),
-    IdlLiteral::EmptyObject | IdlLiteral::EmptyArray | IdlLiteral::Identifier(_) => "rt.js_undefined()".to_string(),
+    IdlLiteral::EmptyObject | IdlLiteral::EmptyArray | IdlLiteral::Identifier(_) => {
+      "rt_js_undefined::<Host, R>(rt)".to_string()
+    }
   }
 }
 
@@ -5240,6 +6002,119 @@ fn write_constructor_wrapper(
   overloads: &[ArgumentList],
   _config: &WebIdlBindingsCodegenConfig,
 ) -> Result<()> {
+  let mut overload_sigs = Vec::<String>::new();
+  let mut arg_schemas = Vec::<String>::new();
+
+  for (decl_index, sig) in overloads.iter().enumerate() {
+    let mut ol_args = Vec::<String>::new();
+    let mut params = Vec::<String>::new();
+
+    for arg in &sig.arguments {
+      let schema_ty = type_resolution::parse_type_with_world(
+        resolved,
+        &ast_idl_type_to_webidl_ir_src(&arg.type_),
+        &arg.ext_attrs,
+      )
+      .with_context(|| format!("parse constructor argument type for {interface} argument `{}`", arg.name))?;
+
+      let overload_ty = expand_typedefs_in_type(type_ctx, &schema_ty).with_context(|| {
+        format!(
+          "expand typedefs in constructor overload type for {interface} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let optionality = if arg.variadic {
+        "Optionality::Variadic"
+      } else if arg.optional || arg.default.is_some() {
+        "Optionality::Optional"
+      } else {
+        "Optionality::Required"
+      };
+
+      ol_args.push(format!(
+        "        OverloadArg {{ ty: {ty}, optionality: {optionality}, default: None }},\n",
+        ty = render_webidl_ir_type(&overload_ty),
+        optionality = optionality
+      ));
+
+      let default_expr = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      params.push(format!(
+        "        ArgumentSchema {{ name: {name}, ty: {ty}, optional: {optional}, variadic: {variadic}, default: {default} }},\n",
+        name = rust_string_literal(&arg.name),
+        ty = render_webidl_ir_type(&schema_ty),
+        optional = if arg.optional { "true" } else { "false" },
+        variadic = if arg.variadic { "true" } else { "false" },
+        default = default_expr,
+      ));
+    }
+
+    overload_sigs.push(format!(
+      "      OverloadSig {{\n        args: vec![\n{args}        ],\n        decl_index: {decl_index},\n        distinguishing_arg_index_by_arg_count: None,\n      }},\n",
+      args = ol_args.concat(),
+      decl_index = decl_index
+    ));
+
+    arg_schemas.push(format!(
+      "      vec![\n{params}      ],\n",
+      params = params.concat()
+    ));
+  }
+
+  let fn_name = ctor_wrapper_fn_name(interface);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, _this: RtJsValue<Host, R>, args: &[RtJsValue<Host, R>]) -> Result<RtJsValue<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host> + WebIdlJsRuntime<JsValue = RtJsValue<Host, R>, PropertyKey = RtPropertyKey<Host, R>, Error = RtError<Host, R>>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
+
+  out.push_str("  static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();\n");
+  out.push_str("  let arg_schemas = ARG_SCHEMAS.get_or_init(|| {\n    vec![\n");
+  out.push_str(&arg_schemas.concat());
+  out.push_str("    ]\n  });\n");
+
+  out.push_str("  let overload_index: usize = {\n");
+  if overloads.len() == 1 {
+    out.push_str("    0\n");
+  } else {
+    out.push_str("    static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();\n");
+    out.push_str("    let overloads = OVERLOADS.get_or_init(|| {\n      vec![\n");
+    out.push_str(&overload_sigs.concat());
+    out.push_str("      ]\n    });\n");
+    out.push_str("    resolve_overload(rt, overloads, args)?.overload_index\n");
+  }
+  out.push_str("  };\n");
+
+  out.push_str("  let params = &arg_schemas[overload_index];\n");
+  out.push_str("  let ctx = type_context();\n");
+  out.push_str("  let converted_args = convert_arguments(rt, args, params, ctx)?;\n");
+  out.push_str(
+    "  let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> = Vec::with_capacity(converted_args.len());\n",
+  );
+  out.push_str("  for (schema, value) in params.iter().zip(converted_args.into_iter()) {\n");
+  out.push_str("    converted_binding_args.push(converted_value_to_binding_value::<Host, R>(rt, ctx, &schema.ty, value)?);\n");
+  out.push_str("  }\n");
+  out.push_str(&format!(
+    "  let result = host.call_operation(rt, None, {iface_lit}, \"constructor\", overload_index, converted_binding_args)?;\n",
+    iface_lit = rust_string_literal(interface)
+  ));
+  out.push_str("  binding_value_to_js::<Host, R>(rt, result)\n");
+  out.push_str("}\n\n");
+  Ok(())
+}
+
+fn write_constructor_wrapper_old(
+  out: &mut String,
+  resolved: &ResolvedWebIdlWorld,
+  type_ctx: &webidl_ir::TypeContext,
+  interface: &str,
+  overloads: &[ArgumentList],
+  _config: &WebIdlBindingsCodegenConfig,
+) -> Result<()> {
   let fn_name = ctor_wrapper_fn_name(interface);
   let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
     "_args"
@@ -5620,212 +6495,157 @@ fn emit_ctor_overload_call(
 fn write_operation_wrapper_vmjs(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
+  type_ctx: &TypeContext,
   interface: &str,
   op_name: &str,
   iterable: Option<&IterableInfo>,
   overloads: &[OperationSig],
   is_static: bool,
   is_global: bool,
-) {
+) -> Result<()> {
+  let mut overload_sigs = Vec::<String>::new();
+  let mut arg_schemas = Vec::<String>::new();
+
+  for (decl_index, sig) in overloads.iter().enumerate() {
+    let mut ol_args = Vec::<String>::new();
+    let mut params = Vec::<String>::new();
+
+    for arg in &sig.arguments {
+      let schema_ty = type_resolution::parse_type_with_world(
+        resolved,
+        &ast_idl_type_to_webidl_ir_src(&arg.type_),
+        &arg.ext_attrs,
+      )
+      .with_context(|| {
+        format!(
+          "parse argument type for {interface}.{op_name} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let overload_ty = expand_typedefs_in_type(type_ctx, &schema_ty).with_context(|| {
+        format!(
+          "expand typedefs in overload type for {interface}.{op_name} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let optionality = if arg.variadic {
+        "Optionality::Variadic"
+      } else if arg.optional || arg.default.is_some() {
+        "Optionality::Optional"
+      } else {
+        "Optionality::Required"
+      };
+
+      let overload_default = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      ol_args.push(format!(
+        "        OverloadArg {{ ty: {ty}, optionality: {optionality}, default: {default} }},\n",
+        ty = render_webidl_ir_type(&overload_ty),
+        optionality = optionality,
+        default = overload_default,
+      ));
+
+      let schema_default = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      params.push(format!(
+        "        ArgumentSchema {{ name: {name}, ty: {ty}, optional: {optional}, variadic: {variadic}, default: {default} }},\n",
+        name = rust_string_literal(&arg.name),
+        ty = render_webidl_ir_type(&schema_ty),
+        optional = if arg.optional { "true" } else { "false" },
+        variadic = if arg.variadic { "true" } else { "false" },
+        default = schema_default,
+      ));
+    }
+
+    overload_sigs.push(format!(
+      "      OverloadSig {{\n        args: vec![\n{args}        ],\n        decl_index: {decl_index},\n        distinguishing_arg_index_by_arg_count: None,\n      }},\n",
+      args = ol_args.concat(),
+      decl_index = decl_index
+    ));
+
+    arg_schemas.push(format!(
+      "      vec![\n{params}      ],\n",
+      params = params.concat()
+    ));
+  }
+
   let fn_name = op_wrapper_fn_name(interface, op_name);
-  let host_ident = if overloads
-    .iter()
-    .any(|sig| args_need_host_vmjs(resolved, &sig.arguments))
-  {
-    "host"
-  } else {
-    "_host"
-  };
-  let this_ident = if is_global || is_static { "_this" } else { "this" };
-  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
-    "_args"
-  } else {
-    "args"
-  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  {this_ident}: Value,\n  {args_ident}: &[Value],\n) -> Result<Value, VmError>\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
-  out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
-  out.push_str("  let rt = &mut rt;\n");
+
+  // Obtain the embedder dispatch host pointer before constructing `VmJsWebIdlCx`, because
+  // `VmJsWebIdlCx::from_native_call` needs to borrow `hooks` mutably for the lifetime of the
+  // conversion context.
+  out.push_str("  let mut bindings_host = {\n");
+  out.push_str("    let host = host_from_hooks(hooks)?;\n");
+  out.push_str("    NonNull::from(host)\n");
+  out.push_str("  };\n");
+
+  out.push_str("  let mut cx = VmJsWebIdlCx::from_native_call(\n");
+  out.push_str("    vm,\n");
+  out.push_str("    scope,\n");
+  out.push_str("    host,\n");
+  out.push_str("    hooks,\n");
+  out.push_str("    WebIdlLimits::default(),\n");
+  out.push_str("    &NO_HOOKS,\n");
+  out.push_str("  );\n");
 
   let receiver_expr = if is_global || is_static {
     "None"
   } else {
     "Some(this)"
   };
-  if !(is_global || is_static) {
-    out.push_str("  rt.scope.push_root(this)?;\n");
+  if is_global || is_static {
+    out.push_str("  let _ = this;\n");
+  } else {
+    out.push_str("  cx.scope.push_root(this)?;\n");
   }
   out.push_str(&format!("  let receiver = {receiver_expr};\n"));
-
-  if iterable.is_some() && !is_static && !is_global {
-    match op_name {
-      "entries" | "keys" | "values" => {
-        let kind = match op_name {
-          "entries" => "IterableKind::Entries",
-          "keys" => "IterableKind::Keys",
-          "values" => "IterableKind::Values",
-          _ => unreachable!(),
-        };
-        out.push_str(&format!("  let _ = {args_ident};\n"));
-        out.push_str("  let bindings_host = host_from_hooks(hooks)?;\n");
-        out.push_str(&format!(
-          "  let snapshot = bindings_host.iterable_snapshot(&mut *rt.vm, &mut rt.scope, receiver, {iface_lit}, {kind})?;\n",
-          iface_lit = rust_string_literal(interface),
-          kind = kind,
-        ));
-        out.push_str("  let arr = rt.alloc_array(snapshot.len())?;\n");
-        out.push_str("  for (idx, item) in snapshot.into_iter().enumerate() {\n");
-        out.push_str("    let value = rt.binding_value_to_js(item)?;\n");
-        out.push_str("    let value = rt.scope.push_root(value)?;\n");
-        out.push_str("    let key_s = rt.scope.alloc_string(&idx.to_string())?;\n");
-        out.push_str("    rt.scope.push_root(Value::String(key_s))?;\n");
-        out.push_str("    let key = vm_js::PropertyKey::from_string(key_s);\n");
-        out.push_str("    rt.scope.create_data_property_or_throw(arr, key, value)?;\n");
-        out.push_str("  }\n");
-        out.push_str("  let intr = rt\n");
-        out.push_str("    .vm\n");
-        out.push_str("    .intrinsics()\n");
-        out.push_str("    .ok_or(VmError::Unimplemented(\"intrinsics not initialized\"))?;\n");
-        out.push_str(
-          "  let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);\n",
-        );
-        out.push_str("  let Some(method) = rt.vm.get_method_from_object(&mut rt.scope, arr, iterator_key)? else {\n");
-        out.push_str(
-          "    return Err(rt.throw_type_error(\"iterable snapshot array is not iterable\"));\n",
-        );
-        out.push_str("  };\n");
-        out.push_str(&format!(
-          "  rt.vm.call_with_host_and_hooks({host_ident}, &mut rt.scope, hooks, method, Value::Object(arr), &[])\n"
-        ));
-        out.push_str("}\n\n");
-        return;
-      }
-      "forEach" => {
-        out.push_str(&format!(
-          "  let callback = {args_ident}.get(0).copied().unwrap_or(Value::Undefined);\n  let callback = rt.scope.push_root(callback)?;\n  let this_arg = {args_ident}.get(1).copied().unwrap_or(Value::Undefined);\n  let this_arg = rt.scope.push_root(this_arg)?;\n",
-        ));
-        out.push_str("  let bindings_host = host_from_hooks(hooks)?;\n");
-        out.push_str(&format!(
-          "  let snapshot = bindings_host.iterable_snapshot(&mut *rt.vm, &mut rt.scope, receiver, {iface_lit}, IterableKind::Entries)?;\n",
-          iface_lit = rust_string_literal(interface),
-        ));
-        out.push_str("  for entry in snapshot {\n");
-        out.push_str("    let BindingValue::Sequence(mut pair) = entry else {\n");
-        out.push_str(
-          "      return Err(rt.throw_type_error(\"iterable forEach: expected [key, value] pair\"));\n",
-        );
-        out.push_str("    };\n");
-        out.push_str("    if pair.len() != 2 {\n");
-        out.push_str(
-          "      return Err(rt.throw_type_error(\"iterable forEach: expected [key, value] pair\"));\n",
-        );
-        out.push_str("    }\n");
-        out.push_str("    let mut iter = pair.into_iter();\n");
-        out.push_str("    let key = iter.next().ok_or_else(|| rt.throw_type_error(\"iterable forEach: expected [key, value] pair\"))?;\n");
-        out.push_str("    let value = iter.next().ok_or_else(|| rt.throw_type_error(\"iterable forEach: expected [key, value] pair\"))?;\n");
-        out.push_str("    let key_js = rt.binding_value_to_js(key)?;\n");
-        out.push_str("    let key_js = rt.scope.push_root(key_js)?;\n");
-        out.push_str("    let value_js = rt.binding_value_to_js(value)?;\n");
-        out.push_str("    let value_js = rt.scope.push_root(value_js)?;\n");
-        out.push_str(&format!(
-          "    let _ = rt.vm.call_with_host_and_hooks({host_ident}, &mut rt.scope, hooks, callback, this_arg, &[value_js, key_js, this])?;\n"
-        ));
-        out.push_str("  }\n");
-        out.push_str("  Ok(Value::Undefined)\n");
-        out.push_str("}\n\n");
-        return;
-      }
-      _ => {}
-    }
-  }
-
+  out.push_str("  static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();\n");
+  out.push_str("  let arg_schemas = ARG_SCHEMAS.get_or_init(|| {\n    vec![\n");
+  out.push_str(&arg_schemas.concat());
+  out.push_str("    ]\n  });\n");
+  out.push_str("  let overload_index: usize = {\n");
   if overloads.len() == 1 {
-    out.push_str(&emit_overload_call_vmjs(
-      resolved,
-      interface,
-      op_name,
-      "receiver",
-      0,
-      &overloads[0].arguments,
-    ));
-    out.push_str("}\n\n");
-    return;
+    out.push_str("    0\n");
+  } else {
+    out.push_str("    static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();\n");
+    out.push_str("    let overloads = OVERLOADS.get_or_init(|| {\n      vec![\n");
+    out.push_str(&overload_sigs.concat());
+    out.push_str("      ]\n    });\n");
+    out.push_str("    resolve_overload(&mut cx, overloads, args)?.overload_index\n");
   }
+  out.push_str("  };\n");
 
-  // WebIDL overload resolution clamps `arguments.length` to the maximum number of arguments in the
-  // overload set (extra arguments are ignored unless an overload is variadic). Without this, calls
-  // like `alert(\"a\", \"b\")` incorrectly fail to match `alert(DOMString)`.
-  //
-  // Note: if any overload is variadic (`max_arg_count == None`), the maximum argument count is
-  // unbounded, so we must not truncate the argument slice.
-  let max_argc = overloads
-    .iter()
-    .map(|sig| max_arg_count(&sig.arguments))
-    .collect::<Vec<_>>();
-  if max_argc.iter().all(|v| v.is_some()) {
-    let max_argc = max_argc
-      .into_iter()
-      .flatten()
-      .max()
-      .unwrap_or(0);
-    out.push_str(&format!(
-      "  let args = if args.len() > {max_argc} {{ &args[..{max_argc}] }} else {{ args }};\n",
-      max_argc = max_argc
-    ));
-  }
-
-  // If each overload's (required..=max) argument-count range is disjoint, argument count alone is
-  // enough to select the overload, so emitting a first-argument type predicate is unnecessary (and
-  // can incorrectly reject valid inputs that are convertible via WebIDL, e.g. `DOMString`).
-  let ranges = overloads
-    .iter()
-    .map(|sig| (required_arg_count(&sig.arguments), max_arg_count(&sig.arguments)))
-    .collect::<Vec<_>>();
-  let ranges_overlap = |a_min: usize, a_max: Option<usize>, b_min: usize, b_max: Option<usize>| {
-    let a_max = a_max.unwrap_or(usize::MAX);
-    let b_max = b_max.unwrap_or(usize::MAX);
-    a_min <= b_max && b_min <= a_max
-  };
-  let use_type_predicate = (0..ranges.len())
-    .map(|idx| {
-      let (min, max) = ranges[idx];
-      (0..ranges.len()).any(|j| {
-        if j == idx {
-          return false;
-        }
-        let (other_min, other_max) = ranges[j];
-        ranges_overlap(min, max, other_min, other_max)
-      })
-    })
-    .collect::<Vec<_>>();
-
-  for (idx, sig) in overloads.iter().enumerate() {
-    let cond = emit_overload_condition_vmjs(sig, "args", use_type_predicate[idx]);
-    if idx == 0 {
-      out.push_str(&format!("  if {cond} {{\n"));
-    } else {
-      out.push_str(&format!("  }} else if {cond} {{\n"));
-    }
-    out.push_str(&indent_lines(
-      &emit_overload_call_vmjs(
-        resolved,
-        interface,
-        op_name,
-        "receiver",
-        idx,
-        &sig.arguments,
-      ),
-      2,
-    ));
-  }
-  out.push_str("  } else {\n");
-  out.push_str(&format!(
-    "    Err(rt.throw_type_error(\"no matching overload for {}.{}\"))\n",
-    interface, op_name
-  ));
+  out.push_str("  let params = &arg_schemas[overload_index];\n");
+  out.push_str("  let ctx = type_context();\n");
+  out.push_str("  let converted_args = convert_arguments(&mut cx, args, params, ctx)?;\n");
+  out.push_str("  let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());\n");
+  out.push_str("  for value in converted_args {\n");
+  out.push_str("    converted_js_args.push(converted_value_to_js(&mut cx, value)?);\n");
   out.push_str("  }\n");
+
+  out.push_str("  let bindings_host = unsafe { bindings_host.as_mut() };\n");
+  out.push_str(&format!(
+    "  bindings_host.call_operation(cx.vm, &mut cx.scope, receiver, {iface_lit}, {op_lit}, overload_index, &converted_js_args)\n",
+    iface_lit = rust_string_literal(interface),
+    op_lit = rust_string_literal(op_name),
+  ));
   out.push_str("}\n\n");
+  Ok(())
 }
 
 fn write_attribute_getter_wrapper_vmjs(
@@ -5996,58 +6816,91 @@ fn emit_overload_call_vmjs(
   out
 }
 
-fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
-  match ty {
-    IdlType::Builtin(b) => match b {
-      BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => true,
-      BuiltinType::Long
-      | BuiltinType::UnsignedLong
-      | BuiltinType::Byte
-      | BuiltinType::Octet
-      | BuiltinType::Short
-      | BuiltinType::UnsignedShort
-      | BuiltinType::LongLong
-      | BuiltinType::UnsignedLongLong
-      | BuiltinType::Float
-      | BuiltinType::UnrestrictedFloat
-      | BuiltinType::Double
-      | BuiltinType::UnrestrictedDouble => true,
-      BuiltinType::Undefined | BuiltinType::Any | BuiltinType::Object | BuiltinType::Boolean => false,
-    },
-    IdlType::Named(name) => {
-      if resolved.dictionaries.contains_key(name) {
-        true
-      } else if resolved.enums.contains_key(name) {
-        true
-      } else if resolved.typedefs.contains_key(name) {
-        resolved
-          .resolve_typedef(name)
-          .ok()
-          .is_some_and(|ty| type_needs_host_vmjs(resolved, &ty))
-      } else {
-        false
-      }
-    }
-    IdlType::Nullable(inner) => type_needs_host_vmjs(resolved, inner),
-    IdlType::Union(members) => members.iter().any(|m| type_needs_host_vmjs(resolved, m)),
-    IdlType::Sequence(_) | IdlType::FrozenArray(_) => true,
-    IdlType::Promise(_) => false,
-    IdlType::Record { .. } => true,
-  }
-}
-
-fn args_need_host_vmjs(resolved: &ResolvedWebIdlWorld, args: &[Argument]) -> bool {
-  args
-    .iter()
-    .any(|arg| type_needs_host_vmjs(resolved, &arg.type_))
-}
-
 fn write_constructor_wrapper_vmjs(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
+  type_ctx: &TypeContext,
   interface: &str,
   overloads: &[ArgumentList],
-) {
+) -> Result<()> {
+  let mut overload_sigs = Vec::<String>::new();
+  let mut arg_schemas = Vec::<String>::new();
+
+  for (decl_index, sig) in overloads.iter().enumerate() {
+    let mut ol_args = Vec::<String>::new();
+    let mut params = Vec::<String>::new();
+
+    for arg in &sig.arguments {
+      let schema_ty = type_resolution::parse_type_with_world(
+        resolved,
+        &ast_idl_type_to_webidl_ir_src(&arg.type_),
+        &arg.ext_attrs,
+      )
+      .with_context(|| {
+        format!(
+          "parse constructor argument type for {interface} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let overload_ty = expand_typedefs_in_type(type_ctx, &schema_ty).with_context(|| {
+        format!(
+          "expand typedefs in constructor overload type for {interface} argument `{}`",
+          arg.name
+        )
+      })?;
+
+      let optionality = if arg.variadic {
+        "Optionality::Variadic"
+      } else if arg.optional || arg.default.is_some() {
+        "Optionality::Optional"
+      } else {
+        "Optionality::Required"
+      };
+
+      let overload_default = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      ol_args.push(format!(
+        "        OverloadArg {{ ty: {ty}, optionality: {optionality}, default: {default} }},\n",
+        ty = render_webidl_ir_type(&overload_ty),
+        optionality = optionality,
+        default = overload_default,
+      ));
+
+      let schema_default = arg
+        .default
+        .as_ref()
+        .and_then(idl_literal_to_webidl_ir_default_value)
+        .map(|dv| format!("Some({})", render_webidl_ir_default_value(&dv)))
+        .unwrap_or_else(|| "None".to_string());
+
+      params.push(format!(
+        "        ArgumentSchema {{ name: {name}, ty: {ty}, optional: {optional}, variadic: {variadic}, default: {default} }},\n",
+        name = rust_string_literal(&arg.name),
+        ty = render_webidl_ir_type(&schema_ty),
+        optional = if arg.optional { "true" } else { "false" },
+        variadic = if arg.variadic { "true" } else { "false" },
+        default = schema_default,
+      ));
+    }
+
+    overload_sigs.push(format!(
+      "      OverloadSig {{\n        args: vec![\n{args}        ],\n        decl_index: {decl_index},\n        distinguishing_arg_index_by_arg_count: None,\n      }},\n",
+      args = ol_args.concat(),
+      decl_index = decl_index
+    ));
+
+    arg_schemas.push(format!(
+      "      vec![\n{params}      ],\n",
+      params = params.concat()
+    ));
+  }
+
   // Call without `new`.
   let call_fn_name = ctor_call_without_new_fn_name(interface);
   out.push_str(&format!(
@@ -6063,23 +6916,39 @@ fn write_constructor_wrapper_vmjs(
 
   let construct_fn_name = ctor_construct_fn_name(interface);
   let host_ident = "host";
-  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
-    "_args"
-  } else {
-    "args"
-  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  {args_ident}: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
+    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  args: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
-  out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
-  out.push_str("  let rt = &mut rt;\n");
   if overloads.is_empty() {
-    out.push_str("  let _ = (host, hooks, callee, args, new_target);\n");
-    out.push_str("  Err(rt.throw_type_error(\"Illegal constructor\"))\n");
+    out.push_str("  let mut cx = VmJsWebIdlCx::from_native_call(\n");
+    out.push_str("    vm,\n");
+    out.push_str("    scope,\n");
+    out.push_str("    host,\n");
+    out.push_str("    hooks,\n");
+    out.push_str("    WebIdlLimits::default(),\n");
+    out.push_str("    &NO_HOOKS,\n");
+    out.push_str("  );\n");
+    out.push_str("  let _ = (callee, args, new_target);\n");
+    out.push_str("  Err(cx.throw_type_error(\"Illegal constructor\"))\n");
     out.push_str("}\n\n");
-    return;
+    return Ok(());
   }
-  out.push_str("  let slots = rt.scope.heap().get_function_native_slots(callee)?;\n");
+
+  out.push_str("  let mut bindings_host = {\n");
+  out.push_str("    let host = host_from_hooks(hooks)?;\n");
+  out.push_str("    NonNull::from(host)\n");
+  out.push_str("  };\n");
+
+  out.push_str("  let mut cx = VmJsWebIdlCx::from_native_call(\n");
+  out.push_str("    vm,\n");
+  out.push_str("    scope,\n");
+  out.push_str("    host,\n");
+  out.push_str("    hooks,\n");
+  out.push_str("    WebIdlLimits::default(),\n");
+  out.push_str("    &NO_HOOKS,\n");
+  out.push_str("  );\n");
+
+  out.push_str("  let slots = cx.scope.heap().get_function_native_slots(callee)?;\n");
   out.push_str("  let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);\n");
   out.push_str("  let Value::Object(default_proto) = proto_slot else {\n");
   out.push_str(&format!(
@@ -6092,79 +6961,54 @@ fn write_constructor_wrapper_vmjs(
   out.push_str("  // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:\n");
   out.push_str("  // - default to the interface prototype cached in native slots,\n");
   out.push_str("  // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.\n");
-  out.push_str("  rt.scope.push_root(Value::Object(default_proto))?;\n");
-  // Root `new_target` before doing property lookups/allocations to avoid GC hazards.
-  out.push_str("  rt.scope.push_root(new_target)?;\n");
+  out.push_str("  cx.scope.push_root(Value::Object(default_proto))?;\n");
+  out.push_str("  cx.scope.push_root(new_target)?;\n");
   out.push_str("  let mut wrapper_proto = default_proto;\n");
   out.push_str("  if let Value::Object(new_target_obj) = new_target {\n");
-  out.push_str("    rt.scope.push_root(Value::Object(new_target_obj))?;\n");
-  out.push_str("    let proto_key = rt.property_key(\"prototype\")?;\n");
-  out.push_str("    let candidate = rt.scope.ordinary_get_with_host_and_hooks(\n");
-  out.push_str("      &mut *rt.vm,\n");
-  out.push_str("      host,\n");
-  out.push_str("      hooks,\n");
-  out.push_str("      new_target_obj,\n");
-  out.push_str("      proto_key,\n");
-  out.push_str("      Value::Object(new_target_obj),\n");
-  out.push_str("    )?;\n");
+  out.push_str("    cx.scope.push_root(Value::Object(new_target_obj))?;\n");
+  out.push_str("    let proto_key = cx.property_key_from_str(\"prototype\")?;\n");
+  out.push_str("    let candidate = cx.get(Value::Object(new_target_obj), proto_key)?;\n");
   out.push_str("    if let Value::Object(candidate_obj) = candidate {\n");
-  out.push_str("      rt.scope.push_root(Value::Object(candidate_obj))?;\n");
+  out.push_str("      cx.scope.push_root(Value::Object(candidate_obj))?;\n");
   out.push_str("      wrapper_proto = candidate_obj;\n");
   out.push_str("    }\n");
   out.push_str("  }\n");
-  out.push_str("  let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;\n");
-  out.push_str("  rt.scope.push_root(Value::Object(obj))?;\n\n");
+  out.push_str("  let obj = cx.scope.alloc_object_with_prototype(Some(wrapper_proto))?;\n");
+  out.push_str("  cx.scope.push_root(Value::Object(obj))?;\n\n");
 
+  out.push_str("  static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();\n");
+  out.push_str("  let arg_schemas = ARG_SCHEMAS.get_or_init(|| {\n    vec![\n");
+  out.push_str(&arg_schemas.concat());
+  out.push_str("    ]\n  });\n");
+
+  out.push_str("  let overload_index: usize = {\n");
   if overloads.len() == 1 {
-    out.push_str(&emit_ctor_overload_call_vmjs(
-      resolved,
-      interface,
-      0,
-      &overloads[0].arguments,
-    ));
-    out.push_str("}\n\n");
-    return;
+    out.push_str("    0\n");
+  } else {
+    out.push_str("    static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();\n");
+    out.push_str("    let overloads = OVERLOADS.get_or_init(|| {\n      vec![\n");
+    out.push_str(&overload_sigs.concat());
+    out.push_str("      ]\n    });\n");
+    out.push_str("    resolve_overload(&mut cx, overloads, args)?.overload_index\n");
   }
-
-  // Like operations, constructor overload resolution clamps `arguments.length` to the maximum
-  // argument count in the overload set (unless the set includes a variadic overload).
-  let max_argc = overloads
-    .iter()
-    .map(|sig| max_arg_count(&sig.arguments))
-    .collect::<Vec<_>>();
-  if max_argc.iter().all(|v| v.is_some()) {
-    let max_argc = max_argc
-      .into_iter()
-      .flatten()
-      .max()
-      .unwrap_or(0);
-    out.push_str(&format!(
-      "  let args = if args.len() > {max_argc} {{ &args[..{max_argc}] }} else {{ args }};\n",
-      max_argc = max_argc
-    ));
-  }
-
-  for (idx, sig) in overloads.iter().enumerate() {
-    let required = required_arg_count(&sig.arguments);
-    let max = max_arg_count(&sig.arguments);
-    let cond = emit_args_len_check("args", required, max);
-    if idx == 0 {
-      out.push_str(&format!("  if {cond} {{\n"));
-    } else {
-      out.push_str(&format!("  }} else if {cond} {{\n"));
-    }
-    out.push_str(&indent_lines(
-      &emit_ctor_overload_call_vmjs(resolved, interface, idx, &sig.arguments),
-      2,
-    ));
-  }
-  out.push_str("  } else {\n");
-  out.push_str(&format!(
-    "    Err(rt.throw_type_error(\"no matching overload for {} constructor\"))\n",
-    interface
-  ));
+  out.push_str("  };\n");
+  out.push_str("  let params = &arg_schemas[overload_index];\n");
+  out.push_str("  let ctx = type_context();\n");
+  out.push_str("  let converted_args = convert_arguments(&mut cx, args, params, ctx)?;\n");
+  out.push_str("  let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());\n");
+  out.push_str("  for value in converted_args {\n");
+  out.push_str("    converted_js_args.push(converted_value_to_js(&mut cx, value)?);\n");
   out.push_str("  }\n");
+
+  out.push_str("  let bindings_host = unsafe { bindings_host.as_mut() };\n");
+  out.push_str(&format!(
+    "  let _ = bindings_host.call_operation(cx.vm, &mut cx.scope, Some(Value::Object(obj)), {iface_lit}, \"constructor\", overload_index, &converted_js_args)?;\n",
+    iface_lit = rust_string_literal(interface),
+  ));
+  out.push_str("  Ok(Value::Object(obj))\n");
   out.push_str("}\n\n");
+
+  Ok(())
 }
 
 fn emit_ctor_overload_call_vmjs(

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 vm-js = { path = "../../vendor/ecma-rs/vm-js" }
+webidl-bindings-core = { path = "../webidl-bindings-core" }
 webidl-ir = { path = "../webidl-ir" }
 webidl = { path = "../../vendor/ecma-rs/webidl" }
 webidl-vm-js = { path = "../webidl-vm-js" }

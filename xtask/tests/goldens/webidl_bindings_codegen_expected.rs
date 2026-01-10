@@ -7,629 +7,1171 @@ use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 
 pub mod window {
   use std::collections::BTreeMap;
+  use std::sync::OnceLock;
 
-  use super::{binding_value_to_js, BindingValue, WebHostBindings};
-
-  use crate::js::webidl::conversions;
-
+  use super::{BindingValue, WebHostBindings};
   use crate::js::webidl::DataPropertyAttributes;
+  use webidl_ir::{
+    DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
+    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
+  };
+  use webidl_js_runtime::{
+    convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
+    OverloadSig, WebIdlJsRuntime,
+  };
 
-  #[allow(dead_code, unused_variables)]
-  fn js_to_dict_foo_options<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    value: R::JsValue,
-  ) -> Result<BindingValue<R::JsValue>, R::Error>
+  type RtJsValue<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::JsValue;
+  type RtPropertyKey<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::PropertyKey;
+  type RtError<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::Error;
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_throw_type_error<Host, R>(rt: &mut R, message: &str) -> RtError<Host, R>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
-    let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if !is_missing && !rt.is_object(value) {
-      return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
-    }
-    let mut out_dict: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
-    {
-      let js_member_value = if is_missing {
-        rt.js_undefined()
-      } else {
-        let key = rt.property_key("capture")?;
-        rt.get(host, value, key)?
-      };
-      if !rt.is_undefined(js_member_value) {
-        let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
-        out_dict.insert("capture".to_string(), converted);
-      } else {
+    rt.throw_type_error(message)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_is_object<Host, R>(rt: &R, value: RtJsValue<Host, R>) -> bool
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.is_object(value)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_undefined<Host, R>(rt: &R) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_undefined()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_null<Host, R>(rt: &R) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_null()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_js_number<Host, R>(rt: &R, value: f64) -> RtJsValue<Host, R>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.js_number(value)
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_symbol_iterator<Host, R>(rt: &mut R) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.symbol_iterator()
+  }
+
+  #[inline]
+  #[allow(dead_code)]
+  fn rt_symbol_async_iterator<Host, R>(
+    rt: &mut R,
+  ) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    rt.symbol_async_iterator()
+  }
+
+  fn binding_value_to_js<Host, R>(
+    rt: &mut R,
+    value: BindingValue<RtJsValue<Host, R>>,
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    match value {
+      BindingValue::Undefined => Ok(rt.js_undefined()),
+      BindingValue::Null => Ok(rt.js_null()),
+      BindingValue::Bool(b) => Ok(rt.js_bool(b)),
+      BindingValue::Number(n) => Ok(rt.js_number(n)),
+      BindingValue::String(s) => rt.js_string(&s),
+      BindingValue::Object(v) => Ok(v),
+      BindingValue::Callback(_) => {
+        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
       }
+      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
+        let obj = rt.create_array(values.len())?;
+        for (idx, item) in values.into_iter().enumerate() {
+          let key = idx.to_string();
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Dictionary(map) => {
+        let obj = rt.create_object()?;
+        for (key, item) in map {
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Record(entries) => {
+        let obj = rt.create_object()?;
+        for (key, item) in entries {
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
+        }
+        Ok(obj)
+      }
+      BindingValue::Union { value, .. } => binding_value_to_js::<Host, R>(rt, *value),
     }
-    Ok(BindingValue::Dictionary(out_dict))
+  }
+
+  fn type_context() -> &'static TypeContext {
+    static CTX: OnceLock<TypeContext> = OnceLock::new();
+    CTX.get_or_init(|| {
+      let mut ctx = TypeContext::default();
+
+      ctx.add_dictionary(DictionarySchema {
+        name: "FooOptions".to_string(),
+        inherits: None,
+        members: vec![DictionaryMemberSchema {
+          name: "capture".to_string(),
+          required: false,
+          ty: IdlType::Boolean,
+          default: None,
+        }],
+      });
+      ctx
+    })
+  }
+
+  fn converted_value_to_binding_value<Host, R>(
+    rt: &mut R,
+    ctx: &TypeContext,
+    ty: &IdlType,
+    value: ConvertedValue<RtJsValue<Host, R>>,
+  ) -> Result<BindingValue<RtJsValue<Host, R>>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+  {
+    // Callback types are converted to raw JS values by `convert_arguments`, but the host expects
+    // rooted callback handles so it can store and invoke them later.
+    match ty {
+      IdlType::Annotated { inner, .. } => {
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);
+      }
+      IdlType::Nullable(inner) => {
+        if matches!(value, ConvertedValue::Null) {
+          return Ok(BindingValue::Null);
+        }
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, inner, value);
+      }
+      IdlType::Named(NamedType {
+        kind: NamedTypeKind::CallbackFunction,
+        ..
+      }) => {
+        return match value {
+          ConvertedValue::Null => Ok(BindingValue::Null),
+          ConvertedValue::Any(v) | ConvertedValue::Object(v) => {
+            Ok(BindingValue::Callback(rt.root_callback_function(v)?))
+          }
+          _ => Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "expected callback function value",
+          )),
+        };
+      }
+      IdlType::Named(NamedType {
+        kind: NamedTypeKind::CallbackInterface,
+        ..
+      }) => {
+        return match value {
+          ConvertedValue::Null => Ok(BindingValue::Null),
+          ConvertedValue::Any(v) | ConvertedValue::Object(v) => {
+            Ok(BindingValue::Callback(rt.root_callback_interface(v)?))
+          }
+          _ => Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "expected callback interface value",
+          )),
+        };
+      }
+      _ => {}
+    }
+
+    Ok(match value {
+      ConvertedValue::Undefined => BindingValue::Undefined,
+      ConvertedValue::Null => BindingValue::Null,
+      ConvertedValue::Boolean(b) => BindingValue::Bool(b),
+      ConvertedValue::Byte(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Octet(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Short(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedShort(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Long(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::LongLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnsignedLongLong(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Float(n) => BindingValue::Number(n as f64),
+      ConvertedValue::UnrestrictedFloat(n) => BindingValue::Number(n as f64),
+      ConvertedValue::Double(n) => BindingValue::Number(n),
+      ConvertedValue::UnrestrictedDouble(n) => BindingValue::Number(n),
+      ConvertedValue::String(s) | ConvertedValue::Enum(s) => BindingValue::String(s),
+      ConvertedValue::Any(v) | ConvertedValue::Object(v) => BindingValue::Object(v),
+      ConvertedValue::PlatformObject(obj) => {
+        let Some(v) = rt.platform_object_to_js_value(&obj) else {
+          return Err(rt_throw_type_error::<Host, R>(
+            rt,
+            "Unsupported platform object value for this runtime",
+          ));
+        };
+        BindingValue::Object(v)
+      }
+      ConvertedValue::Sequence { elem_ty, values } => {
+        let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> =
+          Vec::with_capacity(values.len());
+        for item in values {
+          out_values.push(converted_value_to_binding_value::<Host, R>(
+            rt, ctx, &elem_ty, item,
+          )?);
+        }
+        if matches!(ty, IdlType::FrozenArray(_)) {
+          BindingValue::FrozenArray(out_values)
+        } else {
+          BindingValue::Sequence(out_values)
+        }
+      }
+      ConvertedValue::Record {
+        value_ty, entries, ..
+      } => {
+        let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
+        for (k, v) in entries {
+          map.insert(
+            k,
+            converted_value_to_binding_value::<Host, R>(rt, ctx, &value_ty, v)?,
+          );
+        }
+        BindingValue::Dictionary(map)
+      }
+      ConvertedValue::Dictionary { name, members } => {
+        let mut map: BTreeMap<String, BindingValue<RtJsValue<Host, R>>> = BTreeMap::new();
+        let fallback = IdlType::Any;
+        let member_schemas = ctx.flattened_dictionary_members(&name).unwrap_or_default();
+        for (k, v) in members {
+          let member_ty = member_schemas
+            .iter()
+            .find(|m| m.name == k)
+            .map(|m| &m.ty)
+            .unwrap_or(&fallback);
+          map.insert(
+            k,
+            converted_value_to_binding_value::<Host, R>(rt, ctx, member_ty, v)?,
+          );
+        }
+        BindingValue::Dictionary(map)
+      }
+      ConvertedValue::Union { member_ty, value } => {
+        return converted_value_to_binding_value::<Host, R>(rt, ctx, &member_ty, *value);
+      }
+    })
   }
 
   #[allow(dead_code)]
   fn bar_entries<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Bar", "entries", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Bar",
+      "entries",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn bar_for_each<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(BindingValue::Object(v0));
-      let v1 = if args.len() > 1 {
-        args[1]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(if rt.is_undefined(v1) {
-        BindingValue::Undefined
-      } else {
-        BindingValue::Object(v1)
-      });
-      let result = host.call_operation(rt, Some(this), "Bar", "forEach", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "callback",
+          ty: IdlType::Any,
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "thisArg",
+          ty: IdlType::Any,
+          optional: true,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Bar",
+      "forEach",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn bar_keys<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Bar", "keys", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Bar",
+      "keys",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn bar_values<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Bar", "values", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Bar",
+      "values",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn bar_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let _ = host.call_operation(rt, Some(this), "Bar", "constructor", 0, converted_args)?;
-      Ok(rt.js_undefined())
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
     }
+    let result = host.call_operation(
+      rt,
+      None,
+      "Bar",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_baz<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    let argcount = std::cmp::min(args.len(), 1);
-    match argcount {
-      1 => {
-        let v = args[0];
-        if rt.is_string(v) || rt.is_string_object(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_number(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push(BindingValue::Number(conversions::to_long(rt, host, v0, conversions::IntegerConversionAttrs::default())? as f64));
-            let result = host.call_operation(rt, Some(this), "Foo", "baz", 1, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        }
-
-      },
-      _ => Err(rt.throw_type_error(&format!("No matching overload for Foo.baz with {} arguments.\nCandidates:\n  - Foo.baz(DOMString)\n  - Foo.baz(long)", args.len()))),
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![
+        vec![ArgumentSchema {
+          name: "s",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        }],
+        vec![ArgumentSchema {
+          name: "x",
+          ty: IdlType::Numeric(NumericType::Long),
+          optional: false,
+          variadic: false,
+          default: None,
+        }],
+      ]
+    });
+    let overload_index: usize = {
+      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
+      let overloads = OVERLOADS.get_or_init(|| {
+        vec![
+          OverloadSig {
+            args: vec![OverloadArg {
+              ty: IdlType::String(StringType::DomString),
+              optionality: Optionality::Required,
+              default: None,
+            }],
+            decl_index: 0,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+          OverloadSig {
+            args: vec![OverloadArg {
+              ty: IdlType::Numeric(NumericType::Long),
+              optionality: Optionality::Required,
+              default: None,
+            }],
+            decl_index: 1,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+        ]
+      });
+      resolve_overload(rt, overloads, args)?.overload_index
+    };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "baz",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_do_thing<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    let argcount = std::cmp::min(args.len(), 2);
-    match argcount {
-      1 => {
-        {
-          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-          let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-          converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-          let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-          converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
-          let v = v1;
-          if false {
-            BindingValue::Undefined
-          } else if rt.is_null(v) || rt.is_undefined(v) {
-            BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-          } else if rt.is_object(v) {
-            BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-          } else if rt.is_boolean(v) {
-            BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-          } else {
-            BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-          }
-        }
-         });
-          let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
-          binding_value_to_js::<Host, R>(rt, result)
-        }
-      },
-      2 => {
-        let v = args[1];
-        if rt.is_undefined(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
-            let v = v1;
-            if false {
-              BindingValue::Undefined
-            } else if rt.is_null(v) || rt.is_undefined(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_object(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_boolean(v) {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            } else {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            }
-          }
-           });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_null(v) || rt.is_undefined(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
-            let v = v1;
-            if false {
-              BindingValue::Undefined
-            } else if rt.is_null(v) || rt.is_undefined(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_object(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_boolean(v) {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            } else {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            }
-          }
-           });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_string(v) || rt.is_string_object(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_object(v) && {
-          let iter = rt.symbol_iterator()?;
-          rt.get_method(host, v, iter)?.is_some()
-        } {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push({
-            if !rt.is_object(v1) {
-              return Err(rt.throw_type_error("expected object for sequence"));
-            }
-            rt.with_stack_roots(&[v1], |rt| {
-              let mut iterator_record = rt.get_iterator(host, v1)?;
-              rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
-                let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-                while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-                  if values.len() >= rt.limits().max_sequence_length {
-                    return Err(rt.throw_range_error("sequence exceeds maximum length"));
-                  }
-                  let converted = rt.with_stack_roots(&[next], |rt| Ok({ let s = rt.to_string(host, next)?; BindingValue::String(rt.js_string_to_rust_string(s)?) }))?;
-                  values.push(converted);
-                }
-                Ok(BindingValue::Sequence(values))
-              })
-            })?
-          });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 1, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_object(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
-            let v = v1;
-            if false {
-              BindingValue::Undefined
-            } else if rt.is_null(v) || rt.is_undefined(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_object(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_boolean(v) {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            } else {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            }
-          }
-           });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else if rt.is_boolean(v) {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v1)?) } } else { {
-            let v = v1;
-            if false {
-              BindingValue::Undefined
-            } else if rt.is_null(v) || rt.is_undefined(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_object(v) {
-              BindingValue::Union { member_type: "FooOptions".to_string(), value: Box::new(js_to_dict_foo_options::<Host, R>(rt, host, v)?) }
-            } else if rt.is_boolean(v) {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            } else {
-              BindingValue::Union { member_type: "boolean".to_string(), value: Box::new(BindingValue::Bool(rt.to_boolean(v)?)) }
-            }
-          }
-           });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        } else {
-          {
-            let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-            let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(host, v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-            let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
-            binding_value_to_js::<Host, R>(rt, result)
-          }
-        }
-
-      },
-      _ => Err(rt.throw_type_error(&format!("No matching overload for Foo.doThing with {} arguments.\nCandidates:\n  - Foo.doThing(DOMString, DOMString)\n  - Foo.doThing(DOMString, optional (FooOptions or boolean) = <default>)\n  - Foo.doThing(DOMString, sequence<DOMString>)", args.len()))),
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![
+        vec![
+          ArgumentSchema {
+            name: "name",
+            ty: IdlType::String(StringType::DomString),
+            optional: false,
+            variadic: false,
+            default: None,
+          },
+          ArgumentSchema {
+            name: "options",
+            ty: IdlType::Union(vec![
+              IdlType::Named(NamedType {
+                name: "FooOptions".to_string(),
+                kind: NamedTypeKind::Dictionary,
+              }),
+              IdlType::Boolean,
+            ]),
+            optional: true,
+            variadic: false,
+            default: Some(DefaultValue::EmptyDictionary),
+          },
+        ],
+        vec![
+          ArgumentSchema {
+            name: "name",
+            ty: IdlType::String(StringType::DomString),
+            optional: false,
+            variadic: false,
+            default: None,
+          },
+          ArgumentSchema {
+            name: "items",
+            ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
+            optional: false,
+            variadic: false,
+            default: None,
+          },
+        ],
+        vec![
+          ArgumentSchema {
+            name: "name",
+            ty: IdlType::String(StringType::DomString),
+            optional: false,
+            variadic: false,
+            default: None,
+          },
+          ArgumentSchema {
+            name: "item",
+            ty: IdlType::String(StringType::DomString),
+            optional: false,
+            variadic: false,
+            default: None,
+          },
+        ],
+      ]
+    });
+    let overload_index: usize = {
+      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
+      let overloads = OVERLOADS.get_or_init(|| {
+        vec![
+          OverloadSig {
+            args: vec![
+              OverloadArg {
+                ty: IdlType::String(StringType::DomString),
+                optionality: Optionality::Required,
+                default: None,
+              },
+              OverloadArg {
+                ty: IdlType::Union(vec![
+                  IdlType::Named(NamedType {
+                    name: "FooOptions".to_string(),
+                    kind: NamedTypeKind::Dictionary,
+                  }),
+                  IdlType::Boolean,
+                ]),
+                optionality: Optionality::Optional,
+                default: None,
+              },
+            ],
+            decl_index: 0,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+          OverloadSig {
+            args: vec![
+              OverloadArg {
+                ty: IdlType::String(StringType::DomString),
+                optionality: Optionality::Required,
+                default: None,
+              },
+              OverloadArg {
+                ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
+                optionality: Optionality::Required,
+                default: None,
+              },
+            ],
+            decl_index: 1,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+          OverloadSig {
+            args: vec![
+              OverloadArg {
+                ty: IdlType::String(StringType::DomString),
+                optionality: Optionality::Required,
+                default: None,
+              },
+              OverloadArg {
+                ty: IdlType::String(StringType::DomString),
+                optionality: Optionality::Required,
+                default: None,
+              },
+            ],
+            decl_index: 2,
+            distinguishing_arg_index_by_arg_count: None,
+          },
+        ]
+      });
+      resolve_overload(rt, overloads, args)?.overload_index
+    };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "doThing",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_entries<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Foo", "entries", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "entries",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_for_each<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(BindingValue::Object(v0));
-      let v1 = if args.len() > 1 {
-        args[1]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(if rt.is_undefined(v1) {
-        BindingValue::Undefined
-      } else {
-        BindingValue::Object(v1)
-      });
-      let result = host.call_operation(rt, Some(this), "Foo", "forEach", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "callback",
+          ty: IdlType::Any,
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "thisArg",
+          ty: IdlType::Any,
+          optional: true,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "forEach",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_keys<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Foo", "keys", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "keys",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_qux<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push(js_to_dict_foo_options::<Host, R>(rt, host, v0)?);
-      let result = host.call_operation(rt, Some(this), "Foo", "qux", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "options",
+        ty: IdlType::Named(NamedType {
+          name: "FooOptions".to_string(),
+          kind: NamedTypeKind::Dictionary,
+        }),
+        optional: true,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "qux",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_takes_frozen_array<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push({
-        if !rt.is_object(v0) {
-          return Err(rt.throw_type_error("expected object for FrozenArray"));
-        }
-        rt.with_stack_roots(&[v0], |rt| {
-          let mut iterator_record = rt.get_iterator(host, v0)?;
-          rt.with_stack_roots(
-            &[iterator_record.iterator, iterator_record.next_method],
-            |rt| {
-              let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-              while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-                if values.len() >= rt.limits().max_sequence_length {
-                  return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
-                }
-                let converted = rt.with_stack_roots(&[next], |rt| {
-                  Ok(BindingValue::Number(conversions::to_long(
-                    rt,
-                    host,
-                    next,
-                    conversions::IntegerConversionAttrs {
-                      clamp: false,
-                      enforce_range: true,
-                    },
-                  )? as f64))
-                })?;
-                values.push(converted);
-              }
-              Ok(BindingValue::FrozenArray(values))
-            },
-          )
-        })?
-      });
-      let result =
-        host.call_operation(rt, Some(this), "Foo", "takesFrozenArray", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "values",
+        ty: IdlType::Annotated {
+          annotations: vec![TypeAnnotation::EnforceRange],
+          inner: Box::new(IdlType::FrozenArray(Box::new(IdlType::Numeric(
+            NumericType::Long,
+          )))),
+        },
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "takesFrozenArray",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_takes_sequence<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        rt.js_undefined()
-      };
-      converted_args.push({
-        if !rt.is_object(v0) {
-          return Err(rt.throw_type_error("expected object for sequence"));
-        }
-        rt.with_stack_roots(&[v0], |rt| {
-          let mut iterator_record = rt.get_iterator(host, v0)?;
-          rt.with_stack_roots(
-            &[iterator_record.iterator, iterator_record.next_method],
-            |rt| {
-              let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-              while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
-                if values.len() >= rt.limits().max_sequence_length {
-                  return Err(rt.throw_range_error("sequence exceeds maximum length"));
-                }
-                let converted = rt.with_stack_roots(&[next], |rt| {
-                  Ok(BindingValue::Number(conversions::to_long(
-                    rt,
-                    host,
-                    next,
-                    conversions::IntegerConversionAttrs {
-                      clamp: true,
-                      enforce_range: false,
-                    },
-                  )? as f64))
-                })?;
-                values.push(converted);
-              }
-              Ok(BindingValue::Sequence(values))
-            },
-          )
-        })?
-      });
-      let result =
-        host.call_operation(rt, Some(this), "Foo", "takesSequence", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "values",
+        ty: IdlType::Annotated {
+          annotations: vec![TypeAnnotation::Clamp],
+          inner: Box::new(IdlType::Sequence(Box::new(IdlType::Numeric(
+            NumericType::Long,
+          )))),
+        },
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "takesSequence",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_values<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, Some(this), "Foo", "values", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Foo",
+      "values",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
   fn foo_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
-    {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let _ = host.call_operation(rt, Some(this), "Foo", "constructor", 0, converted_args)?;
-      Ok(rt.js_undefined())
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
     }
+    let result = host.call_operation(
+      rt,
+      None,
+      "Foo",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -645,9 +1187,17 @@ pub mod window {
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
-  pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
+  pub fn install_window_bindings<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+  ) -> Result<(), RtError<Host, R>>
   where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
     Host: WebHostBindings<R>,
   {
     let global = rt.global_object()?;
@@ -661,8 +1211,9 @@ pub mod window {
     rt.define_method(proto_bar, "keys", func)?;
     let func = rt.create_function("values", 0, bar_values::<Host, R>)?;
     rt.define_method(proto_bar, "values", func)?;
-    let iterator_key = rt.symbol_iterator()?;
-    rt.define_data_property(
+    let iterator_key = rt_symbol_iterator::<Host, R>(rt)?;
+    <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::define_data_property(
+      rt,
       proto_bar,
       iterator_key,
       func,
@@ -681,8 +1232,9 @@ pub mod window {
     rt.define_method(proto_foo, "doThing", func)?;
     let func = rt.create_function("entries", 0, foo_entries::<Host, R>)?;
     rt.define_method(proto_foo, "entries", func)?;
-    let iterator_key = rt.symbol_iterator()?;
-    rt.define_data_property(
+    let iterator_key = rt_symbol_iterator::<Host, R>(rt)?;
+    <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::define_data_property(
+      rt,
       proto_foo,
       iterator_key,
       func,

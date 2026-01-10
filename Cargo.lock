@@ -5006,6 +5006,14 @@ name = "webidl"
 version = "0.1.0"
 
 [[package]]
+name = "webidl-bindings-core"
+version = "0.1.0"
+dependencies = [
+ "webidl",
+ "webidl-ir",
+]
+
+[[package]]
 name = "webidl-ir"
 version = "0.1.0"
 
@@ -5015,6 +5023,7 @@ version = "0.1.0"
 dependencies = [
  "vm-js",
  "webidl",
+ "webidl-bindings-core",
  "webidl-ir",
  "webidl-vm-js",
 ]
@@ -5025,6 +5034,8 @@ version = "0.1.0"
 dependencies = [
  "vm-js",
  "webidl",
+ "webidl-bindings-core",
+ "webidl-ir",
 ]
 
 [[package]]

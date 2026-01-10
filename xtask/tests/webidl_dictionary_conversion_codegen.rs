@@ -61,51 +61,54 @@ fn dictionary_conversion_emits_required_defaults_and_inheritance_order() {
   )
   .unwrap();
 
-  // Required member missing error should mention dictionary + member.
+  // Dictionaries should be emitted into `type_context()` with inheritance and defaults.
+  let base_idx = generated
+    .find("name: \"BaseOrder\".to_string()")
+    .expect("BaseOrder dictionary schema should be emitted");
+  let derived_idx = generated
+    .find("name: \"DerivedOrder\".to_string()")
+    .expect("DerivedOrder dictionary schema should be emitted");
   assert!(
-    generated.contains("Missing required dictionary member TestDict.requiredBool"),
-    "expected required-member TypeError message to mention dict+member"
+    base_idx < derived_idx,
+    "expected BaseOrder dictionary schema to be emitted before DerivedOrder"
+  );
+  assert!(
+    generated.contains("inherits: Some(\"BaseOrder\".to_string())"),
+    "expected DerivedOrder to inherit BaseOrder"
   );
 
-  // Default value evaluation for booleans/numbers/strings/empty dict/empty sequence.
+  // Required member + default value shapes.
   assert!(
-    generated.contains("out_dict.insert(\"defaultBool\".to_string(), BindingValue::Bool(false));"),
-    "expected boolean default to be emitted"
-  );
-  assert!(
-    generated.contains("out_dict.insert(\"defaultLong\".to_string(), BindingValue::Number(42.0));"),
-    "expected numeric default to be emitted"
-  );
-  assert!(
-    generated.contains("BindingValue::String(\"hello\".to_string())"),
-    "expected string default to be emitted"
-  );
-  assert!(
-    generated.contains("out_dict.insert(\"defaultSeq\".to_string(), BindingValue::Sequence(Vec::new()));"),
-    "expected empty-sequence default to be emitted"
-  );
-  assert!(
-    generated.contains("map.insert(\"innerBool\".to_string(), BindingValue::Bool(true));"),
-    "expected empty-dictionary default to be evaluated (including inner defaults)"
+    generated.contains("name: \"requiredBool\".to_string()")
+      && generated.contains("required: true")
+      && generated.contains("default: None"),
+    "expected required dictionary member schema for TestDict.requiredBool"
   );
 
-  // Inherited dictionary member flattening order: base first, then derived (with lexicographic
-  // ordering per dictionary).
-  let start = generated
-    .find("fn js_to_dict_derived_order")
-    .expect("DerivedOrder dict converter should be generated");
-  let slice = &generated[start..];
-  let alpha = slice
-    .find("rt.property_key(\"alpha\")")
-    .expect("expected alpha member to be read");
-  let zeta = slice
-    .find("rt.property_key(\"zeta\")")
-    .expect("expected zeta member to be read");
-  let middle = slice
-    .find("rt.property_key(\"middle\")")
-    .expect("expected middle member to be read");
   assert!(
-    alpha < zeta && zeta < middle,
-    "expected flattened member order alpha -> zeta -> middle (base before derived)"
+    generated.contains("name: \"defaultBool\".to_string()")
+      && generated.contains("default: Some(DefaultValue::Boolean(false))"),
+    "expected boolean default to be emitted in schema"
+  );
+  assert!(
+    generated.contains("name: \"defaultLong\".to_string()")
+      && generated.contains("DefaultValue::Number(NumericLiteral::Integer(")
+      && generated.contains("\"42\".to_string()"),
+    "expected numeric default to be emitted in schema"
+  );
+  assert!(
+    generated.contains("name: \"defaultString\".to_string()")
+      && generated.contains("DefaultValue::String(\"hello\".to_string())"),
+    "expected string default to be emitted in schema"
+  );
+  assert!(
+    generated.contains("name: \"defaultDict\".to_string()")
+      && generated.contains("default: Some(DefaultValue::EmptyDictionary)"),
+    "expected empty-dictionary default to be emitted in schema"
+  );
+  assert!(
+    generated.contains("name: \"defaultSeq\".to_string()")
+      && generated.contains("default: Some(DefaultValue::EmptySequence)"),
+    "expected empty-sequence default to be emitted in schema"
   );
 }

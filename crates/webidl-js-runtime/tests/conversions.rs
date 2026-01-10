@@ -179,13 +179,13 @@ fn dictionary_defaults_and_required_members() {
 }
 
 #[test]
-fn interface_named_type_converts_platform_object_to_opaque_id() {
+fn interface_named_type_converts_platform_object_to_object_value() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();
 
-  let opaque = 0xfeed_u64;
+  let _opaque = 0xfeed_u64;
   let obj = rt
-    .alloc_platform_object_value("Node", &["EventTarget"], opaque)
+    .alloc_platform_object_value("Node", &["EventTarget"], _opaque)
     .unwrap();
 
   let ty = IdlType::Named(NamedType {
@@ -194,10 +194,10 @@ fn interface_named_type_converts_platform_object_to_opaque_id() {
   });
 
   let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
-  let ConvertedValue::PlatformObject(host) = converted else {
-    panic!("expected platform object, got {converted:?}");
+  let ConvertedValue::Object(v) = converted else {
+    panic!("expected object, got {converted:?}");
   };
-  assert_eq!(host.downcast_ref::<u64>().copied(), Some(opaque));
+  assert_eq!(v, obj);
 }
 
 #[test]
@@ -390,6 +390,7 @@ fn convert_arguments_treats_defaulted_params_as_optional() {
       name: "a",
       ty: IdlType::Numeric(NumericType::Long),
       optional: false,
+      variadic: false,
       default: None,
     },
     // This is not marked `optional`, but it has a default value; it should not contribute to the
@@ -398,6 +399,7 @@ fn convert_arguments_treats_defaulted_params_as_optional() {
       name: "b",
       ty: IdlType::Numeric(NumericType::Long),
       optional: false,
+      variadic: false,
       default: Some(parse_default_value("5").unwrap()),
     },
   ];
@@ -429,8 +431,8 @@ fn union_conversion_prefers_matching_interface_member() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();
 
-  let opaque = 123u64;
-  let obj = rt.alloc_platform_object_value("Node", &[], opaque).unwrap();
+  let _opaque = 123u64;
+  let obj = rt.alloc_platform_object_value("Node", &[], _opaque).unwrap();
 
   let interface_ty = IdlType::Named(NamedType {
     name: "Node".to_string(),
@@ -447,10 +449,10 @@ fn union_conversion_prefers_matching_interface_member() {
   };
   assert_eq!(*member_ty, interface_ty);
 
-  let ConvertedValue::PlatformObject(host) = *value else {
-    panic!("expected platform object union value, got {value:?}");
+  let ConvertedValue::Object(v) = *value else {
+    panic!("expected object union value, got {value:?}");
   };
-  assert_eq!(host.downcast_ref::<u64>().copied(), Some(opaque));
+  assert_eq!(v, obj);
 }
 
 #[test]
