@@ -2260,6 +2260,155 @@ fn response_redirect_native(
   Ok(Value::Object(resp_obj))
 }
 
+fn response_json_static_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let response_proto = response_proto_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
+
+  let data = args.get(0).copied().unwrap_or(Value::Undefined);
+  let init = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // WHATWG Fetch: `Response.json(data, init)`
+  // https://fetch.spec.whatwg.org/#dom-response-json
+  //
+  // Step 1: serialize a JavaScript value to JSON bytes.
+  // This relies on the realm's `JSON.stringify` implementation; if it returns `undefined`, the
+  // Infra algorithm specifies treating it as `"null"`.
+  let json_bytes = {
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let json = intr.json();
+
+    // Root `json` and `data` while allocating property keys and calling into JS: any allocation can
+    // trigger GC.
+    let mut call_scope = scope.reborrow();
+    call_scope.push_root(Value::Object(json))?;
+    call_scope.push_root(data)?;
+    let stringify_key = alloc_key(&mut call_scope, "stringify")?;
+    let stringify_fn = vm.get(&mut call_scope, json, stringify_key)?;
+
+    let result = vm.call_with_host_and_hooks(
+      &mut *host,
+      &mut call_scope,
+      host_hooks,
+      stringify_fn,
+      Value::Object(json),
+      &[data],
+    )?;
+
+    let serialized = match result {
+      Value::Undefined => "null".to_string(),
+      Value::String(s) => js_string_to_rust_string_limited(
+        call_scope.heap(),
+        s,
+        limits.max_response_body_bytes,
+        FETCH_BODY_TOO_LONG_ERROR,
+      )?,
+      _ => return Err(VmError::InvariantViolation("JSON.stringify returned non-string")),
+    };
+
+    serialized.into_bytes()
+  };
+
+  // Step 2: extract the bytes as a BodyInit. `Body::new_response` enforces response body limits.
+  let body = crate::resource::web_fetch::Body::new_response(json_bytes, &limits)
+    .map_err(|e| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, e))?;
+
+  // Step 3/4: create the response and initialize it with `init` and the `(body, "application/json")` type.
+  let mut status: u16 = 200;
+  let mut status_text = String::new();
+  let mut headers = CoreHeaders::new_with_guard_and_limits(HeadersGuard::Response, &limits);
+
+  if !matches!(init, Value::Undefined | Value::Null) {
+    let Value::Object(init_obj) = init else {
+      return Err(VmError::TypeError("Response init must be an object"));
+    };
+    let status_key = alloc_key(scope, "status")?;
+    let status_val = vm.get(scope, init_obj, status_key)?;
+    if !matches!(status_val, Value::Undefined) {
+      let n = scope.heap_mut().to_number(status_val)?;
+      status = number_to_u16_wrapping(n);
+    }
+    let status_text_key = alloc_key(scope, "statusText")?;
+    let st_val = vm.get(scope, init_obj, status_text_key)?;
+    if !matches!(st_val, Value::Undefined) {
+      status_text = to_rust_string_limited(
+        scope.heap_mut(),
+        st_val,
+        limits.max_url_bytes,
+        FETCH_STATUS_TEXT_TOO_LONG_ERROR,
+      )?;
+    }
+    let headers_key = alloc_key(scope, "headers")?;
+    let headers_val = vm.get(scope, init_obj, headers_key)?;
+    if !matches!(headers_val, Value::Undefined | Value::Null) {
+      fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut headers, headers_val)?;
+    }
+  }
+
+  if !(200..=599).contains(&status) {
+    return Err(throw_range_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Response status must be in range 200 to 599, inclusive",
+    ));
+  }
+  if !status_text.is_empty() && !is_reason_phrase_byte_string(&status_text) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Response statusText must be a valid reason phrase",
+    ));
+  }
+  if matches!(status, 101 | 103 | 204 | 205 | 304) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Response cannot have a body with a null body status",
+    ));
+  }
+
+  // `initialize a response` appends the content-type if not already present.
+  if !headers
+    .has("Content-Type")
+    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?
+  {
+    headers
+      .append("Content-Type", "application/json")
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+  }
+
+  let mut response = CoreResponse::new(status);
+  response.status_text = status_text;
+  response.headers = headers;
+  response.body = Some(body);
+
+  let response_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.responses.insert(id, response);
+    Ok(id)
+  })?;
+
+  let resp_obj = make_response_wrapper(scope, env_id, headers_proto, response_proto, response_id)?;
+  Ok(Value::Object(resp_obj))
+}
+
 fn response_text_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3778,6 +3927,23 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.heap_mut().object_set_prototype(redirect_fn, Some(func_proto))?;
     set_data_prop(&mut scope, ctor, "redirect", Value::Object(redirect_fn), true)?;
 
+    let json_id = vm.register_native_call(response_json_static_native)?;
+    let json_name = scope.alloc_string("json")?;
+    scope.push_root(Value::String(json_name))?;
+    let json_fn = scope.alloc_native_function_with_slots(
+      json_id,
+      None,
+      json_name,
+      2,
+      &[
+        Value::Number(env_id as f64),
+        Value::Object(headers_proto),
+        Value::Object(proto),
+      ],
+    )?;
+    scope.heap_mut().object_set_prototype(json_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, ctor, "json", Value::Object(json_fn), true)?;
+
     let key = alloc_key(&mut scope, "Response")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
     proto
@@ -4766,6 +4932,229 @@ mod tests {
     };
     let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
     assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_json_sets_body_and_default_content_type() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let json_key = alloc_key(&mut scope, "json")?;
+    let json_fn = vm.get(&mut scope, response_ctor, json_key)?;
+    let Value::Object(json_fn) = json_fn else {
+      return Err(VmError::InvariantViolation("Response.json missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(resp_obj) = response_json_static_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      json_fn,
+      Value::Object(response_ctor),
+      &[],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response.json must return an object"));
+    };
+
+    let (env_id, response_id) = response_info_from_this(&mut scope, Value::Object(resp_obj))?;
+    with_env_state(env_id, |state| {
+      let res = state
+        .responses
+        .get(&response_id)
+        .ok_or(VmError::InvariantViolation("Response state missing"))?;
+      assert_eq!(res.status, 200);
+      assert_eq!(
+        res.headers.get("content-type").unwrap().as_deref(),
+        Some("application/json")
+      );
+      let body = res.body.as_ref().ok_or(VmError::InvariantViolation(
+        "Response.json must create a response body",
+      ))?;
+      assert_eq!(body.as_bytes(), b"null");
+      Ok(())
+    })?;
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_json_preserves_existing_content_type() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let json_key = alloc_key(&mut scope, "json")?;
+    let json_fn = vm.get(&mut scope, response_ctor, json_key)?;
+    let Value::Object(json_fn) = json_fn else {
+      return Err(VmError::InvariantViolation("Response.json missing"));
+    };
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let headers_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(headers_obj))?;
+    let existing = scope.alloc_string("text/plain")?;
+    scope.push_root(Value::String(existing))?;
+    set_data_prop(
+      &mut scope,
+      headers_obj,
+      "Content-Type",
+      Value::String(existing),
+      true,
+    )?;
+    set_data_prop(&mut scope, init_obj, "headers", Value::Object(headers_obj), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(resp_obj) = response_json_static_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      json_fn,
+      Value::Object(response_ctor),
+      &[Value::Number(1.0), Value::Object(init_obj)],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response.json must return an object"));
+    };
+
+    let (env_id, response_id) = response_info_from_this(&mut scope, Value::Object(resp_obj))?;
+    with_env_state(env_id, |state| {
+      let res = state
+        .responses
+        .get(&response_id)
+        .ok_or(VmError::InvariantViolation("Response state missing"))?;
+      assert_eq!(
+        res.headers.get("content-type").unwrap().as_deref(),
+        Some("text/plain")
+      );
+      let body = res.body.as_ref().ok_or(VmError::InvariantViolation(
+        "Response.json must create a response body",
+      ))?;
+      assert_eq!(body.as_bytes(), b"1");
+      Ok(())
+    })?;
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_json_throws_on_bigint() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let json_key = alloc_key(&mut scope, "json")?;
+    let json_fn = vm.get(&mut scope, response_ctor, json_key)?;
+    let Value::Object(json_fn) = json_fn else {
+      return Err(VmError::InvariantViolation("Response.json missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_json_static_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      json_fn,
+      Value::Object(response_ctor),
+      &[Value::BigInt(vm_js::JsBigInt::from_u128(1))],
+    )
+    .expect_err("expected Response.json(BigInt) to throw");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+
+    let message_key = alloc_key(&mut scope, "message")?;
+    let message_val = vm.get(&mut scope, err_obj, message_key)?;
+    let Value::String(message_s) = message_val else {
+      panic!("expected TypeError.message to be a string, got {message_val:?}");
+    };
+    let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+    assert!(
+      message.contains("serialize a BigInt"),
+      "unexpected error message: {message:?}"
+    );
 
     drop(scope);
     drop(bindings);
