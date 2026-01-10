@@ -51,6 +51,17 @@ one-command driver:
 bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --overlay --write-snapshot --chrome
 ```
 
+If you don’t know which page to pick next, you can select a single fixture from the committed
+pageset progress artifacts (`progress/pages/*.json`):
+
+```bash
+# Pick the current single worst-accuracy ok page (requires `accuracy.diff_percent` in progress JSON).
+bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --overlay --write-snapshot --chrome
+
+# Or pick the first failing page (status != ok):
+bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --only-failures --overlay --write-snapshot --chrome
+```
+
 Note: `--chrome` spawns headless Chrome. Modern Chrome reserves a very large virtual address space up front (>64GiB), so if you see a failure containing `Oilpan: Out of memory`, bump the xtask address-space cap:
 
 ```bash
