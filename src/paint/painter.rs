@@ -8189,7 +8189,7 @@ impl Painter {
           }
         }
         for candidate in sources {
-          if self.paint_image_from_src(
+          if self.paint_image_from_src_reject_placeholder(
             &candidate,
             *crossorigin,
             *referrer_policy,
@@ -20829,6 +20829,60 @@ mod tests {
       FragmentContent::Replaced {
         replaced_type: ReplacedType::Image {
           src: String::new(),
+          alt: Some("alt".to_string()),
+          loading: Default::default(),
+          decoding: ImageDecodingAttribute::Auto,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+        box_id: None,
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 60.0, 30.0), vec![fragment]);
+    let tree = FragmentTree::new(root);
+    let pixmap = paint_tree(&tree, 60, 30, Rgba::WHITE).expect("paint alt");
+
+    let center = color_at(&pixmap, 25, 10);
+    assert_ne!(
+      center,
+      (200, 200, 200, 255),
+      "alt text should prevent placeholder rectangles"
+    );
+
+    let mut has_ink = false;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        if color_at(&pixmap, x, y) != (255, 255, 255, 255) {
+          has_ink = true;
+          break;
+        }
+      }
+      if has_ink {
+        break;
+      }
+    }
+    assert!(has_ink, "alt text should paint glyphs");
+  }
+
+  #[test]
+  fn paints_alt_text_when_image_is_placeholder() {
+    let mut style = ComputedStyle::default();
+    style.color = Rgba::BLACK;
+
+    // `about:blank` is treated as a non-fetchable URL and resolves to the internal transparent
+    // placeholder image. `<img>` elements should treat that placeholder as a missing image and
+    // render alt text rather than painting a transparent 1×1 pixel.
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Image {
+          src: "about:blank".to_string(),
           alt: Some("alt".to_string()),
           loading: Default::default(),
           decoding: ImageDecodingAttribute::Auto,
