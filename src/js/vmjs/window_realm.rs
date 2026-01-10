@@ -13031,6 +13031,8 @@ mod tests {
 
     let ua = realm.exec_script("navigator.userAgent")?;
     assert_eq!(get_string(realm.heap(), ua), FASTRENDER_USER_AGENT);
+    let platform = realm.exec_script("navigator.platform")?;
+    assert_eq!(get_string(realm.heap(), platform), "Win32");
 
     assert_eq!(
       realm.exec_script("matchMedia('(min-width: 700px)').matches")?,

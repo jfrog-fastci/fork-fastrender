@@ -92,6 +92,45 @@ html.js-enabled body { background: rgb(0, 255, 0); }
 }
 
 #[test]
+fn js_flag_exposes_browser_like_user_agent_for_site_sniffing() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+body { background: rgb(255, 0, 0); }
+html.desktop body { background: rgb(0, 255, 0); }
+</style>
+<script>
+  // Keep the JS expression surface minimal: the current JS engine does not yet implement
+  // RegExp literals, but many real pages gate "desktop" behaviour on UA sniffing.
+  //
+  // We treat a non-placeholder `navigator.userAgent` + a Win32 `navigator.platform` as the
+  // "desktop" signal.
+  if (navigator.platform === 'Win32' && navigator.userAgent !== 'Mozilla/5.0 (compatible; FastRender)') {
+    document.documentElement.className = 'desktop';
+  }
+</script>
+</head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(no_js_pixel, "baseline run should not execute scripts");
+  assert_green(
+    js_pixel,
+    "JS run should expose a desktop-like navigator.userAgent for UA sniffing",
+  );
+}
+
+#[test]
 fn js_flag_executes_external_script_src_and_mutates_dom() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let html_path = tmp.path().join("page.html");

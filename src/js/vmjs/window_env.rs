@@ -12,8 +12,10 @@ use webidl_js_runtime::JsRuntime as _;
 
 /// Stable `navigator.userAgent` string reported by FastRender.
 ///
-/// This string is intentionally deterministic and does not depend on the host OS.
-pub const FASTRENDER_USER_AGENT: &str = "Mozilla/5.0 (compatible; FastRender)";
+/// This string is intentionally deterministic and does not depend on the host OS. We keep it
+/// aligned with the default HTTP `User-Agent` header so that pages which sniff UA strings (common
+/// in scripts gating "unsupported browser" experiences) see a consistent environment.
+pub const FASTRENDER_USER_AGENT: &str = crate::resource::DEFAULT_USER_AGENT;
 
 /// Upper bound on the length of media query strings accepted by `matchMedia`.
 ///
@@ -40,7 +42,8 @@ impl WindowEnv {
     Self {
       media,
       user_agent: FASTRENDER_USER_AGENT,
-      platform: "FastRender",
+      // Match the UA string above (`DEFAULT_USER_AGENT` uses a Windows Chrome UA).
+      platform: "Win32",
       language: "en-US",
       languages: &["en-US", "en"],
     }
@@ -517,6 +520,9 @@ mod tests {
     let navigator = get_prop(&mut rt, window, "navigator");
     let ua = get_prop(&mut rt, navigator, "userAgent");
     assert_eq!(value_to_string(&rt, ua), FASTRENDER_USER_AGENT);
+
+    let platform = get_prop(&mut rt, navigator, "platform");
+    assert_eq!(value_to_string(&rt, platform), "Win32");
   }
 
   #[test]
