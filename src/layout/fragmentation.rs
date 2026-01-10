@@ -380,7 +380,7 @@ fn grid_item_parallel_flow_required_block_size(
     positions
       .retain(|p| *p > item_abs_start + BREAK_EPSILON && *p < item_abs_end - BREAK_EPSILON);
     if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
-      let shift = shifts.breaks.last().map(|(_, shift)| *shift).unwrap_or(0.0);
+      let shift = shifts.shift_for(item_abs_end);
       required = required.max(item_block_size + shift);
     }
   }
@@ -5638,6 +5638,173 @@ mod tests {
         .count(),
       1,
       "expected the forced break to align to the end edge of the first column track (flow pos 30), got {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn grid_parallel_flow_forced_break_blank_insertion_uses_absolute_fragmentainer_boundaries() {
+    let axes = default_axes();
+    let axis = axis_from_fragment_axes(axes);
+    let fragmentainer_size = 100.0;
+
+    let leading =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 30.0), 1, vec![]);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_before = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    let mut first = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 90.0),
+      10,
+      vec![],
+    );
+    first.style = Some(Arc::clone(&block_style));
+
+    let mut second = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 90.0, 100.0, 20.0),
+      11,
+      vec![],
+    );
+    second.style = Some(break_style);
+
+    let mut item = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 110.0),
+      20,
+      vec![first, second],
+    );
+    item.style = Some(block_style);
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 30.0, 100.0, 110.0),
+      vec![item],
+      grid_style,
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 20,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 140.0), vec![leading, grid]);
+
+    fn find_node<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_node(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    fn find_abs_start(
+      node: &FragmentNode,
+      id: usize,
+      abs_start: f32,
+      axis: &FragmentAxis,
+      parent_block_size: f32,
+    ) -> Option<f32> {
+      if node.box_id() == Some(id) {
+        return Some(abs_start);
+      }
+      for child in node.children.iter() {
+        let child_abs_start = axis.flow_range(abs_start, parent_block_size, &child.bounds).0;
+        if let Some(found) = find_abs_start(
+          child,
+          id,
+          child_abs_start,
+          axis,
+          axis.block_size(&child.bounds),
+        ) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    // Apply blank-insertion modelling for forced breaks inside parallel-flow grid items.
+    let mut shifted = root.clone();
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut shifted,
+      axes,
+      fragmentainer_size,
+      FragmentationContext::Page,
+    );
+
+    // The forced break occurs at absolute flow position 120 (= 30 offset + 90 in-flow). With a 100px
+    // fragmentainer size, the continuation must start at the next *global* boundary (200), not at
+    // 30+100=130.
+    let second_abs_start = find_abs_start(
+      &shifted,
+      11,
+      0.0,
+      &axis,
+      axis.block_size(&shifted.bounds),
+    )
+    .expect("expected to find forced-break child in fragment tree");
+    assert!(
+      (second_abs_start - 200.0).abs() < BREAK_EPSILON,
+      "expected forced-break continuation to start at the next global page boundary (200), got {second_abs_start}"
+    );
+
+    // The grid item must report its required block size using the same absolute-alignment logic so
+    // descendants can be clipped onto subsequent fragmentainers.
+    let item_node = find_node(&shifted, 20).expect("expected to find grid item");
+    let item_abs_start = find_abs_start(
+      &shifted,
+      20,
+      0.0,
+      &axis,
+      axis.block_size(&shifted.bounds),
+    )
+    .expect("expected to find grid item abs start");
+    let required = grid_item_parallel_flow_required_block_size(
+      item_node,
+      axes,
+      fragmentainer_size,
+      item_abs_start,
+      FragmentationContext::Page,
+    );
+    assert!(
+      (required - 190.0).abs() < BREAK_EPSILON,
+      "expected 80px of blank insertion to reach the 200px boundary (required=190), got {required}"
+    );
+
+    // The overall pagination extent should now span three fragmentainers: [0,100], [100,200], and
+    // [200,220].
+    let mut analyzer = FragmentationAnalyzer::new(
+      &shifted,
+      FragmentationContext::Page,
+      axes,
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .expect("expected boundaries");
+    assert_eq!(boundaries.len().saturating_sub(1), 3, "boundaries={boundaries:?}");
+    assert!(
+      boundaries
+        .iter()
+        .any(|b| (*b - 200.0).abs() < BREAK_EPSILON),
+      "expected a page boundary at 200 after blank insertion, got {boundaries:?}"
     );
   }
 
