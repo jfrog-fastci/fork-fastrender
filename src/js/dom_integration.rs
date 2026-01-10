@@ -199,6 +199,12 @@ where
       return (None, false);
     }
 
+    // `integrity` attribute clamping: if present but too large, the metadata is invalid and the
+    // script must not execute.
+    if spec.integrity_attr_present && spec.integrity.is_none() {
+      return (None, false);
+    }
+
     // Only mark "already started" for script types this helper can execute. Avoid marking
     // unsupported script types so later mutations can still produce a runnable classic script.
     let should_mark_started = match spec.script_type {
@@ -820,6 +826,36 @@ mod tests {
       host.events,
       vec![ScriptElementEvent::Error],
       "expected an error event task for empty src"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_oversized_integrity_attribute_does_not_execute_and_is_not_started() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    dom
+      .set_attribute(script, "integrity", &integrity)
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("RUN");
+    dom.append_child(script, text).expect("append_child");
+    dom.append_child(dom.root(), script).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.executed.is_empty(),
+      "expected scripts with invalid integrity metadata not to execute"
+    );
+    assert!(
+      !host.dom.node(script).script_already_started,
+      "expected invalid integrity metadata not to mark scripts as already started"
     );
     Ok(())
   }

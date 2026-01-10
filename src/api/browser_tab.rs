@@ -1825,16 +1825,20 @@ impl BrowserTabHost {
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
-    // Dynamic scripts are also marked "already started" at preparation time (DOM insertion steps /
-    // attribute mutation steps) so subsequent insertion attempts short-circuit.
-    self.mutate_dom(|dom| {
-      dom.node_mut(node_id).script_already_started = true;
-      ((), false)
-    });
-
+    let mut spec = spec;
     let spec_for_table = spec.clone();
+    let integrity_invalid =
+      spec_for_table.integrity_attr_present && spec_for_table.integrity.is_none();
     let failed_to_run = (!spec_for_table.src_attr_present && spec_for_table.inline_text.is_empty())
-      || spec_for_table.script_type == ScriptType::Unknown;
+      || spec_for_table.script_type == ScriptType::Unknown
+      || (integrity_invalid && !spec_for_table.src_attr_present);
+
+    // When integrity metadata is invalid due to clamping, the script must not execute. Inline
+    // scripts do not have a fetch pipeline to surface errors, so keep them eligible for later
+    // mutation by forcing the scheduler to see an empty inline script (yielding no actions).
+    if integrity_invalid && !spec_for_table.src_attr_present {
+      spec.inline_text.clear();
+    }
 
     if matches!(
       spec_for_table.script_type,
@@ -1859,6 +1863,12 @@ impl BrowserTabHost {
       // does not run. Keep it eligible for later mutations (src/children changed steps).
       return Ok(discovered.id);
     }
+    // Dynamic scripts are marked "already started" at preparation time (DOM insertion steps /
+    // attribute mutation steps) so subsequent insertion attempts short-circuit.
+    self.mutate_dom(|dom| {
+      dom.node_mut(node_id).script_already_started = true;
+      ((), false)
+    });
     self.scripts.insert(
       discovered.id,
       ScriptEntry {

@@ -493,6 +493,14 @@ pub(crate) fn prepare_script_element_dom2(
     return false;
   }
 
+  // `integrity` attribute clamping: if present but too large, the metadata is invalid and the
+  // script must not execute.
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    // For external scripts, still allow the scheduler to see the element so it can dispatch `error`
+    // events and suppress inline fallback (HTML: `src` presence blocks inline execution).
+    return spec.src_attr_present;
+  }
+
   // HTML: If there is no `src` attribute and the source text is empty, "prepare a script" returns
   // early (after clearing parser-document/force-async as above).
   spec.src_attr_present || !spec.inline_text.is_empty()

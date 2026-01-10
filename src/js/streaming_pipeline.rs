@@ -1712,6 +1712,34 @@ mod tests {
   }
 
   #[test]
+  fn oversized_integrity_attribute_parser_inserted_script_is_not_started_and_is_mutatable_later(
+  ) -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    let html = format!(r#"<script id=s integrity="{integrity}">RUN</script>"#);
+    p.feed_str(&html)?;
+    p.finish_input()?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.log.is_empty(),
+      "scripts with invalid integrity metadata must not execute"
+    );
+    let doc = p.finished_document().expect("expected parsing to finish");
+    let script = doc.get_element_by_id("s").expect("expected #s script");
+    let node = doc.node(script);
+    assert!(!node.script_already_started);
+    assert!(!node.script_parser_document);
+    assert!(
+      node.script_force_async,
+      "expected parser-inserted scripts that do not execute to become async-by-default after mutation"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn empty_parser_inserted_script_with_async_attr_clears_parser_document_but_keeps_force_async_false(
   ) -> Result<()> {
     let mut host = Host::default();
