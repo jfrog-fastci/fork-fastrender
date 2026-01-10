@@ -245,24 +245,42 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+pub(crate) const MAX_SCRIPT_ATTRIBUTE_VALUE_BYTES: usize = 8 * 1024;
+
 /// Parse an HTML "CORS settings attribute" value.
 ///
 /// This is used for `<script crossorigin>`, `<img crossorigin>`, etc.
 ///
-/// Returns `None` when the attribute is missing (no CORS).
-///
-/// Per HTML, the attribute's default/empty/invalid keywords map to the `"anonymous"` state.
+/// Recognizes `anonymous` and `use-credentials` case-insensitively after trimming ASCII whitespace.
+/// Returns `None` when the attribute is missing or has an invalid value.
 pub(crate) fn parse_crossorigin_attr(value: Option<&str>) -> Option<crate::resource::CorsMode> {
-  let Some(value) = value else {
-    return None;
-  };
+  value.and_then(parse_cors_settings_attribute)
+}
+
+pub(crate) fn parse_cors_settings_attribute(
+  value: &str,
+) -> Option<crate::resource::CorsMode> {
   let value = trim_ascii_whitespace(value);
-  if value.eq_ignore_ascii_case("use-credentials") {
-    Some(crate::resource::CorsMode::UseCredentials)
-  } else {
-    // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
-    Some(crate::resource::CorsMode::Anonymous)
+  if value.is_empty() || value.eq_ignore_ascii_case("anonymous") {
+    return Some(crate::resource::CorsMode::Anonymous);
   }
+  if value.eq_ignore_ascii_case("use-credentials") {
+    return Some(crate::resource::CorsMode::UseCredentials);
+  }
+  None
+}
+
+pub(crate) fn parse_referrer_policy_attribute(
+  value: &str,
+) -> Option<crate::resource::ReferrerPolicy> {
+  crate::resource::ReferrerPolicy::parse_value_list(value)
+}
+
+pub(crate) fn take_bounded_script_attribute_value(value: &str) -> Option<String> {
+  if value.len() > MAX_SCRIPT_ATTRIBUTE_VALUE_BYTES {
+    return None;
+  }
+  Some(value.to_string())
 }
 
 /// A parsed `<script>` element, normalized into a scheduler-friendly record.
@@ -315,6 +333,8 @@ pub struct ScriptElementSpec {
   ///
   /// When `None`, the document's default referrer policy applies.
   pub referrer_policy: Option<crate::resource::ReferrerPolicy>,
+  /// Raw `fetchpriority` attribute value (bounded).
+  pub fetch_priority: Option<String>,
   /// Whether the script was inserted by the HTML parser.
   ///
   /// This affects scheduling (`defer` only applies to parser-inserted scripts; parser-inserted

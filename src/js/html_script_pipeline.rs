@@ -856,9 +856,7 @@ mod tests {
   fn importmap_executes_synchronously_at_boundary_and_does_not_block_parsing() -> Result<()> {
     let mut host = Host::default();
     let mut p = HtmlScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
-    p.feed_str(
-      r#"<!doctype html><script type=importmap>{"imports":{}}</script><script>RUN</script>"#,
-    )?;
+    p.feed_str(r#"<!doctype html><script type=importmap>{"imports":{}}</script><script>RUN</script>"#)?;
     p.finish_input()?;
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(

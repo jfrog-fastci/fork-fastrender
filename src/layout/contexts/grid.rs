@@ -8010,7 +8010,7 @@ impl GridFormattingContext {
           fc.layout(&relayout_child, &measure_constraints)?
         };
         input.intrinsic_size.height = (child_fragment.bounds.size.height - actual_vertical).max(0.0);
-        (layout_positioned_style, result) =
+          (layout_positioned_style, result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,

@@ -24,52 +24,37 @@ pub fn build_parser_inserted_script_element_spec_dom2(
 ) -> ScriptElementSpec {
   let base_url = base.current_base_url();
 
+  let ignored = || ScriptElementSpec {
+    base_url: base_url.clone(),
+    src: None,
+    src_attr_present: false,
+    inline_text: String::new(),
+    async_attr: false,
+    force_async: false,
+    defer_attr: false,
+    nomodule_attr: false,
+    crossorigin: None,
+    integrity_attr_present: false,
+    integrity: None,
+    referrer_policy: None,
+    fetch_priority: None,
+    parser_inserted: true,
+    node_id: Some(script),
+    script_type: ScriptType::Unknown,
+  };
+
   let NodeKind::Element {
     tag_name,
     namespace,
     ..
   } = &doc.node(script).kind
   else {
-    return ScriptElementSpec {
-      base_url,
-      src: None,
-      src_attr_present: false,
-      inline_text: String::new(),
-      async_attr: false,
-      force_async: false,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      parser_inserted: true,
-      node_id: Some(script),
-      script_type: ScriptType::Unknown,
-    };
+    return ignored();
   };
 
   // Only scripts in the HTML namespace participate in the HTML script processing model.
-  if !tag_name.eq_ignore_ascii_case("script")
-    || !(namespace.is_empty() || namespace == HTML_NAMESPACE)
-  {
-    return ScriptElementSpec {
-      base_url,
-      src: None,
-      src_attr_present: false,
-      inline_text: String::new(),
-      async_attr: false,
-      force_async: false,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      parser_inserted: true,
-      node_id: Some(script),
-      script_type: ScriptType::Unknown,
-    };
+  if !tag_name.eq_ignore_ascii_case("script") || !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+    return ignored();
   }
 
   // HTML: "prepare a script" early-outs when the script element is not connected.
@@ -78,23 +63,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   // `<template>` element as `inert_subtree`. Scripts inside such subtrees must be ignored: they
   // must not be fetched or executed by the HTML script processing model.
   if !doc.is_connected_for_scripting(script) {
-    return ScriptElementSpec {
-      base_url,
-      src: None,
-      src_attr_present: false,
-      inline_text: String::new(),
-      async_attr: false,
-      force_async: false,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      parser_inserted: true,
-      node_id: Some(script),
-      script_type: ScriptType::Unknown,
-    };
+    return ignored();
   }
 
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
@@ -104,7 +73,12 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     .get_attribute(script, "referrerpolicy")
     .ok()
     .flatten()
-    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+    .and_then(crate::resource::ReferrerPolicy::parse_value_list);
+  let fetch_priority = doc
+    .get_attribute(script, "fetchpriority")
+    .ok()
+    .flatten()
+    .and_then(super::take_bounded_script_attribute_value);
 
   let raw_src = doc.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
@@ -134,6 +108,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     integrity_attr_present,
     integrity,
     referrer_policy,
+    fetch_priority,
     parser_inserted: true,
     node_id: Some(script),
     script_type: determine_script_type_dom2(doc, script),
@@ -148,7 +123,7 @@ mod tests {
   use crate::html::base_url_tracker::BaseUrlTracker;
   use crate::js::streaming::build_parser_inserted_script_element_spec;
   use crate::js::ScriptType;
-  use crate::resource::CorsMode;
+  use crate::resource::{CorsMode, ReferrerPolicy};
   use selectors::context::QuirksMode;
 
   #[test]
@@ -286,11 +261,86 @@ mod tests {
 
     // U+00A0 NBSP is *not* ASCII whitespace and must not be stripped.
     let nbsp_wrapped = format!("\u{00A0}use-credentials\u{00A0}");
-    assert_eq!(crossorigin_for_attr(&nbsp_wrapped), Some(CorsMode::Anonymous));
+    assert_eq!(crossorigin_for_attr(&nbsp_wrapped), None);
 
     // U+000B VT is also not included in HTML's ASCII whitespace set.
     let vt_wrapped = format!("\u{000B}use-credentials\u{000B}");
-    assert_eq!(crossorigin_for_attr(&vt_wrapped), Some(CorsMode::Anonymous));
+    assert_eq!(crossorigin_for_attr(&vt_wrapped), None);
+  }
+
+  fn spec_for_attrs(attrs: &[(&str, &str)]) -> crate::js::ScriptElementSpec {
+    let mut doc = Dom2Document::new(QuirksMode::NoQuirks);
+    let script = doc.create_element("script", "");
+    for (name, value) in attrs {
+      doc
+        .set_attribute(script, name, value)
+        .expect("set_attribute should succeed");
+    }
+    doc
+      .append_child(doc.root(), script)
+      .expect("append_child should succeed");
+    let base = BaseUrlTracker::new(Some("https://example.com/doc.html"));
+    build_parser_inserted_script_element_spec_dom2(&doc, script, &base)
+  }
+
+  #[test]
+  fn dom2_builder_parses_nomodule_as_presence_boolean_attribute() {
+    assert!(!spec_for_attrs(&[]).nomodule_attr);
+    assert!(spec_for_attrs(&[("nomodule", "0")]).nomodule_attr);
+  }
+
+  #[test]
+  fn dom2_builder_parses_crossorigin_attribute_state() {
+    assert_eq!(
+      spec_for_attrs(&[("crossorigin", "anonymous")]).crossorigin,
+      Some(CorsMode::Anonymous)
+    );
+    assert_eq!(
+      spec_for_attrs(&[("crossorigin", "USE-CREDENTIALS")]).crossorigin,
+      Some(CorsMode::UseCredentials)
+    );
+    assert_eq!(
+      spec_for_attrs(&[("crossorigin", "invalid")]).crossorigin,
+      None
+    );
+  }
+
+  #[test]
+  fn dom2_builder_parses_referrerpolicy_using_value_list_rules() {
+    assert_eq!(
+      spec_for_attrs(&[("referrerpolicy", "unknown, origin, no-referrer")]).referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(
+      spec_for_attrs(&[("referrerpolicy", "invalid-policy")]).referrer_policy,
+      None
+    );
+  }
+
+  #[test]
+  fn dom2_builder_copies_integrity_and_fetchpriority_with_bounds() {
+    let spec = spec_for_attrs(&[("integrity", "sha256-abc"), ("fetchpriority", "high")]);
+    assert!(spec.integrity_attr_present);
+    assert_eq!(spec.integrity.as_deref(), Some("sha256-abc"));
+    assert_eq!(spec.fetch_priority.as_deref(), Some("high"));
+
+    let too_long_integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    let spec = spec_for_attrs(&[("integrity", too_long_integrity.as_str())]);
+    assert!(
+      spec.integrity_attr_present,
+      "expected integrity_attr_present=true when the attribute is present"
+    );
+    assert!(
+      spec.integrity.is_none(),
+      "expected overly large integrity attribute to be treated as invalid"
+    );
+
+    let too_long_fetch_priority = "a".repeat(crate::js::MAX_SCRIPT_ATTRIBUTE_VALUE_BYTES + 1);
+    let spec = spec_for_attrs(&[("fetchpriority", too_long_fetch_priority.as_str())]);
+    assert!(
+      spec.fetch_priority.is_none(),
+      "expected overly large fetchpriority attribute to be dropped"
+    );
   }
 
   fn find_first_script_dom2(doc: &Dom2Document) -> NodeId {

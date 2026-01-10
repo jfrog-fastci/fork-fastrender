@@ -73,7 +73,10 @@ pub fn extract_script_elements(
         let nomodule_attr = node.get_attribute_ref("nomodule").is_some();
         let referrer_policy = node
           .get_attribute_ref("referrerpolicy")
-          .and_then(crate::resource::ReferrerPolicy::from_attribute);
+          .and_then(crate::resource::ReferrerPolicy::parse_value_list);
+        let fetch_priority = node
+          .get_attribute_ref("fetchpriority")
+          .and_then(super::take_bounded_script_attribute_value);
 
         let raw_src = node.get_attribute_ref("src");
         let src_attr_present = raw_src.is_some();
@@ -102,6 +105,7 @@ pub fn extract_script_elements(
           integrity_attr_present,
           integrity,
           referrer_policy,
+          fetch_priority,
           // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and
           // enabling scheduler tests). This is not reliable for dynamically inserted scripts.
           parser_inserted: true,

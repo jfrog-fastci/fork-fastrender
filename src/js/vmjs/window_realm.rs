@@ -9895,8 +9895,8 @@ fn prepare_dynamic_script_element(
 
     if scheduled {
       // Mark started only if we successfully queued the script task.
-      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-      // lifetime of the associated host document.
+      // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only used
+      // within this function call.
       let dom = unsafe { dom_ptr.as_mut() };
       let _ = dom.set_script_already_started(script, true);
     }
@@ -9967,7 +9967,12 @@ fn build_dynamic_script_spec(
     .get_attribute(script, "referrerpolicy")
     .ok()
     .flatten()
-    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+    .and_then(crate::resource::ReferrerPolicy::parse_value_list);
+  let fetch_priority = dom
+    .get_attribute(script, "fetchpriority")
+    .ok()
+    .flatten()
+    .and_then(super::take_bounded_script_attribute_value);
 
   let base_for_resolve = base_url.as_deref();
   let raw_src = dom.get_attribute(script, "src").ok().flatten();
@@ -9994,6 +9999,7 @@ fn build_dynamic_script_spec(
     integrity_attr_present,
     integrity,
     referrer_policy,
+    fetch_priority,
     parser_inserted: false,
     node_id: Some(script),
     script_type: super::determine_script_type_dom2(dom, script),

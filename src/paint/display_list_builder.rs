@@ -19715,25 +19715,18 @@ mod tests {
 
   #[test]
   fn background_tiling_aborts_on_deadline() {
-    struct TestRenderDelayGuard;
-
-    impl TestRenderDelayGuard {
-      fn set(ms: Option<u64>) -> Self {
-        crate::render_control::set_test_render_delay_ms(ms);
-        Self
-      }
-    }
-
-    impl Drop for TestRenderDelayGuard {
-      fn drop(&mut self) {
-        crate::render_control::set_test_render_delay_ms(None);
-      }
-    }
-
-    // Make each deadline check take 10ms so we can deterministically force the render deadline to
+    // Make each deadline check take ~10ms so we can deterministically force the render deadline to
     // expire mid-way through background tiling (as opposed to at fragment traversal boundaries).
-    let _delay_guard = TestRenderDelayGuard::set(Some(10));
-    let deadline = RenderDeadline::new(Some(Duration::from_millis(35)), None);
+    //
+    // Note: avoid using the global `set_test_render_delay_ms` override here. That value is
+    // process-wide and can interfere with unrelated deadline tests when Rust runs unit tests in
+    // parallel.
+    let delay = Duration::from_millis(10);
+    let cancel_callback = Arc::new(move || {
+      std::thread::sleep(delay);
+      false
+    });
+    let deadline = RenderDeadline::new(Some(Duration::from_millis(35)), Some(cancel_callback));
 
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;

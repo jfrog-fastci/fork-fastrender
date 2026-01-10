@@ -60,7 +60,12 @@ pub fn build_dynamic_script_element_spec(
     .get_attribute(script, "referrerpolicy")
     .ok()
     .flatten()
-    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+    .and_then(super::parse_referrer_policy_attribute);
+  let fetch_priority = dom
+    .get_attribute(script, "fetchpriority")
+    .ok()
+    .flatten()
+    .and_then(super::take_bounded_script_attribute_value);
 
   let raw_src = dom.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
@@ -91,6 +96,7 @@ pub fn build_dynamic_script_element_spec(
     integrity_attr_present,
     integrity,
     referrer_policy,
+    fetch_priority,
     parser_inserted: false,
     node_id: Some(script),
     script_type: determine_script_type_dom2(dom, script),
@@ -1115,7 +1121,7 @@ mod tests {
       .expect("set_attribute should succeed");
 
     let spec = build_dynamic_script_element_spec(&dom, script, None);
-    assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
+    assert_eq!(spec.crossorigin, None);
     Ok(())
   }
 
@@ -1131,7 +1137,7 @@ mod tests {
       .expect("set_attribute should succeed");
 
     let spec = build_dynamic_script_element_spec(&dom, script, None);
-    assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
+    assert_eq!(spec.crossorigin, None);
     Ok(())
   }
 

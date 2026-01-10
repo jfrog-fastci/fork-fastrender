@@ -1414,6 +1414,7 @@ mod tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,

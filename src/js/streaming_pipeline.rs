@@ -286,6 +286,7 @@ impl ClassicScriptPipelineState {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -309,6 +310,7 @@ impl ClassicScriptPipelineState {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -330,6 +332,7 @@ impl ClassicScriptPipelineState {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -343,7 +346,12 @@ impl ClassicScriptPipelineState {
       .get_attribute(script_node_id, "referrerpolicy")
       .ok()
       .flatten()
-      .and_then(crate::resource::ReferrerPolicy::from_attribute);
+      .and_then(crate::resource::ReferrerPolicy::parse_value_list);
+    let fetch_priority = dom
+      .get_attribute(script_node_id, "fetchpriority")
+      .ok()
+      .flatten()
+      .and_then(super::take_bounded_script_attribute_value);
     let raw_src = dom
       .get_attribute(script_node_id, "src")
       .ok()
@@ -387,6 +395,7 @@ impl ClassicScriptPipelineState {
       integrity_attr_present,
       integrity,
       referrer_policy,
+      fetch_priority,
       parser_inserted: true,
       node_id: Some(script_node_id),
       script_type,

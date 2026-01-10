@@ -28,7 +28,10 @@ pub fn build_parser_inserted_script_element_spec(
   let nomodule_attr = script.get_attribute_ref("nomodule").is_some();
   let referrer_policy = script
     .get_attribute_ref("referrerpolicy")
-    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+    .and_then(crate::resource::ReferrerPolicy::parse_value_list);
+  let fetch_priority = script
+    .get_attribute_ref("fetchpriority")
+    .and_then(super::take_bounded_script_attribute_value);
 
   let raw_src = script.get_attribute_ref("src");
   let src_attr_present = raw_src.is_some();
@@ -57,6 +60,7 @@ pub fn build_parser_inserted_script_element_spec(
     integrity_attr_present,
     integrity,
     referrer_policy,
+    fetch_priority,
     parser_inserted: true,
     node_id: None,
     script_type: determine_script_type(script),

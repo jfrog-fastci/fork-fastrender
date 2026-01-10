@@ -1456,12 +1456,20 @@ impl BrowserTabHost {
           );
 
           if tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace) {
+            // Reuse the shared dom2 parse-time `<script>` normalization logic so best-effort DOM
+            // scans observe the same attribute parsing rules as the streaming parser.
             let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
               dom,
               id,
               &base_url_tracker,
             );
             out.push((id, spec));
+            // Best-effort script discovery runs over a fully-built DOM (unlike the streaming parser
+            // which discovers scripts incrementally). While the first discovered scripts execute,
+            // internal DOM mutations (e.g. the "already started" flag) can trigger dynamic script
+            // discovery. Pre-mark discovered nodes so dynamic discovery doesn't mistakenly schedule
+            // later static `<script>` elements as "dynamic" and fetch them twice.
+            self.scheduled_script_nodes.insert(id);
           }
 
           let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
@@ -1671,6 +1679,16 @@ impl BrowserTabHost {
       )
     });
     if !should_run {
+      // `discover_scripts_best_effort` pre-marks all discovered `<script>` elements as scheduled to
+      // prevent dynamic-script discovery from accidentally re-scheduling later static scripts while
+      // earlier scripts execute.
+      //
+      // When "prepare a script" returns early (e.g. empty inline script or unknown type), HTML does
+      // *not* mark the element as started. Instead, the element's internal slots are adjusted so
+      // later mutations (setting `src`, changing `type`, appending text children) can make it
+      // runnable again. Ensure such scripts remain eligible for dynamic discovery by removing the
+      // pre-mark.
+      self.scheduled_script_nodes.remove(&node_id);
       let discovered =
         self
           .scheduler
@@ -4717,6 +4735,7 @@ mod tests {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: false,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -5193,10 +5212,13 @@ mod tests {
           "module script src attribute was present but empty/invalid".to_string(),
         ));
       };
-      let cors_mode = spec.crossorigin.unwrap_or(crate::resource::CorsMode::Anonymous);
+      let credentials_mode = spec
+        .crossorigin
+        .unwrap_or(crate::resource::CorsMode::Anonymous)
+        .credentials_mode();
       let req = FetchRequest::new(url, FetchDestination::ScriptCors)
-        .with_credentials_mode(cors_mode.credentials_mode());
-      let _ = fetcher.fetch_with_request(req)?;
+        .with_credentials_mode(credentials_mode);
+      fetcher.fetch_with_request(req)?;
       Ok(())
     }
   }
@@ -7222,6 +7244,7 @@ mod tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       force_async: false,
       node_id: None,
@@ -9000,6 +9023,9 @@ html, body { margin: 0; padding: 0; }
       pending: None,
     };
 
+    // Use a relatively generous timeout so this deadline-based test remains stable even under
+    // parallel `cargo test` load. We'll force the deadline to elapse deterministically before
+    // committing the navigation below.
     let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
       &html,
       document_url,

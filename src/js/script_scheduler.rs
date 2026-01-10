@@ -216,6 +216,18 @@ where
     match spec.script_type {
       ScriptType::Classic => {}
       ScriptType::Module => {
+        // Even when module execution is disabled, HTML still requires that an empty/invalid `src`
+        // attribute queues an `error` event task (and the element must not fall back to inline
+        // execution).
+        //
+        // Keep this check outside the `supports_module_scripts` gate so hosts that ignore module
+        // scripts still get the correct error behavior.
+        if spec.src_attr_present && spec.src.as_deref().filter(|s| !s.is_empty()).is_none() {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+          return Ok(());
+        }
         if !self.options.supports_module_scripts {
           // Even when module scripts are disabled, keep HTML's "src present but empty/invalid"
           // behavior: queue an error event task and suppress inline fallback.
@@ -1671,6 +1683,7 @@ mod tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1691,6 +1704,7 @@ mod tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1715,6 +1729,7 @@ mod tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       force_async,
       node_id: None,
@@ -1902,6 +1917,7 @@ mod tests {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: false,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -2023,6 +2039,7 @@ mod tests {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: true,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -2077,6 +2094,7 @@ mod tests {
         integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
+        fetch_priority: None,
         parser_inserted: true,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -2403,6 +2421,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -2423,6 +2442,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -2448,6 +2468,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -2468,6 +2489,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -2479,7 +2501,6 @@ mod state_machine_tests {
     spec.script_type = ScriptType::Module;
     spec
   }
-
   fn module_external(src: &str, async_attr: bool) -> ScriptElementSpec {
     let mut spec = classic_external(src, async_attr, /* defer_attr */ false);
     spec.script_type = ScriptType::Module;
@@ -2499,6 +2520,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       force_async,
       node_id: None,
@@ -2520,6 +2542,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: false,
       node_id: None,
       script_type: ScriptType::Module,
@@ -2986,6 +3009,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -3130,6 +3154,7 @@ mod state_machine_tests {
       integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
+      fetch_priority: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Module,

@@ -10227,6 +10227,32 @@ impl Clone for ImageCache {
 
     let doc_url = "https://doc.test/";
     let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    // `Access-Control-Allow-Origin` is compared byte-for-byte against the serialized request origin
+    // used in the `Origin` header. That serialization omits default ports (e.g. `:443` for HTTPS),
+    // so avoid using `DocumentOrigin`'s Display impl here (which includes the effective port).
+    let doc_origin_str = {
+      let scheme = doc_origin.scheme().to_ascii_lowercase();
+      match doc_origin.host() {
+        Some(host) => {
+          let host = host.to_ascii_lowercase();
+          let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+          } else {
+            host
+          };
+          let port = match (scheme.as_str(), doc_origin.port()) {
+            ("http", Some(80)) | ("https", Some(443)) => None,
+            (_, Some(port)) => Some(port),
+            _ => None,
+          };
+          match port {
+            Some(port) => format!("{scheme}://{host}:{port}"),
+            None => format!("{scheme}://{host}"),
+          }
+        }
+        None => "null".to_string(),
+      }
+    };
 
     let mut pixels = RgbaImage::new(1, 1);
     pixels
@@ -10267,9 +10293,12 @@ impl Clone for ImageCache {
       ),
       (
         cred_missing.to_string(),
-        make_res(cred_missing, Some(doc_url), false),
+        make_res(cred_missing, Some(doc_origin_str.as_str()), false),
       ),
-      (cred_ok.to_string(), make_res(cred_ok, Some(doc_url), true)),
+      (
+        cred_ok.to_string(),
+        make_res(cred_ok, Some(doc_origin_str.as_str()), true),
+      ),
     ]);
 
     let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
