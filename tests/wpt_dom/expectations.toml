@@ -33,3 +33,9 @@ id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now + idle_wait fast-forward) is vm-js-only; QuickJS timers are wall-clock based."
+
+[[expectations]]
+id = "vmjs/time_determinism_baseline.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."

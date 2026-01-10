@@ -192,6 +192,11 @@ fn runs_dom_shims_window_js() {
 }
 
 #[test]
+fn runs_step_func_smoke_test() {
+  assert_wpt_pass("smoke/step_func.window.js");
+}
+
+#[test]
 fn runs_document_head_body_smoke_test() {
   assert_wpt_pass("smoke/document_head_body.window.js");
 }

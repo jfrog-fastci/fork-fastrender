@@ -21,6 +21,12 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
   let tests_root = tests_root();
   let tests = discover_tests(&tests_root).expect("discover tests");
 
+  let baseline_id = "vmjs/time_determinism_baseline.window.js";
+  let baseline_test = tests
+    .iter()
+    .find(|t| t.id == baseline_id)
+    .unwrap_or_else(|| panic!("missing test {baseline_id}"));
+
   let id = "vmjs/time_determinism.window.js";
   let test = tests
     .iter()
@@ -39,12 +45,29 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
     },
   );
 
+  // Measure a short baseline test first so we can compare wall-clock overhead. This avoids flakiness
+  // from absolute timing thresholds on busy CI machines while still catching accidental real-time
+  // sleeps for the long (1000ms) timer.
+  let baseline_start = Instant::now();
+  let baseline_result = runner.run_test(baseline_test).expect("run baseline test");
+  let baseline_elapsed = baseline_start.elapsed();
+  assert_eq!(
+    baseline_result.outcome,
+    RunOutcome::Pass,
+    "{baseline_id} should pass under vm-js backend"
+  );
+
   let start = Instant::now();
   let result = runner.run_test(test).expect("run test");
   let elapsed = start.elapsed();
+
+  let extra = elapsed.saturating_sub(baseline_elapsed);
   assert!(
-    elapsed < Duration::from_millis(500),
-    "test should complete without wall-clock waiting (elapsed={elapsed:?})"
+    // The determinism test schedules a 1000ms timer after an initial 10ms timer. With virtual time
+    // fast-forward, the additional wall time relative to the baseline should be small. If the
+    // backend regresses to real-time sleeps, this delta will approach the timer delay (~1s).
+    extra < Duration::from_millis(800),
+    "expected long virtual timers to avoid real-time waiting (baseline={baseline_elapsed:?}, determinism={elapsed:?}, extra={extra:?})"
   );
   assert_eq!(
     result.outcome,
