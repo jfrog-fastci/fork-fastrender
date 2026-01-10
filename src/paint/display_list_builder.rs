@@ -10772,6 +10772,70 @@ impl DisplayListBuilder {
       }
     };
 
+    let byte_offset_for_char_idx = |text: &str, char_idx: usize| -> usize {
+      if char_idx == 0 {
+        return 0;
+      }
+      let mut count = 0usize;
+      for (byte_idx, _) in text.char_indices() {
+        if count == char_idx {
+          return byte_idx;
+        }
+        count += 1;
+      }
+      text.len()
+    };
+
+    let shaped_prefix_advance_for_byte = |runs: &[ShapedRun], target_byte: usize| -> f32 {
+      let mut x = 0.0f32;
+      for run in runs {
+        if target_byte <= run.start {
+          break;
+        }
+        if target_byte >= run.end {
+          x += run.advance;
+          continue;
+        }
+        let local_byte = target_byte.saturating_sub(run.start);
+        if run.direction.is_rtl() {
+          // TODO: Proper bidi caret mapping. For now, fall back to clamping to either edge of the run.
+          x += if local_byte == 0 { 0.0 } else { run.advance };
+          break;
+        }
+        for glyph in &run.glyphs {
+          if (glyph.cluster as usize) >= local_byte {
+            break;
+          }
+          x += glyph.x_advance;
+        }
+        break;
+      }
+      if x.is_finite() { x.max(0.0) } else { 0.0 }
+    };
+
+    let shaped_prefix_advance_for_char_idx =
+      |text: &str, runs: &[ShapedRun], char_idx: usize, total_advance: f32, fallback_advance: f32| -> f32 {
+        if char_idx == 0 {
+          return 0.0;
+        }
+        let max_chars = text.chars().count();
+        if char_idx >= max_chars {
+          return total_advance;
+        }
+        let byte = byte_offset_for_char_idx(text, char_idx);
+        let x = shaped_prefix_advance_for_byte(runs, byte);
+        if x > 0.0 || x.is_finite() {
+          x.min(total_advance)
+        } else {
+          let avg = if max_chars > 0 {
+            (fallback_advance / max_chars as f32).max(0.0)
+          } else {
+            0.0
+          };
+          (avg * char_idx as f32).min(total_advance)
+        }
+      };
+
     let highlight = if control.invalid {
       Some(muted_accent.with_alpha((muted_accent.a * 0.25).max(0.18)))
     } else if control.focus_visible {
@@ -10810,6 +10874,8 @@ impl DisplayListBuilder {
         placeholder,
         placeholder_style,
         kind,
+        caret,
+        selection,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -10924,7 +10990,7 @@ impl DisplayListBuilder {
           cloned
         };
 
-        let mut text_rect = content_rect;
+        let mut text_rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;
         if !matches!(control.appearance, Appearance::None) {
           match kind {
@@ -10935,8 +11001,7 @@ impl DisplayListBuilder {
         }
         let mut affordance_rect: Option<Rect> = None;
         if affordance_space > 0.0 {
-          let (text, affordance) =
-            Self::split_rect_inline_end(content_rect, style, affordance_space);
+          let (text, affordance) = Self::split_rect_inline_end(text_rect, style, affordance_space);
           text_rect = text;
           affordance_rect = Some(affordance);
         }
@@ -10962,6 +11027,138 @@ impl DisplayListBuilder {
           text_rect.height(),
         );
 
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+        let mut selection_rect: Option<Rect> = None;
+        let mut preedit_underline_rect: Option<Rect> = None;
+        let mut caret_rect: Option<(Rect, Rgba)> = None;
+
+        if control.focused && !control.disabled {
+          let mut sample_text = paint_text.unwrap_or("M");
+          if trim_ascii_whitespace(sample_text).is_empty() {
+            sample_text = "M";
+          }
+          let metrics_runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+          let metrics = InlineTextItem::metrics_from_runs(
+            &self.font_ctx,
+            &metrics_runs,
+            line_height,
+            text_style.font_size,
+          );
+          let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+          let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+          let top = baseline_y - metrics.ascent;
+          let bottom = baseline_y + metrics.descent;
+
+          let display_text = paint_text.unwrap_or("");
+          let text_runs = shape_text_runs(self, display_text, &text_style).unwrap_or_default();
+          let fallback_advance = display_text.chars().count() as f32 * text_style.font_size * 0.6;
+          let total_advance: f32 = if !text_runs.is_empty() {
+            text_runs.iter().map(|run| run.advance).sum()
+          } else {
+            fallback_advance
+          };
+          let start_x = Self::aligned_text_start_x(&text_style, text_rect, total_advance);
+          let max_chars = display_text.chars().count();
+
+          if preedit.is_some() && !matches!(kind, TextControlKind::Password) && text_style.color.a > f32::EPSILON {
+            let committed_len = value.chars().count();
+            let preedit_start = if committed_is_empty {
+              0
+            } else {
+              committed_len.min(max_chars)
+            };
+            let x0 = start_x
+              + shaped_prefix_advance_for_char_idx(
+                display_text,
+                &text_runs,
+                preedit_start,
+                total_advance,
+                fallback_advance,
+              );
+            let x1 = start_x
+              + shaped_prefix_advance_for_char_idx(
+                display_text,
+                &text_runs,
+                max_chars,
+                total_advance,
+                fallback_advance,
+              );
+            let left = x0.min(x1);
+            let right = x0.max(x1);
+            let underline_y = (bottom - 1.0).max(top);
+            let underline_rect =
+              Rect::from_xywh(left, underline_y, (right - left).max(0.0), 1.0);
+            preedit_underline_rect = underline_rect
+              .intersection(padding_rect)
+              .filter(|r| r.width() > 0.0 && r.height() > 0.0);
+          }
+
+          if let Some((sel_start, sel_end)) = *selection {
+            let sel_start = sel_start.min(max_chars);
+            let sel_end = sel_end.min(max_chars);
+            if sel_start != sel_end {
+              let x1 = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  display_text,
+                  &text_runs,
+                  sel_start,
+                  total_advance,
+                  fallback_advance,
+                );
+              let x2 = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  display_text,
+                  &text_runs,
+                  sel_end,
+                  total_advance,
+                  fallback_advance,
+                );
+              let left = x1.min(x2);
+              let right = x1.max(x2);
+              let rect = Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
+              selection_rect = rect
+                .intersection(text_rect)
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0);
+            }
+          }
+
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let caret_idx = if preedit.is_some() { max_chars } else { (*caret).min(max_chars) };
+            let caret_x = start_x
+              + shaped_prefix_advance_for_char_idx(
+                display_text,
+                &text_runs,
+                caret_idx,
+                total_advance,
+                fallback_advance,
+              );
+            let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
+            let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
+
+            let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect_raw.intersection(padding_rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                caret_rect = Some((clipped, caret_color));
+              }
+            }
+          }
+        }
+
+        if let Some(selection_rect) = selection_rect {
+          self.list.push(DisplayItem::FillRect(FillRectItem {
+            rect: selection_rect,
+            color: selection_color,
+          }));
+        }
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
             let _ = self.emit_text_with_style_raw(text, Some(&text_style), centered_text_rect);
@@ -10996,81 +11193,17 @@ impl DisplayListBuilder {
           }
         }
 
-        if control.focused && !control.disabled {
-          let caret_color = match style.caret_color {
-            CaretColor::Color(c) => c,
-            CaretColor::Auto => style.color,
-          };
-
-          let caret_advance = if display_is_empty {
-            0.0
-          } else {
-            let caret_text = paint_text.unwrap_or("");
-            measure_shaped_advance(self, caret_text, &text_style)
-          };
-          let caret_start_x = if display_is_empty {
-            Self::aligned_text_start_x(&text_style, text_rect, 0.0)
-          } else {
-            Self::aligned_text_start_x(&text_style, text_rect, caret_advance)
-          };
-
-          let mut sample_text = paint_text.unwrap_or("M");
-          if trim_ascii_whitespace(sample_text).is_empty() {
-            sample_text = "M";
-          }
-          let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
-          let metrics = InlineTextItem::metrics_from_runs(
-            &self.font_ctx,
-            &runs,
-            line_height,
-            text_style.font_size,
-          );
-          let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-          let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
-          let top = baseline_y - metrics.ascent;
-          let bottom = baseline_y + metrics.descent;
-
-          // IME preedit underline: draw a simple underline under the preedit range.
-          if let Some(_preedit) = preedit {
-            if !matches!(kind, TextControlKind::Password) {
-              let prefix_advance = if committed_is_empty {
-                0.0
-              } else {
-                measure_shaped_advance(self, value.as_str(), &text_style)
-              };
-              let underline_x0 = caret_start_x + prefix_advance;
-              let underline_x1 = caret_start_x + caret_advance;
-              if underline_x0.is_finite() && underline_x1.is_finite() && underline_x1 > underline_x0 {
-                let underline_y = (bottom - 1.0).max(top);
-                let underline_rect =
-                  Rect::from_xywh(underline_x0, underline_y, underline_x1 - underline_x0, 1.0);
-                if let Some(clipped) = underline_rect.intersection(padding_rect) {
-                  if clipped.width() > 0.0 && clipped.height() > 0.0 && text_style.color.a > f32::EPSILON {
-                    self.list.push(DisplayItem::FillRect(FillRectItem {
-                      rect: clipped,
-                      color: text_style.color,
-                    }));
-                  }
-                }
-              }
-            }
-          }
-
-          if !caret_color.is_transparent() {
-            let mut caret_x = caret_start_x + caret_advance;
-            let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
-            caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
-
-            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(padding_rect) {
-              if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                self.list.push(DisplayItem::FillRect(FillRectItem {
-                  rect: clipped,
-                  color: caret_color,
-                }));
-              }
-            }
-          }
+        if let Some(preedit_underline_rect) = preedit_underline_rect {
+          self.list.push(DisplayItem::FillRect(FillRectItem {
+            rect: preedit_underline_rect,
+            color: text_style.color,
+          }));
+        }
+        if let Some((caret_rect, caret_color)) = caret_rect {
+          self.list.push(DisplayItem::FillRect(FillRectItem {
+            rect: caret_rect,
+            color: caret_color,
+          }));
         }
         true
       }
@@ -11078,6 +11211,8 @@ impl DisplayListBuilder {
         value,
         placeholder,
         placeholder_style,
+        caret,
+        selection,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -11085,8 +11220,7 @@ impl DisplayListBuilder {
 
         let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
         let committed_is_empty = value.is_empty();
-        let display_is_empty = committed_is_empty && preedit.is_none();
-        let rect = content_rect;
+        let rect = inset_rect(content_rect, 2.0);
 
         let mut paint_text_owned: Option<String> = None;
         let mut paint_text: Option<&str> = None;
@@ -11133,117 +11267,184 @@ impl DisplayListBuilder {
         let line_height =
           compute_line_height_with_metrics_viewport(&text_style, metrics_scaled.as_ref(), viewport);
 
-        if text_style.color.a > f32::EPSILON {
-          if let Some(text) = paint_text {
-            let mut y = rect.y();
-            for line in text.split('\n') {
-              if y > rect.y() + rect.height() {
-                break;
-              }
-              let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-              let _ = self.emit_text_with_style_raw(line, Some(&text_style), line_rect);
-              y += line_height;
-            }
-          }
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+        let display_text = paint_text.unwrap_or("");
+        let max_chars = display_text.chars().count();
+        let caret_idx = if preedit.is_some() { max_chars } else { (*caret).min(max_chars) };
+        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let caret_color = match style.caret_color {
+          CaretColor::Color(c) => c,
+          CaretColor::Auto => style.color,
+        };
+        let mut caret_rect: Option<Rect> = None;
+        let preedit_range = preedit.map(|_| {
+          let committed_len = value.chars().count();
+          let start = if committed_is_empty {
+            0
+          } else {
+            committed_len
+          };
+          (start.min(max_chars), max_chars)
+        });
+
+        let mut metrics_sample = display_text;
+        if trim_ascii_whitespace(metrics_sample).is_empty() {
+          metrics_sample = "M";
         }
+        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style).unwrap_or_default();
+        let metrics = InlineTextItem::metrics_from_runs(
+          &self.font_ctx,
+          &metrics_runs,
+          line_height,
+          text_style.font_size,
+        );
+        let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
 
-        if control.focused && !control.disabled {
-          let caret_color = match style.caret_color {
-            CaretColor::Color(c) => c,
-            CaretColor::Auto => style.color,
-          };
+        let mut y = rect.y();
+        let mut line_start = 0usize;
+        for line in display_text.split('\n') {
+          if y > rect.y() + rect.height() {
+            break;
+          }
 
-          let caret_source = paint_text.unwrap_or("");
-          let (caret_y, caret_line) = if display_is_empty {
-            (rect.y(), caret_source.split('\n').next().unwrap_or(""))
-          } else {
-            let mut y = rect.y();
-            let mut last_y = y;
-            let mut last_line = "";
-            for line in caret_source.split('\n') {
-              if y > rect.y() + rect.height() {
-                break;
-              }
-              last_y = y;
-              last_line = line;
-              y += line_height;
-            }
-            (last_y, last_line)
-          };
+          let line_len = line.chars().count();
+          let line_end = line_start + line_len;
+          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
 
-          let caret_advance = if display_is_empty || caret_line.is_empty() {
-            0.0
+          let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+          let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
+          let total_advance: f32 = if !line_runs.is_empty() {
+            line_runs.iter().map(|run| run.advance).sum()
           } else {
-            measure_shaped_advance(self, caret_line, &text_style)
+            fallback_advance
           };
-          let line_rect = Rect::from_xywh(rect.x(), caret_y, rect.width(), line_height);
-          let caret_start_x = if display_is_empty {
-            Self::aligned_text_start_x(&text_style, line_rect, 0.0)
-          } else {
-            Self::aligned_text_start_x(&text_style, line_rect, caret_advance)
-          };
+          let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
 
-          let sample_text = if trim_ascii_whitespace(caret_line).is_empty() {
-            "M"
-          } else {
-            caret_line
-          };
-          let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
-          let metrics = InlineTextItem::metrics_from_runs(
-            &self.font_ctx,
-            &runs,
-            line_height,
-            text_style.font_size,
-          );
-          let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-          let baseline_y = caret_y + half_leading + metrics.baseline_offset;
+          let baseline_y = y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
           let bottom = baseline_y + metrics.descent;
 
-          // IME preedit underline: underline the in-progress composition text on the caret line.
-          if preedit.is_some() {
-            let prefix_line = if committed_is_empty {
-              ""
-            } else {
-              value.split('\n').last().unwrap_or("")
-            };
-            let prefix_advance = if prefix_line.is_empty() {
-              0.0
-            } else {
-              measure_shaped_advance(self, prefix_line, &text_style)
-            };
-            let underline_x0 = caret_start_x + prefix_advance;
-            let underline_x1 = caret_start_x + caret_advance;
-            if underline_x0.is_finite() && underline_x1.is_finite() && underline_x1 > underline_x0 {
-              let underline_y = (bottom - 1.0).max(top);
-              let underline_rect =
-                Rect::from_xywh(underline_x0, underline_y, underline_x1 - underline_x0, 1.0);
-              if let Some(clipped) = underline_rect.intersection(rect) {
-                if clipped.width() > 0.0 && clipped.height() > 0.0 && text_style.color.a > f32::EPSILON {
-                  self.list.push(DisplayItem::FillRect(FillRectItem {
-                    rect: clipped,
-                    color: text_style.color,
-                  }));
+          if control.focused && !control.disabled {
+            if let Some((sel_start, sel_end)) = selection {
+              let seg_start = sel_start.max(line_start).min(line_end);
+              let seg_end = sel_end.max(line_start).min(line_end);
+              if seg_start < seg_end {
+                let start_col = seg_start - line_start;
+                let end_col = seg_end - line_start;
+                let x1 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    start_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let x2 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    end_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                let sel_rect = Rect::from_xywh(
+                  left,
+                  top,
+                  (right - left).max(0.0),
+                  (bottom - top).max(0.0),
+                );
+                if let Some(clipped) = sel_rect.intersection(rect) {
+                  if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                    self.list.push(DisplayItem::FillRect(FillRectItem {
+                      rect: clipped,
+                      color: selection_color,
+                    }));
+                  }
                 }
               }
             }
           }
 
-          if !caret_color.is_transparent() {
-            let mut caret_x = caret_start_x + caret_advance;
-            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
-            caret_x = caret_x.clamp(rect.x(), max_caret_x);
+          if text_style.color.a > f32::EPSILON && !line.is_empty() {
+            let _ = self.emit_text_with_style_raw(line, Some(&text_style), line_rect);
+          }
 
-            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(rect) {
-              if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                self.list.push(DisplayItem::FillRect(FillRectItem {
-                  rect: clipped,
-                  color: caret_color,
-                }));
+          if control.focused && !control.disabled {
+            if let Some((pre_start, pre_end)) = preedit_range {
+              let seg_start = pre_start.max(line_start).min(line_end);
+              let seg_end = pre_end.max(line_start).min(line_end);
+              if seg_start < seg_end && text_style.color.a > f32::EPSILON {
+                let start_col = seg_start - line_start;
+                let end_col = seg_end - line_start;
+                let x1 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    start_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let x2 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    end_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                let underline_y = (bottom - 1.0).max(top);
+                let underline_rect =
+                  Rect::from_xywh(left, underline_y, (right - left).max(0.0), 1.0);
+                if let Some(clipped) = underline_rect.intersection(rect) {
+                  if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                    self.list.push(DisplayItem::FillRect(FillRectItem {
+                      rect: clipped,
+                      color: text_style.color,
+                    }));
+                  }
+                }
               }
             }
           }
+
+          if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
+            if !caret_color.is_transparent() {
+              let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
+              let caret_x = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  line,
+                  &line_runs,
+                  caret_col,
+                  total_advance,
+                  fallback_advance,
+                );
+              let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
+              let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+              let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+              caret_rect = caret_rect_raw
+                .intersection(rect)
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0);
+            }
+          }
+
+          y += line_height;
+          line_start = line_end.saturating_add(1);
+        }
+
+        if let Some(caret_rect) = caret_rect {
+          self.list.push(DisplayItem::FillRect(FillRectItem {
+            rect: caret_rect,
+            color: caret_color,
+          }));
         }
         true
       }

@@ -230,6 +230,14 @@ fn backspace_edits_focused_input_and_repaints() {
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
+  // Real text editing is caret-based. The click above lands near the start of the input, so ensure
+  // the caret is at the end before we press backspace (matching what the old "delete-at-end"
+  // semantics were asserting).
+  ui_tx
+    .send(key_action(tab_id, KeyAction::End))
+    .expect("End");
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+
   ui_tx
     .send(key_action(tab_id, KeyAction::Backspace))
     .expect("Backspace");

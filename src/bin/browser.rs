@@ -2597,12 +2597,39 @@ error: {err}",
         if self.egui_ctx.wants_keyboard_input() {
           return;
         }
+
+        // Ctrl/Cmd+Tab is reserved for chrome tab switching; don't forward it to the page as a Tab
+        // key press.
+        if (self.modifiers.ctrl() || self.modifiers.logo()) && matches!(key, VirtualKeyCode::Tab) {
+          return;
+        }
+
+        // Alt+Left/Right are reserved for chrome back/forward navigation (handled in the egui
+        // chrome layer). Don't forward them to the page as caret movement.
+        //
+        // Guard against AltGr (often encoded as Ctrl+Alt).
+        let alt_only = self.modifiers.alt() && !(self.modifiers.ctrl() || self.modifiers.logo());
+        if alt_only && matches!(key, VirtualKeyCode::Left | VirtualKeyCode::Right) {
+          return;
+        }
         if !self.page_has_focus {
           return;
         }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
+
+        // Ctrl/Cmd+A selects all in the focused text control.
+        //
+        // Guard against AltGr (often encoded as Ctrl+Alt).
+        if (self.modifiers.ctrl() || self.modifiers.logo()) && !self.modifiers.alt() && matches!(key, VirtualKeyCode::A)
+        {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: fastrender::interaction::KeyAction::SelectAll,
+          });
+          return;
+        }
 
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
@@ -2613,8 +2640,28 @@ error: {err}",
           } else {
             fastrender::interaction::KeyAction::Tab
           }),
+          VirtualKeyCode::Left => Some(if self.modifiers.shift() {
+            fastrender::interaction::KeyAction::ShiftArrowLeft
+          } else {
+            fastrender::interaction::KeyAction::ArrowLeft
+          }),
+          VirtualKeyCode::Right => Some(if self.modifiers.shift() {
+            fastrender::interaction::KeyAction::ShiftArrowRight
+          } else {
+            fastrender::interaction::KeyAction::ArrowRight
+          }),
           VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
           VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
+          VirtualKeyCode::Home => Some(if self.modifiers.shift() {
+            fastrender::interaction::KeyAction::ShiftHome
+          } else {
+            fastrender::interaction::KeyAction::Home
+          }),
+          VirtualKeyCode::End => Some(if self.modifiers.shift() {
+            fastrender::interaction::KeyAction::ShiftEnd
+          } else {
+            fastrender::interaction::KeyAction::End
+          }),
           _ => None,
         };
         let Some(key_action) = key_action else {

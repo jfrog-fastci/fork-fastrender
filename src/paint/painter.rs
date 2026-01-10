@@ -9370,6 +9370,81 @@ impl Painter {
       TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
       runs.iter().map(|run| run.advance).sum()
     };
+    let shape_text_runs = |painter: &mut Self, text: &str, style: &ComputedStyle| -> Vec<ShapedRun> {
+      if text.is_empty() {
+        return Vec::new();
+      }
+      painter
+        .shaper
+        .shape(text, style, &painter.font_ctx)
+        .ok()
+        .map(|mut runs| {
+          TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+          runs
+        })
+        .unwrap_or_default()
+    };
+    let byte_offset_for_char_idx = |text: &str, char_idx: usize| -> usize {
+      if char_idx == 0 {
+        return 0;
+      }
+      let mut count = 0usize;
+      for (byte_idx, _) in text.char_indices() {
+        if count == char_idx {
+          return byte_idx;
+        }
+        count += 1;
+      }
+      text.len()
+    };
+    let shaped_prefix_advance_for_byte = |runs: &[ShapedRun], target_byte: usize| -> f32 {
+      let mut x = 0.0f32;
+      for run in runs {
+        if target_byte <= run.start {
+          break;
+        }
+        if target_byte >= run.end {
+          x += run.advance;
+          continue;
+        }
+        let local_byte = target_byte.saturating_sub(run.start);
+        if run.direction.is_rtl() {
+          // TODO: Proper bidi caret mapping. For now, fall back to clamping to either edge of the run.
+          x += if local_byte == 0 { 0.0 } else { run.advance };
+          break;
+        }
+        for glyph in &run.glyphs {
+          if (glyph.cluster as usize) >= local_byte {
+            break;
+          }
+          x += glyph.x_advance;
+        }
+        break;
+      }
+      if x.is_finite() { x.max(0.0) } else { 0.0 }
+    };
+    let shaped_prefix_advance_for_char_idx =
+      |text: &str, runs: &[ShapedRun], char_idx: usize, total_advance: f32, fallback_advance: f32| -> f32 {
+        if char_idx == 0 {
+          return 0.0;
+        }
+        let max_chars = text.chars().count();
+        if char_idx >= max_chars {
+          return total_advance;
+        }
+        let byte = byte_offset_for_char_idx(text, char_idx);
+        let x = shaped_prefix_advance_for_byte(runs, byte);
+        if x > 0.0 || x.is_finite() {
+          x.min(total_advance)
+        } else {
+          let avg = if max_chars > 0 {
+            (fallback_advance / max_chars as f32).max(0.0)
+          } else {
+            0.0
+          };
+          (avg * char_idx as f32).min(total_advance)
+        }
+      };
 
     match &control.control {
       FormControlKind::Text {
@@ -9377,6 +9452,8 @@ impl Painter {
         placeholder,
         placeholder_style,
         kind,
+        caret,
+        selection,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -9391,7 +9468,7 @@ impl Painter {
         match kind {
           TextControlKind::Password => {
             if !value_is_empty {
-              let mask_len = value.chars().count().clamp(3, 50);
+              let mask_len = value.chars().count();
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
@@ -9495,6 +9572,97 @@ impl Painter {
           rect.width(),
           rect.height(),
         );
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+        let mut selection_rect: Option<Rect> = None;
+        let mut caret_rect: Option<(Rect, Rgba)> = None;
+
+        if control.focused && !control.disabled {
+          let mut sample_text = paint_text.unwrap_or("M");
+          if trim_ascii_whitespace_html_css(sample_text).is_empty() {
+            sample_text = "M";
+          }
+
+          let metrics_runs = shape_text_runs(self, sample_text, &text_style);
+          let metrics =
+            TextItem::metrics_from_runs(&self.font_ctx, &metrics_runs, line_height, text_style.font_size);
+          let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+          let baseline_y = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+          let top = baseline_y - metrics.ascent;
+          let bottom = baseline_y + metrics.descent;
+
+          let display_text = paint_text.unwrap_or("");
+          let text_runs = shape_text_runs(self, display_text, &text_style);
+          let fallback_advance = display_text.chars().count() as f32 * text_style.font_size * 0.6;
+          let total_advance: f32 = if !text_runs.is_empty() {
+            text_runs.iter().map(|run| run.advance).sum()
+          } else {
+            fallback_advance
+          };
+          let start_x = Self::aligned_text_start_x(&text_style, rect, total_advance);
+          let max_chars = display_text.chars().count();
+
+          if let Some((sel_start, sel_end)) = *selection {
+            let sel_start = sel_start.min(max_chars);
+            let sel_end = sel_end.min(max_chars);
+            if sel_start != sel_end {
+              let x1 = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  display_text,
+                  &text_runs,
+                  sel_start,
+                  total_advance,
+                  fallback_advance,
+                );
+              let x2 = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  display_text,
+                  &text_runs,
+                  sel_end,
+                  total_advance,
+                  fallback_advance,
+                );
+              let left = x1.min(x2);
+              let right = x1.max(x2);
+              let sel_rect = Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
+              selection_rect = sel_rect.intersection(rect).filter(|r| r.width() > 0.0 && r.height() > 0.0);
+            }
+          }
+
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let caret_idx = (*caret).min(max_chars);
+            let caret_x = start_x
+              + shaped_prefix_advance_for_char_idx(
+                display_text,
+                &text_runs,
+                caret_idx,
+                total_advance,
+                fallback_advance,
+              );
+            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
+            let caret_x = caret_x.clamp(rect.x(), max_caret_x);
+
+            let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect_raw.intersection(padding_rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                caret_rect = Some((clipped, caret_color));
+              }
+            }
+          }
+        }
+
+        if let Some(selection_rect) = selection_rect {
+          let device_rect = self.device_rect(selection_rect);
+          fill_rect_masked(&mut self.pixmap, device_rect, selection_color, clip_mask);
+        }
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
             let _ = self.paint_alt_text_raw(text, &text_style, centered_rect, clip_mask);
@@ -9534,59 +9702,9 @@ impl Painter {
           }
         }
 
-        if control.focused && !control.disabled {
-          let caret_color = match style.caret_color {
-            CaretColor::Color(c) => c,
-            CaretColor::Auto => style.color,
-          };
-          if !caret_color.is_transparent() {
-            let mut sample_text = paint_text.unwrap_or("M");
-            if trim_ascii_whitespace_html_css(sample_text).is_empty() {
-              sample_text = "M";
-            }
-            let runs = self
-              .shaper
-              .shape(sample_text, &text_style, &self.font_ctx)
-              .ok()
-              .map(|mut runs| {
-                TextItem::apply_spacing_to_runs(
-                  &mut runs,
-                  sample_text,
-                  text_style.letter_spacing,
-                  text_style.word_spacing,
-                );
-                runs
-              })
-              .unwrap_or_default();
-            let metrics =
-              TextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, text_style.font_size);
-            let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-            let baseline_y = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
-            let top = baseline_y - metrics.ascent;
-            let bottom = baseline_y + metrics.descent;
-
-            let caret_x = if value_is_empty {
-              Self::aligned_text_start_x(&text_style, rect, 0.0)
-            } else {
-              let caret_text = match kind {
-                TextControlKind::Password => generated.as_deref().unwrap_or(value.as_str()),
-                _ => value.as_str(),
-              };
-              let caret_advance = measure_shaped_advance(self, caret_text, &text_style);
-              let start_x = Self::aligned_text_start_x(&text_style, rect, caret_advance);
-              start_x + caret_advance
-            };
-            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
-            let caret_x = caret_x.clamp(rect.x(), max_caret_x);
-
-            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(padding_rect) {
-              if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                let device_rect = self.device_rect(clipped);
-                fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
-              }
-            }
-          }
+        if let Some((caret_rect, caret_color)) = caret_rect {
+          let device_rect = self.device_rect(caret_rect);
+          fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
         }
         true
       }
@@ -9594,6 +9712,8 @@ impl Painter {
         value,
         placeholder,
         placeholder_style,
+        caret,
+        selection,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -9632,92 +9752,138 @@ impl Painter {
           style.color = fallback_color;
           style
         };
-        let metrics = self.resolve_scaled_metrics(&text_style);
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+        let metrics_scaled = self.resolve_scaled_metrics(&text_style);
         let line_height = compute_line_height_with_metrics_viewport(
           &text_style,
-          metrics.as_ref(),
+          metrics_scaled.as_ref(),
           Some(Size::new(self.css_width, self.css_height)),
         );
-        if text_style.color.a > f32::EPSILON {
-          if let Some(text) = paint_text {
-            let mut y = rect.y();
-            for line in text.split('\n') {
-              if y > rect.y() + rect.height() {
-                break;
+
+        let display_text = paint_text.unwrap_or("");
+        let max_chars = display_text.chars().count();
+        let caret_idx = (*caret).min(max_chars);
+        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let mut caret_rect: Option<(Rect, Rgba)> = None;
+
+        let mut metrics_sample = display_text;
+        if trim_ascii_whitespace_html_css(metrics_sample).is_empty() {
+          metrics_sample = "M";
+        }
+        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style);
+        let metrics =
+          TextItem::metrics_from_runs(&self.font_ctx, &metrics_runs, line_height, text_style.font_size);
+        let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+
+        let caret_color = match style.caret_color {
+          CaretColor::Color(c) => c,
+          CaretColor::Auto => style.color,
+        };
+
+        let mut y = rect.y();
+        let mut line_start = 0usize;
+        for line in display_text.split('\n') {
+          if y > rect.y() + rect.height() {
+            break;
+          }
+
+          let line_len = line.chars().count();
+          let line_end = line_start + line_len;
+          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
+
+          let line_runs = shape_text_runs(self, line, &text_style);
+          let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
+          let total_advance: f32 = if !line_runs.is_empty() {
+            line_runs.iter().map(|run| run.advance).sum()
+          } else {
+            fallback_advance
+          };
+          let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
+
+          let baseline_y = y + half_leading + metrics.baseline_offset;
+          let top = baseline_y - metrics.ascent;
+          let bottom = baseline_y + metrics.descent;
+
+          if control.focused && !control.disabled {
+            if let Some((sel_start, sel_end)) = selection {
+              // Selection is stored as a global character range (across the full textarea value,
+              // including newline characters). Highlight the intersection with this line.
+              let seg_start = sel_start.max(line_start).min(line_end);
+              let seg_end = sel_end.max(line_start).min(line_end);
+              if seg_start < seg_end {
+                let start_col = seg_start - line_start;
+                let end_col = seg_end - line_start;
+                let x1 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    start_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let x2 = start_x
+                  + shaped_prefix_advance_for_char_idx(
+                    line,
+                    &line_runs,
+                    end_col,
+                    total_advance,
+                    fallback_advance,
+                  );
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                let sel_rect = Rect::from_xywh(
+                  left,
+                  top,
+                  (right - left).max(0.0),
+                  (bottom - top).max(0.0),
+                );
+                if let Some(clipped) = sel_rect.intersection(rect) {
+                  if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                    let device_rect = self.device_rect(clipped);
+                    fill_rect_masked(&mut self.pixmap, device_rect, selection_color, clip_mask);
+                  }
+                }
               }
-              let line_rect = Rect::from_xywh(
-                rect.x(),
-                y,
-                rect.width(),
-                (rect.height() - (y - rect.y())).max(0.0),
-              );
-              let _ = self.paint_alt_text_raw(line, &text_style, line_rect, clip_mask);
-              y += line_height;
             }
           }
+
+          if text_style.color.a > f32::EPSILON && !line.is_empty() {
+            let _ = self.paint_alt_text_raw(line, &text_style, line_rect, clip_mask);
+          }
+
+          if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
+            if !caret_color.is_transparent() {
+              let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
+              let caret_x = start_x
+                + shaped_prefix_advance_for_char_idx(
+                  line,
+                  &line_runs,
+                  caret_col,
+                  total_advance,
+                  fallback_advance,
+                );
+              let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
+              let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+              let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+              caret_rect = caret_rect_raw
+                .intersection(rect)
+                .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+                .map(|r| (r, caret_color));
+            }
+          }
+
+          y += line_height;
+          line_start = line_end.saturating_add(1);
         }
 
-        if control.focused && !control.disabled {
-          let caret_color = match style.caret_color {
-            CaretColor::Color(c) => c,
-            CaretColor::Auto => style.color,
-          };
-          if !caret_color.is_transparent() {
-            let ascent = metrics
-              .as_ref()
-              .map(|m| m.ascent)
-              .unwrap_or(text_style.font_size * 0.8);
-            let descent = metrics
-              .as_ref()
-              .map(|m| m.descent)
-              .unwrap_or(text_style.font_size * 0.2);
-            let half_leading = (line_height - (ascent + descent)) / 2.0;
-
-            let (caret_y, caret_line) = if value_is_empty {
-              (
-                rect.y(),
-                paint_text
-                  .and_then(|t| t.split('\n').next())
-                  .unwrap_or(""),
-              )
-            } else {
-              let mut y = rect.y();
-              let mut last_y = y;
-              let mut last_line = "";
-              for line in value.split('\n') {
-                if y > rect.y() + rect.height() {
-                  break;
-                }
-                last_y = y;
-                last_line = line;
-                y += line_height;
-              }
-              (last_y, last_line)
-            };
-
-            let caret_x = if value_is_empty {
-              Self::aligned_text_start_x(&text_style, rect, 0.0)
-            } else if caret_line.is_empty() {
-              rect.x()
-            } else {
-              let caret_advance = measure_shaped_advance(self, caret_line, &text_style);
-              let start_x = Self::aligned_text_start_x(&text_style, rect, caret_advance);
-              start_x + caret_advance
-            };
-            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
-            let caret_x = caret_x.clamp(rect.x(), max_caret_x);
-
-            let baseline_y = caret_y + ascent + half_leading * 2.0;
-            let top = baseline_y - ascent;
-            let bottom = baseline_y + descent;
-            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(content_rect) {
-              if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                let device_rect = self.device_rect(clipped);
-                fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
-              }
-            }
-          }
+        if let Some((caret_rect, caret_color)) = caret_rect {
+          let device_rect = self.device_rect(caret_rect);
+          fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
         }
         true
       }

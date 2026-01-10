@@ -111,7 +111,7 @@ pub(crate) fn intrinsic_content_size_for_form_control(
         let measure_text: Option<std::borrow::Cow<'_, str>> = if !value_is_empty {
           match kind {
             TextControlKind::Password => {
-              let mask_len = value.chars().count().clamp(3, 50);
+              let mask_len = value.chars().count();
               Some(std::borrow::Cow::Owned("•".repeat(mask_len)))
             }
             _ => Some(std::borrow::Cow::Borrowed(value.as_str())),

@@ -243,6 +243,13 @@ pub enum FormControlKind {
     size_attr: Option<u32>,
     /// What kind of text control to render
     kind: TextControlKind,
+    /// Caret position in character indices.
+    ///
+    /// When the control isn't focused (or the interaction layer hasn't provided a caret), this
+    /// defaults to the end of `value`.
+    caret: usize,
+    /// Optional selection range in character indices (start, end), where `start < end`.
+    selection: Option<(usize, usize)>,
   },
   /// Multiline control (<textarea>)
   TextArea {
@@ -256,6 +263,10 @@ pub enum FormControlKind {
     rows: Option<u32>,
     /// Optional cols hint (default 20)
     cols: Option<u32>,
+    /// Caret position in character indices.
+    caret: usize,
+    /// Optional selection range in character indices (start, end), where `start < end`.
+    selection: Option<(usize, usize)>,
   },
   /// Button-like control (`<input type=button|submit|reset>`)
   Button { label: String },

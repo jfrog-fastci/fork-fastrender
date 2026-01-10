@@ -2344,6 +2344,9 @@ impl BrowserTab {
         },
       )? {
         RunUntilIdleOutcome::Idle => {}
+        RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. }) => {
+          continue;
+        }
         RunUntilIdleOutcome::Stopped(reason) => {
           return Ok(RunUntilStableOutcome::Stopped {
             reason: RunUntilStableStopReason::EventLoop(reason),

@@ -27,7 +27,19 @@ pub use url::resolve_url;
 use crate::style::ComputedStyle;
 use crate::text::font_db::{FontConfig, FontStretch, FontStyle as DbFontStyle, ScaledMetrics};
 use crate::text::font_loader::FontContext;
+use crate::text::pipeline::ShapingPipeline;
 use std::sync::OnceLock;
+
+fn interaction_font_ctx() -> &'static FontContext {
+  static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
+  FONT_CTX.get_or_init(|| {
+    #[cfg(feature = "browser_ui")]
+    let config = FontConfig::bundled_only();
+    #[cfg(not(feature = "browser_ui"))]
+    let config = FontConfig::default();
+    FontContext::with_config(config)
+  })
+}
 
 /// Resolve the scaled font metrics for an element style.
 ///
@@ -37,14 +49,7 @@ use std::sync::OnceLock;
 /// Note: When the UI is built with `browser_ui`, it uses bundled fonts for deterministic output;
 /// match that here so hit-testing aligns with what the painter rendered.
 pub(crate) fn resolve_scaled_metrics_for_interaction(style: &ComputedStyle) -> Option<ScaledMetrics> {
-  static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
-  let font_ctx = FONT_CTX.get_or_init(|| {
-    #[cfg(feature = "browser_ui")]
-    let config = FontConfig::bundled_only();
-    #[cfg(not(feature = "browser_ui"))]
-    let config = FontConfig::default();
-    FontContext::with_config(config)
-  });
+  let font_ctx = interaction_font_ctx();
 
   let italic = matches!(style.font_style, crate::style::types::FontStyle::Italic);
   let oblique = matches!(style.font_style, crate::style::types::FontStyle::Oblique(_));
@@ -81,4 +86,23 @@ pub(crate) fn resolve_scaled_metrics_for_interaction(style: &ComputedStyle) -> O
       .unwrap_or_else(|| authored.clone());
       font_ctx.get_scaled_metrics_with_variations(&font, used_font_size, &variations)
     })
+}
+
+/// Shared `FontContext` for UI interaction code that needs deterministic font metrics.
+///
+/// This mirrors the `FontContext` choice in [`resolve_scaled_metrics_for_interaction`]. Keeping a
+/// single accessor helps other interaction subsystems (e.g. text cursor positioning) reuse the same
+/// font configuration without each creating their own `FontContext`.
+pub(crate) fn font_context_for_interaction() -> &'static FontContext {
+  interaction_font_ctx()
+}
+
+/// Shared `ShapingPipeline` for UI interaction code.
+///
+/// This avoids allocating a fresh shaping cache for every cursor-positioning query (e.g. click-to-place
+/// caret mapping inside `<input>`/`<textarea>`). The pipeline internally synchronizes its caches, so a
+/// process-global instance is sufficient.
+pub(crate) fn shaping_pipeline_for_interaction() -> &'static ShapingPipeline {
+  static SHAPER: OnceLock<ShapingPipeline> = OnceLock::new();
+  SHAPER.get_or_init(ShapingPipeline::new)
 }

@@ -5674,14 +5674,14 @@ fn build_appearance_none_form_control_fallback(
         text = Some(value.clone());
       } else if preedit.is_none() {
         if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
-        text = Some(ph.clone());
-        if let Some(ph_style) = placeholder_style
-          .as_ref()
-          .or(form_control.placeholder_style.as_ref())
-        {
-          style = Arc::clone(ph_style);
-          pseudo = Some(GeneratedPseudoElement::Placeholder);
-        }
+          text = Some(ph.clone());
+          if let Some(ph_style) = placeholder_style
+            .as_ref()
+            .or(form_control.placeholder_style.as_ref())
+          {
+            style = Arc::clone(ph_style);
+            pseudo = Some(GeneratedPseudoElement::Placeholder);
+          }
         }
       }
 
@@ -6581,6 +6581,13 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       .and_then(|v| v.parse::<f32>().ok())
       .filter(|v| v.is_finite())
   };
+  let parse_usize_attr = |node: &DomNode, name: &str| -> Option<usize> {
+    node
+      .get_attribute_ref(name)
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty())
+      .and_then(|v| v.parse::<usize>().ok())
+  };
 
   let disabled = styled.node.get_attribute_ref("disabled").is_some();
   let inert = styled.node.get_attribute_ref("inert").is_some()
@@ -6844,12 +6851,36 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         TextControlKind::Plain
       };
 
+      let value_char_len = value.chars().count();
+      let caret = parse_usize_attr(&styled.node, "data-fastr-caret")
+        .unwrap_or(value_char_len)
+        .min(value_char_len);
+      let selection = match (
+        parse_usize_attr(&styled.node, "data-fastr-selection-start"),
+        parse_usize_attr(&styled.node, "data-fastr-selection-end"),
+      ) {
+        (Some(start), Some(end)) => {
+          let start = start.min(value_char_len);
+          let end = end.min(value_char_len);
+          if start == end {
+            None
+          } else if start < end {
+            Some((start, end))
+          } else {
+            Some((end, start))
+          }
+        }
+        _ => None,
+      };
+
       FormControlKind::Text {
         value,
         placeholder,
         placeholder_style: styled.placeholder_styles.clone(),
         size_attr,
         kind,
+        caret,
+        selection,
       }
     };
 
@@ -6904,9 +6935,31 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       .map(trim_ascii_whitespace)
       .filter(|p| !p.is_empty())
       .map(|p| p.to_string());
+    let value = textarea_value.unwrap_or_default();
+    let value_char_len = value.chars().count();
+    let caret = parse_usize_attr(&styled.node, "data-fastr-caret")
+      .unwrap_or(value_char_len)
+      .min(value_char_len);
+    let selection = match (
+      parse_usize_attr(&styled.node, "data-fastr-selection-start"),
+      parse_usize_attr(&styled.node, "data-fastr-selection-end"),
+    ) {
+      (Some(start), Some(end)) => {
+        let start = start.min(value_char_len);
+        let end = end.min(value_char_len);
+        if start == end {
+          None
+        } else if start < end {
+          Some((start, end))
+        } else {
+          Some((end, start))
+        }
+      }
+      _ => None,
+    };
     Some(FormControl {
       control: FormControlKind::TextArea {
-        value: textarea_value.unwrap_or_default(),
+        value,
         placeholder,
         placeholder_style: styled.placeholder_styles.clone(),
         rows: styled
@@ -6917,6 +6970,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           .node
           .get_attribute_ref("cols")
           .and_then(|c| c.parse::<u32>().ok()),
+        caret,
+        selection,
       },
       appearance,
       placeholder_style: styled.placeholder_styles.clone(),
