@@ -9,7 +9,8 @@ use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::EventLoop;
 use crate::resource::{
-  ensure_http_success, ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher,
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
+  origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest, ResourceFetcher,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use vm_js::{
 pub struct VmJsModuleLoader {
   fetcher: Arc<dyn ResourceFetcher>,
   document_url: String,
+  document_origin: Option<DocumentOrigin>,
   max_module_bytes: usize,
   module_graph: ModuleGraph,
   module_id_by_url: HashMap<String, ModuleId>,
@@ -35,9 +37,12 @@ pub struct VmJsModuleLoader {
 
 impl VmJsModuleLoader {
   pub fn new(fetcher: Arc<dyn ResourceFetcher>, document_url: impl Into<String>, max_module_bytes: usize) -> Self {
+    let document_url = document_url.into();
+    let document_origin = origin_from_url(&document_url);
     Self {
       fetcher,
-      document_url: document_url.into(),
+      document_url,
+      document_origin,
       max_module_bytes,
       module_graph: ModuleGraph::new(),
       module_id_by_url: HashMap::new(),
@@ -139,6 +144,7 @@ impl VmJsModuleLoader {
     let VmJsModuleLoader {
       fetcher,
       document_url,
+      document_origin,
       max_module_bytes,
       module_graph,
       module_id_by_url,
@@ -147,6 +153,7 @@ impl VmJsModuleLoader {
     } = self;
     let fetcher = Arc::clone(fetcher);
     let document_url = document_url.clone();
+    let document_origin = document_origin.clone();
     let max_module_bytes = *max_module_bytes;
 
     with_event_loop(event_loop, move || {
@@ -154,6 +161,7 @@ impl VmJsModuleLoader {
         inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
         fetcher,
         document_url: document_url.as_str(),
+        document_origin,
         max_module_bytes,
         module_id_by_url,
         module_url_by_id,
@@ -303,6 +311,7 @@ struct VmJsModuleHooks<'a, Host: WindowRealmHost + 'static> {
   inner: VmJsEventLoopHooks<Host>,
   fetcher: Arc<dyn ResourceFetcher>,
   document_url: &'a str,
+  document_origin: Option<DocumentOrigin>,
   max_module_bytes: usize,
   module_id_by_url: &'a mut HashMap<String, ModuleId>,
   module_url_by_id: &'a mut HashMap<ModuleId, String>,
@@ -362,7 +371,10 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     }
 
     // Fetch module scripts in CORS mode (`<script type="module">` / module imports).
-    let req = FetchRequest::new(url, FetchDestination::ScriptCors).with_referrer_url(self.document_url);
+    let mut req = FetchRequest::new(url, FetchDestination::ScriptCors).with_referrer_url(self.document_url);
+    if let Some(origin) = self.document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
     let res = if self.max_module_bytes == usize::MAX {
       self.fetcher.fetch_with_request(req)
     } else {
@@ -374,6 +386,13 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
 
     ensure_http_success(&res, url)
       .and_then(|_| ensure_script_mime_sane(&res, url))
+      .and_then(|_| {
+        if cors_enforcement_enabled() {
+          ensure_cors_allows_origin(self.document_origin.as_ref(), &res, url, CorsMode::Anonymous)
+        } else {
+          Ok(())
+        }
+      })
       .map_err(|err| self.throw_type_error(vm, scope, &format!("{err}")))?;
 
     // WHATWG HTML import maps: module scripts can be associated with Subresource Integrity metadata
@@ -658,6 +677,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::dom2;
   use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
   use crate::resource::FetchedResource;
@@ -666,6 +686,7 @@ mod tests {
   use selectors::context::QuirksMode;
   use sha2::{Digest, Sha256};
   use std::sync::Mutex;
+  use std::sync::Arc;
   use vm_js::{Budget, PropertyKey};
 
   #[derive(Default)]
@@ -1059,5 +1080,100 @@ mod tests {
       "entry module should not have executed after SRI failure"
     );
     Ok(())
+  }
+
+  #[test]
+  fn module_loader_blocks_cross_origin_modules_without_cors_headers() -> Result<()> {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+    with_thread_runtime_toggles(toggles, || -> Result<()> {
+      let entry_url = "https://example.com/entry.js";
+      let dep_url = "https://cdn.example.net/dep.js";
+      let document_url = "https://example.com/index.html";
+
+      let mut map = HashMap::<String, FetchedResource>::new();
+      map.insert(
+        entry_url.to_string(),
+        FetchedResource::new(
+          format!("import x from '{dep_url}'; globalThis.result = x;").into_bytes(),
+          Some("application/javascript".to_string()),
+        ),
+      );
+      // Cross-origin module with no Access-Control-Allow-Origin should be blocked.
+      map.insert(
+        dep_url.to_string(),
+        FetchedResource::new(
+          "export default 1;".as_bytes().to_vec(),
+          Some("application/javascript".to_string()),
+        ),
+      );
+
+      let fetcher = Arc::new(MapFetcher::new(map));
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+      let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+      host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+      let mut loader = VmJsModuleLoader::new(fetcher, document_url, 128 * 1024);
+      let err = loader
+        .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+        .expect_err("expected CORS failure");
+      assert!(
+        err.to_string().contains("CORS"),
+        "expected CORS error, got {err}"
+      );
+      assert_eq!(
+        get_global_prop(&mut host, "result"),
+        Value::Undefined,
+        "entry module should not execute when an import is blocked by CORS"
+      );
+      Ok(())
+    })
+  }
+
+  #[test]
+  fn module_loader_allows_cross_origin_modules_with_cors_headers() -> Result<()> {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+    with_thread_runtime_toggles(toggles, || -> Result<()> {
+      let entry_url = "https://example.com/entry.js";
+      let dep_url = "https://cdn.example.net/dep.js";
+      let document_url = "https://example.com/index.html";
+
+      let mut map = HashMap::<String, FetchedResource>::new();
+      map.insert(
+        entry_url.to_string(),
+        FetchedResource::new(
+          format!("import x from '{dep_url}'; globalThis.result = x;").into_bytes(),
+          Some("application/javascript".to_string()),
+        ),
+      );
+      let mut dep = FetchedResource::new(
+        "export default 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      );
+      dep.access_control_allow_origin = Some("*".to_string());
+      map.insert(dep_url.to_string(), dep);
+
+      let fetcher = Arc::new(MapFetcher::new(map));
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+      let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+      host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+      let mut loader = VmJsModuleLoader::new(fetcher, document_url, 128 * 1024);
+      loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+      assert_eq!(
+        get_global_prop(&mut host, "result"),
+        Value::Number(1.0),
+        "expected cross-origin module with ACAO=* to load"
+      );
+      Ok(())
+    })
   }
 }
