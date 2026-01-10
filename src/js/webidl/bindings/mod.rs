@@ -212,6 +212,31 @@ mod tests {
   }
 
   #[derive(Default)]
+  struct AlertHost {
+    calls: Vec<usize>,
+  }
+
+  impl<'a> WebHostBindings<VmJsWebIdlBindingsCx<'a, AlertHost>> for AlertHost {
+    fn call_operation(
+      &mut self,
+      _rt: &mut VmJsWebIdlBindingsCx<'a, AlertHost>,
+      _receiver: Option<Value>,
+      interface: &'static str,
+      operation: &'static str,
+      overload: usize,
+      _args: Vec<BindingValue<Value>>,
+    ) -> Result<BindingValue<Value>, VmError> {
+      match (interface, operation) {
+        ("Window", "alert") => {
+          self.calls.push(overload);
+          Ok(BindingValue::Undefined)
+        }
+        _ => Err(VmError::TypeError("unimplemented host operation")),
+      }
+    }
+  }
+
+  #[derive(Default)]
   struct AttributeAndConstHost {
     limits: UrlLimits,
     params: HashMap<WeakGcObject, UrlSearchParams>,
@@ -626,5 +651,60 @@ mod tests {
         Ok(())
       })
     })
+  }
+
+  #[test]
+  fn generated_bindings_dispatch_window_alert_overloads() -> Result<(), VmError> {
+    let limits = HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let mut host = AlertHost::default();
+    {
+      let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+      install_window_bindings(&mut rt, &mut host)?;
+    }
+
+    let mut hooks = MicrotaskQueue::new();
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+    let alert_key = alloc_key(&mut scope, "alert")?;
+    let alert = scope
+      .heap()
+      .object_get_own_data_property_value(global, &alert_key)?
+      .expect("globalThis.alert should be defined");
+
+    // alert()
+    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[])?;
+
+    // alert("hi")
+    let hi_str = scope.alloc_string("hi")?;
+    scope.push_root(Value::String(hi_str))?;
+    let hi = Value::String(hi_str);
+    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[hi])?;
+
+    // alert("a", "b") -> dispatch uses min(args.len(), maxarg) so should still pick overload #1.
+    let a_str = scope.alloc_string("a")?;
+    scope.push_root(Value::String(a_str))?;
+    let b_str = scope.alloc_string("b")?;
+    scope.push_root(Value::String(b_str))?;
+    let a = Value::String(a_str);
+    let b = Value::String(b_str);
+    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[a, b])?;
+
+    assert_eq!(host.calls, vec![0, 1, 1]);
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
   }
 }

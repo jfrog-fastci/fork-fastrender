@@ -38,4 +38,4 @@ operations = ["append", "delete", "get", "getAll", "has", "set"]
 name = "Window"
 constructors = false
 attributes = []
-operations = ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask"]
+operations = ["alert", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask"]

@@ -84,6 +84,17 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn is_object(&self, value: Self::JsValue) -> bool;
   fn is_callable(&self, value: Self::JsValue) -> bool;
   fn is_boolean(&self, value: Self::JsValue) -> bool;
+  fn is_number(&self, value: Self::JsValue) -> bool;
+  fn is_bigint(&self, value: Self::JsValue) -> bool;
+  fn is_string(&self, value: Self::JsValue) -> bool;
+  fn is_string_object(&self, value: Self::JsValue) -> bool;
+  fn is_symbol(&self, value: Self::JsValue) -> bool;
+
+  /// Returns whether `value` is an embedding-defined platform object.
+  fn is_platform_object(&self, value: Self::JsValue) -> bool;
+
+  /// Returns whether `value` implements the given WebIDL interface.
+  fn implements_interface(&self, value: Self::JsValue, interface: webidl::InterfaceId) -> bool;
 
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
   fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error>;
@@ -97,6 +108,9 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   /// Return the property key for `%Symbol.iterator%` in the active realm.
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
+
+  /// Return the property key for `%Symbol.asyncIterator%` in the active realm.
+  fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
 
@@ -652,6 +666,35 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     matches!(value, Value::Bool(_))
   }
 
+  fn is_number(&self, value: Self::JsValue) -> bool {
+    matches!(value, Value::Number(_))
+  }
+
+  fn is_bigint(&self, value: Self::JsValue) -> bool {
+    matches!(value, Value::BigInt(_))
+  }
+
+  fn is_string(&self, value: Self::JsValue) -> bool {
+    matches!(value, Value::String(_))
+  }
+
+  fn is_string_object(&self, _value: Self::JsValue) -> bool {
+    // `vm-js` does not yet model boxed String objects.
+    false
+  }
+
+  fn is_symbol(&self, value: Self::JsValue) -> bool {
+    matches!(value, Value::Symbol(_))
+  }
+
+  fn is_platform_object(&self, value: Self::JsValue) -> bool {
+    self.state.hooks.is_platform_object(value)
+  }
+
+  fn implements_interface(&self, value: Self::JsValue, interface: webidl::InterfaceId) -> bool {
+    self.state.hooks.implements_interface(value, interface)
+  }
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
     use webidl::JsRuntime as _;
     self.cx.to_boolean(value)
@@ -758,6 +801,11 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
     let intr = self.intrinsics()?;
     Ok(PropertyKey::from_symbol(intr.well_known_symbols().iterator))
+  }
+
+  fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
+    let intr = self.intrinsics()?;
+    Ok(PropertyKey::from_symbol(intr.well_known_symbols().async_iterator))
   }
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
@@ -1255,6 +1303,34 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_boolean(self, value)
   }
 
+  fn is_number(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_number(self, value)
+  }
+
+  fn is_bigint(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_bigint(self, value)
+  }
+
+  fn is_string(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_string(self, value)
+  }
+
+  fn is_string_object(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::is_string_object(self, value)
+  }
+
+  fn is_symbol(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_symbol(self, value)
+  }
+
+  fn is_platform_object(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::is_platform_object(self, value)
+  }
+
+  fn implements_interface(&self, value: Self::JsValue, interface: webidl::InterfaceId) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::implements_interface(self, value, interface)
+  }
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_boolean(self, value)
   }
@@ -1365,6 +1441,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(self)
+  }
+
+  fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_async_iterator(self)
   }
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
