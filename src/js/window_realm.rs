@@ -3643,6 +3643,51 @@ fn event_prototype_stop_immediate_propagation_native(
   Ok(Value::Undefined)
 }
 
+fn event_target_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "EventTarget constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn event_target_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+  Ok(Value::Object(obj))
+}
+
 fn event_target_default_this_from_callee(
   scope: &Scope<'_>,
   callee: GcObject,
@@ -7234,6 +7279,14 @@ fn init_window_globals(
   scope.push_root(Value::Object(dispatch_event_func))?;
 
   let add_event_listener_key = alloc_key(&mut scope, "addEventListener")?;
+  // Minimal `EventTarget` constructor + prototype.
+  let event_target_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(event_target_proto))?;
+  scope.define_property(
+    event_target_proto,
+    add_event_listener_key,
+    data_desc(Value::Object(add_event_listener_func)),
+  )?;
   scope.define_property(
     global,
     add_event_listener_key,
@@ -7246,6 +7299,11 @@ fn init_window_globals(
   )?;
   let remove_event_listener_key = alloc_key(&mut scope, "removeEventListener")?;
   scope.define_property(
+    event_target_proto,
+    remove_event_listener_key,
+    data_desc(Value::Object(remove_event_listener_func)),
+  )?;
+  scope.define_property(
     global,
     remove_event_listener_key,
     data_desc(Value::Object(remove_event_listener_global_func)),
@@ -7257,6 +7315,11 @@ fn init_window_globals(
   )?;
   let dispatch_event_key = alloc_key(&mut scope, "dispatchEvent")?;
   scope.define_property(
+    event_target_proto,
+    dispatch_event_key,
+    data_desc(Value::Object(dispatch_event_func)),
+  )?;
+  scope.define_property(
     global,
     dispatch_event_key,
     data_desc(Value::Object(dispatch_event_global_func)),
@@ -7265,6 +7328,39 @@ fn init_window_globals(
     document_obj,
     dispatch_event_key,
     data_desc(Value::Object(dispatch_event_func)),
+  )?;
+
+  let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
+  let event_target_ctor_construct_id =
+    vm.register_native_construct(event_target_constructor_construct_native)?;
+  let event_target_ctor_name = scope.alloc_string("EventTarget")?;
+  scope.push_root(Value::String(event_target_ctor_name))?;
+  let event_target_ctor_func = scope.alloc_native_function(
+    event_target_ctor_call_id,
+    Some(event_target_ctor_construct_id),
+    event_target_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    event_target_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(event_target_ctor_func))?;
+  scope.define_property(
+    event_target_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(event_target_proto)),
+  )?;
+  scope.define_property(
+    event_target_proto,
+    constructor_key,
+    data_desc(Value::Object(event_target_ctor_func)),
+  )?;
+  let event_target_key = alloc_key(&mut scope, "EventTarget")?;
+  scope.define_property(
+    global,
+    event_target_key,
+    data_desc(Value::Object(event_target_ctor_func)),
   )?;
 
   // Store shared function objects on document so wrappers can reuse them.
@@ -8618,6 +8714,26 @@ mod tests {
       unbound_error,
       Err(VmError::TypeError(msg)) if msg == "Illegal invocation"
     ));
+
+    Ok(())
+  }
+
+  #[test]
+  fn event_target_constructor_exists_and_dispatches() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (typeof EventTarget !== 'function') return false;\n\
+        if (typeof EventTarget.prototype.addEventListener !== 'function') return false;\n\
+        const et = new EventTarget();\n\
+        let count = 0;\n\
+        et.addEventListener('x', () => { count++; });\n\
+        et.dispatchEvent(new Event('x'));\n\
+        return count === 1;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
 
     Ok(())
   }
