@@ -258,6 +258,54 @@ fn abspos_percent_height_uses_used_border_box_size_for_relayout_percentage_bases
 }
 
 #[test]
+fn abspos_in_flow_percent_height_resolves_against_definite_used_height() {
+  // Regression test: absolutely positioned blocks can have `height:auto` in computed style while
+  // still producing a definite used height via `top`/`bottom` insets (CSS 2.1 §10.6.4). In that
+  // case, in-flow descendants with `height: 100%` must resolve against that used height rather
+  // than computing the percentage to `auto` (which would collapse the box to 0px).
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = fastrender::FastRender::new().expect("renderer");
+      let html = r#"
+        <style>
+          body { margin: 0; background: white; }
+          .cb { position: relative; width: 200px; height: 100px; background: white; }
+          .abs { position: absolute; top: 10px; bottom: 0; left: 0; right: 0; }
+          .fill { height: 100%; background: rgb(255, 0, 0); }
+        </style>
+        <div class="cb"><div class="abs"><div class="fill"></div></div></div>
+      "#;
+
+      let pixmap = renderer.render_html(html, 220, 120).expect("render");
+
+      assert_eq!(
+        pixel(&pixmap, 10, 5),
+        [255, 255, 255, 255],
+        "expected area above the abspos box to remain white"
+      );
+      assert_eq!(
+        pixel(&pixmap, 10, 15),
+        [255, 0, 0, 255],
+        "expected `height:100%` in-flow child to fill the abspos used height"
+      );
+      assert_eq!(
+        pixel(&pixmap, 10, 95),
+        [255, 0, 0, 255],
+        "expected child to paint near the bottom of the abspos box"
+      );
+      assert_eq!(
+        pixel(&pixmap, 10, 105),
+        [255, 255, 255, 255],
+        "expected pixels below the containing block to remain white"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn abspos_percent_height_in_inline_flow_uses_block_containing_block_not_inline_wrapper() {
   // Regression test: block layout wraps runs of inline-level children in a synthetic
   // `BoxType::Inline` container so the inline formatting context can lay them out. When that
