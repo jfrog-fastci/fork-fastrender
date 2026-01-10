@@ -428,31 +428,41 @@ where
           event_loop.perform_microtask_checkpoint(host)?;
         }
 
-        let discovered = {
+        let spec = {
           let Some(doc) = parser.document() else {
             return Err(Error::Other(
               "html_script_processing: parser document unavailable".to_string(),
             ));
           };
           let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-          let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker);
-          scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?
+          build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker)
         };
-        let mut host_wrapper = ParserHost {
-          inner: host,
-          parser: &parser,
+
+        let should_run = {
+          let mut doc = parser.document_mut().ok_or_else(|| {
+            Error::Other("html_script_processing: parser document unavailable".to_string())
+          })?;
+          crate::js::prepare_script_element_dom2(&mut doc, script, &spec)
         };
-        apply_actions(
-          &mut scheduler,
-          &mut host_wrapper,
-          loader,
-          &mut pending_fetches,
-          &mut queued_task_scripts,
-          event_loop,
-          &runner,
-          &state,
-          discovered.actions,
-        )?;
+
+        if should_run {
+          let discovered = scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?;
+          let mut host_wrapper = ParserHost {
+            inner: host,
+            parser: &parser,
+          };
+          apply_actions(
+            &mut scheduler,
+            &mut host_wrapper,
+            loader,
+            &mut pending_fetches,
+            &mut queued_task_scripts,
+            event_loop,
+            &runner,
+            &state,
+            discovered.actions,
+          )?;
+        }
       }
       StreamingParserYield::NeedMoreInput => {
         return Err(Error::Other(

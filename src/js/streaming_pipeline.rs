@@ -246,19 +246,27 @@ impl ClassicScriptPipelineState {
     }
 
     // Scope the `document()` borrow so we can later mutably borrow `self` when applying actions.
-    let (spec, discovered) = {
+    let spec = {
       let dom = self.parser.document().ok_or_else(|| {
         Error::Other("internal error: parser document unavailable at script boundary".to_string())
       })?;
-      let spec = self.build_script_element_spec(&dom, script_node_id, base_url_at_discovery);
-      let base_url_at_discovery = spec.base_url.clone();
-      let discovered = self.scheduler.discovered_parser_script(
-        spec.clone(),
-        script_node_id,
-        base_url_at_discovery,
-      )?;
-      (spec, discovered)
+      self.build_script_element_spec(&dom, script_node_id, base_url_at_discovery)
     };
+    let should_run = {
+      let mut dom = self.parser.document_mut().ok_or_else(|| {
+        Error::Other("internal error: parser document unavailable at script boundary".to_string())
+      })?;
+      crate::js::prepare_script_element_dom2(&mut dom, script_node_id, &spec)
+    };
+    if !should_run {
+      return Ok(());
+    }
+
+    let base_url_at_discovery = spec.base_url.clone();
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec.clone(), script_node_id, base_url_at_discovery)?;
 
     self
       .script_node_by_id
@@ -844,6 +852,75 @@ mod tests {
     }
   }
 
+  struct DynHost {
+    dom: Document,
+    executed: Vec<(String, bool)>,
+  }
+ 
+  impl DynHost {
+    fn new(dom: Document) -> Self {
+      Self {
+        dom,
+        executed: Vec::new(),
+      }
+    }
+  }
+ 
+  impl DomHost for DynHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+ 
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
+  }
+ 
+  impl ScriptLoader for DynHost {
+    type Handle = usize;
+ 
+    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+      Err(Error::Other(format!("unexpected load_blocking for url={url}")))
+    }
+ 
+    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+      Err(Error::Other(format!("unexpected start_load for url={url}")))
+    }
+ 
+    fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+      Ok(None)
+    }
+  }
+ 
+  impl ScriptExecutor for DynHost {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push((script_text.to_string(), spec.force_async));
+      Ok(())
+    }
+  }
+ 
+  impl ScriptEventDispatcher for DynHost {
+    fn dispatch_script_event(
+      &mut self,
+      _event: ScriptElementEvent,
+      _spec: &ScriptElementSpec,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+ 
   #[test]
   fn build_script_element_spec_ignores_inert_or_foreign_scripts() {
     let mut doc = Document::new(QuirksMode::NoQuirks);
@@ -966,6 +1043,158 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn parser_inserted_module_script_can_execute_later_after_mutation() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+ 
+    // Module scripts are not executed by FastRender today. HTML still requires that parser-inserted
+    // scripts that do not run are converted into dynamic scripts by clearing the parser-document
+    // slot and (when `async` is absent) setting force-async.
+    p.feed_str(r#"<!doctype html><script id=s type="module"></script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(host.log.is_empty(), "expected unsupported module script not to execute");
+ 
+    let doc = p
+      .finished_document()
+      .expect("expected pipeline to produce a finished document");
+    let script = doc.get_element_by_id("s").expect("expected <script id=s>");
+ 
+    let script_node = doc.node(script);
+    assert!(
+      !script_node.script_parser_document,
+      "expected parser document to be cleared for unsupported parser-inserted scripts"
+    );
+    assert!(
+      script_node.script_force_async,
+      "expected force async to be set for unsupported parser-inserted scripts without async attr"
+    );
+    assert!(
+      !script_node.script_already_started,
+      "expected already started to remain false for unsupported parser-inserted scripts"
+    );
+ 
+    // Now treat the element as dynamic: mutate it into a runnable classic script.
+    let mut dyn_host = DynHost::new(doc);
+    let mut scheduler = ClassicScriptScheduler::<DynHost>::new();
+    let mut event_loop = EventLoop::<DynHost>::new();
+ 
+    // Add some inline script text while the element is still `type="module"`. This must not mark
+    // the element as already started.
+    let module_text = dyn_host.dom.create_text("MODULE");
+    dyn_host.dom.append_child(script, module_text).expect("append_child");
+    crate::js::dom_integration::prepare_dynamic_script_on_children_changed(
+      &mut dyn_host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+    )?;
+    assert!(
+      !dyn_host.dom.node(script).script_already_started,
+      "unsupported dynamic scripts must not be marked already started"
+    );
+    event_loop.run_until_idle(&mut dyn_host, RunLimits::unbounded())?;
+    assert!(
+      dyn_host.executed.is_empty(),
+      "expected unsupported dynamic script type not to execute"
+    );
+ 
+    // Convert to classic by removing `type` and replacing the text content.
+    dyn_host.dom.remove_child(script, module_text).expect("remove_child");
+    dyn_host
+      .dom
+      .remove_attribute(script, "type")
+      .expect("remove_attribute");
+    let classic_text = dyn_host.dom.create_text("RUN");
+    dyn_host.dom.append_child(script, classic_text).expect("append_child");
+ 
+    crate::js::dom_integration::prepare_dynamic_script_on_children_changed(
+      &mut dyn_host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+    )?;
+    event_loop.run_until_idle(&mut dyn_host, RunLimits::unbounded())?;
+ 
+    assert_eq!(
+      dyn_host.executed,
+      vec![("RUN".to_string(), true)],
+      "expected mutated classic script to execute with force_async inherited from parser conversion"
+    );
+    assert!(
+      dyn_host.dom.node(script).script_already_started,
+      "expected already started to be set once the classic script is prepared"
+    );
+    Ok(())
+  }
+ 
+  #[test]
+  fn parser_inserted_empty_inline_script_executes_after_children_change() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+ 
+    p.feed_str(r#"<!doctype html><script id=s></script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(
+      host.log.is_empty(),
+      "expected empty inline parser-inserted script not to execute"
+    );
+ 
+    let doc = p
+      .finished_document()
+      .expect("expected pipeline to produce a finished document");
+    let script = doc.get_element_by_id("s").expect("expected <script id=s>");
+ 
+    let script_node = doc.node(script);
+    assert!(
+      !script_node.script_parser_document,
+      "expected parser document to be cleared for empty parser-inserted scripts"
+    );
+    assert!(
+      script_node.script_force_async,
+      "expected force async to be set for empty parser-inserted scripts without async attr"
+    );
+    assert!(
+      !script_node.script_already_started,
+      "expected already started to remain false for empty parser-inserted scripts"
+    );
+ 
+    let mut dyn_host = DynHost::new(doc);
+    let mut scheduler = ClassicScriptScheduler::<DynHost>::new();
+    let mut event_loop = EventLoop::<DynHost>::new();
+ 
+    // Trigger children-changed without any text content; should still be a no-op.
+    crate::js::dom_integration::prepare_dynamic_script_on_children_changed(
+      &mut dyn_host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+    )?;
+    assert!(
+      !dyn_host.dom.node(script).script_already_started,
+      "empty scripts must not be marked already started"
+    );
+ 
+    let text = dyn_host.dom.create_text("RUN");
+    dyn_host.dom.append_child(script, text).expect("append_child");
+    crate::js::dom_integration::prepare_dynamic_script_on_children_changed(
+      &mut dyn_host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+    )?;
+    event_loop.run_until_idle(&mut dyn_host, RunLimits::unbounded())?;
+ 
+    assert_eq!(
+      dyn_host.executed,
+      vec![("RUN".to_string(), true)],
+      "expected dynamically prepared script to execute with force_async inherited from parser conversion"
+    );
+    Ok(())
+  }
+ 
   #[test]
   fn template_script_is_converted_to_dynamic_and_executes_when_inserted() -> Result<()> {
     let mut host = Host::default();

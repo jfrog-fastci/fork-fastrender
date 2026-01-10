@@ -246,6 +246,17 @@ where
     }
 
     let spec = self.build_script_spec(script_node)?;
+    let should_run = {
+      let Some(sink) = self.parser.sink() else {
+        return Err(Error::Other("page_load: parser sink unavailable".to_string()));
+      };
+      let mut doc = sink.document_mut();
+      crate::js::prepare_script_element_dom2(&mut doc, script_node, &spec)
+    };
+    if !should_run {
+      return Ok(());
+    }
+
     let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
     let is_deferred = spec.script_type == ScriptType::Classic
       && spec.src.is_some()

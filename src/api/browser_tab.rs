@@ -801,6 +801,32 @@ impl BrowserTabHost {
               script,
               &base,
             );
+
+            // HTML: "prepare the script element" can return early without executing the script
+            // (e.g. unsupported `type`, empty inline script). In that case, the spec clears the
+            // "parser document" internal slot (and may set force-async) so future mutations/insertion
+            // treat the element like a dynamic script.
+            let should_run = self.mutate_dom(|dom| {
+              (
+                crate::js::prepare_script_element_dom2(dom, script, &spec),
+                /* changed */ false,
+              )
+            });
+            if !should_run {
+              // Sync any DOM mutations (including internal-slot updates above) back into the
+              // streaming parser's live DOM before resuming parsing.
+              let updated = self.dom().clone_with_events();
+              {
+                let Some(mut doc) = state.parser.document_mut() else {
+                  return Err(Error::Other(
+                    "StreamingHtmlParser yielded a script without an active document".to_string(),
+                  ));
+                };
+                *doc = updated;
+              }
+              continue;
+            }
+
             let base_url_at_discovery = spec.base_url.clone();
 
             with_active_streaming_parser(&state.parser, || {

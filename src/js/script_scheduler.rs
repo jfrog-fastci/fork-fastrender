@@ -626,15 +626,18 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     base_url_at_discovery: Option<String>,
   ) -> Result<DiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
-
-    if element.is_suppressed_by_nomodule(&self.options) {
-      return Ok(DiscoveredScript {
-        id,
-        actions: Vec::new(),
-      });
-    }
     let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
 
+    if element.is_suppressed_by_nomodule(&self.options) {
+      return Ok(DiscoveredScript { id, actions });
+    }
+
+    // HTML: If there is no `src` attribute and the source text is empty, "prepare a script"
+    // returns early.
+    if !element.src_attr_present && element.inline_text.is_empty() {
+      return Ok(DiscoveredScript { id, actions });
+    }
+ 
     match element.script_type {
       ScriptType::Classic => {
         if element.src_attr_present {

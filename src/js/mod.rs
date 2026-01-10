@@ -444,6 +444,37 @@ pub fn determine_script_type_dom2(
     doc.get_attribute(node, "language").ok().flatten(),
   )
 }
+
+pub(crate) fn prepare_script_element_dom2(
+  doc: &mut crate::dom2::Document,
+  script: crate::dom2::NodeId,
+  spec: &ScriptElementSpec,
+) -> bool {
+  if doc.node(script).script_already_started {
+    return false;
+  }
+
+  let was_parser_inserted = doc.node(script).script_parser_document;
+  doc.node_mut(script).script_parser_document = false;
+  if was_parser_inserted && !spec.async_attr {
+    doc.node_mut(script).script_force_async = true;
+  }
+
+  let should_run = if spec.script_type != ScriptType::Classic {
+    false
+  } else if spec.src_attr_present {
+    spec.src.as_deref().is_some_and(|src| !src.is_empty())
+  } else {
+    !spec.inline_text.is_empty()
+  };
+
+  if should_run && was_parser_inserted {
+    doc.node_mut(script).script_parser_document = true;
+    doc.node_mut(script).script_force_async = false;
+  }
+
+  should_run
+}
 #[cfg(test)]
 mod tests {
   use super::{determine_script_type, determine_script_type_dom2, ScriptType};

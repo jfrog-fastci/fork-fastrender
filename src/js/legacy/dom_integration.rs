@@ -103,7 +103,12 @@ where
       return (None, false);
     }
 
-    dom.node_mut(script).script_already_started = true;
+    // Only classic scripts are executed by this dynamic insertion helper. Do not set the HTML
+    // "already started" flag for unsupported script types so later mutations can still produce a
+    // runnable classic script.
+    if spec.script_type == ScriptType::Classic {
+      dom.node_mut(script).script_already_started = true;
+    }
     (Some(spec), false)
   });
 

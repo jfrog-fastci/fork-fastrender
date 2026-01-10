@@ -111,12 +111,13 @@ pub struct Node {
   /// selector matching and other traversals.
   pub inert_subtree: bool,
   pub script_already_started: bool,
-  /// Whether this `<script>` element was created by the HTML parser as part of full document
-  /// parsing.
+  /// Whether this script element was created by the HTML parser.
   ///
-  /// This corresponds to the HTML spec's "parser-inserted" internal slot for scripts. It is
-  /// distinct from fragment parsing (e.g. `innerHTML`), which does **not** mark scripts as parser
-  /// inserted.
+  /// This mirrors the HTML spec's per-script-element "parser document" internal slot: it is set
+  /// for parser-inserted scripts and cleared when the element stops being parser-inserted (e.g.
+  /// when a parser-inserted script fails to run and may later be re-prepared dynamically).
+  ///
+  /// Fragment parsing (e.g. `innerHTML`) does **not** mark scripts as parser-inserted.
   pub script_parser_document: bool,
   /// Whether the script's `async` IDL attribute should default to true regardless of the presence
   /// of an explicit `async` content attribute.
@@ -712,9 +713,9 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
-      script_already_started: false,
-      script_force_async: false,
       script_parser_document: false,
+      script_force_async: false,
+      script_already_started: false,
       mathml_annotation_xml_integration_point: false,
     });
     if let Some(parent_id) = parent {
