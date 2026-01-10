@@ -656,6 +656,22 @@ impl ModuleLoaderHooks<'_> {
       return Err(VmError::Throw(value));
     }
 
+    // HTML: module scripts can be associated with Subresource Integrity metadata via import maps
+    // (`"integrity"` top-level key). Enforce the integrity metadata when present.
+    //
+    // Spec: "resolve a module integrity metadata" (WHATWG HTML import maps).
+    let integrity_metadata = url::Url::parse(url)
+      .ok()
+      .map(|url| self.import_map_state.resolve_module_integrity_metadata(&url))
+      .unwrap_or("");
+    if !integrity_metadata.is_empty() {
+      if let Err(message) = crate::js::sri::verify_integrity(&fetched.bytes, integrity_metadata) {
+        let err_value =
+          Self::throw_type_error(vm, scope, &format!("SRI blocked module {url}: {message}"))?;
+        return Err(VmError::Throw(err_value));
+      }
+    }
+
     if fetched.bytes.len() > self.max_script_bytes {
       let message = format!(
         "module {url} is too large ({} bytes > max {})",

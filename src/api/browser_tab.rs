@@ -7435,6 +7435,127 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn module_imports_enforce_import_map_integrity_metadata() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let module_source = "export default 123;";
+    let module_url = Url::parse("data:text/javascript,export%20default%20123%3B")
+      .expect("data: URL should parse")
+      .to_string();
+
+    let digest = Sha256::digest(module_source.as_bytes());
+    let integrity = format!("sha256-{}", BASE64_STANDARD.encode(digest));
+
+    let importmap = {
+      let mut root = serde_json::Map::new();
+      let mut imports = serde_json::Map::new();
+      imports.insert(
+        "dep".to_string(),
+        serde_json::Value::String(module_url.clone()),
+      );
+      root.insert("imports".to_string(), serde_json::Value::Object(imports));
+      let mut integrity_map = serde_json::Map::new();
+      integrity_map.insert(
+        module_url.clone(),
+        serde_json::Value::String(integrity),
+      );
+      root.insert(
+        "integrity".to_string(),
+        serde_json::Value::Object(integrity_map),
+      );
+      serde_json::Value::Object(root).to_string()
+    };
+
+    let html = format!(
+      r#"<!doctype html><body>
+          <script type="importmap">{importmap}</script>
+          <script type="module">
+            import x from "dep";
+            document.body.setAttribute("data-integrity", String(x));
+          </script>
+        </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-integrity")
+        .expect("get_attribute should succeed"),
+      Some("123")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_imports_reject_mismatched_import_map_integrity_metadata() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let module_url = Url::parse("data:text/javascript,export%20default%20123%3B")
+      .expect("data: URL should parse")
+      .to_string();
+
+    let digest = Sha256::digest(b"other");
+    let integrity = format!("sha256-{}", BASE64_STANDARD.encode(digest));
+
+    let importmap = {
+      let mut root = serde_json::Map::new();
+      let mut imports = serde_json::Map::new();
+      imports.insert(
+        "dep".to_string(),
+        serde_json::Value::String(module_url.clone()),
+      );
+      root.insert("imports".to_string(), serde_json::Value::Object(imports));
+      let mut integrity_map = serde_json::Map::new();
+      integrity_map.insert(
+        module_url.clone(),
+        serde_json::Value::String(integrity),
+      );
+      root.insert(
+        "integrity".to_string(),
+        serde_json::Value::Object(integrity_map),
+      );
+      serde_json::Value::Object(root).to_string()
+    };
+
+    let html = format!(
+      r#"<!doctype html><body>
+          <script type="importmap">{importmap}</script>
+          <script type="module">
+            import x from "dep";
+            document.body.setAttribute("data-integrity", String(x));
+          </script>
+        </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-integrity")
+        .expect("get_attribute should succeed"),
+      None
+    );
+    Ok(())
+  }
+
+  #[test]
   fn load_waits_for_async_external_script_execution() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let (mut host, mut event_loop) = build_host(
