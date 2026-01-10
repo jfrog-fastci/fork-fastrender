@@ -1,6 +1,6 @@
 use crate::backend::{Backend, BackendInit};
 use crate::cookie_jar::CookieJar;
-use crate::wpt_report::WptReport;
+use crate::wpt_report::{WptReport, WptSubtest};
 use crate::RunError;
 use crate::window_or_worker_global_scope::{
   forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
@@ -351,6 +351,9 @@ struct CachedKeys {
   harness_status: GcString,
   message: GcString,
   stack: GcString,
+  subtests: GcString,
+  name: GcString,
+  status: GcString,
 }
 
 impl CachedKeys {
@@ -364,6 +367,9 @@ impl CachedKeys {
       harness_status: scope.alloc_string("harness_status")?,
       message: scope.alloc_string("message")?,
       stack: scope.alloc_string("stack")?,
+      subtests: scope.alloc_string("subtests")?,
+      name: scope.alloc_string("name")?,
+      status: scope.alloc_string("status")?,
     })
   }
 }
@@ -938,6 +944,20 @@ impl JsWptRuntime {
     // Report hook.
     let report_fn = rt.alloc_native_function(native_wpt_report).expect("alloc report fn");
     rt.env.set("__fastrender_wpt_report", Value::Object(report_fn));
+    // Mirror the host hook on `window`/`globalThis` so WPT reporter shims that probe
+    // `globalThis.__fastrender_wpt_report` work under the vm-js backend (which otherwise treats
+    // global bindings and global object properties as separate namespaces).
+    let report_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(
+        scope
+          .alloc_string("__fastrender_wpt_report")
+          .expect("alloc report key"),
+      )
+    };
+    rt
+      .define_data_prop(rt.global_object, report_key, Value::Object(report_fn))
+      .expect("define report hook");
 
     // Timers + microtasks.
     let set_timeout = rt.alloc_native_function(native_set_timeout).expect("alloc setTimeout");
@@ -3076,6 +3096,7 @@ impl JsWptRuntime {
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => self.eval_lit_bool(&node.stx),
       Expr::LitNull(_node) => self.eval_lit_null(),
+      Expr::This(_node) => Ok(self.this_binding),
       Expr::Id(node) => self.eval_id(&node.stx),
       Expr::Binary(node) => self.eval_binary(&node.stx),
       Expr::Member(node) => self.eval_member(&node.stx),
@@ -7976,12 +7997,16 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
   let mut harness_status: Option<String> = None;
   let mut message: Option<String> = None;
   let mut stack: Option<String> = None;
+  let mut subtests: Vec<WptSubtest> = Vec::new();
 
   if let Value::Object(obj) = payload {
     let file_status_key = PropertyKey::from_string(rt.keys.file_status);
     let harness_status_key = PropertyKey::from_string(rt.keys.harness_status);
     let message_key = PropertyKey::from_string(rt.keys.message);
     let stack_key = PropertyKey::from_string(rt.keys.stack);
+    let subtests_key = PropertyKey::from_string(rt.keys.subtests);
+    let name_key = PropertyKey::from_string(rt.keys.name);
+    let status_key = PropertyKey::from_string(rt.keys.status);
 
     if let Some(desc) = rt.heap.get_property(obj, &file_status_key)? {
       if let PropertyKind::Data { value, .. } = desc.kind {
@@ -8011,6 +8036,62 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
         }
       }
     }
+
+    // Subtests array (optional).
+    if let Some(desc) = rt.heap.get_property(obj, &subtests_key)? {
+      if let PropertyKind::Data { value, .. } = desc.kind {
+        if let Value::Object(arr) = value {
+          if let Some(elements) = rt.arrays.get(&arr).cloned() {
+            for elem in elements {
+              let Value::Object(st_obj) = elem else {
+                continue;
+              };
+
+              let mut st_name: Option<String> = None;
+              let mut st_status: Option<String> = None;
+              let mut st_message: Option<String> = None;
+              let mut st_stack: Option<String> = None;
+
+              if let Some(desc) = rt.heap.get_property(st_obj, &name_key)? {
+                if let PropertyKind::Data { value, .. } = desc.kind {
+                  if !matches!(value, Value::Undefined | Value::Null) {
+                    st_name = Some(rt.value_to_string_lossy(value));
+                  }
+                }
+              }
+              if let Some(desc) = rt.heap.get_property(st_obj, &status_key)? {
+                if let PropertyKind::Data { value, .. } = desc.kind {
+                  if !matches!(value, Value::Undefined | Value::Null) {
+                    st_status = Some(rt.value_to_string_lossy(value));
+                  }
+                }
+              }
+              if let Some(desc) = rt.heap.get_property(st_obj, &message_key)? {
+                if let PropertyKind::Data { value, .. } = desc.kind {
+                  if !matches!(value, Value::Undefined | Value::Null) {
+                    st_message = Some(rt.value_to_string_lossy(value));
+                  }
+                }
+              }
+              if let Some(desc) = rt.heap.get_property(st_obj, &stack_key)? {
+                if let PropertyKind::Data { value, .. } = desc.kind {
+                  if !matches!(value, Value::Undefined | Value::Null) {
+                    st_stack = Some(rt.value_to_string_lossy(value));
+                  }
+                }
+              }
+
+              subtests.push(WptSubtest {
+                name: st_name.unwrap_or_else(|| "<unnamed subtest>".to_string()),
+                status: st_status.unwrap_or_else(|| "error".to_string()),
+                message: st_message,
+                stack: st_stack,
+              });
+            }
+          }
+        }
+      }
+    }
   } else if matches!(payload, Value::String(_)) {
     file_status = Some(rt.value_to_string_lossy(payload));
   }
@@ -8020,7 +8101,7 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
     harness_status: harness_status.unwrap_or_else(|| "ok".to_string()),
     message,
     stack,
-    subtests: Vec::new(),
+    subtests,
   };
   rt.report = Some(report);
 

@@ -54,6 +54,12 @@ fn assert_wpt_pass(id: &str) {
       .wpt_report
       .unwrap_or_else(|| panic!("{id} should include report payload under backend {backend}"));
     assert_eq!(report.file_status, "pass");
+    if id.starts_with("smoke/") {
+      assert!(
+        !report.subtests.is_empty(),
+        "{id} should include at least one subtest under backend {backend}: {report:#?}"
+      );
+    }
   }
 }
 
