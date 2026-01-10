@@ -289,6 +289,17 @@ pub struct BlockFormattingContext {
   /// This is threaded into descendant block contexts so `layout_flow_children` can tell when it is
   /// laying out children of an independent formatting context root.
   independent_context_root_id: Option<usize>,
+  /// When true, avoid falling back to the viewport size when the containing block inline size is
+  /// near-zero.
+  ///
+  /// Block layout includes a safeguard that replaces collapsed containing widths (≤ 1px) with the
+  /// viewport inline size. This keeps percentage-based sizing usable when flex/grid measurement
+  /// passes a 0px constraint during real layout.
+  ///
+  /// Intrinsic sizing probes (e.g. min-/max-content block sizes used by grid/flex track sizing)
+  /// intentionally treat percentage bases as 0px; using the viewport fallback inflates intrinsic
+  /// measurements (notably for aspect-ratio replaced content sized with `width: 100%`).
+  suppress_near_zero_width_viewport_fallback: bool,
   parallelism: LayoutParallelism,
 }
 
@@ -350,6 +361,7 @@ impl BlockFormattingContext {
       flex_item_mode: false,
       independent_context_root_mode: false,
       independent_context_root_id: None,
+      suppress_near_zero_width_viewport_fallback: false,
       parallelism,
     }
   }
@@ -385,6 +397,7 @@ impl BlockFormattingContext {
       flex_item_mode: true,
       independent_context_root_mode: true,
       independent_context_root_id: None,
+      suppress_near_zero_width_viewport_fallback: false,
       parallelism,
     }
   }
@@ -4374,7 +4387,11 @@ impl BlockFormattingContext {
     } else {
       constraints.used_border_box_height
     };
-    if !intrinsic_width && containing_width <= 1.0 && used_border_box_inline.is_none() {
+    if !intrinsic_width
+      && containing_width <= 1.0
+      && used_border_box_inline.is_none()
+      && !self.suppress_near_zero_width_viewport_fallback
+    {
       let width_is_absolute = parent
         .style
         .width
@@ -7687,7 +7704,10 @@ impl FormattingContext for BlockFormattingContext {
     // width as the used content width without honoring max-width).
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       let mut containing_width = inline_percentage_base;
-      if containing_width <= 1.0 && constraints.used_border_box_width.is_none() {
+      if containing_width <= 1.0
+        && constraints.used_border_box_width.is_none()
+        && !self.suppress_near_zero_width_viewport_fallback
+      {
         let width_is_absolute = style
           .width
           .as_ref()
@@ -7857,7 +7877,11 @@ impl FormattingContext for BlockFormattingContext {
     } else {
       constraints.used_border_box_height
     };
-    if containing_width <= 1.0 && !intrinsic_width_mode && used_border_box_inline.is_none() {
+    if containing_width <= 1.0
+      && !intrinsic_width_mode
+      && used_border_box_inline.is_none()
+      && !self.suppress_near_zero_width_viewport_fallback
+    {
       let width_is_absolute = style
         .width
         .as_ref()
@@ -10286,11 +10310,22 @@ impl FormattingContext for BlockFormattingContext {
     // 1) running layout under a *definite* inline constraint equal to the intrinsic inline size, and
     // 2) installing a temporary style override that resolves padding/margin percentages against a
     //    0px base so they don't pick up that definite inline constraint.
-    let constraints = if inline_is_horizontal {
+    let mut constraints = if inline_is_horizontal {
       LayoutConstraints::new(AvailableSpace::Definite(intrinsic_inline), AvailableSpace::Indefinite)
     } else {
       LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(intrinsic_inline))
     };
+    // Block layout contains a "near-zero width" safeguard that falls back to the viewport size in
+    // order to keep percentage sizing usable when flex/grid measurement passes a collapsed
+    // containing block. Intrinsic block-size probes intentionally pass definite constraints that
+    // can be 0px (e.g. when the min-content inline size is 0), so mark the computed inline size as
+    // an explicit used border-box override to prevent that fallback from inflating intrinsic
+    // measurements.
+    if inline_is_horizontal {
+      constraints.used_border_box_width = Some(intrinsic_inline);
+    } else {
+      constraints.used_border_box_height = Some(intrinsic_inline);
+    }
     let mut probe_style = style_override.unwrap_or_else(|| box_node.style.clone());
     {
       let s = Arc::make_mut(&mut probe_style);
@@ -10377,14 +10412,16 @@ impl FormattingContext for BlockFormattingContext {
       }
     }
 
+    let mut probe_ctx = self.clone();
+    probe_ctx.suppress_near_zero_width_viewport_fallback = true;
     let fragment = if box_node.id != 0 {
       crate::layout::style_override::with_style_override(box_node.id, probe_style, || {
-        self.layout(box_node, &constraints)
+        probe_ctx.layout(box_node, &constraints)
       })?
     } else {
       let mut cloned = box_node.clone();
       cloned.style = probe_style;
-      self.layout(&cloned, &constraints)?
+      probe_ctx.layout(&cloned, &constraints)?
     };
     let block_size = if inline_is_horizontal {
       fragment.bounds.height()
@@ -15274,6 +15311,55 @@ mod tests {
     assert_eq!(
       crate::text::pipeline::ShapingPipeline::debug_new_call_count(),
       1
+    );
+  }
+
+  #[test]
+  fn intrinsic_block_size_probe_does_not_fallback_to_viewport_width() {
+    // Regression: intrinsic block-size probes used to inflate nested layout when the min-content
+    // inline size was 0px. A "near-zero containing width" safeguard would fall back to the
+    // viewport size during descendant layout, producing huge intrinsic block sizes (e.g. square
+    // images sized with `width: 100%` would report an intrinsic height equal to the viewport
+    // inline size).
+
+    // Outer wrapper whose min-content inline size becomes 0 due to percentage-based descendants.
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    let outer_style = Arc::new(outer_style);
+
+    // Intermediate block so the descendant layout path is exercised (the safeguard triggers on
+    // this element before laying out the replaced child).
+    let mut middle_style = ComputedStyle::default();
+    middle_style.display = Display::Block;
+    let middle_style = Arc::new(middle_style);
+
+    // Replaced element sized with percentages; with a 0px percentage base its used size should be
+    // 0x0, not expanded to the viewport.
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Block;
+    replaced_style.width = Some(Length::percent(100.0));
+    let replaced_style = Arc::new(replaced_style);
+    let replaced = BoxNode::new_replaced(
+      replaced_style,
+      crate::tree::box_tree::ReplacedType::Canvas,
+      Some(Size::new(1000.0, 1000.0)),
+      Some(1.0),
+    );
+
+    let middle = BoxNode::new_block(middle_style, FormattingContextType::Block, vec![replaced]);
+    let outer = BoxNode::new_block(outer_style, FormattingContextType::Block, vec![middle]);
+
+    let factory = FormattingContextFactory::new().with_parallelism(LayoutParallelism::disabled());
+    let fc = factory.create(FormattingContextType::Block);
+
+    let min_block = fc
+      .compute_intrinsic_block_size(&outer, IntrinsicSizingMode::MinContent)
+      .expect("intrinsic block size");
+
+    assert!(
+      min_block < 1.0,
+      "expected intrinsic min-content block size to remain near 0px, got {:.2}",
+      min_block
     );
   }
 }

@@ -8318,6 +8318,8 @@ impl GridFormattingContext {
     record_taffy_invocation(TaffyAdapterKind::Grid);
     let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_enabled();
     let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
+    let trace_measure_id =
+      crate::debug::runtime::runtime_toggles().usize("FASTR_TRACE_GRID_MEASURE_ID");
     // Render pipeline always installs a deadline guard (even when disabled), so only enable
     // the Taffy cancellation path when the active deadline is actually configured.
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
@@ -8329,6 +8331,7 @@ impl GridFormattingContext {
       {
         let factory = self.factory.clone();
         let viewport_size = self.viewport_size;
+        let trace_measure_id = trace_measure_id;
         let mut cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
         move |known_dimensions,
               available_space,
@@ -8351,6 +8354,12 @@ impl GridFormattingContext {
             return taffy::tree::MeasureOutput::ZERO;
           };
           let box_node = unsafe { &*node_ptr };
+          if trace_measure_id.is_some_and(|id| id == box_node.id) {
+            eprintln!(
+              "[grid-measure] box_id={} taffy_node_id={:?} known={:?} avail={:?}",
+              box_node.id, node_id, known_dimensions, available_space
+            );
+          }
           let style_override = style_override_for(box_node.id);
           let style: &ComputedStyle = style_override
             .as_deref()
@@ -8463,6 +8472,12 @@ impl GridFormattingContext {
               _ => None,
             };
           }
+          if trace_measure_id.is_some_and(|id| id == box_node.id) {
+            eprintln!(
+              "[grid-measure] box_id={} intrinsic_w={intrinsic_width:?} intrinsic_h={intrinsic_height:?}",
+              box_node.id
+            );
+          }
 
           if !(wants_baseline_y || wants_baseline_x)
             && (intrinsic_width.is_some() || intrinsic_height.is_some())
@@ -8489,10 +8504,19 @@ impl GridFormattingContext {
             let size = taffy::geometry::Size { width, height };
             let output = taffy::tree::MeasureOutput::from_size(size);
             cache.insert(key, output);
+            if trace_measure_id.is_some_and(|id| id == box_node.id) {
+              eprintln!("[grid-measure] box_id={} fast_path size={size:?}", box_node.id);
+            }
             return output;
           }
           let constraints =
             constraints_from_taffy(viewport_size, known_dimensions, available_space, None);
+          if trace_measure_id.is_some_and(|id| id == box_node.id) {
+            eprintln!(
+              "[grid-measure] box_id={} layout_path constraints={:?}",
+              box_node.id, constraints
+            );
+          }
           let fragment = match fc.layout(box_node, &constraints) {
             Ok(fragment) => fragment,
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
@@ -10752,10 +10776,23 @@ impl FormattingContext for GridFormattingContext {
         .map(|d| d.to_selector())
         .unwrap_or_else(|| "<anon>".to_string());
       eprintln!(
-        "[grid-layout] start id={} in_flow_children={} selector={}",
+        "[grid-layout] start id={} in_flow_children={} selector={} constraints={{avail_w={:?} avail_h={:?} used_w={:?} used_h={:?} inline_base={:?} block_base={:?}}} style={{writing_mode={:?} direction={:?} width={:?} width_kw={:?} height={:?} height_kw={:?}}} fragmentainer_hint={:?}",
         box_node.id,
         in_flow_children.len(),
-        selector
+        selector,
+        constraints.available_width,
+        constraints.available_height,
+        constraints.used_border_box_width,
+        constraints.used_border_box_height,
+        constraints.inline_percentage_base,
+        constraints.block_percentage_base,
+        style.writing_mode,
+        style.direction,
+        style.width,
+        style.width_keyword,
+        style.height,
+        style.height_keyword,
+        fragmentainer_block_size_hint(),
       );
     }
 
@@ -11113,6 +11150,12 @@ impl FormattingContext for GridFormattingContext {
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
 
     let mut available_space = taffy_available_space_for_grid_container(style, constraints);
+    if trace_grid_layout {
+      eprintln!(
+        "[grid-layout] available_space id={} width={:?} height={:?}",
+        box_node.id, available_space.width, available_space.height
+      );
+    }
     // If the grid container itself is sized with intrinsic keywords, map the available space we
     // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
     // definite available size (fill-available), so only map min-/max-content here.
