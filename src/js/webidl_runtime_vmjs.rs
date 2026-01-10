@@ -356,24 +356,26 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     let key_dom_exception_s = scope.alloc_string("DOMException")?;
     scope.push_root(Value::String(key_dom_exception_s))?;
     let key_dom_exception = PropertyKey::from_string(key_dom_exception_s);
-    let Some(Value::Object(constructor)) =
-      scope
-        .heap()
-        .object_get_own_data_property_value(global, &key_dom_exception)?
-    else {
-      return Ok(None);
+    let constructor = match scope
+      .heap()
+      .object_get_own_data_property_value(global, &key_dom_exception)
+    {
+      Ok(Some(Value::Object(constructor))) => constructor,
+      Ok(_) | Err(VmError::PropertyNotData) => return Ok(None),
+      Err(err) => return Err(err),
     };
     scope.push_root(Value::Object(constructor))?;
 
     let key_prototype_s = scope.alloc_string("prototype")?;
     scope.push_root(Value::String(key_prototype_s))?;
     let key_prototype = PropertyKey::from_string(key_prototype_s);
-    let Some(Value::Object(prototype)) =
-      scope
-        .heap()
-        .object_get_own_data_property_value(constructor, &key_prototype)?
-    else {
-      return Ok(None);
+    let prototype = match scope
+      .heap()
+      .object_get_own_data_property_value(constructor, &key_prototype)
+    {
+      Ok(Some(Value::Object(prototype))) => prototype,
+      Ok(_) | Err(VmError::PropertyNotData) => return Ok(None),
+      Err(err) => return Err(err),
     };
 
     Ok(Some(crate::js::bindings::DomExceptionClassVmJs {
@@ -1319,6 +1321,8 @@ mod tests {
       let Value::Object(obj) = thrown else {
         return Err(VmError::TypeError("expected thrown value to be an object"));
       };
+      // Root the thrown object while allocating strings/property keys below.
+      cx.cx.scope.push_root(Value::Object(obj))?;
 
       let proto = cx.cx.scope.heap().object_prototype(obj)?;
       assert_eq!(proto, Some(realm.intrinsics().error_prototype()));
@@ -1363,6 +1367,8 @@ mod tests {
       let Value::Object(obj) = thrown else {
         return Err(VmError::TypeError("expected thrown value to be an object"));
       };
+      // Root the thrown object while allocating strings/property keys below.
+      cx.cx.scope.push_root(Value::Object(obj))?;
 
       let proto = cx.cx.scope.heap().object_prototype(obj)?;
       assert_eq!(proto, Some(dom_exception.prototype));
