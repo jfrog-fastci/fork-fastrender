@@ -8697,8 +8697,8 @@ impl FlexFormattingContext {
     let resolved_definite_width = || {
       constraints
         .used_border_box_width
-        .filter(|w| w.is_finite() && *w > rect_eps)
-        .or_else(|| constraints.width().filter(|w| w.is_finite() && *w > rect_eps))
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .or_else(|| constraints.width().filter(|w| w.is_finite() && *w >= 0.0))
     };
 
     let desired_auto_border_box_width = if physical_width_is_auto(&box_node.style) {
@@ -9262,6 +9262,20 @@ impl FlexFormattingContext {
       } else {
         0.0
       };
+      let child_cross_align = child_box
+        .style
+        .align_self
+        .map(normalize_cross_align)
+        .unwrap_or(container_cross_align);
+      let cross_align_is_stretch = matches!(child_cross_align, AlignItems::Stretch);
+      // Taffy frequently reports a 0px cross size for empty items. Preserve that 0px unless the
+      // item's cross-axis alignment is `stretch` (in which case the used size will be non-zero).
+      if main_axis_is_row && raw_layout_height <= eps && !cross_align_is_stretch {
+        target_height = 0.0;
+      }
+      if !main_axis_is_row && raw_layout_width <= eps && !cross_align_is_stretch {
+        target_width = 0.0;
+      }
       if toggles.truthy("FASTR_DEBUG_FLEX_CHILD") {
         eprintln!(
           "[flex-child-layout] id={} selector={} layout=({:.2},{:.2}) loc=({:.2},{:.2}) grow={} shrink={} basis={:?}",
@@ -9306,7 +9320,7 @@ impl FlexFormattingContext {
               layout_width = specified;
             }
           }
-          if layout_width <= eps && base > eps {
+          if layout_width <= eps && base > eps && cross_align_is_stretch {
             layout_width = base;
           }
         }
@@ -9332,7 +9346,7 @@ impl FlexFormattingContext {
               layout_height = specified;
             }
           }
-          if layout_height <= eps && base > eps {
+          if layout_height <= eps && base > eps && cross_align_is_stretch {
             layout_height = base;
           }
         }

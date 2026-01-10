@@ -13,6 +13,7 @@ use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::ReplacedType;
+use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::tree::fragment_tree::FragmentNode;
 use std::sync::Arc;
 
@@ -77,6 +78,37 @@ fn layout_abspos_child_in_size(
 
 fn layout_abspos_child(container_style: ComputedStyle, child_style: ComputedStyle) -> (f32, f32) {
   layout_abspos_child_in_size(container_style, child_style, 100.0, 100.0)
+}
+
+fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
+  match &fragment.content {
+    FragmentContent::Block { box_id }
+    | FragmentContent::Inline { box_id, .. }
+    | FragmentContent::Text { box_id, .. }
+    | FragmentContent::Replaced { box_id, .. } => *box_id,
+    FragmentContent::Line { .. }
+    | FragmentContent::RunningAnchor { .. }
+    | FragmentContent::FootnoteAnchor { .. } => None,
+  }
+}
+
+fn find_abs_bounds_by_box_id(
+  fragment: &FragmentNode,
+  offset_x: f32,
+  offset_y: f32,
+  box_id: usize,
+) -> Option<(f32, f32, f32, f32)> {
+  let abs_x = offset_x + fragment.bounds.x();
+  let abs_y = offset_y + fragment.bounds.y();
+  if fragment_box_id(fragment) == Some(box_id) {
+    return Some((abs_x, abs_y, fragment.bounds.width(), fragment.bounds.height()));
+  }
+  for child in &fragment.children {
+    if let Some(found) = find_abs_bounds_by_box_id(child, abs_x, abs_y, box_id) {
+      return Some(found);
+    }
+  }
+  None
 }
 
 #[test]
@@ -522,6 +554,69 @@ fn abspos_static_position_respects_row_reverse_main_start() {
 
   let (x, _) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_in_nested_zero_sized_flex_item() {
+  // Regression for apnews.com: a flex item can legitimately have a 0px used size when it has no
+  // in-flow content. Absolutely positioned descendants inside that item must compute their static
+  // position against the 0px size (yielding negative offsets under `center` alignment) and the
+  // parent flex container must not force the item to fill the cross size unless it is stretched.
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(20.0));
+  let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  abs_child.id = 3;
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Flex;
+  item_style.position = Position::Relative;
+  item_style.justify_content = JustifyContent::Center;
+  item_style.align_items = AlignItems::Center;
+  let mut item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Flex,
+    vec![abs_child],
+  );
+  item.id = 2;
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Flex;
+  root_style.position = Position::Relative;
+  root_style.width = Some(Length::px(100.0));
+  root_style.height = Some(Length::px(100.0));
+  root_style.justify_content = JustifyContent::Center;
+  root_style.align_items = AlignItems::Center;
+  let mut root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Flex, vec![item]);
+  root.id = 1;
+
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fc = FlexFormattingContext::with_viewport(Size::new(100.0, 100.0));
+
+  let first = fc.layout(&root, &constraints).expect("flex layout");
+  let (item_x, item_y, item_w, item_h) =
+    find_abs_bounds_by_box_id(&first, 0.0, 0.0, 2).expect("nested item fragment");
+  assert!(item_w.abs() < 0.1, "expected nested item width≈0, got {}", item_w);
+  assert!(item_h.abs() < 0.1, "expected nested item height≈0, got {}", item_h);
+  assert!((item_x - 50.0).abs() < 0.1, "expected nested item x≈50, got {}", item_x);
+  assert!((item_y - 50.0).abs() < 0.1, "expected nested item y≈50, got {}", item_y);
+
+  let (abs_x, abs_y, abs_w, abs_h) =
+    find_abs_bounds_by_box_id(&first, 0.0, 0.0, 3).expect("abspos fragment");
+  assert!((abs_w - 10.0).abs() < 0.1, "expected abspos width≈10, got {}", abs_w);
+  assert!((abs_h - 20.0).abs() < 0.1, "expected abspos height≈20, got {}", abs_h);
+  assert!((abs_x - 45.0).abs() < 0.1, "expected abspos x≈45, got {}", abs_x);
+  assert!((abs_y - 40.0).abs() < 0.1, "expected abspos y≈40, got {}", abs_y);
+
+  // Run layout again to guard against template-cache reuse producing different results.
+  let second = fc.layout(&root, &constraints).expect("flex layout");
+  let (abs_x2, abs_y2, _, _) =
+    find_abs_bounds_by_box_id(&second, 0.0, 0.0, 3).expect("abspos fragment");
+  assert!(
+    (abs_x - abs_x2).abs() < 1e-3 && (abs_y - abs_y2).abs() < 1e-3,
+    "nested abspos position should be stable across layout calls (first=({abs_x:.2},{abs_y:.2}), second=({abs_x2:.2},{abs_y2:.2}))"
+  );
 }
 
 #[test]
