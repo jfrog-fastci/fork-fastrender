@@ -41,6 +41,19 @@ impl WindowHost {
     )
   }
 
+  pub fn new_with_js_execution_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Self::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      js_execution_options,
+    )
+  }
+
   pub fn new_with_fetcher(
     dom: dom2::Document,
     document_url: impl Into<String>,
@@ -1776,6 +1789,25 @@ mod tests {
   }
 
   #[test]
+  fn js_budget_terminates_infinite_loop_in_top_level_script() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.max_instruction_count = Some(10_000);
+    js_options.event_loop_run_limits.max_wall_time = None;
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+
+    let err = host
+      .exec_script("while (true) {}")
+      .expect_err("expected infinite loop to terminate");
+    assert!(
+      err.to_string().contains("out of fuel"),
+      "expected out-of-fuel termination, got {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn abort_signal_timeout_zero_aborts_on_next_turn() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
@@ -1857,6 +1889,25 @@ mod tests {
   }
 
   #[test]
+  fn js_budget_terminates_recursion_via_stack_depth_limit() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.max_stack_depth = Some(64);
+    js_options.event_loop_run_limits.max_wall_time = None;
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+
+    let err = host
+      .exec_script("function f() { return f(); }\nf();")
+      .expect_err("expected recursion to terminate");
+    assert!(
+      err.to_string().contains("stack overflow"),
+      "expected stack overflow termination, got {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn fetch_can_be_aborted_after_scheduling_before_execution() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let fetcher = Arc::new(CountingFetcher::default());
@@ -1888,6 +1939,26 @@ mod tests {
   }
 
   #[test]
+  fn js_budget_terminates_infinite_loop_in_promise_job() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.max_instruction_count = Some(10_000);
+    js_options.event_loop_run_limits.max_wall_time = None;
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+
+    host.exec_script("Promise.resolve().then(function () { while (true) {} });")?;
+    let err = host
+      .perform_microtask_checkpoint()
+      .expect_err("expected Promise job to terminate");
+    assert!(
+      err.to_string().contains("out of fuel"),
+      "expected out-of-fuel termination, got {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn request_exposes_signal_and_clone_preserves_it() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
@@ -1906,6 +1977,42 @@ mod tests {
       get_global_prop(&mut host, "__req_signal_same"),
       Value::Bool(true)
     ));
+    Ok(())
+  }
+
+  #[test]
+  fn js_heap_limit_terminates_large_allocations() -> Result<()> {
+    // WindowRealm initialization can allocate a non-trivial amount of heap memory. Find a small heap
+    // cap that still allows initialization, then verify that we can deterministically trigger an
+    // allocation failure from JS.
+    let mut max_bytes = 1024usize;
+    let mut host = loop {
+      let mut js_options = JsExecutionOptions::default();
+      js_options.max_vm_heap_bytes = Some(max_bytes);
+      js_options.event_loop_run_limits.max_wall_time = None;
+
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      match WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options) {
+        Ok(host) => break host,
+        Err(_) => {
+          max_bytes = max_bytes.saturating_mul(2);
+          assert!(
+            max_bytes <= 64 * 1024 * 1024,
+            "failed to find a heap limit that allows WindowHost initialization"
+          );
+        }
+      }
+    };
+
+    let err = host
+      // Avoid relying on Array.prototype methods (which may be unimplemented in our JS VM): keep
+      // allocating reachable objects until the VM hits its heap limit.
+      .exec_script("var o = {}; while (true) { o = { next: o }; }")
+      .expect_err("expected heap allocations to exceed vm heap limit");
+    assert!(
+      err.to_string().contains("out of memory"),
+      "expected out-of-memory error, got {err}"
+    );
     Ok(())
   }
 }

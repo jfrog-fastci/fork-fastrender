@@ -111,13 +111,6 @@ pub struct Node {
   /// selector matching and other traversals.
   pub inert_subtree: bool,
   pub script_already_started: bool,
-  /// Whether the script's `async` IDL attribute should default to true regardless of the presence
-  /// of an explicit `async` content attribute.
-  ///
-  /// This mirrors the HTML spec's per-script-element "force async" flag:
-  /// - Parser-inserted scripts set this to false.
-  /// - Scripts created via DOM APIs default it to true.
-  pub script_force_async: bool,
   /// Whether this `<script>` element was created by the HTML parser as part of full document
   /// parsing.
   ///
@@ -125,6 +118,13 @@ pub struct Node {
   /// distinct from fragment parsing (e.g. `innerHTML`), which does **not** mark scripts as parser
   /// inserted.
   pub script_parser_document: bool,
+  /// Whether the script's `async` IDL attribute should default to true regardless of the presence
+  /// of an explicit `async` content attribute.
+  ///
+  /// This mirrors the HTML spec's per-script-element "force async" flag:
+  /// - Parser-inserted scripts set this to false.
+  /// - Scripts created via DOM APIs default it to true.
+  pub script_force_async: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
 

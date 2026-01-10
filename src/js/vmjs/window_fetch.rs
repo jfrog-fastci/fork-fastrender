@@ -14,9 +14,7 @@ use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
-use crate::js::window_timers::{
-  callback_budget_from_render_deadline, vm_error_to_event_loop_error, VmJsEventLoopHooks,
-};
+use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
   RequestCredentials, RequestMode, RequestRedirect, ResponseType, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
@@ -2980,20 +2978,20 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Ok(tuple) => tuple,
       Err(err) => {
         let message = format!("fetch failed: {err}");
-        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
-          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
           with_event_loop(event_loop, || {
-            let vm = window_realm.vm_mut();
-            vm.set_budget(callback_budget_from_render_deadline());
+            let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
               let type_error =
-                create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
                 &mut *vm_host,
                 &mut scope,
@@ -3005,18 +3003,19 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               Ok(())
             });
 
-            window_realm.heap_mut().remove_root(resolve_root);
-            window_realm.heap_mut().remove_root(reject_root);
-            window_realm.heap_mut().remove_root(promise_root);
+            // Remove roots even if the rejection throws/terminates.
+            heap.remove_root(resolve_root);
+            heap.remove_root(reject_root);
+            heap.remove_root(promise_root);
             if let Some(signal_root) = signal_root {
-              window_realm.heap_mut().remove_root(signal_root);
+              heap.remove_root(signal_root);
             }
 
-            if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+            if let Some(err) = hooks.finish(heap) {
               return Err(err);
             }
             call_result
-              .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
               .map(|_| ())
           })
         });
@@ -3059,16 +3058,16 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       })();
 
       if aborted.unwrap_or(false) {
-        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
-          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
           with_event_loop(event_loop, || {
-            let vm = window_realm.vm_mut();
-            vm.set_budget(callback_budget_from_render_deadline());
+            let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let signal_value = heap.get_root(signal_root_id).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
@@ -3090,16 +3089,16 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               Ok(())
             });
 
-            window_realm.heap_mut().remove_root(resolve_root);
-            window_realm.heap_mut().remove_root(reject_root);
-            window_realm.heap_mut().remove_root(promise_root);
-            window_realm.heap_mut().remove_root(signal_root_id);
+            heap.remove_root(resolve_root);
+            heap.remove_root(reject_root);
+            heap.remove_root(promise_root);
+            heap.remove_root(signal_root_id);
 
-            if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+            if let Some(err) = hooks.finish(heap) {
               return Err(err);
             }
             call_result
-              .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
               .map(|_| ())
           })
         });
@@ -3140,20 +3139,20 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           Ok(id) => id,
           Err(err) => {
             let message = format!("fetch failed: {err}");
-            let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
-              let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+            let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+              let (vm_host, window_realm) = host.vm_host_and_window_realm();
               window_realm.reset_interrupt();
+              let budget = window_realm.vm_budget_now();
+              let (vm, heap) = window_realm.vm_and_heap_mut();
               with_event_loop(event_loop, || {
-                let vm = window_realm.vm_mut();
-                vm.set_budget(callback_budget_from_render_deadline());
+                let mut vm = vm.push_budget(budget);
                 let tick_result = vm.tick();
                 let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
                 let call_result = tick_result.and_then(|_| {
-                  let (vm, heap) = window_realm.vm_and_heap_mut();
                   let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
                   let mut scope = heap.scope();
                   let type_error =
-                    create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                    create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
                   vm.call_with_host_and_hooks(
                     &mut *vm_host,
                     &mut scope,
@@ -3165,18 +3164,18 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                   Ok(())
                 });
 
-                window_realm.heap_mut().remove_root(resolve_root);
-                window_realm.heap_mut().remove_root(reject_root);
-                window_realm.heap_mut().remove_root(promise_root);
+                heap.remove_root(resolve_root);
+                heap.remove_root(reject_root);
+                heap.remove_root(promise_root);
                 if let Some(signal_root) = signal_root {
-                  window_realm.heap_mut().remove_root(signal_root);
+                  heap.remove_root(signal_root);
                 }
 
-                if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+                if let Some(err) = hooks.finish(heap) {
                   return Err(err);
                 }
                 call_result
-                  .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+                  .map_err(|err| vm_error_to_event_loop_error(heap, err))
                   .map(|_| ())
               })
             });
@@ -3196,18 +3195,18 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           }
         };
 
-        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           // Resolve the promise with a JS Response wrapper.
-          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
           with_event_loop(event_loop, || {
-            let vm = window_realm.vm_mut();
-            vm.set_budget(callback_budget_from_render_deadline());
+            let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
 
             let call_result = tick_result.and_then(|_| {
-              let (vm, heap) = window_realm.vm_and_heap_mut();
               let resolve = heap.get_root(resolve_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
 
@@ -3228,18 +3227,18 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             });
 
             // Remove roots even if resolution fails.
-            window_realm.heap_mut().remove_root(resolve_root);
-            window_realm.heap_mut().remove_root(reject_root);
-            window_realm.heap_mut().remove_root(promise_root);
+            heap.remove_root(resolve_root);
+            heap.remove_root(reject_root);
+            heap.remove_root(promise_root);
             if let Some(signal_root) = signal_root {
-              window_realm.heap_mut().remove_root(signal_root);
+              heap.remove_root(signal_root);
             }
 
-            if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+            if let Some(err) = hooks.finish(heap) {
               return Err(err);
             }
             call_result
-              .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
               .map(|_| ())
           })
         });
@@ -3262,20 +3261,20 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       }
       Err(err) => {
         let message = format!("fetch failed: {err}");
-        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
-          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
           with_event_loop(event_loop, || {
-            let vm = window_realm.vm_mut();
-            vm.set_budget(callback_budget_from_render_deadline());
+            let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
               let type_error =
-                create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
                 &mut *vm_host,
                 &mut scope,
@@ -3287,18 +3286,18 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               Ok(())
             });
 
-            window_realm.heap_mut().remove_root(resolve_root);
-            window_realm.heap_mut().remove_root(reject_root);
-            window_realm.heap_mut().remove_root(promise_root);
+            heap.remove_root(resolve_root);
+            heap.remove_root(reject_root);
+            heap.remove_root(promise_root);
             if let Some(signal_root) = signal_root {
-              window_realm.heap_mut().remove_root(signal_root);
+              heap.remove_root(signal_root);
             }
 
-            if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+            if let Some(err) = hooks.finish(heap) {
               return Err(err);
             }
             call_result
-              .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
               .map(|_| ())
           })
         });
@@ -3474,6 +3473,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       let iter_name = scope.alloc_string("Symbol.iterator")?;
       scope.push_root(Value::String(iter_name))?;
       let iter_fn = scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      scope.push_root(Value::Object(iter_fn))?;
       scope.heap_mut().object_set_prototype(iter_fn, Some(func_proto))?;
       let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
       scope.define_property(iter_proto, sym_key, data_desc(Value::Object(iter_fn), true))?;
@@ -3604,6 +3604,8 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.push_root(Value::String(body_used_get_name))?;
     let body_used_get = scope.alloc_native_function(body_used_get_id, None, body_used_get_name, 0)?;
     scope.heap_mut().object_set_prototype(body_used_get, Some(func_proto))?;
+    // Root before allocating the property key: `alloc_key` can trigger GC.
+    scope.push_root(Value::Object(body_used_get))?;
     let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
     scope.define_property(
       proto,
@@ -3692,6 +3694,8 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.push_root(Value::String(body_used_get_name))?;
     let body_used_get = scope.alloc_native_function(body_used_get_id, None, body_used_get_name, 0)?;
     scope.heap_mut().object_set_prototype(body_used_get, Some(func_proto))?;
+    // Root before allocating the property key: `alloc_key` can trigger GC.
+    scope.push_root(Value::Object(body_used_get))?;
     let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
     scope.define_property(
       proto,

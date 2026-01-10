@@ -192,6 +192,21 @@ impl BudgetState {
   }
 }
 
+/// Opaque snapshot of a VM's budget state (budget + tick counter).
+///
+/// This is returned by [`Vm::swap_budget_state`] and can be passed back into
+/// [`Vm::restore_budget_state`] to fully restore the previous budget, including its tick counter.
+///
+/// Host embeddings often need this because they cannot hold a mutable borrow of the [`Vm`] across
+/// complex operations (for example, `JsRuntime::exec_script_*` borrows the runtime, including the
+/// VM, mutably). [`Vm::push_budget`] provides an RAII guard for nested budgets, but it borrows the
+/// VM for the lifetime of the guard; `swap_budget_state`/`restore_budget_state` provides the same
+/// semantics without a borrow that spans the guest execution.
+#[derive(Debug)]
+pub struct BudgetStateToken {
+  state: BudgetState,
+}
+
 /// VM execution state shell.
 pub struct Vm {
   options: VmOptions,
@@ -785,12 +800,15 @@ impl Vm {
     self.budget = BudgetState::new(budget);
   }
 
-  pub(crate) fn swap_budget_state(&mut self, budget: Budget) -> BudgetState {
-    mem::replace(&mut self.budget, BudgetState::new(budget))
+  /// Replace the current budget state and return an opaque token for restoring it later.
+  pub fn swap_budget_state(&mut self, budget: Budget) -> BudgetStateToken {
+    let previous = mem::replace(&mut self.budget, BudgetState::new(budget));
+    BudgetStateToken { state: previous }
   }
 
-  pub(crate) fn restore_budget_state(&mut self, state: BudgetState) {
-    self.budget = state;
+  /// Restore a previously saved budget state.
+  pub fn restore_budget_state(&mut self, token: BudgetStateToken) {
+    self.budget = token.state;
   }
 
   /// Reset this VM's execution budget to its construction defaults.

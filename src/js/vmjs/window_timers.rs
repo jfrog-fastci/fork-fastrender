@@ -11,13 +11,14 @@
 use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::vm_error_format;
-use crate::js::window_realm::{dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost};
-use crate::render_control;
-use std::time::{Duration, Instant};
+use crate::js::window_realm::{
+  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost,
+};
+use std::time::Duration;
 use vm_js::{
-  Budget, ExecutionContext, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation,
-  PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmJobContext,
+  ExecutionContext, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation, PromiseState,
+  PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmJobContext,
 };
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
@@ -36,46 +37,8 @@ const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
 
 // Native slot index on timer host functions that stores the owning global object.
 const TIMER_GLOBAL_SLOT: usize = 0;
-
-const DEFAULT_CALLBACK_FUEL: u64 = 1_000_000;
-const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
 #[cfg(test)]
 const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number";
-
-pub(crate) fn callback_budget_from_render_deadline() -> Budget {
-  // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
-  let mut check_time_every = DEFAULT_CHECK_TIME_EVERY;
-  let deadline = match render_control::root_deadline() {
-    Some(deadline) => match deadline.remaining_timeout() {
-      Some(remaining) => {
-        // When no time remains, force the VM to check the deadline on the first `tick` so we can
-        // immediately abort queued work (important for microtasks and Promise jobs).
-        if remaining.is_zero() {
-          check_time_every = 1;
-        }
-        Instant::now().checked_add(remaining)
-      }
-      None => {
-        // `remaining_timeout` returns `None` both when no timeout is configured *and* when the
-        // timeout has elapsed. Only treat this as an elapsed timeout when a timeout limit exists.
-        if deadline.timeout_limit().is_some() {
-          check_time_every = 1;
-          Some(Instant::now())
-        } else {
-          None
-        }
-      }
-    },
-    None => None,
-  };
-
-  Budget {
-    fuel: Some(DEFAULT_CALLBACK_FUEL),
-    deadline,
-    check_time_every,
-  }
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -270,22 +233,20 @@ impl VmJobContext for HeapRootContext<'_> {
 }
 
 struct WindowRealmJobContext<'a> {
-  window_realm: &'a mut crate::js::window_realm::WindowRealm,
+  vm: &'a mut Vm,
+  heap: &'a mut Heap,
   host: &'a mut dyn VmHost,
   realm: Option<RealmId>,
 }
 
 impl<'a> WindowRealmJobContext<'a> {
   fn new(
-    window_realm: &'a mut crate::js::window_realm::WindowRealm,
+    vm: &'a mut Vm,
+    heap: &'a mut Heap,
     host: &'a mut dyn VmHost,
     realm: Option<RealmId>,
   ) -> Self {
-    Self {
-      window_realm,
-      host,
-      realm,
-    }
+    Self { vm, heap, host, realm }
   }
 }
 
@@ -298,16 +259,17 @@ impl VmJobContext for WindowRealmJobContext<'_> {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let host = &mut *self.host;
-    let (vm, heap) = self.window_realm.vm_and_heap_mut();
-    let mut scope = heap.scope();
+    let mut scope = self.heap.scope();
     if let Some(realm) = self.realm {
-      let mut vm = vm.execution_context_guard(ExecutionContext {
+      let mut vm = self.vm.execution_context_guard(ExecutionContext {
         realm,
         script_or_module: None,
       });
       vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
     } else {
-      vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
+      self
+        .vm
+        .call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
     }
   }
 
@@ -319,25 +281,31 @@ impl VmJobContext for WindowRealmJobContext<'_> {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let host = &mut *self.host;
-    let (vm, heap) = self.window_realm.vm_and_heap_mut();
-    let mut scope = heap.scope();
+    let mut scope = self.heap.scope();
     if let Some(realm) = self.realm {
-      let mut vm = vm.execution_context_guard(ExecutionContext {
+      let mut vm = self.vm.execution_context_guard(ExecutionContext {
         realm,
         script_or_module: None,
       });
       vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     } else {
-      vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
+      self.vm.construct_with_host_and_hooks(
+        host,
+        &mut scope,
+        host_hooks,
+        callee,
+        args,
+        new_target,
+      )
     }
   }
 
   fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
-    self.window_realm.heap_mut().add_root(value)
+    self.heap.add_root(value)
   }
 
   fn remove_root(&mut self, id: RootId) {
-    self.window_realm.heap_mut().remove_root(id);
+    self.heap.remove_root(id);
   }
 }
 
@@ -423,30 +391,31 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         window_realm.reset_interrupt();
 
         with_event_loop(event_loop, || {
-          let vm = window_realm.vm_mut();
-          vm.set_budget(callback_budget_from_render_deadline());
+          let budget = window_realm.vm_budget_now();
+          let (vm, heap) = window_realm.vm_and_heap_mut();
+          let mut vm = vm.push_budget(budget);
           let tick_result = vm.tick();
 
           let job_result = match tick_result {
             Ok(()) => {
-              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
+              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, host_ctx, realm);
               job.run(&mut ctx, &mut hooks)
             }
             Err(err) => {
               // If the VM is already out of budget (deadline exceeded, interrupted, out of fuel),
               // we must still discard the job so any persistent roots it owns are cleaned up.
-              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
+              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, host_ctx, realm);
               job.discard(&mut ctx);
               Err(err)
             }
           };
 
-          if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+          if let Some(err) = hooks.finish(heap) {
             return Err(err);
           }
 
           job_result
-            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
             .map(|_| ())
         })
       })
@@ -582,10 +551,11 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
     let (host_ctx, window_realm) = host.vm_host_and_window_realm();
     window_realm.reset_interrupt();
     let global_obj = window_realm.global_object();
+    let budget = window_realm.vm_budget_now();
     let (vm, heap) = window_realm.vm_and_heap_mut();
 
     let result: crate::error::Result<bool> = with_event_loop(event_loop, || {
-      vm.set_budget(callback_budget_from_render_deadline());
+      let mut vm = vm.push_budget(budget);
       vm.tick()
         .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
 
@@ -822,16 +792,17 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
       let id = id_cell_for_cb.get();
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
 
-        let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-          vm.set_budget(callback_budget_from_render_deadline());
-          let tick_result = vm.tick();
+      let result: crate::error::Result<()> = with_event_loop(event_loop, || {
+        let mut vm = vm.push_budget(budget);
+        let tick_result = vm.tick();
 
-          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
-          let call_result = tick_result.and_then(|_| {
-            let call_result: Result<(), VmError> = (|| {
-              let mut scope = heap.scope();
+        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
+        let call_result = tick_result.and_then(|_| {
+          let call_result: Result<(), VmError> = (|| {
+            let mut scope = heap.scope();
             vm.call_with_host_and_hooks(
               host_ctx,
               &mut scope,
@@ -849,10 +820,10 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
           return Err(err);
         }
 
-          call_result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
-        });
+        call_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      });
 
       {
         let mut scope = heap.scope();
@@ -963,16 +934,17 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
       let id = id_cell_for_cb.get();
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
 
-        let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-          vm.set_budget(callback_budget_from_render_deadline());
-          let tick_result = vm.tick();
+      let result: crate::error::Result<()> = with_event_loop(event_loop, || {
+        let mut vm = vm.push_budget(budget);
+        let tick_result = vm.tick();
 
-          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
-          let call_result = tick_result.and_then(|_| {
-            let call_result: Result<(), VmError> = (|| {
-              let mut scope = heap.scope();
+        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
+        let call_result = tick_result.and_then(|_| {
+          let call_result: Result<(), VmError> = (|| {
+            let mut scope = heap.scope();
             vm.call_with_host_and_hooks(
               host_ctx,
               &mut scope,
@@ -990,10 +962,10 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
           return Err(err);
         }
 
-          call_result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
-        });
+        call_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      });
 
       if let Err(err) = result {
         // On error, cancel the interval and drop JS references to avoid repeated errors/leaks.
@@ -1086,11 +1058,12 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
     .queue_microtask(move |host, event_loop| {
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
       let callback = heap.get_root(root).unwrap_or(Value::Undefined);
 
       let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-        vm.set_budget(callback_budget_from_render_deadline());
+        let mut vm = vm.push_budget(budget);
         let tick_result = vm.tick();
 
         let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
@@ -2554,7 +2527,7 @@ mod tests {
   }
 
   #[test]
-  fn timer_callback_does_not_reset_vm_budget_to_unlimited() -> crate::error::Result<()> {
+  fn timer_callback_restores_vm_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut host = Host::new();
@@ -2588,20 +2561,19 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
 
-    // Timer callbacks set a fresh budget based on the renderer deadline. We intentionally keep that
-    // budget active after the callback returns so Promise jobs (queued via `then`) run under the
-    // same budget during the subsequent microtask checkpoint.
+    // Timer callbacks should run under a fresh budget scope and then restore the previous budget so
+    // each entry point gets an independent limit.
     let budget = host.window.vm().budget();
     assert!(
-      budget.fuel.is_some() || budget.deadline.is_some(),
-      "expected timer callback budget to remain set"
+      budget.fuel.is_none() && budget.deadline.is_none(),
+      "expected timer callback budget to be restored"
     );
 
     Ok(())
   }
 
   #[test]
-  fn promise_job_does_not_reset_vm_budget_to_unlimited() -> crate::error::Result<()> {
+  fn promise_job_restores_vm_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut host = Host::new();
@@ -2648,8 +2620,8 @@ mod tests {
 
     let budget = host.window.vm().budget();
     assert!(
-      budget.fuel.is_some() || budget.deadline.is_some(),
-      "expected Promise job budget to remain set"
+      budget.fuel.is_none() && budget.deadline.is_none(),
+      "expected Promise job budget to be restored"
     );
 
     Ok(())

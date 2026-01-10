@@ -8,9 +8,8 @@ use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
-use crate::js::JsExecutionOptions;
-use crate::js::vm_budgets::vm_budget_for_js_run;
 use crate::js::CurrentScriptStateHandle;
+use crate::js::JsExecutionOptions;
 use crate::render_control;
 use crate::resource::ResourceFetcher;
 use crate::style::media::MediaContext;
@@ -114,8 +113,16 @@ impl WindowRealmConfig {
     self
   }
 
-  pub fn with_heap_limits(mut self, limits: HeapLimits) -> Self {
-    self.heap_limits = limits;
+  pub fn with_js_execution_options(mut self, options: JsExecutionOptions) -> Self {
+    self.heap_limits = super::vm_limits::heap_limits_from_js_options(&options);
+    if let Some(max_stack_depth) = options.max_stack_depth {
+      self.vm_options.max_stack_depth = max_stack_depth;
+    }
+    self
+  }
+
+  pub fn with_heap_limits(mut self, heap_limits: HeapLimits) -> Self {
+    self.heap_limits = heap_limits;
     self
   }
 
@@ -199,6 +206,17 @@ impl WindowRealmUserData {
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm_options = config.vm_options.clone();
+    let heap_limits = config.heap_limits;
+    let enforced_heap_max_bytes = heap_limits.max_bytes;
+    let enforced_stack_depth = vm_options.max_stack_depth;
+
+    // `WindowRealm` stores the JS execution options that drive per-run budgets. Realms created
+    // directly via `WindowRealm::new` use default execution limits, but we still record the
+    // enforced heap/stack bounds from the construction config for consistency/debugging.
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.max_vm_heap_bytes = Some(enforced_heap_max_bytes);
+    js_execution_options.max_stack_depth = Some(enforced_stack_depth);
+
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag: it's resettable per realm.
     let interrupt_flag = Arc::new(AtomicBool::new(false));
@@ -206,9 +224,8 @@ impl WindowRealm {
     // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
     // `Vm::tick()`.
     vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
-    let max_stack_depth = vm_options.max_stack_depth;
     let vm = Vm::new(vm_options);
-    let heap = Heap::new(config.heap_limits);
+    let heap = Heap::new(heap_limits);
 
     let mut runtime = Box::new(VmJsRuntime::new(vm, heap)?);
     runtime
@@ -245,11 +262,6 @@ impl WindowRealm {
         return Err(err);
       }
     };
-    let mut js_execution_options = JsExecutionOptions::default();
-    // Keep the stored JS options consistent with the realm's actual limits. `WindowRealm::new`
-    // configures heap limits via `WindowRealmConfig`, not via `JsExecutionOptions`.
-    js_execution_options.max_vm_heap_bytes = Some(config.heap_limits.max_bytes);
-    js_execution_options.max_stack_depth = Some(max_stack_depth);
     Ok(Self {
       runtime,
       realm_id,
@@ -286,14 +298,12 @@ impl WindowRealm {
     Ok(realm)
   }
 
-  fn prepare_for_script_run(&mut self) -> Result<(), VmError> {
-    let budget = vm_budget_for_js_run(self.js_execution_options);
-    self.runtime.vm.set_budget(budget);
-    self.runtime.vm.tick()
-  }
-
   pub fn reset_interrupt(&self) {
     self.interrupt_flag.store(false, Ordering::Relaxed);
+  }
+
+  pub(crate) fn vm_budget_now(&self) -> vm_js::Budget {
+    self.js_execution_options.vm_js_budget_now()
   }
 
   pub fn heap(&self) -> &Heap {
@@ -374,8 +384,7 @@ impl WindowRealm {
 
   /// Execute a classic script in this window realm.
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
-    self.prepare_for_script_run()?;
-    self.runtime.exec_script(source)
+    self.with_vm_budget(|rt| rt.exec_script(source))
   }
 
   /// Execute a classic script in this window realm with an explicit embedder host context and host
@@ -415,10 +424,9 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    self.prepare_for_script_run()?;
-    self
-      .runtime
-      .exec_script_source_with_host_and_hooks(host, hooks, source)
+    // Route Promise jobs through host hooks so embeddings can integrate with a host-owned microtask
+    // queue (HTML event loop).
+    self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source))
   }
 
   pub(crate) fn exec_script_source_with_hooks(
@@ -436,10 +444,24 @@ impl WindowRealm {
     source_name: impl Into<Arc<str>>,
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
-    self.prepare_for_script_run()?;
-    self
-      .runtime
-      .exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+    self.with_vm_budget(|rt| {
+      rt.exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
+    })
+  }
+
+  fn with_vm_budget<T>(
+    &mut self,
+    f: impl FnOnce(&mut VmJsRuntime) -> Result<T, VmError>,
+  ) -> Result<T, VmError> {
+    let budget = self.vm_budget_now();
+    let prev_budget = self.runtime.vm.swap_budget_state(budget);
+    let result = (|| {
+      // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
+      self.runtime.vm.tick()?;
+      f(&mut self.runtime)
+    })();
+    self.runtime.vm.restore_budget_state(prev_budget);
+    result
   }
 }
 
@@ -511,6 +533,7 @@ impl vm_js::VmJobContext for WindowRealm {
     self.runtime.heap.remove_root(id);
   }
 }
+
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -1106,7 +1129,14 @@ pub(crate) fn dataset_exotic_get(
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  let slots = scope.heap().object_host_slots(obj)?;
+  // `host_exotic_get` is called for *all* objects, including VM-internal object kinds like
+  // Promises/TypedArrays. `Heap::object_host_slots` only supports ordinary objects/functions; for
+  // other object kinds, treat this as "no host slots" rather than failing the property access.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
   let Some(slots) = slots else {
     return Ok(None);
   };
@@ -1156,7 +1186,11 @@ pub(crate) fn dataset_exotic_set(
   key: PropertyKey,
   value: Value,
 ) -> Result<Option<bool>, VmError> {
-  let slots = scope.heap().object_host_slots(obj)?;
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
   let Some(slots) = slots else {
     return Ok(None);
   };
@@ -1213,7 +1247,11 @@ pub(crate) fn dataset_exotic_delete(
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<bool>, VmError> {
-  let slots = scope.heap().object_host_slots(obj)?;
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
   let Some(slots) = slots else {
     return Ok(None);
   };
@@ -13565,8 +13603,10 @@ mod tests {
     let probe = |max_bytes: usize| -> (bool, bool) {
       let before_next = NEXT_CONSOLE_SINK_ID.load(Ordering::Relaxed);
 
+      let mut js_options = JsExecutionOptions::default();
+      js_options.max_vm_heap_bytes = Some(max_bytes);
       let mut config = WindowRealmConfig::new("https://example.com/")
-        .with_heap_limits(HeapLimits::new(max_bytes, max_bytes));
+        .with_js_execution_options(js_options);
       config.console_sink = Some(sink.clone());
 
       let res = WindowRealm::new(config);

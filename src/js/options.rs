@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
+use crate::render_control;
 use std::time::Duration;
+use std::time::Instant;
+use vm_js::Budget as VmJsBudget;
 
 use super::{QueueLimits, RunLimits};
 
@@ -36,20 +39,19 @@ pub struct JsExecutionOptions {
 
   /// VM budget: maximum number of VM instructions that may be executed before the VM is interrupted.
   ///
-  /// For the `vm-js` backend, this is enforced as a per-run fuel budget.
+  /// For the `vm-js` backend, this is mapped to [`vm_js::Budget::fuel`].
   pub max_instruction_count: Option<u64>,
 
-  /// VM budget: maximum heap bytes the VM is allowed to allocate.
+  /// VM budget: hard upper bound for the VM heap, in bytes.
   ///
-  /// When using the `vm-js` backend, this configures the VM heap's hard cap.
-  ///
-  /// If `None`, embeddings should apply a conservative default (currently 64MiB, scaled down when
-  /// the process is constrained by `RLIMIT_AS`).
+  /// For the `vm-js` backend, this is mapped to [`vm_js::HeapLimits`]. If `None`, FastRender
+  /// applies a conservative default heap cap (see [`crate::js::vm_limits::default_heap_limits`]).
   pub max_vm_heap_bytes: Option<usize>,
 
-  /// VM budget: maximum allowed stack depth for JS execution.
+  /// VM budget: maximum allowed JavaScript stack depth (call frames).
   ///
-  /// When using the `vm-js` backend, this configures `vm_js::VmOptions::max_stack_depth`.
+  /// For the `vm-js` backend, this is mapped to [`vm_js::VmOptions::max_stack_depth`]. If `None`,
+  /// the VM default is used.
   pub max_stack_depth: Option<usize>,
 }
 
@@ -68,6 +70,57 @@ impl JsExecutionOptions {
   /// Validate a script source string against [`JsExecutionOptions::max_script_bytes`].
   pub fn check_script_source(&self, source: &str, context: &str) -> Result<()> {
     self.check_script_source_bytes(source.len(), context)
+  }
+
+  /// Translate these execution options into a fresh `vm-js` execution budget for "now".
+  pub(crate) fn vm_js_budget_now(&self) -> VmJsBudget {
+    const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
+
+    let fuel = self.max_instruction_count;
+
+    // Use a single `Instant::now()` snapshot so "min(deadline_a, deadline_b)" decisions are
+    // consistent.
+    let now = Instant::now();
+
+    // First candidate: JS-specific per-spin wall-time budget.
+    let options_deadline = self
+      .event_loop_run_limits
+      .max_wall_time
+      .and_then(|duration| now.checked_add(duration));
+
+    // Second candidate: renderer-wide root deadline remaining time.
+    let render_deadline = render_control::root_deadline().and_then(|deadline| {
+      // `remaining_timeout` returns `None` both when no timeout is configured *and* when the timeout
+      // has elapsed. Only treat this as an elapsed timeout when a timeout limit exists.
+      if deadline.timeout_limit().is_none() {
+        return None;
+      }
+      match deadline.remaining_timeout() {
+        Some(remaining) => now.checked_add(remaining).or(Some(now)),
+        None => Some(now),
+      }
+    });
+
+    // Choose the earliest deadline (if any).
+    let deadline = match (options_deadline, render_deadline) {
+      (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+      (Some(a), None) => Some(a),
+      (None, Some(b)) => Some(b),
+      (None, None) => None,
+    };
+
+    // When no time remains, force the VM to check the deadline on the first `tick` so we can
+    // immediately abort queued work (important for microtasks and Promise jobs).
+    let check_time_every = match deadline {
+      Some(deadline) if deadline <= now => 1,
+      _ => DEFAULT_CHECK_TIME_EVERY,
+    };
+
+    VmJsBudget {
+      fuel,
+      deadline,
+      check_time_every,
+    }
   }
 }
 

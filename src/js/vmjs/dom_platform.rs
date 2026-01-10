@@ -86,21 +86,25 @@ impl DomPlatform {
   pub fn new(scope: &mut Scope<'_>, realm: &Realm, dom_source_id: u64) -> Result<Self, VmError> {
     let realm_id = realm.id();
 
+    // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
+    //
+    // Root each object immediately after allocation. Under a tight heap limit, subsequent
+    // allocations can trigger GC, and unrooted prototypes would be collected (turning their
+    // handles into stale values).
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(6);
+
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
-    let proto_node = scope.alloc_object()?;
-    let proto_text = scope.alloc_object()?;
-    let proto_element = scope.alloc_object()?;
-    let proto_document = scope.alloc_object()?;
-    let proto_document_fragment = scope.alloc_object()?;
-
-    // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(6);
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_event_target))?);
+    let proto_node = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_node))?);
+    let proto_text = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
+    let proto_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
+    let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
+    let proto_document_fragment = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_fragment))?);
 
     // WebIDL / WHATWG DOM inheritance chain:

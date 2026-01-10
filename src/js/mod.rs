@@ -79,8 +79,6 @@ pub mod webidl;
 pub mod dom_platform;
 #[path = "vmjs/runtime.rs"]
 pub mod runtime;
-#[path = "vmjs/vm_budgets.rs"]
-pub(crate) mod vm_budgets;
 #[path = "vmjs/vm_limits.rs"]
 pub mod vm_limits;
 #[path = "vmjs/vm_error_format.rs"]

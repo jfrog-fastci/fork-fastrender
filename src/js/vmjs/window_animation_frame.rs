@@ -9,7 +9,7 @@ use crate::js::event_loop::AnimationFrameId;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::{
-  callback_budget_from_render_deadline, vm_error_to_event_loop_error, VmJsEventLoopHooks,
+  vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
 use vm_js::{
   Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -192,33 +192,37 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
       window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
 
-      let result: crate::error::Result<()> = (|| {
-        let call_result: VmResult<()> = with_event_loop(event_loop, || {
-          vm.set_budget(callback_budget_from_render_deadline());
-          vm.tick()?;
+      let result: crate::error::Result<()> = with_event_loop(event_loop, || {
+        let mut vm = vm.push_budget(budget);
+        let tick_result = vm.tick();
 
-          let mut scope = heap.scope();
-          let callback_value = {
-            let key_s = scope.alloc_string(&id.to_string())?;
-            scope.push_root(Value::String(key_s))?;
-            let key = PropertyKey::from_string(key_s);
-            scope
-              .heap()
-               .object_get_own_data_property_value(registry, &key)?
-               .unwrap_or(Value::Undefined)
-          };
-          // The callback is invoked with the global object as `this` and the timestamp argument.
-          let _ = vm.call_with_host_and_hooks(
-            host_ctx,
-            &mut scope,
-            &mut hooks,
-            callback_value,
-            Value::Object(global_obj),
-            &[Value::Number(ts)],
-          )?;
-          Ok(())
+        let call_result = tick_result.and_then(|_| {
+          let call_result: VmResult<()> = (|| {
+            let mut scope = heap.scope();
+            let callback_value = {
+              let key_s = scope.alloc_string(&id.to_string())?;
+              scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              scope
+                .heap()
+                .object_get_own_data_property_value(registry, &key)?
+                .unwrap_or(Value::Undefined)
+            };
+            // The callback is invoked with the global object as `this` and the timestamp argument.
+            let _ = vm.call_with_host_and_hooks(
+              host_ctx,
+              &mut scope,
+              &mut hooks,
+              callback_value,
+              Value::Object(global_obj),
+              &[Value::Number(ts)],
+            )?;
+            Ok(())
+          })();
+          call_result
         });
 
         if let Some(err) = hooks.finish(heap) {
@@ -228,7 +232,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         call_result
           .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ())
-      })();
+      });
 
       {
         let mut scope = heap.scope();
@@ -776,8 +780,8 @@ mod tests {
 
     let budget = host.window.vm().budget();
     assert!(
-      budget.fuel.is_some() || budget.deadline.is_some(),
-      "expected requestAnimationFrame callback budget to remain set"
+      budget.fuel.is_none() && budget.deadline.is_none(),
+      "expected requestAnimationFrame callback budget to be restored"
     );
 
     // Promise jobs are queued into the FastRender microtask queue; draining it should run the job.
@@ -785,8 +789,8 @@ mod tests {
 
     let budget = host.window.vm().budget();
     assert!(
-      budget.fuel.is_some() || budget.deadline.is_some(),
-      "expected Promise job budget to remain set"
+      budget.fuel.is_none() && budget.deadline.is_none(),
+      "expected Promise job budget to be restored"
     );
     let log = {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
