@@ -3025,4 +3025,66 @@ mod tests {
 
     assert_eq!(taffy.layout(abs_child).unwrap().location.x, 90.0);
   }
+
+  fn build_row_auto_margin_tree(main_axis_gap: f32) -> (TaffyTree<()>, [NodeId; 2]) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child1 = taffy
+      .new_leaf(Style {
+        size: Size::from_lengths(10.0, 10.0),
+        margin: Rect {
+          left: auto(),
+          ..Rect::zero()
+        },
+        ..Default::default()
+      })
+      .unwrap();
+    let child2 = taffy
+      .new_leaf(Style {
+        size: Size::from_lengths(10.0, 10.0),
+        margin: Rect {
+          right: auto(),
+          ..Rect::zero()
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(100.0, 10.0),
+          flex_direction: FlexDirection::Row,
+          gap: Size {
+            width: length(main_axis_gap),
+            height: length(0.0),
+          },
+          ..Default::default()
+        },
+        &[child1, child2],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    (taffy, [child1, child2])
+  }
+
+  #[test]
+  fn flexbox_invalid_gap_is_treated_as_zero_for_auto_margins() {
+    let (taffy_zero, [child1_zero, child2_zero]) = build_row_auto_margin_tree(0.0);
+    let expected_child1_x = taffy_zero.layout(child1_zero).unwrap().location.x;
+    let expected_child2_x = taffy_zero.layout(child2_zero).unwrap().location.x;
+
+    for gap in [f32::NAN, f32::INFINITY, -5.0] {
+      let (taffy, [child1, child2]) = build_row_auto_margin_tree(gap);
+      let child1_x = taffy.layout(child1).unwrap().location.x;
+      let child2_x = taffy.layout(child2).unwrap().location.x;
+      assert!(child1_x.is_finite());
+      assert!(child2_x.is_finite());
+      assert_eq!(child1_x, expected_child1_x);
+      assert_eq!(child2_x, expected_child2_x);
+    }
+  }
 }

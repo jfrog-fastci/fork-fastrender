@@ -220,4 +220,13 @@ mod tests {
     assert!(offset_negative_gap.is_finite());
     assert_eq!(offset_negative_gap, offset_zero_gap);
   }
+
+  #[test]
+  fn apply_alignment_fallback_non_finite_free_space_matches_zero_free_space() {
+    for (free_space, label) in [(f32::NAN, "NaN"), (f32::INFINITY, "INFINITY")] {
+      let fallback = super::apply_alignment_fallback(free_space, 1, AlignContent::SpaceBetween, true);
+      let expected = super::apply_alignment_fallback(0.0, 1, AlignContent::SpaceBetween, true);
+      assert_eq!(fallback, expected, "{label}");
+    }
+  }
 }
