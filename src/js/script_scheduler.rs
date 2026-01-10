@@ -75,6 +75,17 @@ pub trait ScriptExecutor: Sized {
     spec: &ScriptElementSpec,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()>;
+
+  /// Execute the provided module script source text (`type="module"`).
+  ///
+  /// Note: module scripts must never execute synchronously in the parser/DOM mutation call stack.
+  /// Scheduling is responsible for ensuring this runs from a queued task.
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()>;
 }
 
 /// Host hook for firing `<script>` element `load`/`error` events.
@@ -95,13 +106,23 @@ struct InOrderAsapScript {
   source: Option<String>,
 }
 
-/// A classic `<script>` scheduler implementing the HTML Standard ordering model:
-/// parser-blocking vs async vs "in-order-asap" vs defer.
+/// An HTML `<script>` scheduler implementing a subset of the HTML Standard ordering model for
+/// classic and module scripts.
 ///
 /// - **parser-blocking**: inline scripts, and external scripts without `async`/`defer`
 /// - **async**: external scripts with `async`, or with the HTML "force async" flag set
 /// - **in-order-asap**: external scripts that are not parser-inserted and are not async-like
 /// - **defer**: external parser-inserted scripts with `defer` and not `async`
+///
+/// Module scripts (`type="module"`):
+/// - Module scripts never execute synchronously in the parser/DOM mutation call stack; they always
+///   execute from a queued task.
+/// - Parser-inserted module scripts are deferred-by-default:
+///   - `async` present: execute ASAP once ready (may run before parsing completes).
+///   - otherwise: execute after parsing completes (the `defer` attribute has no effect).
+/// - Non-parser-inserted module scripts:
+///   - `async` present: execute ASAP once ready.
+///   - otherwise: execute in insertion order as soon as possible once ready.
 ///
 /// Async and deferred scripts are executed as event loop tasks (`TaskSource::Script`), so the event
 /// loop's "microtasks after tasks" rule naturally applies.
@@ -117,6 +138,7 @@ where
   parsing_finished: bool,
 
   async_pending: HashMap<<Host as ScriptLoader>::Handle, ScriptElementSpec>,
+  module_async_pending: HashMap<<Host as ScriptLoader>::Handle, ScriptElementSpec>,
 
   in_order_asap_scripts: Vec<InOrderAsapScript>,
   in_order_asap_by_handle: HashMap<<Host as ScriptLoader>::Handle, usize>,
@@ -125,6 +147,10 @@ where
   defer_scripts: Vec<DeferredScript>,
   defer_by_handle: HashMap<<Host as ScriptLoader>::Handle, usize>,
   next_defer_to_queue: usize,
+
+  module_in_order_scripts: Vec<InOrderAsapScript>,
+  module_in_order_by_handle: HashMap<<Host as ScriptLoader>::Handle, usize>,
+  next_module_in_order_to_queue: usize,
 }
 
 impl<Host> Default for ClassicScriptScheduler<Host>
@@ -137,12 +163,16 @@ where
       js_execution_depth: Rc::new(Cell::new(0)),
       parsing_finished: false,
       async_pending: HashMap::new(),
+      module_async_pending: HashMap::new(),
       in_order_asap_scripts: Vec::new(),
       in_order_asap_by_handle: HashMap::new(),
       next_in_order_asap_to_queue: 0,
       defer_scripts: Vec::new(),
       defer_by_handle: HashMap::new(),
       next_defer_to_queue: 0,
+      module_in_order_scripts: Vec::new(),
+      module_in_order_by_handle: HashMap::new(),
+      next_module_in_order_to_queue: 0,
     }
   }
 }
@@ -173,9 +203,17 @@ where
     event_loop: &mut EventLoop<Host>,
     spec: ScriptElementSpec,
   ) -> Result<()> {
-    // Only classic scripts are scheduled/executed by this scheduler for now.
-    if spec.script_type != ScriptType::Classic {
-      return Ok(());
+    match spec.script_type {
+      ScriptType::Classic => {}
+      ScriptType::Module => {
+        if !self.options.supports_module_scripts {
+          // HTML: unsupported module scripts are ignored.
+          return Ok(());
+        }
+        return self.handle_module_script(host, event_loop, spec);
+      }
+      // Import maps and unknown script types are ignored by FastRender's execution pipeline.
+      ScriptType::ImportMap | ScriptType::Unknown => return Ok(()),
     }
     // HTML: When a user agent supports module scripts, classic scripts with the `nomodule`
     // attribute must be ignored completely (not fetched/executed).
@@ -226,11 +264,13 @@ where
       })?;
       return Ok(());
     };
-    let (destination, credentials_mode) = if let Some(cors_mode) = spec.crossorigin {
-      (FetchDestination::ScriptCors, cors_mode.credentials_mode())
-    } else {
-      (FetchDestination::Script, FetchCredentialsMode::Include)
-    };
+    // Module scripts are fetched in CORS mode and default to `same-origin` credentials. The
+    // `crossorigin` attribute only affects the credentials mode.
+    let destination = FetchDestination::ScriptCors;
+    let credentials_mode = spec
+      .crossorigin
+      .map(|cors_mode| cors_mode.credentials_mode())
+      .unwrap_or(FetchCredentialsMode::SameOrigin);
 
     // Async takes priority over defer. For classic scripts, HTML treats `async` as true when either
     // the `async` attribute is present or the per-element "force async" flag is set.
@@ -239,8 +279,10 @@ where
     if async_like {
       let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
+        || self.module_async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
+        || self.module_in_order_by_handle.contains_key(&handle)
       {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
@@ -253,8 +295,10 @@ where
     if !spec.parser_inserted {
       let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
+        || self.module_async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
+        || self.module_in_order_by_handle.contains_key(&handle)
       {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
@@ -272,8 +316,10 @@ where
     if spec.defer_attr {
       let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
+        || self.module_async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
+        || self.module_in_order_by_handle.contains_key(&handle)
       {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
@@ -317,6 +363,93 @@ where
     Ok(())
   }
 
+  fn handle_module_script(
+    &mut self,
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+    mut spec: ScriptElementSpec,
+  ) -> Result<()> {
+    // Module scripts never execute synchronously inside the parser/DOM mutation call stack. The
+    // HTML Standard queues module script execution as tasks, and `defer` is ignored.
+
+    // Inline module script.
+    // Note: `src_attr_present` suppresses inline execution even if the URL is empty/invalid.
+    if !spec.src_attr_present {
+      let source = std::mem::take(&mut spec.inline_text);
+      self.options.check_script_source(&source, "source=inline")?;
+
+      if spec.async_attr {
+        // Async module scripts execute ASAP once ready.
+        self.queue_script_task(event_loop, spec, source)?;
+        return Ok(());
+      }
+
+      if spec.parser_inserted {
+        // Parser-inserted module scripts without `async` execute after parsing completes (defer-like).
+        self
+          .defer_scripts
+          .push(DeferredScript { spec: Some(spec), source: Some(source) });
+        self.queue_ready_deferred(event_loop)?;
+        return Ok(());
+      }
+
+      // Dynamic module scripts without `async` execute in insertion order as soon as possible.
+      self
+        .module_in_order_scripts
+        .push(InOrderAsapScript { spec: Some(spec), source: Some(source) });
+      self.queue_ready_module_in_order(event_loop)?;
+      return Ok(());
+    }
+
+    // External module script.
+    let Some(src_url) = spec.src.as_deref() else {
+      // `src` attribute present but empty/invalid/unresolvable: per HTML this fires an error event
+      // and does not fall back to inline execution.
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+        host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+      })?;
+      return Ok(());
+    };
+    let (destination, credentials_mode) = if let Some(cors_mode) = spec.crossorigin {
+      (FetchDestination::ScriptCors, cors_mode.credentials_mode())
+    } else {
+      (FetchDestination::Script, FetchCredentialsMode::Include)
+    };
+
+    // External module scripts start fetching as early as possible. Unlike classic scripts, dynamic
+    // module scripts are not async-by-default: the absence of `async` means they execute in order.
+    let handle = host.start_load(src_url, destination, credentials_mode)?;
+    if self.async_pending.contains_key(&handle)
+      || self.module_async_pending.contains_key(&handle)
+      || self.defer_by_handle.contains_key(&handle)
+      || self.in_order_asap_by_handle.contains_key(&handle)
+      || self.module_in_order_by_handle.contains_key(&handle)
+    {
+      return Err(Error::Other(format!(
+        "Script loader returned a duplicate handle: {handle:?}"
+      )));
+    }
+
+    if spec.async_attr {
+      self.module_async_pending.insert(handle, spec);
+      return Ok(());
+    }
+
+    if spec.parser_inserted {
+      let idx = self.defer_scripts.len();
+      self.defer_scripts.push(DeferredScript { spec: Some(spec), source: None });
+      self.defer_by_handle.insert(handle, idx);
+      return Ok(());
+    }
+
+    let idx = self.module_in_order_scripts.len();
+    self
+      .module_in_order_scripts
+      .push(InOrderAsapScript { spec: Some(spec), source: None });
+    self.module_in_order_by_handle.insert(handle, idx);
+    Ok(())
+  }
+
   /// Poll pending async/defer loads and schedule any newly-completed scripts.
   pub fn poll(&mut self, host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     while let Some((handle, source)) = host.poll_complete()? {
@@ -327,10 +460,23 @@ where
         self.queue_script_task(event_loop, spec, source)?;
         continue;
       }
+      if let Some(spec) = self.module_async_pending.remove(&handle) {
+        self.queue_script_task(event_loop, spec, source)?;
+        continue;
+      }
       if let Some(idx) = self.in_order_asap_by_handle.remove(&handle) {
         let entry = self.in_order_asap_scripts.get_mut(idx).ok_or_else(|| {
           Error::Other(format!(
             "internal error: in_order_asap_by_handle index out of bounds (idx={idx})"
+          ))
+        })?;
+        entry.source = Some(source);
+        continue;
+      }
+      if let Some(idx) = self.module_in_order_by_handle.remove(&handle) {
+        let entry = self.module_in_order_scripts.get_mut(idx).ok_or_else(|| {
+          Error::Other(format!(
+            "internal error: module_in_order_by_handle index out of bounds (idx={idx})"
           ))
         })?;
         entry.source = Some(source);
@@ -352,6 +498,7 @@ where
 
     self.queue_ready_in_order_asap(event_loop)?;
     self.queue_ready_deferred(event_loop)?;
+    self.queue_ready_module_in_order(event_loop)?;
     Ok(())
   }
 
@@ -412,6 +559,28 @@ where
     Ok(())
   }
 
+  fn queue_ready_module_in_order(&mut self, event_loop: &mut EventLoop<Host>) -> Result<()> {
+    while self.next_module_in_order_to_queue < self.module_in_order_scripts.len() {
+      let entry = &mut self.module_in_order_scripts[self.next_module_in_order_to_queue];
+      let Some(source) = entry.source.take() else {
+        break;
+      };
+      self.options.check_script_source(
+        &source,
+        &format!(
+          "source=external module_in_order_idx={}",
+          self.next_module_in_order_to_queue
+        ),
+      )?;
+      let spec = entry.spec.take().ok_or_else(|| {
+        Error::Other("internal error: in-order module script missing spec".to_string())
+      })?;
+      self.next_module_in_order_to_queue += 1;
+      self.queue_script_task(event_loop, spec, source)?;
+    }
+    Ok(())
+  }
+
   fn queue_script_task(
     &mut self,
     event_loop: &mut EventLoop<Host>,
@@ -419,9 +588,19 @@ where
     source: String,
   ) -> Result<()> {
     let js_execution_depth = Rc::clone(&self.js_execution_depth);
-    event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+    let task_source = match spec.script_type {
+      ScriptType::Classic => TaskSource::Script,
+      ScriptType::Module => TaskSource::Networking,
+      ScriptType::ImportMap | ScriptType::Unknown => TaskSource::Script,
+    };
+    event_loop.queue_task(task_source, move |host, event_loop| {
       let _guard = enter_js_execution(&js_execution_depth);
-      host.execute_classic_script(&source, &spec, event_loop)?;
+      match spec.script_type {
+        ScriptType::Classic => host.execute_classic_script(&source, &spec, event_loop)?,
+        ScriptType::Module => host.execute_module_script(&source, &spec, event_loop)?,
+        ScriptType::ImportMap | ScriptType::Unknown => {}
+      }
+
       // HTML: external scripts (those with a `src` attribute) fire a `load` event once they have
       // finished executing. This is queued as an element task on the DOM manipulation task source.
       //
@@ -433,6 +612,7 @@ where
           host.dispatch_script_event(ScriptElementEvent::Load, &spec_for_event)
         })?;
       }
+
       Ok(())
     })?;
     Ok(())
@@ -453,11 +633,15 @@ where
 ///   - async-like: execute ASAP on fetch completion, not ordered.
 /// - Module scripts (`type="module"`):
 ///   - never block parsing (even when parser-inserted),
-///   - async-like when `async` is present or the per-element "force async" flag is set,
-///   - otherwise, parser-inserted module scripts execute after parsing completes, in document
-///     order (deferred-by-default),
-///   - otherwise, non-parser-inserted module scripts execute in insertion order as soon as possible
-///     (HTML "in-order-asap" list).
+///   - never execute synchronously in the parser/DOM mutation call stack; they always execute from a
+///     queued task once the module graph is ready,
+///   - async-like when `async` is present or the per-element "force async" flag is set: execute ASAP
+///     once ready (may run before parsing completes),
+///   - otherwise:
+///     - parser-inserted module scripts execute after parsing completes (deferred-by-default; the
+///       `defer` attribute has no effect),
+///     - non-parser-inserted module scripts execute in insertion order as soon as possible (HTML
+///       "in-order-asap" list).
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
@@ -522,6 +706,20 @@ pub enum ScriptSchedulerAction<NodeId> {
     destination: FetchDestination,
     credentials_mode: FetchCredentialsMode,
   },
+  /// Begin fetching/creating a module script graph for a module script (`type="module"`).
+  ///
+  /// The embedding is responsible for resolving/fetching the entry module + its dependencies. Once
+  /// the module graph is ready, it must call [`ScriptScheduler::module_graph_ready`].
+  ///
+  /// This is emitted for both inline and external module scripts.
+  StartModuleGraphFetch {
+    script_id: ScriptId,
+    node_id: NodeId,
+    /// Entry URL for external module scripts; `None` for inline module scripts.
+    url: Option<String>,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  },
   /// Block the HTML parser until the referenced script has executed.
   ///
   /// This is emitted for parsing-blocking external scripts (no `async`/`defer`).
@@ -582,12 +780,52 @@ struct ExternalScriptEntry<NodeId> {
   queued_for_execution: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleMode {
+  /// Execute as soon as possible once the module graph is ready (not ordered).
+  Async,
+  /// Execute after parsing completes, in document order with classic `defer` scripts.
+  AfterParsing,
+  /// Execute in insertion order as soon as possible once ready (non-parser-inserted, `async` absent).
+  InOrder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleScriptEntry<NodeId> {
+  #[allow(dead_code)]
+  node_id: NodeId,
+  #[allow(dead_code)]
+  base_url_at_discovery: Option<String>,
+  /// URL for external module scripts; `None` for inline module scripts.
+  #[allow(dead_code)]
+  url: Option<String>,
+  async_attr: bool,
+  defer_attr: bool,
+  parser_inserted: bool,
+  mode: ModuleMode,
+  graph_ready: bool,
+  source_text: Option<String>,
+  queued_for_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScriptEntry<NodeId> {
+  ClassicExternal(ExternalScriptEntry<NodeId>),
+  Module(ModuleScriptEntry<NodeId>),
+}
+
 pub struct ScriptScheduler<NodeId> {
   options: JsExecutionOptions,
   next_script_id: u64,
-  scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>,
+  scripts: HashMap<ScriptId, ScriptEntry<NodeId>>,
+  /// Scripts that execute after parsing completes (classic `defer` + parser-inserted module scripts
+  /// without `async`), in document order.
   defer_queue: Vec<ScriptId>,
   next_defer_to_queue: usize,
+  /// Scripts that execute in insertion order as soon as possible once ready (HTML's
+  /// "list of scripts that will execute in order as soon as possible").
+  ///
+  /// This can include both classic external scripts and module scripts.
   in_order_queue: Vec<ScriptId>,
   next_in_order_to_queue: usize,
   parsing_completed: bool,
@@ -627,12 +865,20 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
   pub(crate) fn trace_metadata(&self, script_id: ScriptId) -> Option<ScriptTraceMetadata<'_>> {
     let entry = self.scripts.get(&script_id)?;
-    Some(ScriptTraceMetadata {
-      url: (!entry.url.is_empty()).then_some(entry.url.as_str()),
-      async_attr: entry.async_attr,
-      defer_attr: entry.defer_attr,
-      parser_inserted: entry.parser_inserted,
-    })
+    match entry {
+      ScriptEntry::ClassicExternal(entry) => Some(ScriptTraceMetadata {
+        url: Some(entry.url.as_str()),
+        async_attr: entry.async_attr,
+        defer_attr: entry.defer_attr,
+        parser_inserted: entry.parser_inserted,
+      }),
+      ScriptEntry::Module(entry) => Some(ScriptTraceMetadata {
+        url: entry.url.as_deref(),
+        async_attr: entry.async_attr,
+        defer_attr: entry.defer_attr,
+        parser_inserted: entry.parser_inserted,
+      }),
+    }
   }
 
   fn alloc_script_id(&mut self) -> ScriptId {
@@ -718,7 +964,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
           self.scripts.insert(
             id,
-            ExternalScriptEntry {
+            ScriptEntry::ClassicExternal(ExternalScriptEntry {
               node_id: node_id.clone(),
               base_url_at_discovery,
               url: url.clone(),
@@ -729,7 +975,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
               fetch_completed: false,
               source_text: None,
               queued_for_execution: false,
-            },
+            }),
           );
 
           let (destination, credentials_mode) = if let Some(cors_mode) = element.crossorigin {
@@ -791,111 +1037,79 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
           return Ok(DiscoveredScript { id, actions });
         }
 
-        // Module scripts execute asynchronously (as tasks). For ordering, HTML treats module scripts
-        // as async-like when either:
-        // - the `async` attribute is present, or
-        // - the element's internal "force async" flag is set (default for dynamically created
-        //   scripts).
+        // Module scripts never execute synchronously in the parser/DOM mutation call stack; they
+        // are always executed from a queued task once the module graph is ready.
         //
-        // When a module script is not async-like:
-        // - parser-inserted module scripts are deferred by default
-        // - dynamically inserted module scripts execute in insertion order as soon as possible.
-        let is_async = element.async_attr || element.force_async;
-        let mode = if is_async {
-          ExternalMode::Async
+        // For ordering, HTML treats module scripts as async-like when either:
+        // - the `async` attribute is present, or
+        // - the element's internal "force async" flag is set (the default for dynamically created
+        //   scripts).
+        let mode = if element.is_effectively_async() {
+          ModuleMode::Async
         } else if element.parser_inserted {
-          ExternalMode::Defer
+          // Parser-inserted module scripts are deferred-by-default.
+          ModuleMode::AfterParsing
         } else {
-          ExternalMode::InOrderAsap
+          // Dynamic module scripts without `async` execute in insertion order as soon as possible once ready.
+          ModuleMode::InOrder
         };
 
-        if element.src_attr_present {
-          let Some(url) = element.src.filter(|s| !s.is_empty()) else {
-            // Handled above (before `supports_module_scripts` gating).
-            return Ok(DiscoveredScript { id, actions });
-          };
-
-          if mode == ExternalMode::Defer {
-            self.defer_queue.push(id);
+        let url_for_entry: Option<String> = if element.src_attr_present {
+          match element.src.filter(|s| !s.is_empty()) {
+            Some(url) => Some(url),
+            None => {
+              // HTML: module scripts with `src` present but empty/invalid also queue `error` and do not
+              // fall back to inline execution.
+              actions.push(ScriptSchedulerAction::QueueScriptEventTask {
+                script_id: id,
+                node_id,
+                event: ScriptElementEvent::Error,
+              });
+              return Ok(DiscoveredScript { id, actions });
+            }
           }
-          if mode == ExternalMode::InOrderAsap {
-            self.in_order_queue.push(id);
-          }
-
-          self.scripts.insert(
-            id,
-            ExternalScriptEntry {
-              node_id: node_id.clone(),
-              base_url_at_discovery,
-              url: url.clone(),
-              async_attr: element.async_attr,
-              defer_attr: element.defer_attr,
-              parser_inserted: element.parser_inserted,
-              mode,
-              fetch_completed: false,
-              source_text: None,
-              queued_for_execution: false,
-            },
-          );
-
-          // HTML: module scripts are fetched in CORS mode regardless of the `crossorigin`
-          // attribute. The attribute only controls the credentials mode ("anonymous" vs
-          // "use-credentials", defaulting to same-origin).
-          let destination = FetchDestination::ScriptCors;
-          let credentials_mode = element
-            .crossorigin
-            .map(|cors_mode| cors_mode.credentials_mode())
-            .unwrap_or(FetchCredentialsMode::SameOrigin);
-          actions.push(ScriptSchedulerAction::StartFetch {
-            script_id: id,
-            node_id: node_id.clone(),
-            url,
-            destination,
-            credentials_mode,
-          });
-        } else if mode == ExternalMode::Async {
-          actions.push(ScriptSchedulerAction::QueueTask {
-            script_id: id,
-            node_id,
-            source_text: element.inline_text,
-          });
         } else {
-          if mode == ExternalMode::Defer {
-            // Inline module scripts are deferred-by-default for parser-inserted scripts.
-            self.defer_queue.push(id);
-          } else {
-            // Non-parser-inserted module scripts without async-like behavior should execute in
-            // insertion order as soon as possible.
-            debug_assert_eq!(mode, ExternalMode::InOrderAsap);
-            self.in_order_queue.push(id);
-          }
-          self.scripts.insert(
-            id,
-            ExternalScriptEntry {
-              node_id: node_id.clone(),
-              base_url_at_discovery,
-              url: String::new(),
-              async_attr: element.async_attr,
-              defer_attr: element.defer_attr,
-              parser_inserted: element.parser_inserted,
-              mode,
-              fetch_completed: true,
-              source_text: Some(element.inline_text),
-              queued_for_execution: false,
-            },
-          );
-          match mode {
-            ExternalMode::Defer => {
-              if self.parsing_completed {
-                actions.extend(self.queue_defer_scripts_if_ready()?);
-              }
-            }
-            ExternalMode::InOrderAsap => {
-              actions.extend(self.queue_in_order_scripts_if_ready()?);
-            }
-            ExternalMode::Blocking | ExternalMode::Async => {}
-          }
+          None
+        };
+
+        if mode == ModuleMode::AfterParsing {
+          self.defer_queue.push(id);
+        } else if mode == ModuleMode::InOrder {
+          self.in_order_queue.push(id);
         }
+
+        // Module scripts are fetched in CORS mode and default to `same-origin` credentials. The
+        // `crossorigin` CORS settings attribute only affects the credentials mode.
+        let destination = FetchDestination::ScriptCors;
+        let credentials_mode = element
+          .crossorigin
+          .map(|cors_mode| cors_mode.credentials_mode())
+          .unwrap_or(FetchCredentialsMode::SameOrigin);
+
+        let action_url = url_for_entry.clone();
+        self.scripts.insert(
+          id,
+          ScriptEntry::Module(ModuleScriptEntry {
+            node_id: node_id.clone(),
+            base_url_at_discovery,
+            url: url_for_entry,
+            async_attr: element.async_attr,
+            defer_attr: element.defer_attr,
+            parser_inserted: element.parser_inserted,
+            mode,
+            graph_ready: false,
+            source_text: None,
+            queued_for_execution: false,
+          }),
+        );
+
+        actions.push(ScriptSchedulerAction::StartModuleGraphFetch {
+          script_id: id,
+          node_id,
+          url: action_url,
+          destination,
+          credentials_mode,
+        });
       }
       ScriptType::ImportMap => {
         // HTML: import maps must be inline; `src` is invalid and must queue `error`.
@@ -945,6 +1159,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         script_id.as_u64()
       )));
     };
+    let ScriptEntry::ClassicExternal(entry) = entry else {
+      return Err(Error::Other(format!(
+        "fetch_completed called for non-classic script_id={}",
+        script_id.as_u64()
+      )));
+    };
 
     if entry.fetch_completed {
       return Err(Error::Other(format!(
@@ -991,6 +1211,99 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     }
   }
 
+  /// Notify the scheduler that the module graph for a module script is ready.
+  ///
+  /// This corresponds to HTML's notion of a "ready" module script (entry module + dependencies
+  /// fetched/created). Callers should invoke this once the module graph is fully available.
+  pub fn module_graph_ready(
+    &mut self,
+    script_id: ScriptId,
+    source_text: String,
+  ) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
+    let Some(entry) = self.scripts.get_mut(&script_id) else {
+      return Err(Error::Other(format!(
+        "module_graph_ready called for unknown script_id={}",
+        script_id.as_u64()
+      )));
+    };
+    let ScriptEntry::Module(entry) = entry else {
+      return Err(Error::Other(format!(
+        "module_graph_ready called for non-module script_id={}",
+        script_id.as_u64()
+      )));
+    };
+
+    if entry.graph_ready {
+      return Err(Error::Other(format!(
+        "module_graph_ready called more than once for script_id={}",
+        script_id.as_u64()
+      )));
+    }
+    entry.graph_ready = true;
+    entry.source_text = Some(source_text);
+
+    match entry.mode {
+      ModuleMode::Async => {
+        if entry.queued_for_execution {
+          return Ok(Vec::new());
+        }
+        entry.queued_for_execution = true;
+        let node_id = entry.node_id.clone();
+        let source_text = entry.source_text.take().ok_or_else(|| {
+          Error::Other("internal error: missing source text after module_graph_ready".to_string())
+        })?;
+        Ok(vec![ScriptSchedulerAction::QueueTask {
+          script_id,
+          node_id,
+          source_text,
+        }])
+      }
+      ModuleMode::AfterParsing => self.queue_defer_scripts_if_ready(),
+      ModuleMode::InOrder => self.queue_in_order_scripts_if_ready(),
+    }
+  }
+
+  /// Notify the scheduler that building/fetching the module graph for a module script failed.
+  ///
+  /// Like [`ScriptScheduler::fetch_failed`] for classic scripts, failed module scripts are treated
+  /// as "completed" for ordering purposes: they must not execute, but they must not block later
+  /// ordered scripts (in-order-asap dynamic modules or after-parsing scripts).
+  pub fn module_graph_failed(
+    &mut self,
+    script_id: ScriptId,
+  ) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
+    let mode = {
+      let Some(entry) = self.scripts.get_mut(&script_id) else {
+        return Err(Error::Other(format!(
+          "module_graph_failed called for unknown script_id={}",
+          script_id.as_u64()
+        )));
+      };
+      let ScriptEntry::Module(entry) = entry else {
+        return Err(Error::Other(format!(
+          "module_graph_failed called for non-module script_id={}",
+          script_id.as_u64()
+        )));
+      };
+      if entry.graph_ready {
+        return Err(Error::Other(format!(
+          "module_graph_failed called after module graph readiness for script_id={}",
+          script_id.as_u64()
+        )));
+      }
+      entry.graph_ready = true;
+      entry.queued_for_execution = true;
+      entry.source_text = None;
+      entry.mode
+    };
+
+    match mode {
+      ModuleMode::AfterParsing => self.queue_defer_scripts_if_ready(),
+      ModuleMode::InOrder => self.queue_in_order_scripts_if_ready(),
+      ModuleMode::Async => Ok(Vec::new()),
+    }
+  }
+
   /// Notify the scheduler that an external script fetch failed (network error, CORS failure, SRI
   /// mismatch, etc).
   ///
@@ -1006,6 +1319,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
       let Some(entry) = self.scripts.get_mut(&script_id) else {
         return Err(Error::Other(format!(
           "fetch_failed called for unknown script_id={}",
+          script_id.as_u64()
+        )));
+      };
+      let ScriptEntry::ClassicExternal(entry) = entry else {
+        return Err(Error::Other(format!(
+          "fetch_failed called for non-classic script_id={}",
           script_id.as_u64()
         )));
       };
@@ -1051,28 +1370,56 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         )));
       };
 
-      if entry.queued_for_execution {
-        self.next_defer_to_queue += 1;
-        continue;
-      }
+      match entry {
+        ScriptEntry::ClassicExternal(entry) => {
+          if entry.queued_for_execution {
+            self.next_defer_to_queue += 1;
+            continue;
+          }
 
-      if entry.source_text.is_none() {
-        break;
-      }
+          if entry.source_text.is_none() {
+            break;
+          }
 
-      entry.queued_for_execution = true;
-      let node_id = entry.node_id.clone();
-      let source_text = entry.source_text.take().ok_or_else(|| {
-        Error::Other(
-          "internal error: missing source text when queueing deferred scripts".to_string(),
-        )
-      })?;
-      actions.push(ScriptSchedulerAction::QueueTask {
-        script_id,
-        node_id,
-        source_text,
-      });
-      self.next_defer_to_queue += 1;
+          entry.queued_for_execution = true;
+          let node_id = entry.node_id.clone();
+          let source_text = entry.source_text.take().ok_or_else(|| {
+            Error::Other(
+              "internal error: missing source text when queueing after-parsing scripts".to_string(),
+            )
+          })?;
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id,
+            node_id,
+            source_text,
+          });
+          self.next_defer_to_queue += 1;
+        }
+        ScriptEntry::Module(entry) => {
+          if entry.queued_for_execution {
+            self.next_defer_to_queue += 1;
+            continue;
+          }
+
+          if entry.source_text.is_none() {
+            break;
+          }
+
+          entry.queued_for_execution = true;
+          let node_id = entry.node_id.clone();
+          let source_text = entry.source_text.take().ok_or_else(|| {
+            Error::Other(
+              "internal error: missing source text when queueing after-parsing scripts".to_string(),
+            )
+          })?;
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id,
+            node_id,
+            source_text,
+          });
+          self.next_defer_to_queue += 1;
+        }
+      }
     }
 
     Ok(actions)
@@ -1088,29 +1435,58 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
           script_id.as_u64()
         )));
       };
+      match entry {
+        ScriptEntry::ClassicExternal(entry) => {
+          if entry.queued_for_execution {
+            self.next_in_order_to_queue += 1;
+            continue;
+          }
 
-      if entry.queued_for_execution {
-        self.next_in_order_to_queue += 1;
-        continue;
+          if entry.source_text.is_none() {
+            break;
+          }
+
+          entry.queued_for_execution = true;
+          let node_id = entry.node_id.clone();
+          let source_text = entry.source_text.take().ok_or_else(|| {
+            Error::Other(
+              "internal error: missing source text when queueing in-order-asap scripts".to_string(),
+            )
+          })?;
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id,
+            node_id,
+            source_text,
+          });
+          self.next_in_order_to_queue += 1;
+        }
+        ScriptEntry::Module(entry) => {
+          debug_assert_eq!(entry.mode, ModuleMode::InOrder);
+
+          if entry.queued_for_execution {
+            self.next_in_order_to_queue += 1;
+            continue;
+          }
+
+          if entry.source_text.is_none() {
+            break;
+          }
+
+          entry.queued_for_execution = true;
+          let node_id = entry.node_id.clone();
+          let source_text = entry.source_text.take().ok_or_else(|| {
+            Error::Other(
+              "internal error: missing source text when queueing in-order-asap scripts".to_string(),
+            )
+          })?;
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id,
+            node_id,
+            source_text,
+          });
+          self.next_in_order_to_queue += 1;
+        }
       }
-
-      if entry.source_text.is_none() {
-        break;
-      }
-
-      entry.queued_for_execution = true;
-      let node_id = entry.node_id.clone();
-      let source_text = entry.source_text.take().ok_or_else(|| {
-        Error::Other(
-          "internal error: missing source text when queueing in-order-asap scripts".to_string(),
-        )
-      })?;
-      actions.push(ScriptSchedulerAction::QueueTask {
-        script_id,
-        node_id,
-        source_text,
-      });
-      self.next_in_order_to_queue += 1;
     }
 
     Ok(actions)
@@ -1202,6 +1578,23 @@ mod tests {
 
   impl ScriptExecutor for TestHost {
     fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.log.push(script_text.to_string());
+      if self.queue_microtask_after_execute {
+        let name = script_text.to_string();
+        event_loop.queue_microtask(move |host, _event_loop| {
+          host.log.push(format!("microtask-after-{name}"));
+          Ok(())
+        })?;
+      }
+      Ok(())
+    }
+
+    fn execute_module_script(
       &mut self,
       script_text: &str,
       _spec: &ScriptElementSpec,
@@ -1914,26 +2307,6 @@ mod state_machine_tests {
     spec
   }
 
-  fn module_inline_dynamic(text: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
-    ScriptElementSpec {
-      base_url: None,
-      src: None,
-      src_attr_present: false,
-      inline_text: text.to_string(),
-      async_attr,
-      defer_attr: false,
-      nomodule_attr: false,
-      crossorigin: None,
-      integrity_attr_present: false,
-      integrity: None,
-      referrer_policy: None,
-      parser_inserted: false,
-      force_async,
-      node_id: None,
-      script_type: ScriptType::Module,
-    }
-  }
-
   fn module_external(src: &str, async_attr: bool) -> ScriptElementSpec {
     let mut spec = classic_external(src, async_attr, /* defer_attr */ false);
     spec.script_type = ScriptType::Module;
@@ -1960,6 +2333,26 @@ mod state_machine_tests {
     }
   }
 
+  fn module_inline_dynamic(text: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      src_attr_present: false,
+      inline_text: text.to_string(),
+      async_attr,
+      force_async,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      node_id: None,
+      script_type: ScriptType::Module,
+    }
+  }
+
   fn with_nomodule(mut spec: ScriptElementSpec) -> ScriptElementSpec {
     spec.nomodule_attr = true;
     spec
@@ -1970,7 +2363,10 @@ mod state_machine_tests {
     event_loop: EventLoop<Host>,
     host: Host,
     started_fetches: Vec<(ScriptId, u32, String, FetchDestination, FetchCredentialsMode)>,
+    started_module_graph_fetches:
+      Vec<(ScriptId, u32, Option<String>, FetchDestination, FetchCredentialsMode)>,
     blocked_parser_on: Option<ScriptId>,
+    script_type_by_id: HashMap<ScriptId, ScriptType>,
   }
 
   impl Harness {
@@ -1984,7 +2380,9 @@ mod state_machine_tests {
         event_loop: EventLoop::new(),
         host: Host::default(),
         started_fetches: Vec::new(),
+        started_module_graph_fetches: Vec::new(),
         blocked_parser_on: None,
+        script_type_by_id: HashMap::new(),
       }
     }
 
@@ -2002,10 +2400,18 @@ mod state_machine_tests {
               .started_fetches
               .push((script_id, node_id, url, destination, credentials_mode));
           }
-          ScriptSchedulerAction::BlockParserUntilExecuted {
+          ScriptSchedulerAction::StartModuleGraphFetch {
             script_id,
-            node_id: _,
+            node_id,
+            url,
+            destination,
+            credentials_mode,
           } => {
+            self
+              .started_module_graph_fetches
+              .push((script_id, node_id, url, destination, credentials_mode));
+          }
+          ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
             self.blocked_parser_on = Some(script_id);
           }
           ScriptSchedulerAction::ExecuteNow {
@@ -2022,13 +2428,22 @@ mod state_machine_tests {
             }
           }
           ScriptSchedulerAction::QueueTask {
-            script_id: _,
+            script_id,
             node_id: _,
             source_text,
           } => {
+            let task_source = self
+              .script_type_by_id
+              .get(&script_id)
+              .copied()
+              .map(|ty| match ty {
+                ScriptType::Module => TaskSource::Networking,
+                _ => TaskSource::Script,
+              })
+              .unwrap_or(TaskSource::Script);
             self
               .event_loop
-              .queue_task(TaskSource::Script, move |host, event_loop| {
+              .queue_task(task_source, move |host, event_loop| {
                 execute_fake_script(host, event_loop, &source_text)
               })?;
           }
@@ -2051,19 +2466,23 @@ mod state_machine_tests {
     }
 
     fn discover(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
+      let script_type = element.script_type;
       let discovered = self.scheduler.discovered_parser_script(
         element, /* node_id */ 1, /* base_url_at_discovery */ None,
       )?;
       let id = discovered.id;
+      self.script_type_by_id.insert(id, script_type);
       self.apply_actions(discovered.actions)?;
       Ok(id)
     }
 
     fn discover_dynamic(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
-      let discovered = self.scheduler.discovered_script(
-        element, /* node_id */ 1, /* base_url_at_discovery */ None,
-      )?;
+      let script_type = element.script_type;
+      let discovered = self
+        .scheduler
+        .discovered_script(element, /* node_id */ 1, /* base_url_at_discovery */ None)?;
       let id = discovered.id;
+      self.script_type_by_id.insert(id, script_type);
       self.apply_actions(discovered.actions)?;
       Ok(id)
     }
@@ -2077,6 +2496,13 @@ mod state_machine_tests {
 
     fn parsing_completed(&mut self) -> Result<()> {
       let actions = self.scheduler.parsing_completed()?;
+      self.apply_actions(actions)
+    }
+
+    fn module_graph_ready(&mut self, script_id: ScriptId, source_text: &str) -> Result<()> {
+      let actions = self
+        .scheduler
+        .module_graph_ready(script_id, source_text.to_string())?;
       self.apply_actions(actions)
     }
 
@@ -2219,78 +2645,42 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn in_order_asap_dynamic_module_external_scripts_execute_in_insertion_order() -> Result<()> {
+  fn force_async_true_dynamic_module_external_scripts_behave_like_async() -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    let a = h.discover_dynamic(module_external_dynamic(
-      "a.js",
-      /* async_attr */ false,
-      /* force_async */ false,
-    ))?;
-    let b = h.discover_dynamic(module_external_dynamic(
-      "b.js",
-      /* async_attr */ false,
-      /* force_async */ false,
-    ))?;
+    let a = h.discover_dynamic(module_external_dynamic("a.js", /* async_attr */ false, /* force_async */ true))?;
+    let b = h.discover_dynamic(module_external_dynamic("b.js", /* async_attr */ false, /* force_async */ true))?;
 
     assert!(
       h.blocked_parser_on.is_none(),
       "dynamic module scripts must not block parsing"
     );
     assert_eq!(
-      h.started_fetches
-        .iter()
-        .map(|(_id, _node_id, url, _destination, _credentials_mode)| url.as_str())
-        .collect::<Vec<_>>(),
-      vec!["a.js", "b.js"]
-    );
-
-    // Complete out-of-order: B finishes before A.
-    h.fetch_complete(b, "B")?;
-    h.run_event_loop()?;
-    assert_eq!(
-      h.host.log,
-      Vec::<String>::new(),
-      "in-order-asap module scripts must not run until earlier scripts are ready"
-    );
-
-    h.fetch_complete(a, "A")?;
-    h.run_event_loop()?;
-
-    assert_eq!(
-      h.host.log,
+      h.started_module_graph_fetches,
       vec![
-        "script:A".to_string(),
-        "microtask:A".to_string(),
-        "script:B".to_string(),
-        "microtask:B".to_string(),
-      ]
+        (
+          a,
+          1u32,
+          Some("a.js".to_string()),
+          FetchDestination::ScriptCors,
+          FetchCredentialsMode::SameOrigin,
+        ),
+        (
+          b,
+          1u32,
+          Some("b.js".to_string()),
+          FetchDestination::ScriptCors,
+          FetchCredentialsMode::SameOrigin,
+        ),
+      ],
+      "module scripts should request a module graph fetch"
     );
-    Ok(())
-  }
 
-  #[test]
-  fn force_async_true_dynamic_module_external_scripts_behave_like_async() -> Result<()> {
-    let mut options = JsExecutionOptions::default();
-    options.supports_module_scripts = true;
-    let mut h = Harness::new_with_options(options);
-
-    let a = h.discover_dynamic(module_external_dynamic(
-      "a.js",
-      /* async_attr */ false,
-      /* force_async */ true,
-    ))?;
-    let b = h.discover_dynamic(module_external_dynamic(
-      "b.js",
-      /* async_attr */ false,
-      /* force_async */ true,
-    ))?;
-
-    // Async module scripts execute in completion order.
-    h.fetch_complete(b, "B")?;
-    h.fetch_complete(a, "A")?;
+    // Async-like module scripts execute in completion order.
+    h.module_graph_ready(b, "B")?;
+    h.module_graph_ready(a, "A")?;
     h.run_event_loop()?;
 
     assert_eq!(
@@ -2311,18 +2701,16 @@ mod state_machine_tests {
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    h.discover_dynamic(module_inline_dynamic(
-      "A",
-      /* async_attr */ false,
-      /* force_async */ false,
-    ))?;
-    h.discover_dynamic(module_inline_dynamic(
-      "B",
-      /* async_attr */ false,
-      /* force_async */ false,
-    ))?;
+    let a = h.discover_dynamic(module_inline_dynamic("A", /* async_attr */ false, /* force_async */ false))?;
+    let b = h.discover_dynamic(module_inline_dynamic("B", /* async_attr */ false, /* force_async */ false))?;
 
+    // Mark B ready first; it must not execute until A is ready.
+    h.module_graph_ready(b, "B")?;
+    h.run_event_loop()?;
     assert!(h.host.log.is_empty());
+
+    // Now A becomes ready; both should execute in insertion order.
+    h.module_graph_ready(a, "A")?;
     h.run_event_loop()?;
     assert_eq!(
       h.host.log,
@@ -2342,7 +2730,8 @@ mod state_machine_tests {
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
 
-    h.discover(module_inline("M"))?;
+    let module_id = h.discover(module_inline("M"))?;
+    h.module_graph_ready(module_id, "M")?;
     h.run_event_loop()?;
     assert_eq!(
       h.host.log,
@@ -2532,15 +2921,15 @@ mod state_machine_tests {
 
     h.discover(module_external("", false))?;
     assert!(
-      h.started_fetches.is_empty(),
-      "expected empty-src module scripts to not start fetch"
+      h.started_module_graph_fetches.is_empty(),
+      "expected empty-src module scripts to not start module graph fetch"
     );
     h.run_event_loop()?;
     assert_eq!(h.host.log, vec!["event:error".to_string()]);
 
     let script_id = h.discover(module_external("https://example.com/a.js", false))?;
-    assert_eq!(h.started_fetches.len(), 1);
-    h.fetch_complete(script_id, "A")?;
+    assert_eq!(h.started_module_graph_fetches.len(), 1);
+    h.module_graph_ready(script_id, "A")?;
     h.run_event_loop()?;
     assert_eq!(
       h.host.log,
@@ -2569,11 +2958,11 @@ mod state_machine_tests {
 
     let script_id = h.discover(module_external("https://example.com/a.js", false))?;
     assert_eq!(
-      h.started_fetches,
+      h.started_module_graph_fetches,
       vec![(
         script_id,
         1u32,
-        "https://example.com/a.js".to_string(),
+        Some("https://example.com/a.js".to_string()),
         FetchDestination::ScriptCors,
         FetchCredentialsMode::SameOrigin,
       )]
@@ -2583,7 +2972,7 @@ mod state_machine_tests {
       "module scripts must not block parsing"
     );
 
-    h.fetch_complete(script_id, "A")?;
+    h.module_graph_ready(script_id, "A")?;
     h.run_event_loop()?;
     assert!(
       h.host.log.is_empty(),
@@ -2606,9 +2995,9 @@ mod state_machine_tests {
     let mut h = Harness::new_with_options(options);
 
     let script_id = h.discover(module_external("https://example.com/a.js", true))?;
-    assert_eq!(h.started_fetches.len(), 1);
+    assert_eq!(h.started_module_graph_fetches.len(), 1);
     assert!(
-      h.started_fetches[0].3 == FetchDestination::ScriptCors,
+      h.started_module_graph_fetches[0].3 == FetchDestination::ScriptCors,
       "module scripts must fetch with ScriptCors"
     );
     assert!(
@@ -2616,7 +3005,7 @@ mod state_machine_tests {
       "module scripts must not block parsing"
     );
 
-    h.fetch_complete(script_id, "A")?;
+    h.module_graph_ready(script_id, "A")?;
     assert!(
       h.host.log.is_empty(),
       "async module scripts should not execute synchronously on fetch completion"
@@ -2640,11 +3029,11 @@ mod state_machine_tests {
     let script_id = h.discover(spec)?;
 
     assert_eq!(
-      h.started_fetches,
+      h.started_module_graph_fetches,
       vec![(
         script_id,
         1u32,
-        "https://example.com/a.js".to_string(),
+        Some("https://example.com/a.js".to_string()),
         FetchDestination::ScriptCors,
         FetchCredentialsMode::SameOrigin,
       )]
@@ -2668,11 +3057,11 @@ mod state_machine_tests {
     let script_id = h.discover(spec)?;
 
     assert_eq!(
-      h.started_fetches,
+      h.started_module_graph_fetches,
       vec![(
         script_id,
         1u32,
-        "https://example.com/a.js".to_string(),
+        Some("https://example.com/a.js".to_string()),
         FetchDestination::ScriptCors,
         FetchCredentialsMode::Include,
       )]
@@ -2750,11 +3139,11 @@ mod state_machine_tests {
     ))?;
 
     assert_eq!(
-      h.started_fetches,
+      h.started_module_graph_fetches,
       vec![(
         script_id,
         1u32,
-        "https://example.com/a.js".to_string(),
+        Some("https://example.com/a.js".to_string()),
         FetchDestination::ScriptCors,
         FetchCredentialsMode::SameOrigin,
       )]
@@ -2781,11 +3170,11 @@ mod state_machine_tests {
     let script_id = h.discover_dynamic(spec)?;
 
     assert_eq!(
-      h.started_fetches,
+      h.started_module_graph_fetches,
       vec![(
         script_id,
         1u32,
-        "https://example.com/a.js".to_string(),
+        Some("https://example.com/a.js".to_string()),
         FetchDestination::ScriptCors,
         FetchCredentialsMode::Include,
       )]
@@ -2859,6 +3248,164 @@ mod state_machine_tests {
         "microtask:d2".to_string(),
         "script:a1".to_string(),
         "microtask:a1".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn inline_module_scripts_are_queued_as_tasks_not_executed_synchronously() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let module_id = h.discover_dynamic(module_inline_dynamic(
+      "INLINE_MOD",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+    assert_eq!(
+      h.started_module_graph_fetches,
+      vec![(
+        module_id,
+        1u32,
+        None,
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )],
+      "expected scheduler to request module graph fetch for inline module"
+    );
+    assert!(
+      h.host.log.is_empty(),
+      "inline module scripts must not execute synchronously on discovery"
+    );
+
+    h.module_graph_ready(module_id, "INLINE_MOD")?;
+    assert!(
+      h.host.log.is_empty(),
+      "inline module scripts should execute from a queued task, not during module_graph_ready"
+    );
+
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:INLINE_MOD".to_string(),
+        "microtask:INLINE_MOD".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_module_without_async_executes_after_parsing_completed() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let module_id = h.discover(module_external("m.js", false))?;
+    assert_eq!(
+      h.started_module_graph_fetches,
+      vec![(
+        module_id,
+        1u32,
+        Some("m.js".to_string()),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+
+    // The module graph becomes ready before parsing is complete.
+    h.module_graph_ready(module_id, "MOD")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      Vec::<String>::new(),
+      "parser-inserted non-async module scripts must not execute before parsing_completed"
+    );
+
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:MOD".to_string(), "microtask:MOD".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_async_module_can_execute_before_parsing_completes() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let module_id = h.discover(module_external("a.js", true))?;
+    assert_eq!(
+      h.started_module_graph_fetches,
+      vec![(
+        module_id,
+        1u32,
+        Some("a.js".to_string()),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+
+    h.module_graph_ready(module_id, "ASYNC_MOD")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:ASYNC_MOD".to_string(),
+        "microtask:ASYNC_MOD".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_non_async_module_scripts_execute_in_insertion_order() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let m1 = h.discover_dynamic(module_external_dynamic("m1.js", false, /* force_async */ false))?;
+    let m2 = h.discover_dynamic(module_external_dynamic("m2.js", false, /* force_async */ false))?;
+    assert_eq!(
+      h.started_module_graph_fetches,
+      vec![
+        (
+          m1,
+          1u32,
+          Some("m1.js".to_string()),
+          FetchDestination::ScriptCors,
+          FetchCredentialsMode::SameOrigin,
+        ),
+        (
+          m2,
+          1u32,
+          Some("m2.js".to_string()),
+          FetchDestination::ScriptCors,
+          FetchCredentialsMode::SameOrigin,
+        ),
+      ]
+    );
+
+    // Second module becomes ready first; it must not execute until the first module is ready.
+    h.module_graph_ready(m2, "M2")?;
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, Vec::<String>::new());
+
+    // Now the first module is ready; both should queue in insertion order.
+    h.module_graph_ready(m1, "M1")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:M1".to_string(),
+        "microtask:M1".to_string(),
+        "script:M2".to_string(),
+        "microtask:M2".to_string(),
       ]
     );
     Ok(())

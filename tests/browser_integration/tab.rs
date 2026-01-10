@@ -549,8 +549,12 @@ fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()>
     RunUntilIdleOutcome::Idle
   );
   assert_eq!(
-    tab.dom()
-      .get_attribute(find_element_by_id(tab.dom(), "box").expect("#box id"), "data-phase")
+    tab
+      .dom()
+      .get_attribute(
+        find_element_by_id(tab.dom(), "box").expect("#box id"),
+        "data-phase"
+      )
       .map_err(|e| Error::Other(e.to_string()))?,
     Some("task")
   );
@@ -563,8 +567,12 @@ fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()>
     RunUntilIdleOutcome::Idle
   );
   assert_eq!(
-    tab.dom()
-      .get_attribute(find_element_by_id(tab.dom(), "box").expect("#box id"), "data-phase")
+    tab
+      .dom()
+      .get_attribute(
+        find_element_by_id(tab.dom(), "box").expect("#box id"),
+        "data-phase"
+      )
       .map_err(|e| Error::Other(e.to_string()))?,
     Some("timer")
   );
@@ -619,7 +627,9 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
-  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let executor = ParseTimeDomAssertionExecutor {
+    log: Arc::clone(&log),
+  };
   let options = RenderOptions::new().with_viewport(1, 1);
 
   let html = "<!doctype html><script>assert-partial-dom</script><div id=after></div>";
@@ -631,7 +641,10 @@ fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<
   );
 
   assert_eq!(
-    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .as_slice(),
     &["assert-partial-dom".to_string()]
   );
   Ok(())

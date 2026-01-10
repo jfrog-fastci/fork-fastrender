@@ -1,4 +1,6 @@
-use fastrender::api::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions};
+use fastrender::api::{
+  BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions,
+};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{

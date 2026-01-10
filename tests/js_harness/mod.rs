@@ -205,6 +205,18 @@ impl ScriptExecutor for HostState {
     state.borrow_mut().current_script = prev_current;
     result.map(|_| ())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    // The JS harness uses QuickJS evaluation directly. Treat module scripts as evaluating the
+    // provided (already-resolved) source text while relying on the host `ScriptOrchestrator` to
+    // handle `document.currentScript` bookkeeping (`null` for module scripts).
+    self.execute_classic_script(script_text, spec, event_loop)
+  }
 }
 
 impl ScriptEventDispatcher for HostState {

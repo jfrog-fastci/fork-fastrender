@@ -410,6 +410,10 @@ impl ClassicScriptPipelineState {
         } => {
           host.start_fetch(script_id, &url, destination, credentials_mode)?;
         }
+        ScriptSchedulerAction::StartModuleGraphFetch { .. } => {
+          // This pipeline is a classic-script-only integration harness. Module script graph fetching
+          // and execution is handled by higher-level orchestrators.
+        }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_parser_on = Some(script_id);
         }
@@ -832,6 +836,24 @@ mod tests {
       })?;
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      if let Some(assert) = &self.assert_dom_state_on_execute {
+        assert(&self.dom);
+      }
+      self.log.push(script_text.to_string());
+      let micro = format!("m{script_text}");
+      event_loop.queue_microtask(move |host, _| {
+        host.log.push(micro);
+        Ok(())
+      })?;
+      Ok(())
+    }
   }
 
   impl ScriptEventDispatcher for Host {
@@ -910,6 +932,15 @@ mod tests {
     ) -> Result<()> {
       self.executed.push((script_text.to_string(), spec.force_async));
       Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, event_loop)
     }
   }
  

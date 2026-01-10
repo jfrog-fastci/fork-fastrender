@@ -145,9 +145,11 @@ impl JsHost {
   }
 
   fn eval_bool(&self, expr: &str) -> Result<bool> {
-    self
-      .js_ctx
-      .with(|ctx| ctx.eval::<bool, _>(expr).map_err(|e| Error::Other(e.to_string())))
+    self.js_ctx.with(|ctx| {
+      ctx
+        .eval::<bool, _>(expr)
+        .map_err(|e| Error::Other(e.to_string()))
+    })
   }
 
   fn run_script_element(&mut self, node_id: NodeId, script_type: ScriptType) -> Result<()> {
@@ -229,7 +231,11 @@ impl ScriptBlockExecutor<JsHost> for JsExecutor {
     // Mirror host currentScript state into the JS `document.currentScript` getter.
     let new_current_script = host.current_script();
     let nested_inner = (!self.did_nested)
-      .then(|| host.nested.and_then(|(outer, inner)| (outer == script).then_some(inner)))
+      .then(|| {
+        host
+          .nested
+          .and_then(|(outer, inner)| (outer == script).then_some(inner))
+      })
       .flatten();
 
     host
@@ -239,9 +245,11 @@ impl ScriptBlockExecutor<JsHost> for JsExecutor {
     // Always restore `document.currentScript` (via a JS-side stack), even when execution throws.
     let exec_result = (|| -> Result<()> {
       for (idx, seg) in segments.iter().enumerate() {
-        host
-          .js_ctx
-          .with(|ctx| ctx.eval::<(), _>(seg.as_str()).map_err(|e| Error::Other(e.to_string())))?;
+        host.js_ctx.with(|ctx| {
+          ctx
+            .eval::<(), _>(seg.as_str())
+            .map_err(|e| Error::Other(e.to_string()))
+        })?;
 
         // Simulate a nested script execution boundary between the first and second segments.
         if idx == 0 {
@@ -254,9 +262,7 @@ impl ScriptBlockExecutor<JsHost> for JsExecutor {
       Ok(())
     })();
 
-    let restore_result = host
-      .js_ctx
-      .with(|ctx| Self::js_pop_current_script(ctx));
+    let restore_result = host.js_ctx.with(|ctx| Self::js_pop_current_script(ctx));
 
     restore_result?;
     exec_result
@@ -279,14 +285,15 @@ fn assert_log_eq_script_sequence(host: &JsHost, expected: &[NodeId]) -> Result<(
 
     // Compare each log entry to the wrapper object for the expected node id.
     for (idx, &node_id) in expected.iter().enumerate() {
-      let expr = format!(
-        "log[{idx}] === __scriptByNodeId[\"{}\"]",
-        node_id.index()
-      );
+      let expr = format!("log[{idx}] === __scriptByNodeId[\"{}\"]", node_id.index());
       let equal = ctx
         .eval::<bool, _>(expr.as_str())
         .map_err(|e| Error::Other(e.to_string()))?;
-      assert!(equal, "log[{idx}] did not match node_id={}", node_id.index());
+      assert!(
+        equal,
+        "log[{idx}] did not match node_id={}",
+        node_id.index()
+      );
     }
     Ok(())
   })
@@ -349,6 +356,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     for action in actions {
       match action {
         ScriptSchedulerAction::StartFetch { .. } => {}
+        ScriptSchedulerAction::StartModuleGraphFetch { .. } => {}
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           *blocked_parser_on = Some(script_id);
         }
@@ -407,7 +415,12 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     None,
   )?;
   let a_id = discovered.id;
-  apply_actions(&mut blocked_parser_on, &mut host, &mut event_loop, discovered.actions)?;
+  apply_actions(
+    &mut blocked_parser_on,
+    &mut host,
+    &mut event_loop,
+    discovered.actions,
+  )?;
   assert_eq!(blocked_parser_on, Some(a_id));
 
   // Fetch completes; the blocking script executes synchronously and unblocks the parser.
@@ -437,7 +450,12 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     b,
     None,
   )?;
-  apply_actions(&mut blocked_parser_on, &mut host, &mut event_loop, discovered.actions)?;
+  apply_actions(
+    &mut blocked_parser_on,
+    &mut host,
+    &mut event_loop,
+    discovered.actions,
+  )?;
 
   // Discover async + defer external scripts.
   let discovered = scheduler.discovered_parser_script(
@@ -462,7 +480,12 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     None,
   )?;
   let c_id = discovered.id;
-  apply_actions(&mut blocked_parser_on, &mut host, &mut event_loop, discovered.actions)?;
+  apply_actions(
+    &mut blocked_parser_on,
+    &mut host,
+    &mut event_loop,
+    discovered.actions,
+  )?;
 
   let discovered = scheduler.discovered_parser_script(
     fastrender::js::ScriptElementSpec {
@@ -486,7 +509,12 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     None,
   )?;
   let d_id = discovered.id;
-  apply_actions(&mut blocked_parser_on, &mut host, &mut event_loop, discovered.actions)?;
+  apply_actions(
+    &mut blocked_parser_on,
+    &mut host,
+    &mut event_loop,
+    discovered.actions,
+  )?;
 
   // Parsing completes (allows defer scripts to queue once ready).
   apply_actions(
@@ -534,7 +562,10 @@ fn document_current_script_is_null_for_shadow_root_scripts() -> Result<()> {
   let shadow_script = find_element_by_id(&dom, "shadow");
 
   let mut host = JsHost::new(dom, &[shadow_script])?;
-  host.set_script_source(shadow_script, "globalThis.shadowObserved = document.currentScript;");
+  host.set_script_source(
+    shadow_script,
+    "globalThis.shadowObserved = document.currentScript;",
+  );
 
   host.run_script_element(shadow_script, ScriptType::Classic)?;
   assert!(host.eval_bool("shadowObserved === null")?);
@@ -548,7 +579,10 @@ fn document_current_script_is_null_for_module_scripts() -> Result<()> {
   let module_script = find_element_by_id(&dom, "mod");
 
   let mut host = JsHost::new(dom, &[module_script])?;
-  host.set_script_source(module_script, "globalThis.modObserved = document.currentScript;");
+  host.set_script_source(
+    module_script,
+    "globalThis.modObserved = document.currentScript;",
+  );
 
   host.run_script_element(module_script, ScriptType::Module)?;
   assert!(host.eval_bool("modObserved === null")?);
@@ -558,8 +592,7 @@ fn document_current_script_is_null_for_module_scripts() -> Result<()> {
 
 #[test]
 fn current_script_is_restored_on_js_exception() -> Result<()> {
-  let renderer_dom =
-    fastrender::dom::parse_html("<!doctype html><script id=boom></script>")?;
+  let renderer_dom = fastrender::dom::parse_html("<!doctype html><script id=boom></script>")?;
   let dom = Document::from_renderer_dom(&renderer_dom);
   let boom = find_element_by_id(&dom, "boom");
 

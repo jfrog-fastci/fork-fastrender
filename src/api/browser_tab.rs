@@ -62,6 +62,27 @@ pub trait BrowserTabJsExecutor {
     ))
   }
 
+  /// Fetch/instantiate the module graph for a module `<script>` element without evaluating it.
+  ///
+  /// This is used by the HTML-like script scheduler so module scripts can start loading their
+  /// dependency graphs as early as possible, while still deferring evaluation based on
+  /// `async`/parser-inserted ordering rules.
+  ///
+  /// Executors that support module scripts should override this; the default implementation returns
+  /// an error so non-module backends can ignore `type="module"` scripts when
+  /// `supports_module_scripts=false`.
+  fn fetch_module_graph(
+    &mut self,
+    _spec: &ScriptElementSpec,
+    _fetcher: Arc<dyn ResourceFetcher>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    Err(Error::Other(
+      "module graph fetching is not supported by this BrowserTabJsExecutor".to_string(),
+    ))
+  }
+
   /// Process an inline `<script type="importmap">` script.
   ///
   /// HTML import maps are not JavaScript; they register/merge into per-document import map state
@@ -1683,11 +1704,17 @@ impl BrowserTabHost {
           && !nomodule_blocked
       }
       ScriptType::Module => {
-        // HTML: module scripts are deferred-by-default (unless `async`) and block DOMContentLoaded.
-        spec_for_table.parser_inserted
-          && !spec_for_table.async_attr
-          && (!spec_for_table.src_attr_present
-            || spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty()))
+        // Parser-inserted module scripts are deferred-by-default when `async` is absent (the `defer`
+        // attribute has no effect). They should delay `DOMContentLoaded` like classic `defer`.
+        let has_executable_source = if spec_for_table.src_attr_present {
+          spec_for_table
+            .src
+            .as_deref()
+            .is_some_and(|src| !src.is_empty())
+        } else {
+          true
+        };
+        spec_for_table.parser_inserted && !spec_for_table.async_attr && has_executable_source
       }
       ScriptType::ImportMap | ScriptType::Unknown => false,
     };
@@ -1795,6 +1822,18 @@ impl BrowserTabHost {
             .lifecycle
             .register_pending_load_blocker(LoadBlockerKind::Script);
           self.start_fetch(script_id, url, destination, event_loop)?;
+        }
+        ScriptSchedulerAction::StartModuleGraphFetch { script_id, .. } => {
+          if !self.pending_script_load_blockers.insert(script_id) {
+            return Err(Error::Other(format!(
+              "ScriptScheduler requested StartModuleGraphFetch more than once for script_id={}",
+              script_id.as_u64()
+            )));
+          }
+          self
+            .lifecycle
+            .register_pending_load_blocker(LoadBlockerKind::Script);
+          self.start_module_graph_fetch(script_id, event_loop)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           if self.executed.contains(&script_id) {
@@ -1984,7 +2023,16 @@ impl BrowserTabHost {
               }
             }
           }
-          event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+          let task_source = self
+            .scripts
+            .get(&script_id)
+            .map(|entry| match entry.spec.script_type {
+              ScriptType::Module => TaskSource::Networking,
+              _ => TaskSource::Script,
+            })
+            .unwrap_or(TaskSource::Script);
+
+          event_loop.queue_task(task_source, move |host, event_loop| {
             let entry = host.scripts.get(&script_id).cloned();
             let result = {
               let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
@@ -2172,6 +2220,117 @@ impl BrowserTabHost {
     let result = orchestrator.execute_script_element(self, node_id, script_type, &mut adapter);
     self.orchestrator = orchestrator;
     result
+  }
+
+  fn start_module_graph_fetch(
+    &mut self,
+    script_id: ScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    let Some(entry) = self.scripts.get(&script_id).cloned() else {
+      return Err(Error::Other(format!(
+        "StartModuleGraphFetch for unknown script_id={}",
+        script_id.as_u64()
+      )));
+    };
+    let spec = entry.spec.clone();
+    if spec.script_type != ScriptType::Module {
+      return Err(Error::Other(format!(
+        "StartModuleGraphFetch for non-module script_id={}",
+        script_id.as_u64()
+      )));
+    }
+    let script_node_id = entry.node_id;
+
+    use crate::resource::FetchedResource;
+    use std::collections::HashMap;
+
+    struct OverlayFetcher {
+      base: Arc<dyn ResourceFetcher>,
+      sources: HashMap<String, String>,
+    }
+
+    impl ResourceFetcher for OverlayFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        if let Some(source) = self.sources.get(url) {
+          return Ok(FetchedResource::with_final_url(
+            source.as_bytes().to_vec(),
+            Some("application/javascript".to_string()),
+            Some(url.to_string()),
+          ));
+        }
+        self.base.fetch(url)
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if let Some(source) = self.sources.get(req.url) {
+          return Ok(FetchedResource::with_final_url(
+            source.as_bytes().to_vec(),
+            Some("application/javascript".to_string()),
+            Some(req.url.to_string()),
+          ));
+        }
+        self.base.fetch_with_request(req)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if self.sources.contains_key(req.url) {
+          // In-memory script sources are synthetic and do not have a stable header profile. Treat
+          // them as unknown so caching wrappers conservatively avoid Vary-dependent caching.
+          return None;
+        }
+        self.base.request_header_value(req, header_name)
+      }
+
+      fn cookie_header_value(&self, url: &str) -> Option<String> {
+        self.base.cookie_header_value(url)
+      }
+
+      fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+        self.base.store_cookie_from_document(url, cookie_string);
+      }
+    }
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(OverlayFetcher {
+      base: self.document.fetcher(),
+      sources: self.external_script_sources.clone(),
+    });
+
+    // HTML queues module graph fetching on the networking task source. This applies even for inline
+    // module scripts.
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let result = {
+        let BrowserTabHost { executor, document, .. } = host;
+        executor.fetch_module_graph(&spec, Arc::clone(&fetcher), document.as_mut(), event_loop)
+      };
+      match result {
+        Ok(()) => {
+          let actions = host.scheduler.module_graph_ready(script_id, String::new())?;
+          host.apply_scheduler_actions(actions, event_loop)?;
+        }
+        Err(err) => {
+          // Module graph failures dispatch an `error` event and must not execute.
+          host.dispatch_script_event(script_node_id, "error")?;
+          host.mutate_dom(|dom| {
+            dom.node_mut(script_node_id).script_already_started = true;
+            ((), false)
+          });
+ 
+          let actions = host.scheduler.module_graph_failed(script_id)?;
+          // Treat the script as "done" for deferred-script lifecycle gates.
+          host.finish_script_execution(script_id, event_loop)?;
+          host.apply_scheduler_actions(actions, event_loop)?;
+ 
+          // Uncaught module graph errors should not abort parsing/task scheduling (browser
+          // behavior). Still propagate host-level render timeouts/cancellation.
+          if matches!(err, Error::Render(_)) {
+            return Err(err);
+          }
+        }
+      }
+      Ok(())
+    })?;
+    Ok(())
   }
 
   fn start_fetch(

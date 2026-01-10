@@ -204,7 +204,8 @@ impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
       .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
     let key = prop_key(&mut scope, name).map_err(|err| map_vm_error(scope.heap_mut(), err))?;
-    define_value(&mut scope, global, key, value).map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+    define_value(&mut scope, global, key, value)
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     Ok(())
   }
 
@@ -659,9 +660,7 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for RuntimeHostHooks<State
     this_argument: Value,
     arguments: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    unsafe {
-      (&mut *self.host).host_call_job_callback(ctx, callback, this_argument, arguments)
-    }
+    unsafe { (&mut *self.host).host_call_job_callback(ctx, callback, this_argument, arguments) }
   }
 }
 
@@ -804,6 +803,21 @@ impl<State: WebIdlBindingsHost + 'static> ScriptExecutor for EcmaVmRuntime<State
     _spec: &ScriptElementSpec,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
+    let _guard = ExecCtxGuard::install(self, event_loop);
+    self.execute_script_text(script_text)
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    _spec: &ScriptElementSpec,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    // `vm-js` does not yet expose a full module evaluator. For now, treat module scripts as
+    // classic-script execution for the purposes of scheduling/orchestration tests.
+    //
+    // IMPORTANT: module scripts must still be executed from a queued task (enforced by the
+    // scheduler), and `Document.currentScript` bookkeeping is handled by the orchestrator.
     let _guard = ExecCtxGuard::install(self, event_loop);
     self.execute_script_text(script_text)
   }
@@ -1885,8 +1899,15 @@ mod tests {
         scope.push_root(global_value)?;
         let key_s = scope.alloc_string("clearInterval")?;
         scope.push_root(Value::String(key_s))?;
-        let func = scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
-        vm.call_with_host(scope, hooks, func, global_value, &[Value::Number(id as f64)])?;
+        let func =
+          scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
+        vm.call_with_host(
+          scope,
+          hooks,
+          func,
+          global_value,
+          &[Value::Number(id as f64)],
+        )?;
       }
 
       Ok(Value::Undefined)
@@ -1940,13 +1961,19 @@ mod tests {
       .expect("missing name property");
     assert!(!name_desc.enumerable);
     assert!(name_desc.configurable);
-    let PropertyKind::Data { value: name_value, .. } = name_desc.kind else {
+    let PropertyKind::Data {
+      value: name_value, ..
+    } = name_desc.kind
+    else {
       panic!("name is not a data property");
     };
     let Value::String(name_s) = name_value else {
       panic!("name is not a string: {name_value:?}");
     };
-    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+    assert_eq!(
+      scope.heap().get_string(name_s)?.to_utf8_lossy(),
+      "TypeError"
+    );
 
     let msg_key_s = scope.alloc_string("message")?;
     scope.push_root(Value::String(msg_key_s))?;
@@ -1956,7 +1983,10 @@ mod tests {
       .expect("missing message property");
     assert!(!msg_desc.enumerable);
     assert!(msg_desc.configurable);
-    let PropertyKind::Data { value: msg_value, .. } = msg_desc.kind else {
+    let PropertyKind::Data {
+      value: msg_value, ..
+    } = msg_desc.kind
+    else {
       panic!("message is not a data property");
     };
     let Value::String(msg_s) = msg_value else {

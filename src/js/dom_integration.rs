@@ -4,9 +4,8 @@ use crate::error::Result;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 
 use super::{
-  determine_script_type_dom2, trim_ascii_whitespace, ClassicScriptScheduler, DomHost, EventLoop,
-  ScriptElementEvent, ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
-  ScriptType, TaskSource,
+  determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent,
+  ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
@@ -16,14 +15,15 @@ use super::{
 /// connected to the document (e.g. after `Node.appendChild`).
 ///
 /// Supported subset:
-/// - Classic scripts only (`type`/`language` mapped via [`determine_script_type_dom2`]).
-/// - External scripts (`src` present and non-empty) are async by default because dynamically created
-///   `<script>` elements have their HTML "force async" flag set (stored on the `dom2` node and
-///   captured via [`ScriptElementSpec::force_async`]). Assigning `script.async = false` clears this
-///   flag and makes external scripts execute in insertion order.
-/// - Inline scripts are queued as `TaskSource::Script` tasks (rather than executing synchronously
-///   inside the DOM mutation call). The event loop's post-task microtask checkpoint naturally
-///   applies.
+/// - Classic and module scripts (`type`/`language` mapped via [`determine_script_type_dom2`]).
+/// - Dynamic classic external scripts (`src` present and non-empty) are treated as async by default
+///   when the element's internal "force async" flag is set (mirroring HTML's default for
+///   `document.createElement("script")`).
+/// - Dynamic module scripts:
+///   - `async` present: execute ASAP once ready.
+///   - otherwise: execute in insertion order as soon as possible once ready.
+/// - Inline scripts are queued as tasks (rather than executing synchronously inside the DOM
+///   mutation call). The event loop's post-task microtask checkpoint naturally applies.
 ///
 /// HTML uses a per-script-element "already started" flag to ensure each `<script>` executes at most
 /// once. FastRender stores this on the live `dom2` node (`Node::script_already_started`).
@@ -78,6 +78,7 @@ fn prepare_dynamic_script<Host>(
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
+  let supports_module_scripts = scheduler.options().supports_module_scripts;
   let spec = host.mutate_dom(|dom| {
     if !is_html_script_element(dom, script) {
       return (None, false);
@@ -109,13 +110,15 @@ where
       return (None, false);
     }
 
-    // Only classic scripts are executed by this dynamic insertion helper. Do not set the HTML
-    // "already started" flag for unsupported script types so later mutations can still produce a
-    // runnable classic script.
-    if spec.script_type == ScriptType::Classic {
-      if dom.set_script_already_started(script, true).is_err() {
-        return (None, false);
-      }
+    // Only mark "already started" for script types this helper can execute. Avoid marking
+    // unsupported script types so later mutations can still produce a runnable classic script.
+    let should_mark_started = match spec.script_type {
+      ScriptType::Classic => true,
+      ScriptType::Module => supports_module_scripts,
+      ScriptType::ImportMap | ScriptType::Unknown => false,
+    };
+    if should_mark_started && dom.set_script_already_started(script, true).is_err() {
+      return (None, false);
     }
     (Some(spec), false)
   });
@@ -148,16 +151,16 @@ where
       })?;
       Ok(())
     }
-    ScriptType::Module | ScriptType::ImportMap => {
-      // Modules/import maps are not executed by this MVP dynamic insertion helper, but HTML still
-      // requires that `src=""` / invalid `src` queues an error event task and suppresses inline
-      // execution.
-      if spec.src_attr_present && spec.src.as_deref().filter(|s| !s.is_empty()).is_none() {
-        event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
-          host.dispatch_script_event(ScriptElementEvent::Error, &spec)
-        })?;
-      } else if matches!(spec.script_type, ScriptType::ImportMap) && spec.src_attr_present {
-        // Import maps forbid `src` entirely; treat any `src` presence as an error.
+    ScriptType::Module => {
+      // Module scripts must never execute synchronously inside the DOM mutation call stack; route
+      // through the scheduler (which always queues module execution as tasks).
+      scheduler.handle_script(host, event_loop, spec)?;
+      Ok(())
+    }
+    ScriptType::ImportMap => {
+      // Import maps are not executed by this dynamic insertion helper, but HTML still requires that
+      // `src` presence is an error and suppresses inline processing.
+      if spec.src_attr_present {
         event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
           host.dispatch_script_event(ScriptElementEvent::Error, &spec)
         })?;
@@ -356,6 +359,16 @@ mod tests {
 
   impl ScriptExecutor for TestHost {
     fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push(script_text.to_string());
+      Ok(())
+    }
+
+    fn execute_module_script(
       &mut self,
       script_text: &str,
       _spec: &ScriptElementSpec,
@@ -825,6 +838,16 @@ mod nomodule_tests {
       self.executed.push(script_text.to_string());
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push(script_text.to_string());
+      Ok(())
+    }
   }
 
   impl ScriptEventDispatcher for Host {
@@ -1016,6 +1039,16 @@ mod dynamic_mutation_tests {
 
   impl ScriptExecutor for Host {
     fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push((script_text.to_string(), spec.force_async));
+      Ok(())
+    }
+
+    fn execute_module_script(
       &mut self,
       script_text: &str,
       spec: &ScriptElementSpec,

@@ -49,6 +49,7 @@ pub struct VmJsBrowserTabExecutor {
   document_origin: Option<DocumentOrigin>,
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
+  document_url: String,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
   /// Cached `vm-js` host context for Rust-driven event dispatch.
@@ -70,6 +71,7 @@ impl VmJsBrowserTabExecutor {
       document_origin: None,
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
+      document_url: "about:blank".to_string(),
       pending_navigation: None,
       diagnostics: None,
       vm_host: None,
@@ -150,6 +152,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let dom_source_id = document.ensure_dom_source_registered();
 
     let url = document_url.unwrap_or("about:blank");
+    self.document_url = url.to_string();
     let options = document.options();
     let (viewport_w, viewport_h) = options.viewport.unwrap_or((1024, 768));
     let width = viewport_w as f32;
@@ -266,6 +269,153 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     exec_result
   }
 
+  fn fetch_module_graph(
+    &mut self,
+    spec: &ScriptElementSpec,
+    fetcher: Arc<dyn ResourceFetcher>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let entry_specifier = if spec.src_attr_present {
+      let Some(entry_url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
+        // HTML: modules with `src` present but empty/invalid do not execute.
+        return Ok(());
+      };
+      entry_url.to_string()
+    } else {
+      let base_url = spec.base_url.as_deref().unwrap_or("about:blank");
+      let inline_id = self.next_inline_module_id(spec);
+      synthesize_inline_module_url(base_url, &inline_id)
+    };
+
+    let Some(realm) = self.realm.as_mut() else {
+      return Err(Error::Other(
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+      ));
+    };
+    let Some(module_graph) = self.module_graph.as_mut() else {
+      return Err(Error::Other(
+        "VmJsBrowserTabExecutor has no active ModuleGraph; did reset_for_navigation run?".to_string(),
+      ));
+    };
+
+    // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
+    // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
+    let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
+
+    let document_url = self.document_url.clone();
+    let document_origin = self.document_origin.clone();
+
+    let diagnostics = self.diagnostics.clone();
+    let clock = event_loop.clock();
+    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let module_map = &mut self.module_map;
+    let import_map_state = &mut self.import_map_state;
+
+    let exec_result: Result<()> = with_event_loop(event_loop, || {
+      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+      realm.set_base_url(spec.base_url.clone());
+      realm.reset_interrupt();
+
+      // Apply a fresh per-run VM budget so module graph loading is interruptible.
+      let budget = realm.vm_budget_now();
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut vm = vm.push_budget(budget);
+      vm.tick()
+        .map_err(|err| vm_error_format::vm_error_to_error(heap, err))?;
+
+      let mut hooks = ModuleLoaderHooks {
+        inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+        fetcher,
+        max_script_bytes,
+        module_map,
+        import_map_state,
+        document_origin,
+        cors_mode,
+        document_url: document_url.clone(),
+      };
+
+      let mut scope = heap.scope();
+
+      let vm_error_to_host_error = |scope: &mut Scope<'_>, err: VmError| -> Error {
+        if vm_error_format::vm_error_is_js_exception(&err) {
+          let (message, stack) = vm_error_format::vm_error_to_message_and_stack(scope.heap_mut(), err);
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_exception(message.clone(), stack.clone());
+          }
+          if let Some(stack) = stack {
+            Error::Other(format!("{message}\n{stack}"))
+          } else {
+            Error::Other(message)
+          }
+        } else {
+          vm_error_format::vm_error_to_error(scope.heap_mut(), err)
+        }
+      };
+
+      let entry_module: std::result::Result<ModuleId, VmError> = if let Some(id) =
+        hooks.module_map.get(&entry_specifier).copied()
+      {
+        Ok(id)
+      } else if spec.src_attr_present {
+        hooks.load_module_by_url(&mut vm, &mut scope, module_graph, &entry_specifier, None)
+      } else {
+        if max_script_bytes != usize::MAX && spec.inline_text.as_bytes().len() > max_script_bytes {
+          return Err(Error::Other(format!(
+            "inline module {entry_specifier} is too large ({} bytes > max {})",
+            spec.inline_text.as_bytes().len(),
+            max_script_bytes
+          )));
+        }
+
+        let source = Arc::new(SourceText::new(entry_specifier.clone(), spec.inline_text.as_str()));
+        let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
+          Ok(record) => record,
+          Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
+        };
+        let id = module_graph.add_module(record);
+        hooks.module_map.insert(entry_specifier.clone(), id);
+        Ok(id)
+      };
+
+      let entry_module = match entry_module {
+        Ok(id) => id,
+        Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
+      };
+
+      let load_promise = match vm_js::load_requested_modules(
+        &mut vm,
+        &mut scope,
+        module_graph,
+        &mut hooks,
+        entry_module,
+        HostDefined::default(),
+      ) {
+        Ok(p) => p,
+        Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
+      };
+      if let Err(err) = ensure_promise_fulfilled(scope.heap(), load_promise) {
+        return Err(vm_error_to_host_error(&mut scope, err));
+      }
+
+      if let Some(err) = hooks.finish(scope.heap_mut()) {
+        return Err(err);
+      }
+
+      // Suppress unused variable warnings for now; graph loading does not require realm_ref.
+      let _ = realm_ref;
+      Ok(())
+    });
+
+    if let Some(req) = realm.take_pending_navigation_request() {
+      realm.reset_interrupt();
+      self.pending_navigation = Some(req);
+      return Ok(());
+    }
+
+    exec_result
+  }
+
   fn execute_module_script(
     &mut self,
     script_text: &str,
@@ -303,6 +453,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         "VmJsBrowserTabExecutor has no active ModuleGraph; did reset_for_navigation run?".to_string(),
       ));
     };
+
+    let document_url = self.document_url.clone();
 
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
@@ -360,6 +512,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         import_map_state,
         document_origin,
         cors_mode,
+        document_url: document_url.clone(),
       };
 
       let mut scope = heap.scope();
@@ -612,6 +765,7 @@ struct ModuleLoaderHooks<'a> {
   import_map_state: &'a mut ImportMapState,
   document_origin: Option<DocumentOrigin>,
   cors_mode: CorsMode,
+  document_url: String,
 }
 
 impl ModuleLoaderHooks<'_> {
@@ -660,9 +814,8 @@ impl ModuleLoaderHooks<'_> {
 
     let max_fetch = self.max_script_bytes.saturating_add(1);
     let mut req = FetchRequest::new(url, FetchDestination::ScriptCors);
-    if let Some(referrer_url) = referrer_url {
-      req = req.with_referrer_url(referrer_url);
-    }
+    let referrer_url = referrer_url.unwrap_or(self.document_url.as_str());
+    req = req.with_referrer_url(referrer_url);
     if let Some(origin) = self.document_origin.as_ref() {
       req = req.with_client_origin(origin);
     }

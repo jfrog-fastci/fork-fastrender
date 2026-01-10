@@ -265,7 +265,6 @@ where
     if !should_run && !spec.src_attr_present {
       return Ok(());
     }
-
     let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
     let is_deferred = spec.script_type == ScriptType::Classic
       && spec.src.is_some()
@@ -289,13 +288,19 @@ where
 
   fn build_script_spec(&self, script_node: NodeId) -> Result<ScriptElementSpec> {
     let Some(sink) = self.parser.sink() else {
-      return Err(Error::Other("page_load: parser sink unavailable".to_string()));
+      return Err(Error::Other(
+        "page_load: parser sink unavailable".to_string(),
+      ));
     };
     let doc = sink.document();
     let base = sink.base_url_tracker();
-    Ok(crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
-      &doc, script_node, &base,
-    ))
+    Ok(
+      crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
+        &doc,
+        script_node,
+        &base,
+      ),
+    )
   }
   fn apply_actions(
     &mut self,
@@ -323,6 +328,9 @@ where
           self
             .fetcher
             .start_fetch(script_id, &url, destination, credentials_mode)?;
+        }
+        ScriptSchedulerAction::StartModuleGraphFetch { .. } => {
+          // This orchestrator does not currently support module scripts.
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_on = Some(script_id);
@@ -428,15 +436,18 @@ where
     struct NoopInvoker;
 
     impl EventListenerInvoker for NoopInvoker {
-      fn invoke(&mut self, _listener_id: ListenerId, _event: &mut crate::web::events::Event) -> std::result::Result<(), DomError> {
+      fn invoke(
+        &mut self,
+        _listener_id: ListenerId,
+        _event: &mut crate::web::events::Event,
+      ) -> std::result::Result<(), DomError> {
         Ok(())
       }
     }
 
-    let dom = self
-      .finished_document
-      .as_ref()
-      .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
+    let dom = self.finished_document.as_ref().ok_or_else(|| {
+      Error::Other("cannot dispatch lifecycle event before parsing completes".to_string())
+    })?;
     self.lifecycle_events.push(event.type_.clone());
     let mut invoker = NoopInvoker;
     dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
@@ -766,7 +777,8 @@ mod tests {
   }
 
   #[test]
-  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task() -> Result<()> {
+  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task(
+  ) -> Result<()> {
     let html = "<!doctype html><script>RUN</script>".to_string();
     // Use a large chunk size so the parser hits the </script> boundary within the first parsing
     // task. This reproduces the HTML requirement to perform a microtask checkpoint *mid-task*
@@ -805,7 +817,8 @@ mod tests {
   }
 
   #[test]
-  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty(
+  ) -> Result<()> {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.

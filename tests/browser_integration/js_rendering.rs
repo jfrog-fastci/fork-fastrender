@@ -243,6 +243,12 @@ fn apply_scheduler_actions(
           )));
         }
       }
+      ScriptSchedulerAction::StartModuleGraphFetch { script_id, .. } => {
+        return Err(Error::Other(format!(
+          "browser integration harness does not support module script graphs (script_id={})",
+          script_id.as_u64()
+        )));
+      }
       ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
         let mut st = state.borrow_mut();
         if st.executed.contains(&script_id) {

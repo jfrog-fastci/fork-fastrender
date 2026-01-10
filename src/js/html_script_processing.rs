@@ -288,6 +288,10 @@ where
       } => {
         start_fetches.push((script_id, url, destination, credentials_mode));
       }
+      ScriptSchedulerAction::StartModuleGraphFetch { .. } => {
+        // This harness is intentionally scoped to classic scripts only. Module scripts are ignored
+        // by filtering at discovery time, so this should be unreachable.
+      }
       ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
         blocking.insert(script_id);
       }
@@ -440,6 +444,12 @@ where
           let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker)
         };
+ 
+        // This driver is intentionally classic-only: skip module scripts and import maps.
+        if spec.script_type != ScriptType::Classic {
+          continue;
+        }
+ 
         let should_run = {
           let mut doc = parser.document_mut().ok_or_else(|| {
             Error::Other("html_script_processing: parser document unavailable".to_string())
