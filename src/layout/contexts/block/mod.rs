@@ -5331,7 +5331,8 @@ impl BlockFormattingContext {
       // Inline-level floats (e.g. `display:inline-block; float:right`) must be handled by the
       // inline formatting context so they can be positioned relative to the current line box. If
       // we flush the inline buffer and place the float as a standalone block-level float here, it
-      // is forced below any already-laid-out line boxes and cannot share the first line.
+      // is forced below any already-laid-out line boxes and cannot share the first line (CSS 2.1
+      // §9.5.1).
       if child.style.float.is_floating()
         && !matches!(child.style.position, Position::Absolute | Position::Fixed)
       {

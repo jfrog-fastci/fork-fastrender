@@ -133,6 +133,7 @@ mod float_shrink_to_min;
 mod float_intrinsic_includes_floats;
 mod intrinsic_float_children;
 mod intrinsic_block_child_margins;
+mod inline_level_float_after_text_floats_up;
 mod button_inline_flex_children;
 mod form_control_baseline;
 mod form_control_pseudo_elements;
