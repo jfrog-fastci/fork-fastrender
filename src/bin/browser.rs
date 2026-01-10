@@ -508,6 +508,7 @@ struct App {
   egui_state: egui_winit::State,
   egui_renderer: egui_wgpu::Renderer,
   pixels_per_point: f32,
+  browser_limits: fastrender::ui::browser_limits::BrowserLimits,
 
   ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
   worker_join: Option<std::thread::JoinHandle<()>>,
@@ -652,6 +653,7 @@ impl App {
       egui_state,
       egui_renderer,
       pixels_per_point,
+      browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
       ui_to_worker_tx,
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
@@ -1110,6 +1112,15 @@ impl App {
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       return;
     };
+
+    // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
+    let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+    let viewport_css = clamp.viewport_css;
+    let dpr = clamp.dpr;
+
+    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+      tab.warning = clamp.warning_text(&self.browser_limits);
+    }
 
     if self.viewport_cache_tab == Some(tab_id)
       && self.viewport_cache_css == viewport_css
@@ -2271,7 +2282,10 @@ impl App {
           .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css))
           .or_else(|| (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css))
           .unwrap_or(viewport_css);
-        let size_points = tex.size_points(self.pixels_per_point);
+        // Draw the page image at the *logical* viewport size, even when the worker clamps the
+        // underlying DPR/viewport for safety. The input mapping (points→CSS) uses
+        // `viewport_css_for_mapping`, so scaling here stays coherent for hit-testing.
+        let size_points = egui::vec2(viewport_css.0 as f32, viewport_css.1 as f32);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);

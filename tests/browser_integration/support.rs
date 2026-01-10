@@ -255,6 +255,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::LoadingState { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::Warning { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::DebugLog { tab_id, .. } = msg {
     return Some(*tab_id);
   }
@@ -376,6 +379,10 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         "LoadingState(tab={}, loading={loading})",
         tab_id.0
       );
+      continue;
+    }
+    if let WorkerToUi::Warning { tab_id, text } = msg {
+      let _ = writeln!(&mut out, "Warning(tab={}, text={text})", tab_id.0);
       continue;
     }
     if let WorkerToUi::DebugLog { tab_id, line } = msg {

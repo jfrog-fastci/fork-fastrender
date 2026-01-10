@@ -17,6 +17,7 @@ use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGu
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
+use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
@@ -147,10 +148,6 @@ fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageL
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
   push_stage_listener(Some(listener))
-}
-
-fn clamp_viewport((w, h): (u32, u32)) -> (u32, u32) {
-  (w.max(1), h.max(1))
 }
 
 fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
@@ -395,6 +392,7 @@ struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
   ui_tx: Sender<WorkerToUi>,
   factory: FastRenderFactory,
+  limits: BrowserLimits,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
   /// Messages deferred during scroll coalescing that should be handled before blocking for the next
@@ -408,6 +406,7 @@ impl BrowserRuntime {
       ui_rx,
       ui_tx,
       factory,
+      limits: BrowserLimits::from_env(),
       tabs: HashMap::new(),
       active_tab: None,
       deferred_msgs: VecDeque::new(),
@@ -750,8 +749,14 @@ impl BrowserRuntime {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
-        tab.viewport_css = clamp_viewport(viewport_css);
-        tab.dpr = if dpr.is_finite() { dpr.max(f32::EPSILON) } else { 1.0 };
+        let clamp = self.limits.clamp_viewport_and_dpr(viewport_css, dpr);
+        tab.viewport_css = clamp.viewport_css;
+        tab.dpr = clamp.dpr;
+        if let Some(text) = clamp.warning_text(&self.limits) {
+          let _ = self
+            .ui_tx
+            .send(WorkerToUi::Warning { tab_id, text });
+        }
         // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
         // the first navigation completes (no document/layout cache yet).
         tab.cancel.bump_paint();

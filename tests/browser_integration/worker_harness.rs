@@ -38,6 +38,7 @@ pub enum WorkerToUiEvent {
   NavigationFailed { tab_id: TabId, url: String, error: String },
   ScrollStateUpdated { tab_id: TabId, scroll: ScrollState },
   LoadingState { tab_id: TabId, loading: bool },
+  Warning { tab_id: TabId, text: String },
   DebugLog { tab_id: TabId, line: String },
   SelectDropdownClosed { tab_id: TabId },
   ContextMenu {
@@ -57,6 +58,7 @@ pub enum WorkerEventKind {
   NavigationFailed,
   ScrollStateUpdated,
   LoadingState(bool),
+  Warning,
   DebugLog,
   SelectDropdownClosed,
   ContextMenu,
@@ -73,6 +75,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::NavigationFailed { .. } => WorkerEventKind::NavigationFailed,
       WorkerToUiEvent::ScrollStateUpdated { .. } => WorkerEventKind::ScrollStateUpdated,
       WorkerToUiEvent::LoadingState { loading, .. } => WorkerEventKind::LoadingState(*loading),
+      WorkerToUiEvent::Warning { .. } => WorkerEventKind::Warning,
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
@@ -149,6 +152,9 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     }
     WorkerToUi::LoadingState { tab_id, loading } => {
       (WorkerToUiEvent::LoadingState { tab_id, loading }, None)
+    }
+    WorkerToUi::Warning { tab_id, text } => {
+      (WorkerToUiEvent::Warning { tab_id, text }, None)
     }
     WorkerToUi::DebugLog { tab_id, line } => {
       (WorkerToUiEvent::DebugLog { tab_id, line }, None)

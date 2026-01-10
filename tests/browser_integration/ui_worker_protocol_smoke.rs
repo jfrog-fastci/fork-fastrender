@@ -162,6 +162,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       WorkerToUi::NavigationStarted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationCommitted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::LoadingState { tab_id: t, .. } => *t == tab_id,
+      WorkerToUi::Warning { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationFailed { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::ScrollStateUpdated { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::DebugLog { tab_id: t, .. } => *t == tab_id,

@@ -320,6 +320,11 @@ pub enum WorkerToUi {
     tab_id: TabId,
     loading: bool,
   },
+  /// Non-fatal warning intended for user-facing display (e.g. viewport clamping).
+  Warning {
+    tab_id: TabId,
+    text: String,
+  },
   DebugLog {
     tab_id: TabId,
     line: String,

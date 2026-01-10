@@ -1,4 +1,5 @@
 pub mod about_pages;
+pub mod browser_limits;
 pub mod browser_app;
 pub mod browser_tab_controller;
 // UI↔worker messaging lives in `messages.rs`.

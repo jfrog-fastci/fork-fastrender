@@ -257,10 +257,20 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
     // Navigation + address bar row.
     ui.horizontal(|ui| {
-      let (can_back, can_forward, loading, stage, error, zoom_factor) = app
+      let (can_back, can_forward, loading, stage, warning, error, zoom_factor) = app
         .active_tab()
-        .map(|t| (t.can_go_back, t.can_go_forward, t.loading, t.stage, t.error.clone(), t.zoom))
-        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
+        .map(|t| {
+          (
+            t.can_go_back,
+            t.can_go_forward,
+            t.loading,
+            t.stage,
+            t.warning.clone(),
+            t.error.clone(),
+            t.zoom,
+          )
+        })
+        .unwrap_or((false, false, false, None, None, None, zoom::DEFAULT_ZOOM));
 
       if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
         actions.push(ChromeAction::Back);
@@ -358,6 +368,15 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
           Some(stage) => ui.label(egui::RichText::new(format!("Loading… {}", stage.as_str())).small()),
           None => ui.label(egui::RichText::new("Loading…").small()),
         };
+      }
+
+      if let Some(warn) = warning.as_deref().filter(|s| !s.trim().is_empty()) {
+        ui.label(
+          egui::RichText::new("⚠")
+            .color(egui::Color32::BLACK)
+            .background_color(egui::Color32::from_rgb(250, 230, 150)),
+        )
+        .on_hover_text(warn);
       }
 
       if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {

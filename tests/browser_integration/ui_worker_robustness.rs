@@ -69,6 +69,7 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
     | WorkerToUi::NavigationFailed { tab_id: msg_tab, .. }
     | WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. }
     | WorkerToUi::LoadingState { tab_id: msg_tab, .. }
+    | WorkerToUi::Warning { tab_id: msg_tab, .. }
     | WorkerToUi::ContextMenu { tab_id: msg_tab, .. } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
   }

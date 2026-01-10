@@ -88,6 +88,8 @@ pub struct BrowserTabState {
   pub committed_title: Option<String>,
   pub loading: bool,
   pub error: Option<String>,
+  /// Optional non-fatal warning for this tab (e.g. viewport clamping).
+  pub warning: Option<String>,
   pub stage: Option<StageHeartbeat>,
   pub can_go_back: bool,
   pub can_go_forward: bool,
@@ -114,6 +116,7 @@ impl BrowserTabState {
       committed_title: None,
       loading: false,
       error: None,
+      warning: None,
       stage: None,
       can_go_back: false,
       can_go_forward: false,
@@ -646,6 +649,12 @@ impl BrowserAppState {
           tab.loading = loading;
         }
         update.request_redraw = true;
+      }
+      WorkerToUi::Warning { tab_id, text } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.warning = Some(text);
+        }
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
       WorkerToUi::DebugLog { tab_id, line } => {
         if let Some(tab) = self.tab_mut(tab_id) {
