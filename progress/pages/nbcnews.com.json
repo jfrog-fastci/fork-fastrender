@@ -10,11 +10,36 @@
     "fetch": 84.00384878740158,
     "css": 135.0061855511811,
     "cascade": 284.01301256692915,
-    "box_tree": 13.000595645669291,
+    "box_tree": 13.000595645669293,
     "layout": 190.0087055905512,
     "paint": 56.002565858267715
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 248931,
+    "diff_percent": 19.303,
+    "perceptual": 0.3917,
+    "first_mismatch": {
+      "x": 26,
+      "y": 19,
+      "baseline_rgba": [
+        22,
+        31,
+        57,
+        255
+      ],
+      "rendered_rgba": [
+        16,
+        32,
+        57,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -40,13 +65,13 @@
         "css_inline_stylesheet_absolutize_cpu_ms": null,
         "css_inline_imports_cpu_ms": null,
         "css_inline_inject_ms": null,
-        "css_parse_ms": 3.9524169999999996,
+        "css_parse_ms": 3.952417,
         "css_parse_used_codepoints_ms": 0.33536699999999997,
         "css_parse_collect_font_faces_ms": 2.387203,
         "css_parse_load_webfonts_ms": 1.227877,
         "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 283.850466,
-        "box_tree_ms": 11.641345000000001,
+        "box_tree_ms": 11.641345,
         "layout_ms": 181.283237,
         "text_fallback_cpu_ms": 3.245985000000002,
         "text_shape_cpu_ms": 7.028237999999997,
@@ -181,7 +206,7 @@
         "blur_cache_misses": 1,
         "blur_tiles": 0,
         "blur_calls": 1,
-        "blur_ms": 0.43168900000000004,
+        "blur_ms": 0.431689,
         "blur_pixels": 9953,
         "blur_bytes": 39812,
         "blur_cancellations": 0

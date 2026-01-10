@@ -9,12 +9,37 @@
   "stages_ms": {
     "fetch": 74.4046847751938,
     "css": 4.021874852713179,
-    "cascade": 14.076561984496125,
+    "cascade": 14.076561984496124,
     "box_tree": 3.016406139534884,
-    "layout": 14.076561984496125,
+    "layout": 14.076561984496124,
     "paint": 20.109374263565893
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 141069,
+    "diff_percent": 10.939,
+    "perceptual": 0.4366,
+    "first_mismatch": {
+      "x": 910,
+      "y": 7,
+      "baseline_rgba": [
+        154,
+        154,
+        154,
+        255
+      ],
+      "rendered_rgba": [
+        153,
+        153,
+        153,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -42,7 +67,7 @@
         "css_inline_inject_ms": null,
         "css_parse_ms": 1.471242,
         "css_parse_used_codepoints_ms": 0.027231,
-        "css_parse_collect_font_faces_ms": 0.014039999999999999,
+        "css_parse_collect_font_faces_ms": 0.01404,
         "css_parse_load_webfonts_ms": 1.4292109999999998,
         "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 13.897835,
@@ -50,7 +75,7 @@
         "layout_ms": 13.917515,
         "text_fallback_cpu_ms": 1.1459579999999998,
         "text_shape_cpu_ms": 0.6535480000000001,
-        "paint_build_ms": 10.027660000000001,
+        "paint_build_ms": 10.02766,
         "paint_optimize_ms": 0.01082,
         "paint_rasterize_ms": 7.030314000000001,
         "text_rasterize_cpu_ms": 4.3653059999999995,

@@ -8,13 +8,38 @@
   "total_ms": 409.648054,
   "stages_ms": {
     "fetch": 89.14101908557457,
-    "css": 45.071301784841076,
+    "css": 45.07130178484107,
     "cascade": 92.1457725378973,
     "box_tree": 8.012675872860635,
     "layout": 142.22499674327628,
     "paint": 33.05228797555012
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 332485,
+    "diff_percent": 25.782,
+    "perceptual": 0.3027,
+    "first_mismatch": {
+      "x": 21,
+      "y": 12,
+      "baseline_rgba": [
+        85,
+        71,
+        19,
+        255
+      ],
+      "rendered_rgba": [
+        47,
+        41,
+        19,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -164,7 +189,7 @@
         "parallel_threads": 1,
         "parallel_fallback_reason": "parallel paint thread budget is single-threaded; dedicated paint pool disabled (set FASTR_PAINT_THREADS>1 to enable)",
         "parallel_ms": 0.0,
-        "serial_ms": 25.049011999999998,
+        "serial_ms": 25.049012,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,
         "blur_cache_hits": 0,

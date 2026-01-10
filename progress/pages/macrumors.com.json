@@ -15,6 +15,31 @@
     "paint": 69.04708217065868
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 45046,
+    "diff_percent": 3.493,
+    "perceptual": 0.4822,
+    "first_mismatch": {
+      "x": 7,
+      "y": 29,
+      "baseline_rgba": [
+        255,
+        255,
+        247,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -24,7 +49,7 @@
     "stats": {
       "timings": {
         "html_decode_ms": null,
-        "dom_parse_ms": 11.316303999999999,
+        "dom_parse_ms": 11.316304,
         "dom_html5ever_ms": 7.686202,
         "dom_convert_ms": 2.6777200000000003,
         "dom_shadow_attach_ms": 0.29708700000000005,
@@ -215,7 +240,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 10.082562000000001
+        "image_decode_ms": 10.082562
       }
     }
   }

@@ -11,10 +11,35 @@
     "css": 32.08602616822429,
     "cascade": 56.150545794392514,
     "box_tree": 6.016129906542055,
-    "layout": 44.118285981308404,
+    "layout": 44.1182859813084,
     "paint": 109.293026635514
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 604305,
+    "diff_percent": 46.8599,
+    "perceptual": 0.2278,
+    "first_mismatch": {
+      "x": 104,
+      "y": 18,
+      "baseline_rgba": [
+        245,
+        245,
+        246,
+        255
+      ],
+      "rendered_rgba": [
+        249,
+        249,
+        249,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -42,7 +67,7 @@
         "css_inline_inject_ms": null,
         "css_parse_ms": 7.31622,
         "css_parse_used_codepoints_ms": 0.211064,
-        "css_parse_collect_font_faces_ms": 0.09160199999999999,
+        "css_parse_collect_font_faces_ms": 0.091602,
         "css_parse_load_webfonts_ms": 7.012614,
         "css_parse_collect_keyframes_ms": 0.000029999999999999997,
         "cascade_ms": 56.55078,
@@ -170,7 +195,7 @@
         "parallel_threads": 1,
         "parallel_fallback_reason": "parallel paint thread budget is single-threaded; dedicated paint pool disabled (set FASTR_PAINT_THREADS>1 to enable)",
         "parallel_ms": 0.0,
-        "serial_ms": 132.08423900000003,
+        "serial_ms": 132.08423900000005,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,
         "blur_cache_hits": 0,
@@ -211,7 +236,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 25.419489000000002
+        "image_decode_ms": 25.419489
       }
     }
   }

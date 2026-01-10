@@ -10,12 +10,37 @@
   "stages_ms": {
     "fetch": 97.9668547251732,
     "css": 47.98376557967667,
-    "cascade": 127.95670821247113,
-    "box_tree": 15.994588526558891,
+    "cascade": 127.95670821247111,
+    "box_tree": 15.994588526558893,
     "layout": 89.96956046189376,
     "paint": 52.982074494226325
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 542793,
+    "diff_percent": 42.09,
+    "perceptual": 0.2669,
+    "first_mismatch": {
+      "x": 1016,
+      "y": 22,
+      "baseline_rgba": [
+        241,
+        226,
+        200,
+        255
+      ],
+      "rendered_rgba": [
+        241,
+        242,
+        243,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,

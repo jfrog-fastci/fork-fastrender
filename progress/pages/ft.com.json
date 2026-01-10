@@ -8,13 +8,38 @@
   "total_ms": 704.826745,
   "stages_ms": {
     "fetch": 326.91963917021275,
-    "css": 21.994593460992906,
-    "cascade": 203.94986663829786,
-    "box_tree": 14.996313723404255,
+    "css": 21.994593460992903,
+    "cascade": 203.94986663829783,
+    "box_tree": 14.996313723404256,
     "layout": 100.97517907092198,
     "paint": 35.99115293617021
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 380894,
+    "diff_percent": 29.5358,
+    "perceptual": 0.2461,
+    "first_mismatch": {
+      "x": 925,
+      "y": 103,
+      "baseline_rgba": [
+        38,
+        42,
+        51,
+        255
+      ],
+      "rendered_rgba": [
+        65,
+        69,
+        77,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -42,7 +67,7 @@
         "css_inline_inject_ms": null,
         "css_parse_ms": 1.318399,
         "css_parse_used_codepoints_ms": 0.242815,
-        "css_parse_collect_font_faces_ms": 0.24778499999999998,
+        "css_parse_collect_font_faces_ms": 0.247785,
         "css_parse_load_webfonts_ms": 0.826398,
         "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 203.765916,
