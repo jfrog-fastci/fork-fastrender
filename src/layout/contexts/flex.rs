@@ -5187,9 +5187,14 @@ impl FormattingContext for FlexFormattingContext {
     // - Column axis: max of item contributions
     let factory = Arc::new(self.child_factory());
     let is_row_axis = matches!(style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+    let container_inline_is_horizontal = inline_is_horizontal;
 
     let compute_child_contribution = |child: &BoxNode| -> Result<Option<f32>, LayoutError> {
-      if matches!(child.style.position, Position::Absolute | Position::Fixed) {
+      let style_override = crate::layout::style_override::style_override_for(child.id);
+      let style: &ComputedStyle = style_override
+        .as_deref()
+        .unwrap_or_else(|| child.style.as_ref());
+      if matches!(style.position, Position::Absolute | Position::Fixed) {
         return Ok(None);
       }
 
@@ -5197,21 +5202,30 @@ impl FormattingContext for FlexFormattingContext {
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
       let fc = factory.get(fc_type);
-      let child_inline = fc.compute_intrinsic_inline_size(child, mode)?;
+      let child_inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+      let child_inline = if child_inline_is_horizontal == container_inline_is_horizontal {
+        fc.compute_intrinsic_inline_size(child, mode)?
+      } else {
+        fc.compute_intrinsic_block_size(child, mode)?
+      };
 
-      // Include horizontal margins when they resolve without a containing block.
-      let style = &child.style;
-      let margin_left = style
-        .margin_left
+      // Include margins along the container's inline axis when they resolve without a containing
+      // block. In vertical writing modes the inline axis is physical Y, so `margin-top/bottom`
+      // contribute to intrinsic inline size.
+      let (margin_start, margin_end) = if container_inline_is_horizontal {
+        (style.margin_left, style.margin_right)
+      } else {
+        (style.margin_top, style.margin_bottom)
+      };
+      let margin_start = margin_start
         .as_ref()
         .map(|l| self.resolve_length_for_width(*l, 0.0, style))
         .unwrap_or(0.0);
-      let margin_right = style
-        .margin_right
+      let margin_end = margin_end
         .as_ref()
         .map(|l| self.resolve_length_for_width(*l, 0.0, style))
         .unwrap_or(0.0);
-      let child_total = child_inline + margin_left + margin_right;
+      let child_total = child_inline + margin_start + margin_end;
       Ok(Some(child_total))
     };
 
@@ -5300,12 +5314,7 @@ impl FormattingContext for FlexFormattingContext {
       // Note: percentage gaps depend on the container size; resolve against 0px here to keep the
       // intrinsic fast path deterministic. (Most real-world uses, including MDN, use absolute
       // lengths like `rem`.)
-      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-      let gap_len = if inline_is_horizontal {
-        style.grid_column_gap
-      } else {
-        style.grid_row_gap
-      };
+      let gap_len = style.grid_column_gap;
       let gap = self.resolve_length_for_width(gap_len, 0.0, style);
       if gap.is_finite() && gap > 0.0 {
         contribution += gap * (in_flow_items as f32 - 1.0);
