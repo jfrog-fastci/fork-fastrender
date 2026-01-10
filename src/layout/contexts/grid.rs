@@ -12102,6 +12102,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.display = CssDisplay::Grid;
     style.writing_mode = WritingMode::HorizontalTb;
+    // Scrollable along the block axis (physical Y for horizontal-tb).
+    style.overflow_y = Overflow::Auto;
     style.width = None;
     style.width_keyword = None;
     style.height = None;
@@ -12136,6 +12138,8 @@ mod tests {
       let mut style = ComputedStyle::default();
       style.display = CssDisplay::Grid;
       style.writing_mode = writing_mode;
+      // Scrollable along the block axis (physical X for vertical/sideways writing modes).
+      style.overflow_x = Overflow::Auto;
       style.width = None;
       style.width_keyword = None;
       style.height = None;
