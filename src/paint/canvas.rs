@@ -1774,6 +1774,55 @@ impl Canvas {
     self.mirror_to_source_alpha(|canvas| canvas.draw_rect_impl(rect, color));
   }
 
+  fn snapped_device_rect_for_opaque_axis_aligned_fill(
+    &self,
+    rect: Rect,
+    transform: Transform,
+  ) -> Option<Rect> {
+    // Snapping is only meaningful for axis-aligned transforms (no rotation/skew). For other
+    // transforms we rely on the regular anti-aliased rasterization.
+    if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
+      return None;
+    }
+    if transform.sx.abs() < 1e-6 || transform.sy.abs() < 1e-6 {
+      return None;
+    }
+    if !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return None;
+    }
+
+    // Snap in *device* space so the resulting fill is stable under translated canvases
+    // (e.g. tile-based rendering).
+    let x0 = rect.min_x();
+    let x1 = rect.max_x();
+    let y0 = rect.min_y();
+    let y1 = rect.max_y();
+
+    let dx0 = x0 * transform.sx + transform.tx;
+    let dx1 = x1 * transform.sx + transform.tx;
+    let dy0 = y0 * transform.sy + transform.ty;
+    let dy1 = y1 * transform.sy + transform.ty;
+    if !dx0.is_finite() || !dx1.is_finite() || !dy0.is_finite() || !dy1.is_finite() {
+      return None;
+    }
+
+    let dx0s = dx0.round();
+    let dx1s = dx1.round();
+    let dy0s = dy0.round();
+    let dy1s = dy1.round();
+
+    let min_x = dx0s.min(dx1s);
+    let max_x = dx0s.max(dx1s);
+    let min_y = dy0s.min(dy1s);
+    let max_y = dy0s.max(dy1s);
+
+    Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
+  }
+
   fn draw_rect_impl(&mut self, rect: Rect, color: Rgba) {
     // Skip fully transparent colors
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
@@ -1786,9 +1835,33 @@ impl Canvas {
       None => return, // Fully clipped
     };
 
-    if let Some(skia_rect) = self.to_skia_rect(rect) {
-      let transform = self.current_state.transform;
+    let transform = self.current_state.transform;
 
+    // Pixel-snap opaque axis-aligned fills to avoid fractional-edge seams between adjacent
+    // backgrounds (see `tests/paint/canvas_test.rs`).
+    if color.a == 1.0
+      && self.current_state.opacity == 1.0
+      && self.current_state.blend_mode == SkiaBlendMode::SourceOver
+    {
+      if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+      {
+        if let Some(skia_rect) = self.to_skia_rect(snapped) {
+          let path = PathBuilder::from_rect(skia_rect);
+          let mut paint = self.current_state.create_paint(color);
+          paint.anti_alias = false;
+          self.pixmap.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            self.current_state.clip_mask.as_deref(),
+          );
+          return;
+        }
+      }
+    }
+
+    if let Some(skia_rect) = self.to_skia_rect(rect) {
       let path = PathBuilder::from_rect(skia_rect);
       let paint = self.current_state.create_paint(color);
 
@@ -2138,6 +2211,32 @@ impl Canvas {
       }
     }
 
+    let transform = self.current_state.transform;
+
+    // As with `draw_rect_impl`, pixel-snap opaque axis-aligned rounded-rect fills so UI
+    // backgrounds don't produce 1px blended seams at fractional boundaries. For rounded rects we
+    // keep anti-aliasing enabled so corners remain smooth.
+    //
+    // We only take this path for pure translation transforms (no scale/rotation) so radii remain
+    // in the same coordinate space when we bake the transform into the rect.
+    let (rect, transform) = if color.a == 1.0
+      && self.current_state.opacity == 1.0
+      && self.current_state.blend_mode == SkiaBlendMode::SourceOver
+      && transform.kx.abs() <= 1e-6
+      && transform.ky.abs() <= 1e-6
+      && (transform.sx - 1.0).abs() <= 1e-6
+      && (transform.sy - 1.0).abs() <= 1e-6
+    {
+      if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+      {
+        (snapped, Transform::identity())
+      } else {
+        (rect, transform)
+      }
+    } else {
+      (rect, transform)
+    };
+
     let Some(path) = self.build_rounded_rect_path(rect, radii) else {
       return;
     };
@@ -2151,7 +2250,6 @@ impl Canvas {
     // affected destination pixels back.
     const ROUNDED_RECT_SCRATCH_MARGIN_PX: i64 = 2;
 
-    let transform = self.current_state.transform;
     let bounds = Self::transform_rect_aabb(rect, transform);
     let needs_scratch = bounds.min_x() < 0.0
       || bounds.min_y() < 0.0
