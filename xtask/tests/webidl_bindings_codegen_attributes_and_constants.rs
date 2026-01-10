@@ -51,6 +51,10 @@ fn generated_webidl_bindings_include_attributes_and_constants() {
   );
   assert!(
     out.contains("define_constant(ctor_foo, \"ANSWER\""),
-    "expected constant to define a non-enumerable data property on the constructor object"
+    "expected constant to be defined on the constructor object"
+  );
+  assert!(
+    out.contains("define_constant(proto_foo, \"ANSWER\""),
+    "expected constant to also be defined on the interface prototype object"
   );
 }

@@ -171,54 +171,60 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
-    let mut host = UrlSearchParamsHost::default();
-    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host = UrlSearchParamsHost::default();
+        install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
 
-    let mut hooks = HostHooksWithBindingsHost::new(&mut host);
-    let mut scope = heap.scope();
+        let mut hooks = HostHooksWithBindingsHost::new(&mut host);
+        let mut scope = heap.scope();
 
-    // globalThis.URLSearchParams
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-    let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
-    let ctor = scope
-      .heap()
-      .object_get_own_data_property_value(global, &ctor_key)?
-      .expect("globalThis.URLSearchParams should be defined");
+        // globalThis.URLSearchParams
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+        let ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &ctor_key)?
+          .expect("globalThis.URLSearchParams should be defined");
 
-    // new URLSearchParams("?a=b")
-    let init_str = scope.alloc_string("?a=b")?;
-    scope.push_root(Value::String(init_str))?;
-    let init = Value::String(init_str);
+        // new URLSearchParams("?a=b")
+        let init_str = scope.alloc_string("?a=b")?;
+        scope.push_root(Value::String(init_str))?;
+        let init = Value::String(init_str);
 
-    let params_val = vm.construct_with_host(&mut scope, &mut hooks, ctor, &[init], ctor)?;
-    scope.push_root(params_val)?;
-    let Value::Object(params_obj) = params_val else {
-      panic!("URLSearchParams constructor should return an object");
-    };
+        let params_val = vm.construct_with_host(&mut scope, &mut hooks, ctor, &[init], ctor)?;
+        scope.push_root(params_val)?;
+        let Value::Object(params_obj) = params_val else {
+          panic!("URLSearchParams constructor should return an object");
+        };
 
-    // params.append("c", "a")
-    let append_key = alloc_key(&mut scope, "append")?;
-    let append = vm.get(&mut scope, params_obj, append_key)?;
-    let c_str = scope.alloc_string("c")?;
-    scope.push_root(Value::String(c_str))?;
-    let a_str = scope.alloc_string("a")?;
-    scope.push_root(Value::String(a_str))?;
-    let c = Value::String(c_str);
-    let a = Value::String(a_str);
-    vm.call_with_host(&mut scope, &mut hooks, append, params_val, &[c, a])?;
+        // params.append("c", "a")
+        let append_key = alloc_key(&mut scope, "append")?;
+        let append = vm.get(&mut scope, params_obj, append_key)?;
+        let c_str = scope.alloc_string("c")?;
+        scope.push_root(Value::String(c_str))?;
+        let a_str = scope.alloc_string("a")?;
+        scope.push_root(Value::String(a_str))?;
+        let c = Value::String(c_str);
+        let a = Value::String(a_str);
+        vm.call_with_host(&mut scope, &mut hooks, append, params_val, &[c, a])?;
 
-    // params.get("c") === "a"
-    let get_key = alloc_key(&mut scope, "get")?;
-    let get = vm.get(&mut scope, params_obj, get_key)?;
-    let out = vm.call_with_host(&mut scope, &mut hooks, get, params_val, &[c])?;
+        // params.get("c") === "a"
+        let get_key = alloc_key(&mut scope, "get")?;
+        let get = vm.get(&mut scope, params_obj, get_key)?;
+        let out = vm.call_with_host(&mut scope, &mut hooks, get, params_val, &[c])?;
 
-    let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
-    assert_eq!(out_s, "a");
-
-    drop(scope);
+        let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
+        assert_eq!(out_s, "a");
+        Ok(())
+      },
+    ));
     realm.teardown(&mut heap);
-    Ok(())
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
   }
 
   struct NoHooks;
@@ -451,265 +457,312 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
-    let state = Box::new(VmJsWebIdlBindingsState::<AttributeAndConstHost>::new(
-      realm.global_object(),
-      WebIdlLimits::default(),
-      Box::new(NoHooks),
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let state = Box::new(VmJsWebIdlBindingsState::<AttributeAndConstHost>::new(
+          realm.global_object(),
+          WebIdlLimits::default(),
+          Box::new(NoHooks),
+        ));
+
+        let mut host = AttributeAndConstHost::default();
+        {
+          let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+          install_window_bindings(&mut rt, &mut host)?;
+        }
+
+        let mut hooks = MicrotaskQueue::new();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+
+        // --- Read a readonly attribute via the generated accessor getter ---
+        let params_ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+        let params_ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &params_ctor_key)?
+          .expect("globalThis.URLSearchParams should be defined");
+        let Value::Object(params_ctor_obj) = params_ctor else {
+          panic!("URLSearchParams constructor should be an object");
+        };
+
+        let init_str = scope.alloc_string("?a=b&c=d")?;
+        scope.push_root(Value::String(init_str))?;
+        let init = Value::String(init_str);
+
+        let params_val = vm.construct_with_host_and_hooks(
+          &mut host,
+          &mut scope,
+          &mut hooks,
+          params_ctor,
+          &[init],
+          params_ctor,
+        )?;
+        scope.push_root(params_val)?;
+        let Value::Object(_params_obj) = params_val else {
+          panic!("URLSearchParams constructor should return an object");
+        };
+
+        let proto_key = alloc_key(&mut scope, "prototype")?;
+        let params_proto_val = scope
+          .heap()
+          .object_get_own_data_property_value(params_ctor_obj, &proto_key)?
+          .expect("URLSearchParams.prototype should be defined");
+        scope.push_root(params_proto_val)?;
+        let Value::Object(params_proto_obj) = params_proto_val else {
+          panic!("URLSearchParams.prototype should be an object");
+        };
+
+        let size_key = alloc_key(&mut scope, "size")?;
+        let Some(size_desc) = scope
+          .heap()
+          .object_get_own_property(params_proto_obj, &size_key)?
+        else {
+          panic!("missing URLSearchParams.prototype.size descriptor");
+        };
+        assert!(size_desc.enumerable);
+        assert!(size_desc.configurable);
+        let PropertyKind::Accessor { get, set } = size_desc.kind else {
+          panic!("URLSearchParams.prototype.size is not an accessor property");
+        };
+        assert_eq!(set, Value::Undefined);
+        let size_val =
+          vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, params_val, &[])?;
+        assert_eq!(size_val, Value::Number(2.0));
+
+        // Calling the getter with an invalid receiver should throw a TypeError("Illegal invocation").
+        {
+          let err = vm
+            .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, Value::Undefined, &[])
+            .expect_err("expected Illegal invocation error for URLSearchParams.prototype.size getter");
+          let thrown = err
+            .thrown_value()
+            .expect("expected a thrown exception value");
+          let Value::Object(thrown_obj) = thrown else {
+            panic!("expected thrown error to be an object");
+          };
+          scope.push_root(thrown)?;
+          let name_key = alloc_key(&mut scope, "name")?;
+          let message_key = alloc_key(&mut scope, "message")?;
+          let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
+          let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
+          let Value::String(name_s) = name_val else {
+            panic!("expected error.name to be a string");
+          };
+          let Value::String(message_s) = message_val else {
+            panic!("expected error.message to be a string");
+          };
+          assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+          assert_eq!(
+            scope.heap().get_string(message_s)?.to_utf8_lossy(),
+            "Illegal invocation"
+          );
+        }
+
+        // --- Set a writable attribute via the generated accessor setter ---
+        let url_ctor_key = alloc_key(&mut scope, "URL")?;
+        let url_ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &url_ctor_key)?
+          .expect("globalThis.URL should be defined");
+        let Value::Object(url_ctor_obj) = url_ctor else {
+          panic!("URL constructor should be an object");
+        };
+
+        let url_arg_str = scope.alloc_string("https://example.test/")?;
+        scope.push_root(Value::String(url_arg_str))?;
+        let url_arg = Value::String(url_arg_str);
+
+        let url_val = vm.construct_with_host_and_hooks(
+          &mut host,
+          &mut scope,
+          &mut hooks,
+          url_ctor,
+          &[url_arg],
+          url_ctor,
+        )?;
+        scope.push_root(url_val)?;
+        let Value::Object(_url_obj) = url_val else {
+          panic!("URL constructor should return an object");
+        };
+
+        let url_proto_val = scope
+          .heap()
+          .object_get_own_data_property_value(url_ctor_obj, &proto_key)?
+          .expect("URL.prototype should be defined");
+        scope.push_root(url_proto_val)?;
+        let Value::Object(url_proto_obj) = url_proto_val else {
+          panic!("URL.prototype should be an object");
+        };
+
+        let href_key = alloc_key(&mut scope, "href")?;
+        let Some(href_desc) = scope
+          .heap()
+          .object_get_own_property(url_proto_obj, &href_key)?
+        else {
+          panic!("missing URL.prototype.href descriptor");
+        };
+        assert!(href_desc.enumerable);
+        assert!(href_desc.configurable);
+        let PropertyKind::Accessor { set, .. } = href_desc.kind else {
+          panic!("URL.prototype.href is not an accessor property");
+        };
+        assert!(matches!(set, Value::Object(_)));
+
+        // --- Read a readonly attribute with no setter ---
+        let origin_key = alloc_key(&mut scope, "origin")?;
+        let Some(origin_desc) = scope
+          .heap()
+          .object_get_own_property(url_proto_obj, &origin_key)?
+        else {
+          panic!("missing URL.prototype.origin descriptor");
+        };
+        assert!(origin_desc.enumerable);
+        assert!(origin_desc.configurable);
+        let PropertyKind::Accessor {
+          get: origin_get,
+          set: origin_set,
+        } = origin_desc.kind
+        else {
+          panic!("URL.prototype.origin is not an accessor property");
+        };
+        assert_eq!(origin_set, Value::Undefined);
+        let origin_val = vm.call_with_host_and_hooks(
+          &mut host,
+          &mut scope,
+          &mut hooks,
+          origin_get,
+          url_val,
+          &[],
+        )?;
+        assert_eq!(
+          UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
+          "https://example.test"
+        );
+
+        let new_href_str = scope.alloc_string("https://changed.test/")?;
+        scope.push_root(Value::String(new_href_str))?;
+        let new_href = Value::String(new_href_str);
+        vm.call_with_host_and_hooks(
+          &mut host,
+          &mut scope,
+          &mut hooks,
+          set,
+          url_val,
+          &[new_href],
+        )?;
+        assert_eq!(host.last_set_href.as_deref(), Some("https://changed.test/"));
+        let origin_val =
+          vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, origin_get, url_val, &[])?;
+        assert_eq!(
+          UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
+          "https://changed.test"
+        );
+
+        // --- Read a constant defined on the interface object ---
+        let node_key = alloc_key(&mut scope, "Node")?;
+        let node_ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &node_key)?
+          .expect("globalThis.Node should be defined");
+        let Value::Object(node_ctor_obj) = node_ctor else {
+          panic!("Node constructor should be an object");
+        };
+
+        // Interfaces without a WebIDL constructor operation must still expose a constructable interface
+        // object that throws for both `Node()` and `new Node()`.
+        for err in [
+          vm
+            .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, Value::Undefined, &[])
+            .expect_err("expected Node() to throw"),
+          vm
+            .construct_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, &[], node_ctor)
+            .expect_err("expected new Node() to throw"),
+        ] {
+          let thrown = err
+            .thrown_value()
+            .expect("expected a thrown exception value");
+          let Value::Object(thrown_obj) = thrown else {
+            panic!("expected thrown error to be an object");
+          };
+          scope.push_root(thrown)?;
+          let name_key = alloc_key(&mut scope, "name")?;
+          let message_key = alloc_key(&mut scope, "message")?;
+          let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
+          let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
+          let Value::String(name_s) = name_val else {
+            panic!("expected error.name to be a string");
+          };
+          let Value::String(message_s) = message_val else {
+            panic!("expected error.message to be a string");
+          };
+          assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+          assert_eq!(
+            scope.heap().get_string(message_s)?.to_utf8_lossy(),
+            "Illegal constructor"
+          );
+        }
+
+        let element_node_key = alloc_key(&mut scope, "ELEMENT_NODE")?;
+        let Some(element_node_desc) = scope
+          .heap()
+          .object_get_own_property(node_ctor_obj, &element_node_key)?
+        else {
+          panic!("Node.ELEMENT_NODE should be defined");
+        };
+        assert!(element_node_desc.enumerable, "constants must be enumerable");
+        assert!(
+          !element_node_desc.configurable,
+          "constants must be non-configurable"
+        );
+        let PropertyKind::Data { value, writable } = element_node_desc.kind else {
+          panic!("Node.ELEMENT_NODE should be a data property");
+        };
+        assert_eq!(value, Value::Number(1.0));
+        assert!(!writable, "constants must be non-writable");
+
+        // Constants must also be exposed on the interface prototype object.
+        let node_proto_val = scope
+          .heap()
+          .object_get_own_data_property_value(node_ctor_obj, &proto_key)?
+          .expect("Node.prototype should be defined");
+        scope.push_root(node_proto_val)?;
+        let Value::Object(node_proto_obj) = node_proto_val else {
+          panic!("Node.prototype should be an object");
+        };
+        let Some(proto_constant_desc) = scope
+          .heap()
+          .object_get_own_property(node_proto_obj, &element_node_key)?
+        else {
+          panic!("Node.prototype.ELEMENT_NODE should be defined");
+        };
+        assert!(
+          proto_constant_desc.enumerable,
+          "constants must be enumerable on prototypes"
+        );
+        assert!(
+          !proto_constant_desc.configurable,
+          "constants must be non-configurable on prototypes"
+        );
+        let PropertyKind::Data {
+          value: proto_value,
+          writable: proto_writable,
+        } = proto_constant_desc.kind
+        else {
+          panic!("Node.prototype.ELEMENT_NODE should be a data property");
+        };
+        assert_eq!(proto_value, Value::Number(1.0));
+        assert!(!proto_writable, "constants must be non-writable on prototypes");
+        Ok(())
+      },
     ));
 
-    let mut host = AttributeAndConstHost::default();
-    {
-      let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
-      install_window_bindings(&mut rt, &mut host)?;
-    }
-
-    let mut hooks = MicrotaskQueue::new();
-    let mut scope = heap.scope();
-
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-
-    // --- Read a readonly attribute via the generated accessor getter ---
-    let params_ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
-    let params_ctor = scope
-      .heap()
-      .object_get_own_data_property_value(global, &params_ctor_key)?
-      .expect("globalThis.URLSearchParams should be defined");
-    let Value::Object(params_ctor_obj) = params_ctor else {
-      panic!("URLSearchParams constructor should be an object");
-    };
-
-    let init_str = scope.alloc_string("?a=b&c=d")?;
-    scope.push_root(Value::String(init_str))?;
-    let init = Value::String(init_str);
-
-    let params_val = vm.construct_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      params_ctor,
-      &[init],
-      params_ctor,
-    )?;
-    scope.push_root(params_val)?;
-    let Value::Object(_params_obj) = params_val else {
-      panic!("URLSearchParams constructor should return an object");
-    };
-
-    let proto_key = alloc_key(&mut scope, "prototype")?;
-    let params_proto_val = scope
-      .heap()
-      .object_get_own_data_property_value(params_ctor_obj, &proto_key)?
-      .expect("URLSearchParams.prototype should be defined");
-    scope.push_root(params_proto_val)?;
-    let Value::Object(params_proto_obj) = params_proto_val else {
-      panic!("URLSearchParams.prototype should be an object");
-    };
-
-    let size_key = alloc_key(&mut scope, "size")?;
-    let Some(size_desc) = scope
-      .heap()
-      .object_get_own_property(params_proto_obj, &size_key)?
-    else {
-      panic!("missing URLSearchParams.prototype.size descriptor");
-    };
-    assert!(size_desc.enumerable);
-    assert!(size_desc.configurable);
-    let PropertyKind::Accessor { get, set } = size_desc.kind else {
-      panic!("URLSearchParams.prototype.size is not an accessor property");
-    };
-    assert_eq!(set, Value::Undefined);
-    let size_val = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, params_val, &[])?;
-    assert_eq!(size_val, Value::Number(2.0));
-
-    // Calling the getter with an invalid receiver should throw a TypeError("Illegal invocation").
-    {
-      let err = vm
-        .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, Value::Undefined, &[])
-        .expect_err("expected Illegal invocation error for URLSearchParams.prototype.size getter");
-      let thrown = err
-        .thrown_value()
-        .expect("expected a thrown exception value");
-      let Value::Object(thrown_obj) = thrown else {
-        panic!("expected thrown error to be an object");
-      };
-      scope.push_root(thrown)?;
-      let name_key = alloc_key(&mut scope, "name")?;
-      let message_key = alloc_key(&mut scope, "message")?;
-      let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
-      let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
-      let Value::String(name_s) = name_val else {
-        panic!("expected error.name to be a string");
-      };
-      let Value::String(message_s) = message_val else {
-        panic!("expected error.message to be a string");
-      };
-      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
-      assert_eq!(
-        scope.heap().get_string(message_s)?.to_utf8_lossy(),
-        "Illegal invocation"
-      );
-    }
-
-    // --- Set a writable attribute via the generated accessor setter ---
-    let url_ctor_key = alloc_key(&mut scope, "URL")?;
-    let url_ctor = scope
-      .heap()
-      .object_get_own_data_property_value(global, &url_ctor_key)?
-      .expect("globalThis.URL should be defined");
-    let Value::Object(url_ctor_obj) = url_ctor else {
-      panic!("URL constructor should be an object");
-    };
-
-    let url_arg_str = scope.alloc_string("https://example.test/")?;
-    scope.push_root(Value::String(url_arg_str))?;
-    let url_arg = Value::String(url_arg_str);
-
-    let url_val = vm.construct_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      url_ctor,
-      &[url_arg],
-      url_ctor,
-    )?;
-    scope.push_root(url_val)?;
-    let Value::Object(_url_obj) = url_val else {
-      panic!("URL constructor should return an object");
-    };
-
-    let url_proto_val = scope
-      .heap()
-      .object_get_own_data_property_value(url_ctor_obj, &proto_key)?
-      .expect("URL.prototype should be defined");
-    scope.push_root(url_proto_val)?;
-    let Value::Object(url_proto_obj) = url_proto_val else {
-      panic!("URL.prototype should be an object");
-    };
-
-    let href_key = alloc_key(&mut scope, "href")?;
-    let Some(href_desc) = scope
-      .heap()
-      .object_get_own_property(url_proto_obj, &href_key)?
-    else {
-      panic!("missing URL.prototype.href descriptor");
-    };
-    assert!(href_desc.enumerable);
-    assert!(href_desc.configurable);
-    let PropertyKind::Accessor { set, .. } = href_desc.kind else {
-      panic!("URL.prototype.href is not an accessor property");
-    };
-    assert!(matches!(set, Value::Object(_)));
-
-    // --- Read a readonly attribute with no setter ---
-    let origin_key = alloc_key(&mut scope, "origin")?;
-    let Some(origin_desc) = scope
-      .heap()
-      .object_get_own_property(url_proto_obj, &origin_key)?
-    else {
-      panic!("missing URL.prototype.origin descriptor");
-    };
-    assert!(origin_desc.enumerable);
-    assert!(origin_desc.configurable);
-    let PropertyKind::Accessor {
-      get: origin_get,
-      set: origin_set,
-    } = origin_desc.kind
-    else {
-      panic!("URL.prototype.origin is not an accessor property");
-    };
-    assert_eq!(origin_set, Value::Undefined);
-    let origin_val =
-      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, origin_get, url_val, &[])?;
-    assert_eq!(
-      UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
-      "https://example.test"
-    );
-
-    let new_href_str = scope.alloc_string("https://changed.test/")?;
-    scope.push_root(Value::String(new_href_str))?;
-    let new_href = Value::String(new_href_str);
-    vm.call_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      set,
-      url_val,
-      &[new_href],
-    )?;
-    assert_eq!(host.last_set_href.as_deref(), Some("https://changed.test/"));
-    let origin_val =
-      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, origin_get, url_val, &[])?;
-    assert_eq!(
-      UrlSearchParamsHost::value_to_rust_string(&mut scope, origin_val)?,
-      "https://changed.test"
-    );
-
-    // --- Read a constant defined on the interface object ---
-    let node_key = alloc_key(&mut scope, "Node")?;
-    let node_ctor = scope
-      .heap()
-      .object_get_own_data_property_value(global, &node_key)?
-      .expect("globalThis.Node should be defined");
-    let Value::Object(node_ctor_obj) = node_ctor else {
-      panic!("Node constructor should be an object");
-    };
-
-    // Interfaces without a WebIDL constructor operation must still expose a constructable interface
-    // object that throws for both `Node()` and `new Node()`.
-    for err in [
-      vm
-        .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, Value::Undefined, &[])
-        .expect_err("expected Node() to throw"),
-      vm
-        .construct_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, &[], node_ctor)
-        .expect_err("expected new Node() to throw"),
-    ] {
-      let thrown = err
-        .thrown_value()
-        .expect("expected a thrown exception value");
-      let Value::Object(thrown_obj) = thrown else {
-        panic!("expected thrown error to be an object");
-      };
-      scope.push_root(thrown)?;
-      let name_key = alloc_key(&mut scope, "name")?;
-      let message_key = alloc_key(&mut scope, "message")?;
-      let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
-      let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
-      let Value::String(name_s) = name_val else {
-        panic!("expected error.name to be a string");
-      };
-      let Value::String(message_s) = message_val else {
-        panic!("expected error.message to be a string");
-      };
-      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
-      assert_eq!(
-        scope.heap().get_string(message_s)?.to_utf8_lossy(),
-        "Illegal constructor"
-      );
-    }
-
-    let element_node_key = alloc_key(&mut scope, "ELEMENT_NODE")?;
-    let Some(element_node_desc) = scope
-      .heap()
-      .object_get_own_property(node_ctor_obj, &element_node_key)?
-    else {
-      panic!("Node.ELEMENT_NODE should be defined");
-    };
-    assert!(element_node_desc.enumerable, "constants must be enumerable");
-    assert!(
-      !element_node_desc.configurable,
-      "constants must be non-configurable"
-    );
-    let PropertyKind::Data { value, writable } = element_node_desc.kind else {
-      panic!("Node.ELEMENT_NODE should be a data property");
-    };
-    assert_eq!(value, Value::Number(1.0));
-    assert!(!writable, "constants must be non-writable");
-
-    drop(scope);
     realm.teardown(&mut heap);
-    Ok(())
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
   }
 
   #[derive(Default)]
@@ -809,51 +862,58 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut realm = Realm::new(&mut vm, &mut heap)?;
 
-    let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
-      realm.global_object(),
-      WebIdlLimits::default(),
-      Box::new(NoHooks),
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let state = Box::new(VmJsWebIdlBindingsState::<AlertHost>::new(
+          realm.global_object(),
+          WebIdlLimits::default(),
+          Box::new(NoHooks),
+        ));
+
+        let mut host = AlertHost::default();
+        {
+          let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+          install_window_bindings(&mut rt, &mut host)?;
+        }
+
+        let mut hooks = MicrotaskQueue::new();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let alert_key = alloc_key(&mut scope, "alert")?;
+        let alert = scope
+          .heap()
+          .object_get_own_data_property_value(global, &alert_key)?
+          .expect("globalThis.alert should be defined");
+
+        // alert()
+        vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[])?;
+
+        // alert("hi")
+        let hi_str = scope.alloc_string("hi")?;
+        scope.push_root(Value::String(hi_str))?;
+        let hi = Value::String(hi_str);
+        vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[hi])?;
+
+        // alert("a", "b") -> dispatch uses min(args.len(), maxarg) so should still pick overload #1.
+        let a_str = scope.alloc_string("a")?;
+        scope.push_root(Value::String(a_str))?;
+        let b_str = scope.alloc_string("b")?;
+        scope.push_root(Value::String(b_str))?;
+        let a = Value::String(a_str);
+        let b = Value::String(b_str);
+        vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[a, b])?;
+
+        assert_eq!(host.calls, vec![0, 1, 1]);
+        Ok(())
+      },
     ));
 
-    let mut host = AlertHost::default();
-    {
-      let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
-      install_window_bindings(&mut rt, &mut host)?;
-    }
-
-    let mut hooks = MicrotaskQueue::new();
-    let mut scope = heap.scope();
-
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-    let alert_key = alloc_key(&mut scope, "alert")?;
-    let alert = scope
-      .heap()
-      .object_get_own_data_property_value(global, &alert_key)?
-      .expect("globalThis.alert should be defined");
-
-    // alert()
-    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[])?;
-
-    // alert("hi")
-    let hi_str = scope.alloc_string("hi")?;
-    scope.push_root(Value::String(hi_str))?;
-    let hi = Value::String(hi_str);
-    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[hi])?;
-
-    // alert("a", "b") -> dispatch uses min(args.len(), maxarg) so should still pick overload #1.
-    let a_str = scope.alloc_string("a")?;
-    scope.push_root(Value::String(a_str))?;
-    let b_str = scope.alloc_string("b")?;
-    scope.push_root(Value::String(b_str))?;
-    let a = Value::String(a_str);
-    let b = Value::String(b_str);
-    vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, alert, Value::Undefined, &[a, b])?;
-
-    assert_eq!(host.calls, vec![0, 1, 1]);
-
-    drop(scope);
     realm.teardown(&mut heap);
-    Ok(())
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
   }
 }

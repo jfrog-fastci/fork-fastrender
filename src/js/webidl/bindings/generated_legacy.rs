@@ -451,6 +451,24 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -911,6 +929,42 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn window_alert<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    let argcount = std::cmp::min(args.len(), 1);
+    match argcount {
+      0 => {
+        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+        let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
+        binding_value_to_js::<Host, R>(rt, result)
+      }
+      1 => {
+        let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          rt.js_undefined()
+        };
+        converted_args.push({
+          let s = rt.to_string(v0)?;
+          BindingValue::String(rt.js_string_to_rust_string(s)?)
+        });
+        let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
+        binding_value_to_js::<Host, R>(rt, result)
+      }
+      _ => Err(rt.throw_type_error("No matching overload for Window.alert")),
+    }
+  }
+
+  #[allow(dead_code)]
   fn window_clear_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1150,47 +1204,98 @@ pub mod window {
       event_target_remove_event_listener::<Host, R>,
     )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
-    let ctor_event_target =
-      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    let ctor_event_target = rt.create_constructor(
+      "EventTarget",
+      0,
+      illegal_constructor::<Host, R>,
+      event_target_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
-    let ctor_node = rt.create_function("Node", 0, illegal_constructor::<Host, R>)?;
+    let ctor_node = rt.create_constructor(
+      "Node",
+      0,
+      illegal_constructor::<Host, R>,
+      illegal_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "Node", ctor_node, proto_node)?;
     rt.define_constant(ctor_node, "ATTRIBUTE_NODE", rt.js_number(2.0))?;
+    rt.define_constant(proto_node, "ATTRIBUTE_NODE", rt.js_number(2.0))?;
     rt.define_constant(ctor_node, "CDATA_SECTION_NODE", rt.js_number(4.0))?;
+    rt.define_constant(proto_node, "CDATA_SECTION_NODE", rt.js_number(4.0))?;
     rt.define_constant(ctor_node, "COMMENT_NODE", rt.js_number(8.0))?;
+    rt.define_constant(proto_node, "COMMENT_NODE", rt.js_number(8.0))?;
     rt.define_constant(ctor_node, "DOCUMENT_FRAGMENT_NODE", rt.js_number(11.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_FRAGMENT_NODE", rt.js_number(11.0))?;
     rt.define_constant(ctor_node, "DOCUMENT_NODE", rt.js_number(9.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_NODE", rt.js_number(9.0))?;
     rt.define_constant(
       ctor_node,
       "DOCUMENT_POSITION_CONTAINED_BY",
       rt.js_number(16.0),
     )?;
+    rt.define_constant(
+      proto_node,
+      "DOCUMENT_POSITION_CONTAINED_BY",
+      rt.js_number(16.0),
+    )?;
     rt.define_constant(ctor_node, "DOCUMENT_POSITION_CONTAINS", rt.js_number(8.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_POSITION_CONTAINS", rt.js_number(8.0))?;
     rt.define_constant(
       ctor_node,
       "DOCUMENT_POSITION_DISCONNECTED",
       rt.js_number(1.0),
     )?;
+    rt.define_constant(
+      proto_node,
+      "DOCUMENT_POSITION_DISCONNECTED",
+      rt.js_number(1.0),
+    )?;
     rt.define_constant(ctor_node, "DOCUMENT_POSITION_FOLLOWING", rt.js_number(4.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_POSITION_FOLLOWING", rt.js_number(4.0))?;
     rt.define_constant(
       ctor_node,
       "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
       rt.js_number(32.0),
     )?;
+    rt.define_constant(
+      proto_node,
+      "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+      rt.js_number(32.0),
+    )?;
     rt.define_constant(ctor_node, "DOCUMENT_POSITION_PRECEDING", rt.js_number(2.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_POSITION_PRECEDING", rt.js_number(2.0))?;
     rt.define_constant(ctor_node, "DOCUMENT_TYPE_NODE", rt.js_number(10.0))?;
+    rt.define_constant(proto_node, "DOCUMENT_TYPE_NODE", rt.js_number(10.0))?;
     rt.define_constant(ctor_node, "ELEMENT_NODE", rt.js_number(1.0))?;
+    rt.define_constant(proto_node, "ELEMENT_NODE", rt.js_number(1.0))?;
     rt.define_constant(ctor_node, "ENTITY_NODE", rt.js_number(6.0))?;
+    rt.define_constant(proto_node, "ENTITY_NODE", rt.js_number(6.0))?;
     rt.define_constant(ctor_node, "ENTITY_REFERENCE_NODE", rt.js_number(5.0))?;
+    rt.define_constant(proto_node, "ENTITY_REFERENCE_NODE", rt.js_number(5.0))?;
     rt.define_constant(ctor_node, "NOTATION_NODE", rt.js_number(12.0))?;
+    rt.define_constant(proto_node, "NOTATION_NODE", rt.js_number(12.0))?;
     rt.define_constant(ctor_node, "PROCESSING_INSTRUCTION_NODE", rt.js_number(7.0))?;
+    rt.define_constant(
+      proto_node,
+      "PROCESSING_INSTRUCTION_NODE",
+      rt.js_number(7.0),
+    )?;
     rt.define_constant(ctor_node, "TEXT_NODE", rt.js_number(3.0))?;
+    rt.define_constant(proto_node, "TEXT_NODE", rt.js_number(3.0))?;
     let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
     rt.define_method(proto_u_r_l, "toJSON", func)?;
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
-    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
+    let set = rt.js_undefined();
+    rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
+    let ctor_u_r_l = rt.create_constructor(
+      "URL",
+      1,
+      illegal_constructor::<Host, R>,
+      u_r_l_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
     let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
     rt.define_method(ctor_u_r_l, "canParse", func)?;
@@ -1230,9 +1335,10 @@ pub mod window {
     )?;
     let set = rt.js_undefined();
     rt.define_attribute_accessor(proto_u_r_l_search_params, "size", get, set)?;
-    let ctor_u_r_l_search_params = rt.create_function(
+    let ctor_u_r_l_search_params = rt.create_constructor(
       "URLSearchParams",
       0,
+      illegal_constructor::<Host, R>,
       u_r_l_search_params_constructor::<Host, R>,
     )?;
     rt.define_constructor(
@@ -1241,6 +1347,8 @@ pub mod window {
       ctor_u_r_l_search_params,
       proto_u_r_l_search_params,
     )?;
+    let func = rt.create_function("alert", 0, window_alert::<Host, R>)?;
+    rt.define_method(global, "alert", func)?;
     let func = rt.create_function("clearInterval", 0, window_clear_interval::<Host, R>)?;
     rt.define_method(global, "clearInterval", func)?;
     let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
@@ -1702,6 +1810,24 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2161,6 +2287,19 @@ pub mod worker {
     }
   }
 
+  #[allow(dead_code)]
+  fn illegal_constructor<Host, R>(
+    rt: &mut R,
+    _host: &mut Host,
+    _this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
   pub fn install_worker_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
@@ -2184,15 +2323,27 @@ pub mod worker {
       event_target_remove_event_listener::<Host, R>,
     )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
-    let ctor_event_target =
-      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    let ctor_event_target = rt.create_constructor(
+      "EventTarget",
+      0,
+      illegal_constructor::<Host, R>,
+      event_target_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
     let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
     rt.define_method(proto_u_r_l, "toJSON", func)?;
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
-    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    let get = rt.create_function("get origin", 0, u_r_l_get_attribute_origin::<Host, R>)?;
+    let set = rt.js_undefined();
+    rt.define_attribute_accessor(proto_u_r_l, "origin", get, set)?;
+    let ctor_u_r_l = rt.create_constructor(
+      "URL",
+      1,
+      illegal_constructor::<Host, R>,
+      u_r_l_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
     let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
     rt.define_method(ctor_u_r_l, "canParse", func)?;
@@ -2232,9 +2383,10 @@ pub mod worker {
     )?;
     let set = rt.js_undefined();
     rt.define_attribute_accessor(proto_u_r_l_search_params, "size", get, set)?;
-    let ctor_u_r_l_search_params = rt.create_function(
+    let ctor_u_r_l_search_params = rt.create_constructor(
       "URLSearchParams",
       0,
+      illegal_constructor::<Host, R>,
       u_r_l_search_params_constructor::<Host, R>,
     )?;
     rt.define_constructor(

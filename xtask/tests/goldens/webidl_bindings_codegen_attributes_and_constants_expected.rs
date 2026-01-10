@@ -182,6 +182,7 @@ pub mod window {
     let set = rt.js_undefined();
     rt.define_attribute_accessor(ctor_foo, "ok", get, set)?;
     rt.define_constant(ctor_foo, "ANSWER", rt.js_number(42.0))?;
+    rt.define_constant(proto_foo, "ANSWER", rt.js_number(42.0))?;
     let _ = host;
     Ok(())
   }

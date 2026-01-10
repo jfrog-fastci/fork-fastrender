@@ -1755,6 +1755,12 @@ fn generate_bindings_module_for_target_unformatted(
         name = constant.name,
         expr = expr,
       ));
+      out.push_str(&format!(
+        "  rt.define_constant({proto}, \"{name}\", {expr})?;\n",
+        proto = proto_var.as_str(),
+        name = constant.name,
+        expr = expr,
+      ));
     }
   }
 
