@@ -1547,7 +1547,6 @@ mod tests {
       "<!doctype html><html></html>",
     )
     .expect("write doc");
-
     let url = "https://example.com/large.bin";
 
     let size = 1024 * 1024;
@@ -1607,7 +1606,6 @@ mod tests {
         },
       )]),
     };
-
     std::fs::write(
       tmp.path().join(BUNDLE_MANIFEST),
       serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
@@ -1659,6 +1657,82 @@ mod tests {
     );
     assert_eq!(empty_res.response_headers, Some(expected_headers));
     assert!(empty_res.access_control_allow_credentials);
+  }
+
+  #[test]
+  fn bundled_fetcher_fetches_vary_partitioned_manifest_keys() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("style.css"), "body{color:red}").expect("write css");
+
+    let base_url = "https://example.com/style.css";
+    let vary_key = "abc";
+    let manifest_key = vary_partitioned_resource_key(base_url, vary_key);
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources: BTreeMap::from([(
+        manifest_key.clone(),
+        BundledResourceInfo {
+          path: "style.css".to_string(),
+          content_type: Some("text/css".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some(base_url.to_string()),
+          etag: None,
+          last_modified: None,
+          response_referrer_policy: None,
+          response_headers: None,
+          vary: Some("accept-encoding".to_string()),
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let res = fetcher.fetch(&manifest_key).expect("fetch vary key");
+    assert_eq!(res.bytes, b"body{color:red}");
+    assert_eq!(res.content_type.as_deref(), Some("text/css"));
   }
 
   #[test]
