@@ -141,7 +141,8 @@ These features exist in the HTML spec and matter for web-compat, but are intenti
 we can land a correct classic-script core first:
 
 - **Module scripts** (`type="module"`) and the module graph (host hooks, `import`, dynamic import)
-- **Import maps** (`type="importmap"`) parsing + registration + interaction with module fetch
+- **Import maps** (`type="importmap"`) registration/merging + interaction with module fetch
+  (parsing/normalization exists in `src/js/import_maps/`; see [`docs/import_maps.md`](import_maps.md))
 - **Content Security Policy (CSP)** script enforcement (`script-src`, inline script checks,
   nonces/hashes, etc.)
   - A minimal CSP parser/URL matcher exists for some subresource destinations (styles/images/fonts,
