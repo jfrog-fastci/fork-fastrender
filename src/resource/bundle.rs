@@ -165,6 +165,37 @@ fn bool_is_false(value: &bool) -> bool {
   !*value
 }
 
+fn default_fetch_profile_user_agent() -> String {
+  super::DEFAULT_USER_AGENT.to_string()
+}
+
+fn default_fetch_profile_accept_language() -> String {
+  super::DEFAULT_ACCEPT_LANGUAGE.to_string()
+}
+
+/// Request header profile captured with the bundle.
+///
+/// Bundles can contain multiple variants for a single URL when the upstream server responds with a
+/// `Vary` header (e.g. `Vary: User-Agent`). During offline replay we must compute the same
+/// request-side `Vary` key that was used at capture-time; otherwise the bundled resource variants
+/// may not be found deterministically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleFetchProfile {
+  #[serde(default = "default_fetch_profile_user_agent")]
+  pub user_agent: String,
+  #[serde(default = "default_fetch_profile_accept_language")]
+  pub accept_language: String,
+}
+
+impl Default for BundleFetchProfile {
+  fn default() -> Self {
+    Self {
+      user_agent: default_fetch_profile_user_agent(),
+      accept_language: default_fetch_profile_accept_language(),
+    }
+  }
+}
+
 /// Render settings captured with the bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleRenderConfig {
@@ -245,6 +276,8 @@ pub struct BundleManifest {
   pub original_url: String,
   pub document: BundledDocument,
   pub render: BundleRenderConfig,
+  #[serde(default)]
+  pub fetch_profile: BundleFetchProfile,
   pub resources: BTreeMap<String, BundledResourceInfo>,
 }
 
@@ -790,7 +823,12 @@ impl ResourceFetcher for BundledFetcher {
         )));
       }
       let destination = parse_request_partitioned_resource_kind(url)
-        .or_else(|| bucket.variants.values().find_map(|resource| resource.manifest_kind))
+        .or_else(|| {
+          bucket
+            .variants
+            .values()
+            .find_map(|resource| resource.manifest_kind)
+        })
         .map(super::FetchDestination::from)
         .unwrap_or_else(|| super::http_browser_request_profile_for_url(url));
       if !lookup_is_request_partitioned
@@ -805,7 +843,8 @@ impl ResourceFetcher for BundledFetcher {
         )));
       }
       let request = FetchRequest::new(bucket.canonical_url.as_str(), destination);
-      let Some(vary_key) = super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
       else {
         return Err(Error::Other(format!(
           "Resource not cacheable in bundle (unknown Vary headers): {}",
@@ -1043,8 +1082,8 @@ impl ResourceFetcher for BundledFetcher {
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
     let headers = super::build_http_header_pairs(
       req.url,
-      super::DEFAULT_USER_AGENT,
-      super::DEFAULT_ACCEPT_LANGUAGE,
+      &self.bundle.manifest.fetch_profile.user_agent,
+      &self.bundle.manifest.fetch_profile.accept_language,
       super::SUPPORTED_ACCEPT_ENCODING,
       None,
       req.destination,
@@ -1120,6 +1159,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::new(),
     };
     std::fs::write(
@@ -1180,6 +1220,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         "https://example.com/asset.bin".to_string(),
         BundledResourceInfo {
@@ -1284,6 +1325,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         "https://example.com/style.css".to_string(),
         BundledResourceInfo {
@@ -1370,6 +1412,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         "https://example.com/style.css".to_string(),
         BundledResourceInfo {
@@ -1508,6 +1551,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         css_url.to_string(),
         BundledResourceInfo {
@@ -1608,6 +1652,21 @@ mod tests {
 
     let bundle = Bundle::load(tmp.path()).expect("load bundle");
     let fetcher = BundledFetcher::new(bundle);
+    assert_eq!(
+      fetcher.bundle.manifest.fetch_profile.user_agent.as_str(),
+      super::super::DEFAULT_USER_AGENT,
+      "expected missing fetch_profile.user_agent to default for back-compat"
+    );
+    assert_eq!(
+      fetcher
+        .bundle
+        .manifest
+        .fetch_profile
+        .accept_language
+        .as_str(),
+      super::super::DEFAULT_ACCEPT_LANGUAGE,
+      "expected missing fetch_profile.accept_language to default for back-compat"
+    );
     let doc = fetcher.fetch("https://example.com/").expect("fetch doc");
     assert_eq!(doc.access_control_allow_origin, None);
     assert_eq!(doc.timing_allow_origin, None);
@@ -1681,6 +1740,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([
         (
           url.to_string(),
@@ -1852,6 +1912,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(url.to_string(), base_info), (key, v2_info)]),
     };
 
@@ -1964,6 +2025,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([
         (key_include, base_info("font_include.woff2")),
         (key_same_origin, base_info("font_same.woff2")),
@@ -2012,7 +2074,9 @@ mod tests {
         .expect("fetch include entry");
       assert_eq!(include_res.bytes, b"include");
 
-      let same_res = fetcher.fetch_with_request(same_req).expect("fetch same-origin entry");
+      let same_res = fetcher
+        .fetch_with_request(same_req)
+        .expect("fetch same-origin entry");
       assert_eq!(same_res.bytes, b"same-origin");
     });
   }
@@ -2085,6 +2149,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(key, info)]),
     };
 
@@ -2198,6 +2263,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([
         (url.to_string(), shared_info("https://a.test")),
         (key_a, shared_info("https://a.test")),
@@ -2290,6 +2356,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         url.to_string(),
         BundledResourceInfo {
@@ -2387,6 +2454,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(url.to_string(), info.clone()), (key, info)]),
     };
 
@@ -2437,11 +2505,8 @@ mod tests {
     let image_url = "https://cdn.example/image.png";
     let style_url = "https://cdn.example/style.css";
 
-    let image_key = request_partitioned_resource_key_v2(
-      FetchContextKind::ImageCors,
-      image_url,
-      "https://a.test",
-    );
+    let image_key =
+      request_partitioned_resource_key_v2(FetchContextKind::ImageCors, image_url, "https://a.test");
     let style_key = request_partitioned_resource_key_v2(
       FetchContextKind::StylesheetCors,
       style_url,
@@ -2508,6 +2573,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(image_key, image_info), (style_key, style_info)]),
     };
 
@@ -2606,6 +2672,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([
         (image_url.to_string(), image_info),
         (style_url.to_string(), style_info),
@@ -2704,6 +2771,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([
         (
           key_a,
@@ -2761,6 +2829,141 @@ mod tests {
   }
 
   #[test]
+  fn bundled_fetcher_selects_vary_user_agent_variants_using_manifest_profile() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("ua_foo.woff2"), b"foo").expect("write foo variant");
+    std::fs::write(tmp.path().join("ua_bar.woff2"), b"bar").expect("write bar variant");
+
+    let url = "https://cdn.example/font.woff2";
+
+    #[derive(Clone)]
+    struct FixedUserAgentFetcher {
+      user_agent: String,
+    }
+
+    impl ResourceFetcher for FixedUserAgentFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("not implemented".to_string()))
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("user-agent") {
+          Some(self.user_agent.clone())
+        } else {
+          None
+        }
+      }
+    }
+
+    let req = FetchRequest::new(url, FetchDestination::Font);
+    let vary_key_foo = super::super::compute_vary_key_for_request(
+      &FixedUserAgentFetcher {
+        user_agent: "Foo/1.0".to_string(),
+      },
+      req,
+      Some("user-agent"),
+    )
+    .expect("vary key foo");
+    let vary_key_bar = super::super::compute_vary_key_for_request(
+      &FixedUserAgentFetcher {
+        user_agent: "Bar/1.0".to_string(),
+      },
+      req,
+      Some("user-agent"),
+    )
+    .expect("vary key bar");
+
+    let key_foo = vary_partitioned_resource_key(url, &vary_key_foo);
+    let key_bar = vary_partitioned_resource_key(url, &vary_key_bar);
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile {
+        user_agent: "Foo/1.0".to_string(),
+        accept_language: super::super::DEFAULT_ACCEPT_LANGUAGE.to_string(),
+      },
+      resources: BTreeMap::from([
+        (
+          key_foo,
+          BundledResourceInfo {
+            path: "ua_foo.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            nosniff: false,
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            response_referrer_policy: None,
+            vary: Some("user-agent".to_string()),
+            access_control_allow_origin: None,
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+        (
+          key_bar,
+          BundledResourceInfo {
+            path: "ua_bar.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            nosniff: false,
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            response_referrer_policy: None,
+            vary: Some("user-agent".to_string()),
+            access_control_allow_origin: None,
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let res = fetcher.fetch(url).expect("fetch bundle");
+    assert_eq!(res.bytes, b"foo");
+  }
+
+  #[test]
   fn bundled_fetcher_selects_vary_variants_when_vary_casing_or_order_differs() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -2776,12 +2979,9 @@ mod tests {
       FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
 
     // Compute the manifest vary-key from one representation of the vary list...
-    let vary_key = super::super::compute_vary_key_for_request(
-      &http,
-      req,
-      Some("origin, accept-language"),
-    )
-    .expect("vary key");
+    let vary_key =
+      super::super::compute_vary_key_for_request(&http, req, Some("origin, accept-language"))
+        .expect("vary key");
     let key = vary_partitioned_resource_key(url, &vary_key);
 
     // ...but store a semantically equivalent vary value with different casing + ordering. Bundle
@@ -2814,6 +3014,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         key,
         BundledResourceInfo {
