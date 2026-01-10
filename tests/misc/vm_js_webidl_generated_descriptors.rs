@@ -133,10 +133,23 @@ fn webidl_generated_bindings_install_property_descriptors_and_function_metadata(
 
   // Function metadata: length + name.
   let length_key: PropertyKey = rt.property_key_from_str("length")?;
+  let length_desc = rt
+    .heap()
+    .object_get_own_property(append_func_obj, &length_key)?
+    .expect("missing append.length");
+  assert!(
+    !length_desc.enumerable,
+    "expected append.length to be non-enumerable"
+  );
   let length = rt.get(Value::Object(append_func_obj), length_key)?;
   assert_eq!(length, Value::Number(2.0), "append.length");
 
   let name_key: PropertyKey = rt.property_key_from_str("name")?;
+  let name_desc = rt
+    .heap()
+    .object_get_own_property(append_func_obj, &name_key)?
+    .expect("missing append.name");
+  assert!(!name_desc.enumerable, "expected append.name to be non-enumerable");
   let name = rt.get(Value::Object(append_func_obj), name_key)?;
   assert_eq!(
     string_value_to_utf8_lossy(&rt, name),
