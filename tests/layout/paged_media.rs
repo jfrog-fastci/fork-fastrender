@@ -2991,6 +2991,40 @@ fn page_break_inside_avoid_does_not_prevent_column_breaks() {
 }
 
 #[test]
+fn webkit_page_break_inside_avoid_maps_to_avoid_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; }
+          body { margin: 0; }
+          #b { height: 10px; background: rgb(4, 5, 6); -webkit-page-break-inside: avoid; }
+        </style>
+      </head>
+      <body>
+        <div id="b"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let b_fragment =
+    find_fragment_by_background(page, Rgba::rgb(4, 5, 6)).expect("#b fragment with background");
+  let style = b_fragment.style.as_ref().expect("#b computed style");
+  assert_eq!(
+    style.break_inside,
+    BreakInside::AvoidPage,
+    "-webkit-page-break-inside: avoid must map to break-inside: avoid-page"
+  );
+}
+
+#[test]
 fn break_before_page_forces_new_page() {
   let html = r#"
     <html>

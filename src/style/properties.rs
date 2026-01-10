@@ -8945,6 +8945,12 @@ fn apply_declaration_with_base_internal_with_order(
     "page-break-before" => "break-before",
     "page-break-after" => "break-after",
     "page-break-inside" => "break-inside",
+    "-webkit-page-break-before" => "break-before",
+    "-webkit-page-break-after" => "break-after",
+    "-webkit-page-break-inside" => "break-inside",
+    "-webkit-column-break-before" => "column-break-before",
+    "-webkit-column-break-after" => "column-break-after",
+    "-webkit-column-break-inside" => "column-break-inside",
     "-webkit-animation" => "animation",
     "-webkit-animation-name" => "animation-name",
     "-webkit-animation-duration" => "animation-duration",
@@ -13188,7 +13194,7 @@ fn apply_declaration_with_base_internal_with_order(
     "break-before" | "break-after" | "column-break-before" | "column-break-after" => {
       let from_page_break = matches!(
         decl.property.as_str(),
-        "page-break-before" | "page-break-after"
+        "page-break-before" | "page-break-after" | "-webkit-page-break-before" | "-webkit-page-break-after"
       );
       let column_alias = matches!(property, "column-break-before" | "column-break-after");
       if let PropertyValue::Keyword(kw) = resolved_value {
@@ -13230,8 +13236,12 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "break-inside" | "column-break-inside" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let column_alias = decl.property.as_str() == "column-break-inside";
-        let from_page_break = decl.property.as_str() == "page-break-inside";
+        let column_alias = matches!(
+          decl.property.as_str(),
+          "column-break-inside" | "-webkit-column-break-inside"
+        );
+        let from_page_break =
+          matches!(decl.property.as_str(), "page-break-inside" | "-webkit-page-break-inside");
         let kw = kw.to_ascii_lowercase();
         styles.break_inside = match kw.as_str() {
           "auto" => BreakInside::Auto,
