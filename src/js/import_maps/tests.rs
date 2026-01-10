@@ -1,8 +1,10 @@
 use super::{
-  create_import_map_parse_result, merge_existing_and_new_import_maps, parse_import_map_string,
-  register_import_map, resolve_module_integrity_metadata, resolve_module_specifier, ImportMap, ImportMapError,
-  ImportMapState, SpecifierAsUrlKind,
+  create_import_map_parse_result, merge_existing_and_new_import_maps, parse_import_map_string, register_import_map,
+  resolve_module_integrity_metadata, resolve_module_specifier, ImportMap, ImportMapError, ImportMapState,
+  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
+
+use super::types::code_unit_cmp;
 
 use url::Url;
 
@@ -635,4 +637,102 @@ fn merge_integrity_ignores_duplicates() {
 
   let b = Url::parse("https://example.com/b.js").unwrap();
   assert_eq!(resolve_module_integrity_metadata(&state, &b), "sha256-b");
+}
+
+#[test]
+fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
+  // This test constructs a moderately large resolved module set and import map to ensure the merge
+  // algorithm stays correct, and to make accidental O(R * N) regressions noticeable in CI.
+  const N: usize = 5_000;
+
+  let base_url = "https://example.com/app/main.js".to_string();
+  let scope_prefix = "https://example.com/app/".to_string();
+
+  let mut state = ImportMapState::default();
+
+  // Resolved module set entries that will block new top-level imports whose key starts with
+  // `imp{i}`.
+  for i in 0..N {
+    state.resolved_module_set.push(SpecifierResolutionRecord {
+      serialized_base_url: Some(base_url.clone()),
+      specifier: format!("imp{i}"),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    });
+  }
+
+  // Resolved module set entries that will block scoped rules with keys `sc{i}/` (prefix) and
+  // `sc{i}/sub` (exact).
+  for i in 0..N {
+    state.resolved_module_set.push(SpecifierResolutionRecord {
+      serialized_base_url: Some(base_url.clone()),
+      specifier: format!("sc{i}/sub"),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    });
+  }
+
+  // Non-special URL-like resolved specifier: should *not* cause scoped prefix filtering.
+  state.resolved_module_set.push(SpecifierResolutionRecord {
+    serialized_base_url: Some(base_url.clone()),
+    specifier: "blob:https://example.com/uuid".to_string(),
+    as_url_kind: SpecifierAsUrlKind::NonSpecial,
+  });
+
+  let mut new_imports = Vec::with_capacity(N * 3);
+  for i in 0..N {
+    // Filtered: starts with resolved `imp{i}`.
+    new_imports.push((format!("imp{i}"), None));
+    new_imports.push((format!("imp{i}/x"), None));
+    // Retained: no resolved specifier is a prefix of this key.
+    new_imports.push((format!("keep{i}"), None));
+  }
+
+  let mut new_scope_imports = Vec::with_capacity(N * 3 + 1);
+  for i in 0..N {
+    // Filtered due to resolved `sc{i}/sub` within this scope.
+    new_scope_imports.push((format!("sc{i}/"), None));
+    new_scope_imports.push((format!("sc{i}/sub"), None));
+    // Retained.
+    new_scope_imports.push((format!("keep_sc{i}"), None));
+  }
+  new_scope_imports.push(("blob:https://example.com/".to_string(), None));
+  new_scope_imports.sort_by(|(a, _), (b, _)| code_unit_cmp(b.as_str(), a.as_str()));
+
+  let new_import_map = ImportMap {
+    imports: ModuleSpecifierMap { entries: new_imports },
+    scopes: ScopesMap {
+      entries: vec![(
+        scope_prefix.clone(),
+        ModuleSpecifierMap {
+          entries: new_scope_imports,
+        },
+      )],
+    },
+    integrity: ModuleIntegrityMap::default(),
+  };
+
+  merge_existing_and_new_import_maps(&mut state, &new_import_map);
+
+  assert!(!state.import_map.imports.contains_key("imp0"));
+  assert!(!state.import_map.imports.contains_key("imp0/x"));
+  assert!(state.import_map.imports.contains_key("keep0"));
+
+  let last_imp = format!("imp{}", N - 1);
+  let last_keep = format!("keep{}", N - 1);
+  assert!(!state.import_map.imports.contains_key(last_imp.as_str()));
+  assert!(state.import_map.imports.contains_key(last_keep.as_str()));
+
+  let merged_scope = state
+    .import_map
+    .scopes
+    .get(scope_prefix.as_str())
+    .expect("scope exists after merge");
+
+  assert!(!merged_scope.contains_key("sc0/"));
+  assert!(!merged_scope.contains_key("sc0/sub"));
+  assert!(merged_scope.contains_key("keep_sc0"));
+
+  assert!(
+    merged_scope.contains_key("blob:https://example.com/"),
+    "expected prefix rule to remain for non-special URL-like resolved specifier"
+  );
 }
