@@ -94,6 +94,26 @@ pub struct JsExecutionOptions {
   /// navigation.
   pub max_document_write_calls: usize,
 
+  /// Maximum number of distinct module scripts that may be fetched/parsed as part of loading a
+  /// single top-level module script (including the entry module).
+  pub max_module_graph_modules: usize,
+
+  /// Maximum total number of bytes across all module sources in a single module graph load.
+  ///
+  /// This bounds the amount of host memory/work consumed by hostile `type="module"` pages that
+  /// attempt to import enormous dependency graphs.
+  pub max_module_graph_total_bytes: usize,
+
+  /// Maximum allowed static import recursion depth when loading a module graph.
+  ///
+  /// The entry module has depth 0. Each `import` adds 1.
+  pub max_module_graph_depth: usize,
+
+  /// Maximum number of bytes accepted for a single module specifier string.
+  ///
+  /// This is a host-side guard against pathological `import "<very long string>"` inputs.
+  pub max_module_specifier_length: usize,
+
   /// VM budget: maximum number of VM "ticks" (fuel units) that may be executed before the VM
   /// terminates execution.
   ///
@@ -128,6 +148,60 @@ impl JsExecutionOptions {
   /// Validate a script source string against [`JsExecutionOptions::max_script_bytes`].
   pub fn check_script_source(&self, source: &str, context: &str) -> Result<()> {
     self.check_script_source_bytes(source.len(), context)
+  }
+
+  /// Validate a module specifier against [`JsExecutionOptions::max_module_specifier_length`].
+  pub fn check_module_specifier(&self, specifier: &str) -> Result<()> {
+    let len = specifier.len();
+    if len > self.max_module_specifier_length {
+      return Err(Error::Other(format!(
+        "Module specifier exceeded max_module_specifier_length (len={len}, limit={})",
+        self.max_module_specifier_length
+      )));
+    }
+    Ok(())
+  }
+
+  /// Validate a module graph recursion depth against [`JsExecutionOptions::max_module_graph_depth`].
+  pub fn check_module_graph_depth(&self, depth: usize, specifier: &str) -> Result<()> {
+    if depth > self.max_module_graph_depth {
+      return Err(Error::Other(format!(
+        "Module graph exceeded max_module_graph_depth (depth={depth}, limit={}, specifier={specifier})",
+        self.max_module_graph_depth
+      )));
+    }
+    Ok(())
+  }
+
+  /// Validate that adding a module would not exceed [`JsExecutionOptions::max_module_graph_modules`].
+  pub fn check_module_graph_modules(&self, next_modules: usize, specifier: &str) -> Result<()> {
+    if next_modules > self.max_module_graph_modules {
+      return Err(Error::Other(format!(
+        "Module graph exceeded max_module_graph_modules (next={next_modules}, limit={}, specifier={specifier})",
+        self.max_module_graph_modules
+      )));
+    }
+    Ok(())
+  }
+
+  /// Validate that adding `module_bytes` would not exceed
+  /// [`JsExecutionOptions::max_module_graph_total_bytes`].
+  pub fn check_module_graph_total_bytes(
+    &self,
+    current_total: usize,
+    module_bytes: usize,
+    specifier: &str,
+  ) -> Result<usize> {
+    let next_total = current_total.checked_add(module_bytes).ok_or_else(|| {
+      Error::Other("Module graph total bytes overflowed usize".to_string())
+    })?;
+    if next_total > self.max_module_graph_total_bytes {
+      return Err(Error::Other(format!(
+        "Module graph exceeded max_module_graph_total_bytes (next={next_total}, limit={}, specifier={specifier}, module_bytes={module_bytes})",
+        self.max_module_graph_total_bytes
+      )));
+    }
+    Ok(next_total)
   }
 
   /// Translate these execution options into a fresh `vm-js` execution budget for "now".
@@ -218,6 +292,15 @@ impl Default for JsExecutionOptions {
 
       // Bound how many external stylesheets can block parser-inserted scripts.
       max_pending_blocking_stylesheets: 1024,
+
+      // Module graph budgets: safe defaults for hostile input.
+      //
+      // These are intentionally conservative; embedders targeting real sites will often need to
+      // raise them.
+      max_module_graph_modules: 1024,
+      max_module_graph_total_bytes: 16 * 1024 * 1024,
+      max_module_graph_depth: 64,
+      max_module_specifier_length: 2048,
 
       // VM budgets (enforced by the `vm-js` backend).
       max_instruction_count: Some(50_000_000),

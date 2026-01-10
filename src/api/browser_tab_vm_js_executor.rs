@@ -243,7 +243,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
 
-    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let options = self.js_execution_options;
     let document_origin = self.document_origin.clone();
     let document_url = self.document_url.clone();
     let module_map = &mut self.module_map;
@@ -263,7 +263,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut hooks = ModuleLoaderHooks {
         inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
         fetcher,
-        max_script_bytes,
+        options,
+        loaded_modules: 0,
+        loaded_bytes: 0,
+        module_depths: HashMap::new(),
         module_map,
         module_url_by_id,
         import_map_state,
@@ -342,7 +345,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
-    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let options = self.js_execution_options;
     let module_map = &mut self.module_map;
     let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
@@ -362,7 +365,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut hooks = ModuleLoaderHooks {
         inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
         fetcher,
-        max_script_bytes,
+        options,
+        loaded_modules: 0,
+        loaded_bytes: 0,
+        module_depths: HashMap::new(),
         module_map,
         module_url_by_id,
         import_map_state,
@@ -396,13 +402,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       } else if spec.src_attr_present {
         hooks.load_module_by_url(&mut vm, &mut scope, module_graph, &entry_specifier, None)
       } else {
-        if max_script_bytes != usize::MAX && spec.inline_text.as_bytes().len() > max_script_bytes {
-          return Err(Error::Other(format!(
-            "inline module {entry_specifier} is too large ({} bytes > max {})",
-            spec.inline_text.as_bytes().len(),
-            max_script_bytes
-          )));
-        }
+        options.check_module_specifier(&entry_specifier)?;
+        options.check_module_graph_depth(0, &entry_specifier)?;
+
+        let inline_bytes = spec.inline_text.as_bytes().len();
+        options.check_script_source_bytes(
+          inline_bytes,
+          &format!("source=module specifier={entry_specifier}"),
+        )?;
+
+        // Account for the inline entry module within the per-top-level graph budgets.
+        options.check_module_graph_modules(1, &entry_specifier)?;
+        hooks.loaded_modules = 1;
+        hooks.loaded_bytes = options.check_module_graph_total_bytes(0, inline_bytes, &entry_specifier)?;
 
         let source = Arc::new(SourceText::new(entry_specifier.clone(), spec.inline_text.as_str()));
         let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
@@ -412,6 +424,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         let id = module_graph.add_module(record);
         hooks.module_map.insert(entry_specifier.clone(), id);
         hooks.module_url_by_id.insert(id, entry_specifier.clone());
+        hooks.module_depths.insert(id, 0);
         Ok(id)
       };
 
@@ -419,6 +432,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         Ok(id) => id,
         Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
       };
+
+      // Seed depth bookkeeping for the entry module so cyclical graphs cannot accidentally raise the
+      // observed depth for the root module above 0.
+      hooks.module_depths.insert(entry_module, 0);
 
       let load_promise = match vm_js::load_requested_modules(
         &mut vm,
@@ -495,14 +512,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
-    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let options = self.js_execution_options;
+    let entry_bytes = script_text.as_bytes().len();
     let document_origin = self.document_origin.clone();
     let module_map = &mut self.module_map;
     let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
-      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+      update_time_bindings_clock(realm.heap(), clock.clone())
+        .map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       realm.reset_interrupt();
       // Apply a fresh per-run VM budget (fuel + deadline) for module parsing/loading/evaluation.
@@ -517,9 +536,54 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       vm.tick()
         .map_err(|err| vm_error_format::vm_error_to_error(heap, err))?;
 
+      // Validate the entry module specifier and apply per-entry budgets before parsing.
+      if let Err(err) = options.check_module_specifier(&entry_specifier) {
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_exception(err.to_string(), None);
+        }
+        return Ok(());
+      }
+      if let Err(err) = options.check_module_graph_depth(0, &entry_specifier) {
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_exception(err.to_string(), None);
+        }
+        return Ok(());
+      }
+      if let Err(err) = options.check_script_source_bytes(
+        entry_bytes,
+        &format!("source=module specifier={entry_specifier}"),
+      ) {
+        if let Some(diag) = diagnostics.as_ref() {
+          diag.record_js_exception(err.to_string(), None);
+        }
+        return Ok(());
+      }
+
+      // Module graph budgeting is enforced per top-level module script execution. The entry module's
+      // size/count is included when we first add it to the shared module map.
+      let mut loaded_modules: usize = 0;
+      let mut loaded_bytes: usize = 0;
+
       let entry_module = if let Some(id) = module_map.get(&entry_specifier).copied() {
         id
       } else {
+        if let Err(err) = options.check_module_graph_modules(1, &entry_specifier) {
+          if let Some(diag) = diagnostics.as_ref() {
+            diag.record_js_exception(err.to_string(), None);
+          }
+          return Ok(());
+        }
+        loaded_modules = 1;
+        loaded_bytes = match options.check_module_graph_total_bytes(0, entry_bytes, &entry_specifier) {
+          Ok(next) => next,
+          Err(err) => {
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_exception(err.to_string(), None);
+            }
+            return Ok(());
+          }
+        };
+
         let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
         let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
           Ok(record) => record,
@@ -546,7 +610,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let mut hooks = ModuleLoaderHooks {
         inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
         fetcher: document.fetcher(),
-        max_script_bytes,
+        options,
+        loaded_modules,
+        loaded_bytes,
+        module_depths: HashMap::from([(entry_module, 0)]),
         module_map,
         module_url_by_id,
         import_map_state,
@@ -800,7 +867,10 @@ fn ensure_promise_fulfilled(heap: &vm_js::Heap, promise: Value) -> std::result::
 struct ModuleLoaderHooks<'a> {
   inner: VmJsEventLoopHooks<BrowserTabHost>,
   fetcher: Arc<dyn ResourceFetcher>,
-  max_script_bytes: usize,
+  options: JsExecutionOptions,
+  loaded_modules: usize,
+  loaded_bytes: usize,
+  module_depths: HashMap<ModuleId, usize>,
   module_map: &'a mut HashMap<String, ModuleId>,
   module_url_by_id: &'a mut HashMap<ModuleId, String>,
   import_map_state: &'a mut ImportMapState,
@@ -859,11 +929,39 @@ impl ModuleLoaderHooks<'_> {
     url: &str,
     referrer_url: Option<&str>,
   ) -> std::result::Result<ModuleId, VmError> {
+    if let Err(err) = self.options.check_module_specifier(url) {
+      let value = Self::throw_type_error(vm, scope, &err.to_string())?;
+      return Err(VmError::Throw(value));
+    }
+
     if let Some(id) = self.module_map.get(url).copied() {
       return Ok(id);
     }
 
-    let max_fetch = self.max_script_bytes.saturating_add(1);
+    let next_modules = self
+      .loaded_modules
+      .checked_add(1)
+      .ok_or_else(|| VmError::OutOfMemory)?;
+    if let Err(err) = self.options.check_module_graph_modules(next_modules, url) {
+      let value = Self::throw_type_error(vm, scope, &err.to_string())?;
+      return Err(VmError::Throw(value));
+    }
+    self.loaded_modules = next_modules;
+
+    // Bound the fetch size so hostile module graphs cannot force us to buffer arbitrarily large
+    // responses before we enforce `max_script_bytes`/`max_module_graph_total_bytes`.
+    //
+    // Fetch up to `limit + 1` bytes so we can detect "too large" responses without having to read
+    // the full body.
+    let remaining_total = self
+      .options
+      .max_module_graph_total_bytes
+      .saturating_sub(self.loaded_bytes);
+    let max_fetch = self
+      .options
+      .max_script_bytes
+      .min(remaining_total)
+      .saturating_add(1);
     let mut req = FetchRequest::new(url, FetchDestination::ScriptCors);
     let referrer_url = referrer_url.unwrap_or(self.document_url.as_str());
     req = req.with_referrer_url(referrer_url);
@@ -898,6 +996,28 @@ impl ModuleLoaderHooks<'_> {
       }
     }
 
+    let module_bytes = fetched.bytes.len();
+    if module_bytes > self.options.max_script_bytes {
+      let message = format!(
+        "module {url} is too large ({} bytes > max {})",
+        module_bytes,
+        self.options.max_script_bytes
+      );
+      let value = Self::throw_type_error(vm, scope, &message)?;
+      return Err(VmError::Throw(value));
+    }
+
+    self.loaded_bytes = match self
+      .options
+      .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, url)
+    {
+      Ok(next) => next,
+      Err(err) => {
+        let value = Self::throw_type_error(vm, scope, &err.to_string())?;
+        return Err(VmError::Throw(value));
+      }
+    };
+
     // HTML: module scripts can be associated with Subresource Integrity metadata via import maps
     // (`"integrity"` top-level key). Enforce the integrity metadata when present.
     //
@@ -912,16 +1032,6 @@ impl ModuleLoaderHooks<'_> {
           Self::throw_type_error(vm, scope, &format!("SRI blocked module {url}: {message}"))?;
         return Err(VmError::Throw(err_value));
       }
-    }
-
-    if fetched.bytes.len() > self.max_script_bytes {
-      let message = format!(
-        "module {url} is too large ({} bytes > max {})",
-        fetched.bytes.len(),
-        self.max_script_bytes
-      );
-      let value = Self::throw_type_error(vm, scope, &message)?;
-      return Err(VmError::Throw(value));
     }
 
     let source_text = decode_classic_script_bytes(&fetched.bytes, fetched.content_type.as_deref(), UTF_8);
@@ -1041,6 +1151,21 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
   ) -> std::result::Result<(), VmError> {
     let _ = host_defined;
 
+    // Validate the raw specifier before attempting resolution.
+    if let Err(err) = self.options.check_module_specifier(&module_request.specifier) {
+      let err_value = Self::throw_type_error(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
     let base_url =
       Self::referrer_url_for_resolution(vm, modules, referrer).unwrap_or("about:blank");
     let base_url = Url::parse(base_url).unwrap_or_else(|_| {
@@ -1068,16 +1193,56 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
       }
     };
 
+    // Enforce import recursion depth.
+    let depth = match referrer {
+      ModuleReferrer::Module(id) => {
+        let parent_depth = self.module_depths.get(&id).copied().unwrap_or(0);
+        match parent_depth.checked_add(1) {
+          Some(next) => next,
+          None => {
+            let err_value =
+              Self::throw_type_error(vm, scope, "module graph depth overflowed usize")?;
+            vm.finish_loading_imported_module(
+              scope,
+              modules,
+              self,
+              referrer,
+              module_request,
+              payload,
+              Err(VmError::Throw(err_value)),
+            )?;
+            return Ok(());
+          }
+        }
+      }
+      _ => 0,
+    };
+    if let Err(err) = self.options.check_module_graph_depth(depth, &resolved_url) {
+      let err_value = Self::throw_type_error(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
     let referrer_url = Self::referrer_url_for_resolution(vm, modules, referrer)
       .map(|s| s.to_string());
-    let completion = match self.load_module_by_url(
-      vm,
-      scope,
-      modules,
-      &resolved_url,
-      referrer_url.as_deref(),
-    ) {
-      Ok(id) => Ok(id),
+    let completion = match self.load_module_by_url(vm, scope, modules, &resolved_url, referrer_url.as_deref()) {
+      Ok(id) => {
+        // Store the shallowest observed depth.
+        self
+          .module_depths
+          .entry(id)
+          .and_modify(|d| *d = (*d).min(depth))
+          .or_insert(depth);
+        Ok(id)
+      }
       Err(err) => Err(err),
     };
 
