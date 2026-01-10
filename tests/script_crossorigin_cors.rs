@@ -66,6 +66,22 @@ impl BrowserTabJsExecutor for RecordingExecutor {
       .push(script_text.to_string());
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    _spec: &fastrender::js::ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .executed
+      .lock()
+      .expect("executor log lock")
+      .push(script_text.to_string());
+    Ok(())
+  }
 }
 
 struct RecordingInvoker {
