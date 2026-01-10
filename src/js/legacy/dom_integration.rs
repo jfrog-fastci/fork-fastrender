@@ -6,7 +6,6 @@ use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use super::{
   determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent,
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
-  trim_ascii_whitespace,
 };
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
@@ -202,18 +201,8 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
   let force_async = dom.node(script).script_force_async;
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
-  let crossorigin = dom
-    .get_attribute(script, "crossorigin")
-    .ok()
-    .flatten()
-    .map(|value| {
-      let value = trim_ascii_whitespace(value);
-      if value.eq_ignore_ascii_case("use-credentials") {
-        crate::resource::CorsMode::UseCredentials
-      } else {
-        crate::resource::CorsMode::Anonymous
-      }
-    });
+  let crossorigin =
+    super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
   let integrity = dom
     .get_attribute(script, "integrity")
     .ok()
