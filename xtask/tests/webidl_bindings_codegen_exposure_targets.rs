@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::collections::BTreeMap;
 
@@ -68,11 +67,11 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Window target should include BothExposed interface"
   );
   assert!(
-    window.contains("rt.define_data_property_str(proto_both_exposed, \"windowMember\""),
+    window.contains("rt.define_method(proto_both_exposed, \"windowMember\""),
     "Window target should include window-only members"
   );
   assert!(
-    !window.contains("rt.define_data_property_str(proto_both_exposed, \"workerMember\""),
+    !window.contains("rt.define_method(proto_both_exposed, \"workerMember\""),
     "Window target should not include worker-only members"
   );
 
@@ -96,11 +95,11 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Worker target should include BothExposed interface"
   );
   assert!(
-    worker.contains("rt.define_data_property_str(proto_both_exposed, \"workerMember\""),
+    worker.contains("rt.define_method(proto_both_exposed, \"workerMember\""),
     "Worker target should include worker-only members"
   );
   assert!(
-    !worker.contains("rt.define_data_property_str(proto_both_exposed, \"windowMember\""),
+    !worker.contains("rt.define_method(proto_both_exposed, \"windowMember\""),
     "Worker target should not include window-only members"
   );
 }

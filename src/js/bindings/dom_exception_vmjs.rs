@@ -28,8 +28,16 @@ fn method_desc(value: Value) -> PropertyDescriptor {
 
 impl DomExceptionClassVmJs {
   pub fn install(vm: &mut Vm, scope: &mut Scope<'_>, realm: &Realm) -> Result<Self, VmError> {
+    Self::install_for_global(vm, scope, realm.global_object(), *realm.intrinsics())
+  }
+
+  pub fn install_for_global(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global: GcObject,
+    intr: Intrinsics,
+  ) -> Result<Self, VmError> {
     let mut scope = scope.reborrow();
-    let global = realm.global_object();
     scope.push_root(Value::Object(global))?;
 
     // Idempotent install: if DOMException is already present, reuse it.
@@ -65,7 +73,7 @@ impl DomExceptionClassVmJs {
     scope.push_root(Value::Object(ctor))?;
     scope
       .heap_mut()
-      .object_set_prototype(ctor, Some(realm.intrinsics().function_prototype()))?;
+      .object_set_prototype(ctor, Some(intr.function_prototype()))?;
 
     // Extract the `.prototype` object created by `vm-js`'s `make_constructor`.
     let key_prototype_s = scope.alloc_string("prototype")?;
@@ -82,7 +90,7 @@ impl DomExceptionClassVmJs {
     scope.push_root(Value::Object(proto))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto, Some(realm.intrinsics().error_prototype()))?;
+      .object_set_prototype(proto, Some(intr.error_prototype()))?;
 
     // DOMException.prototype.toString (minimal).
     let to_string_call_id: NativeFunctionId = vm.register_native_call(dom_exception_to_string)?;
@@ -92,7 +100,7 @@ impl DomExceptionClassVmJs {
     scope.push_root(Value::Object(to_string_fn))?;
     scope
       .heap_mut()
-      .object_set_prototype(to_string_fn, Some(realm.intrinsics().function_prototype()))?;
+      .object_set_prototype(to_string_fn, Some(intr.function_prototype()))?;
 
     let key_to_string_s = scope.alloc_string("toString")?;
     scope.push_root(Value::String(key_to_string_s))?;
