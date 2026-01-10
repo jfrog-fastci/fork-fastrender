@@ -2,6 +2,7 @@ use crate::dom2::NodeId;
 use crate::error::{Error, Result};
 use crate::js::event_loop::{EventLoop, TaskSource};
 use crate::js::{ScriptElementSpec, ScriptType};
+use crate::resource::FetchDestination;
 
 use super::html_script_scheduler::{
   HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptEventKind,
@@ -21,7 +22,7 @@ pub trait ScriptElementEventHost {
 /// Host interface used by [`HtmlScriptPipeline`].
 pub trait HtmlScriptPipelineHost: ScriptElementEventHost + Sized + 'static {
   /// Begin fetching an external script resource.
-  fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()>;
+  fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str, destination: FetchDestination) -> Result<()>;
 
   /// Begin building/fetching the module graph for an inline module script.
   ///
@@ -181,13 +182,22 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
   ) -> Result<()> {
     for action in actions {
       match action {
-        HtmlScriptSchedulerAction::StartClassicFetch { script_id, url, .. } => {
-          host.start_fetch(script_id, &url)?;
+        HtmlScriptSchedulerAction::StartClassicFetch {
+          script_id,
+          url,
+          destination,
+          ..
+        } => {
+          host.start_fetch(script_id, &url, destination)?;
         }
         HtmlScriptSchedulerAction::StartModuleGraphFetch {
-          script_id, url, element: _, ..
+          script_id,
+          url,
+          destination,
+          element: _,
+          ..
         } => {
-          host.start_fetch(script_id, &url)?;
+          host.start_fetch(script_id, &url, destination)?;
         }
         HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
           script_id,
@@ -301,7 +311,7 @@ mod tests {
 
   #[derive(Default)]
   struct Host {
-    started_fetches: Vec<(HtmlScriptId, String)>,
+    started_fetches: Vec<(HtmlScriptId, String, FetchDestination)>,
     log: Vec<String>,
   }
 
@@ -313,8 +323,10 @@ mod tests {
   }
 
   impl HtmlScriptPipelineHost for Host {
-    fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str) -> Result<()> {
-      self.started_fetches.push((script_id, url.to_string()));
+    fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str, destination: FetchDestination) -> Result<()> {
+      self
+        .started_fetches
+        .push((script_id, url.to_string(), destination));
       Ok(())
     }
 
@@ -419,6 +431,7 @@ mod tests {
     )?;
 
     assert_eq!(host.started_fetches.len(), 1);
+    assert_eq!(host.started_fetches[0].2, FetchDestination::ScriptCors);
     assert!(host.log.is_empty());
 
     pipeline.fetch_completed(&mut host, id, "export default 1;".to_string())?;
@@ -467,6 +480,7 @@ mod tests {
     )?;
 
     assert_eq!(host.started_fetches.len(), 1);
+    assert_eq!(host.started_fetches[0].2, FetchDestination::ScriptCors);
 
     pipeline.fetch_failed(&mut host, id)?;
     pipeline.parsing_completed(&mut host)?;

@@ -17,6 +17,7 @@
 //! - "list of scripts that will execute when the document has finished parsing" (post-parse)
 
 use crate::error::{Error, Result};
+use crate::resource::FetchDestination;
 
 use super::{ScriptElementSpec, ScriptType};
 
@@ -63,6 +64,7 @@ pub enum HtmlScriptSchedulerAction<NodeId> {
     script_id: HtmlScriptId,
     node_id: NodeId,
     url: String,
+    destination: FetchDestination,
   },
   /// Begin fetching the module graph for an external module script (`type="module" src=...`).
   ///
@@ -72,6 +74,7 @@ pub enum HtmlScriptSchedulerAction<NodeId> {
     script_id: HtmlScriptId,
     node_id: NodeId,
     url: String,
+    destination: FetchDestination,
     element: ScriptElementSpec,
   },
   /// Begin fetching the module graph for an inline module script (`type="module"` with no `src`).
@@ -302,10 +305,16 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
           },
         );
 
+        let destination = if element.crossorigin.is_some() {
+          FetchDestination::ScriptCors
+        } else {
+          FetchDestination::Script
+        };
         actions.push(HtmlScriptSchedulerAction::StartClassicFetch {
           script_id: id,
           node_id: node_id.clone(),
           url,
+          destination,
         });
 
         if mode == ScheduleMode::ParserBlocking {
@@ -358,10 +367,12 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
             },
           );
 
+          // Module scripts are fetched in CORS mode regardless of the `crossorigin` attribute.
           actions.push(HtmlScriptSchedulerAction::StartModuleGraphFetch {
             script_id: id,
             node_id: node_id.clone(),
             url,
+            destination: FetchDestination::ScriptCors,
             element: element.clone(),
           });
           return Ok(HtmlDiscoveredScript { id, actions });
@@ -781,8 +792,8 @@ mod state_machine_tests {
     event_loop: EventLoop<Host>,
     host: Host,
 
-    started_classic_fetches: Vec<(HtmlScriptId, u32, String)>,
-    started_module_fetches: Vec<(HtmlScriptId, u32, String, usize)>,
+    started_classic_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination)>,
+    started_module_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination, usize)>,
     started_inline_module_fetches: Vec<(HtmlScriptId, u32, String, usize)>,
 
     import_map_version: usize,
@@ -812,18 +823,22 @@ mod state_machine_tests {
             script_id,
             node_id,
             url,
+            destination,
           } => {
-            self.started_classic_fetches.push((script_id, node_id, url));
+            self
+              .started_classic_fetches
+              .push((script_id, node_id, url, destination));
           }
           HtmlScriptSchedulerAction::StartModuleGraphFetch {
             script_id,
             node_id,
             url,
+            destination,
             element: _,
           } => {
             self
               .started_module_fetches
-              .push((script_id, node_id, url, self.import_map_version));
+              .push((script_id, node_id, url, destination, self.import_map_version));
           }
           HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
             script_id,
@@ -1085,6 +1100,40 @@ mod state_machine_tests {
     let _m = h.discover(module_inline("export {}", /* async */ false, /* parser_inserted */ true))?;
     assert_eq!(h.started_inline_module_fetches.len(), 1);
     assert_eq!(h.started_inline_module_fetches[0].3, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn script_fetch_actions_use_script_destinations() -> Result<()> {
+    let mut h = Harness::new();
+
+    let _classic = h.discover(classic_external(
+      "classic.js",
+      /* async */ false,
+      /* defer */ false,
+      /* parser_inserted */ true,
+    ))?;
+    assert_eq!(h.started_classic_fetches.len(), 1);
+    assert_eq!(h.started_classic_fetches[0].3, FetchDestination::Script);
+
+    let mut classic_cors = classic_external(
+      "classic_cors.js",
+      /* async */ false,
+      /* defer */ false,
+      /* parser_inserted */ true,
+    );
+    classic_cors.crossorigin = Some(crate::resource::CorsMode::Anonymous);
+    let _classic_cors_id = h.discover(classic_cors)?;
+    assert_eq!(h.started_classic_fetches.len(), 2);
+    assert_eq!(h.started_classic_fetches[1].3, FetchDestination::ScriptCors);
+
+    let _module = h.discover(module_external(
+      "mod.js",
+      /* async */ false,
+      /* parser_inserted */ true,
+    ))?;
+    assert_eq!(h.started_module_fetches.len(), 1);
+    assert_eq!(h.started_module_fetches[0].3, FetchDestination::ScriptCors);
     Ok(())
   }
 
