@@ -205,6 +205,34 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
   );
   y = frame_y;
 
+  // `Shift+End` should scroll near the bottom as well (Shift should not disable browser-style
+  // Home/End scrolling when nothing is focused).
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftEnd,
+  ))
+  .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
+  assert!(
+    frame_y > 3_000.0,
+    "expected Shift+End to scroll near bottom, got {frame_y}"
+  );
+
+  // `Shift+Home` should scroll back to the top as well.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftHome,
+  ))
+  .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next <= 1.0);
+  assert!(
+    frame_y <= 1.0,
+    "expected Shift+Home to scroll back to the top, got {frame_y}"
+  );
+  y = frame_y;
+
   // `Space` should scroll down by ~0.9 * viewport height.
   let step_y = (viewport_css.1 as f32) * 0.9;
   tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Space))

@@ -2598,14 +2598,18 @@ impl BrowserRuntime {
           // keep receiving these keys for caret/selection/option navigation.
           if focus_none && !changed && !scroll_changed && action_is_none {
             keyboard_scroll = match key {
-              crate::interaction::KeyAction::Home => Some(UiToWorker::ScrollTo {
-                tab_id,
-                pos_css: (tab.scroll_state.viewport.x, 0.0),
-              }),
-              crate::interaction::KeyAction::End => Some(UiToWorker::ScrollTo {
-                tab_id,
-                pos_css: (tab.scroll_state.viewport.x, f32::MAX),
-              }),
+              crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
+                Some(UiToWorker::ScrollTo {
+                  tab_id,
+                  pos_css: (tab.scroll_state.viewport.x, 0.0),
+                })
+              }
+              crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
+                Some(UiToWorker::ScrollTo {
+                  tab_id,
+                  pos_css: (tab.scroll_state.viewport.x, f32::MAX),
+                })
+              }
               crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
                 tab_id,
                 delta_css: (0.0, 40.0),
