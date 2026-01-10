@@ -277,6 +277,10 @@ impl<Host: 'static> EventLoop<Host> {
     self.clock.now()
   }
 
+  pub fn clock(&self) -> Arc<dyn Clock> {
+    Arc::clone(&self.clock)
+  }
+
   /// Returns the due time of the next scheduled timer, if any.
   ///
   /// This is primarily intended for deterministic hosts (like the offline WPT runner) that want

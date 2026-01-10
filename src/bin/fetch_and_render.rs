@@ -399,10 +399,13 @@ fn render_page(
 
     // Import into dom2 for mutation.
     let dom2 = Dom2Document::from_renderer_dom(&dom);
-    let mut host = match WindowHostState::new_with_fetcher(
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+    let mut host = match WindowHostState::new_with_fetcher_and_clock(
       dom2,
       base_hint.clone(),
       fetcher.clone(),
+      clock,
     ) {
       Ok(host) => host,
       Err(err) => {
@@ -420,7 +423,6 @@ fn render_page(
     } else {
       js.max_script_bytes
     };
-    let mut event_loop = EventLoop::<WindowHostState>::new();
     let mut scripts_queued = 0usize;
     let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
 

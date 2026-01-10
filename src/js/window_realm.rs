@@ -1,5 +1,7 @@
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
+use crate::js::clock::{Clock, RealClock};
+use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
@@ -53,6 +55,10 @@ pub struct WindowRealmConfig {
   /// FastRender treats JavaScript as hostile input; keeping a hard heap limit is a foundational
   /// safety invariant even before full script execution is wired up.
   pub heap_limits: HeapLimits,
+  /// Host clock backing web time APIs like `Date.now()` and `performance.now()`.
+  pub clock: Arc<dyn Clock>,
+  /// Deterministic web time model (`performance.timeOrigin`, and the epoch offset for `Date.now()`).
+  pub web_time: WebTime,
 }
 
 /// Navigation request emitted by `window.location` APIs (`href`, `assign`, `replace`).
@@ -74,6 +80,8 @@ impl WindowRealmConfig {
       current_script_state: None,
       console_sink: None,
       heap_limits: default_heap_limits(),
+      clock: Arc::new(RealClock::default()),
+      web_time: WebTime::default(),
     }
   }
 
@@ -96,14 +104,25 @@ impl WindowRealmConfig {
     self.heap_limits = limits;
     self
   }
+
+  pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+    self.clock = clock;
+    self
+  }
+
+  pub fn with_web_time(mut self, web_time: WebTime) -> Self {
+    self.web_time = web_time;
+    self
+  }
 }
 
 pub struct WindowRealm {
-  runtime: VmJsRuntime,
+  runtime: Box<VmJsRuntime>,
   realm_id: RealmId,
   console_sink_id: Option<u64>,
   current_script_source_id: Option<u64>,
   match_media_env_id: Option<u64>,
+  time_bindings: Option<TimeBindings>,
 }
 
 struct WindowRealmUserData {
@@ -145,7 +164,7 @@ impl WindowRealm {
     let vm = Vm::new(vm_options);
     let heap = Heap::new(config.heap_limits);
 
-    let mut runtime = VmJsRuntime::new(vm, heap)?;
+    let mut runtime = Box::new(VmJsRuntime::new(vm, heap)?);
     runtime
       .vm
       .set_user_data(WindowRealmUserData::new(config.document_url.clone()));
@@ -155,12 +174,20 @@ impl WindowRealm {
 
     let (console_sink_id, current_script_source_id, match_media_env_id) =
       init_window_globals(vm, heap, realm, &config)?;
+    let time_bindings = crate::js::time::install_time_bindings(
+      vm,
+      realm,
+      heap,
+      Arc::clone(&config.clock),
+      config.web_time,
+    )?;
     Ok(Self {
       runtime,
       realm_id,
       console_sink_id,
       current_script_source_id,
       match_media_env_id,
+      time_bindings: Some(time_bindings),
     })
   }
 
@@ -185,7 +212,8 @@ impl WindowRealm {
   }
 
   pub fn vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
-    (&mut self.runtime.vm, &mut self.runtime.heap)
+    let runtime = &mut *self.runtime;
+    (&mut runtime.vm, &mut runtime.heap)
   }
 
   pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
@@ -201,6 +229,7 @@ impl WindowRealm {
   }
 
   pub fn teardown(&mut self) {
+    self.time_bindings.take();
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);
     }
@@ -210,10 +239,8 @@ impl WindowRealm {
     if let Some(id) = self.match_media_env_id.take() {
       unregister_match_media_env(id);
     }
-    crate::js::window_url::teardown_window_url_bindings_for_realm(
-      self.runtime.realm().id(),
-      &mut self.runtime.heap,
-    );
+    let realm_id = self.runtime.realm().id();
+    crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
   }
 
   pub fn set_cookie_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {
@@ -9372,8 +9399,10 @@ fn init_window_globals(
 mod tests {
   use super::*;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
+  use crate::js::clock::VirtualClock;
   use std::ptr::NonNull;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
+  use std::time::Duration;
 
   #[derive(Debug, Clone, PartialEq)]
   enum CapturedConsoleArg {
@@ -9538,6 +9567,56 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), href), "https://example.com/dir/file");
+
+    Ok(())
+  }
+
+  #[test]
+  fn time_bindings_survive_windowrealm_moves() -> Result<(), VmError> {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_realm: Arc<dyn Clock> = clock.clone();
+    let web_time = WebTime::new(0);
+    let realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/")
+        .with_clock(clock_for_realm)
+        .with_web_time(web_time),
+    )?;
+
+    let mut realms = Vec::new();
+    realms.push(realm);
+    let mut realm = realms.pop().expect("expected a moved realm");
+
+    clock.set_now(Duration::from_millis(5));
+    assert_eq!(realm.exec_script("performance.now()")?, Value::Number(5.0));
+    Ok(())
+  }
+
+  #[test]
+  fn time_bindings_exist_and_follow_configured_clock() -> Result<(), VmError> {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_realm: Arc<dyn Clock> = clock.clone();
+    let web_time = WebTime::new(1_000);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/")
+        .with_clock(clock_for_realm)
+        .with_web_time(web_time),
+    )?;
+
+    clock.set_now(Duration::from_millis(0));
+    assert_eq!(
+      realm.exec_script("performance.timeOrigin")?,
+      Value::Number(web_time.time_origin_unix_ms as f64)
+    );
+    assert_eq!(realm.exec_script("Date.now()")?, Value::Number(1_000.0));
+    assert_eq!(realm.exec_script("performance.now()")?, Value::Number(0.0));
+
+    // Advance to a deterministic non-integer millisecond.
+    clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
+    assert_eq!(realm.exec_script("Date.now()")?, Value::Number(2_234.0));
+    let Value::Number(perf_now) = realm.exec_script("performance.now()")? else {
+      panic!("expected performance.now() to return a number");
+    };
+    assert!((perf_now - 1234.56789).abs() < 1e-9);
 
     Ok(())
   }

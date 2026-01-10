@@ -72,6 +72,7 @@ mod select_listbox_click_scrolled;
 mod select_listbox_wheel_scroll;
 mod js_rendering;
 mod location_navigation;
+mod js_time;
 mod support;
 mod tab;
 mod ui_clipboard;

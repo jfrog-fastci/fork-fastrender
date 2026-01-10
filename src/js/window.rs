@@ -11,6 +11,7 @@ use crate::js::{
   install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
   WindowFetchBindings, WindowFetchEnv,
 };
+use crate::js::{Clock, RealClock};
 use crate::js::vm_error_format;
 use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::ptr::NonNull;
@@ -40,8 +41,26 @@ impl WindowHost {
     document_url: impl Into<String>,
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
-    let host = WindowHostState::new_with_fetcher(dom, document_url, fetcher)?;
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::<WindowHostState>::new();
+    Self::new_with_fetcher_and_event_loop(dom, document_url, fetcher, event_loop)
+  }
+
+  pub fn new_with_event_loop(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    event_loop: EventLoop<WindowHostState>,
+  ) -> Result<Self> {
+    Self::new_with_fetcher_and_event_loop(dom, document_url, Arc::new(HttpFetcher::new()), event_loop)
+  }
+
+  pub fn new_with_fetcher_and_event_loop(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    event_loop: EventLoop<WindowHostState>,
+  ) -> Result<Self> {
+    let clock = event_loop.clock();
+    let host = WindowHostState::new_with_fetcher_and_clock(dom, document_url, fetcher, clock)?;
     Ok(Self { host, event_loop })
   }
 
@@ -138,6 +157,16 @@ impl WindowHostState {
     document_url: impl Into<String>,
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
+    Self::new_with_fetcher_and_clock(dom, document_url, fetcher, clock)
+  }
+
+  pub fn new_with_fetcher_and_clock(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    clock: Arc<dyn Clock>,
+  ) -> Result<Self> {
     let document_url = document_url.into();
     // The JS bindings store a `dom_source_id` that resolves to a raw pointer in a thread-local
     // registry. That pointer must remain stable for the lifetime of this host, so keep the
@@ -147,7 +176,8 @@ impl WindowHostState {
     let mut window = match WindowRealm::new(
       WindowRealmConfig::new(document_url.clone())
         .with_dom_source_id(dom_source_id)
-        .with_current_script_state(document.current_script_state().clone()),
+        .with_current_script_state(document.current_script_state().clone())
+        .with_clock(clock),
     ) {
       Ok(window) => window,
       Err(err) => {
