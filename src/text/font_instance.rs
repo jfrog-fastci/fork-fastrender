@@ -1,53 +1,12 @@
 use crate::text::face_cache::{self, CachedFace};
 use crate::text::font_db::LoadedFont;
-use rustc_hash::FxHasher;
 use rustybuzz::Variation;
 use skrifa::instance::{Location, LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlineGlyph, OutlineGlyphCollection, OutlinePen};
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
-use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tiny_skia::{Path, PathBuilder, Rect, Transform};
 use ttf_parser::GlyphId as ParserGlyphId;
-
-#[inline]
-fn f32_to_canonical_bits(value: f32) -> u32 {
-  if value == 0.0 {
-    0.0f32.to_bits()
-  } else {
-    value.to_bits()
-  }
-}
-
-/// Hash variations to use in cache keys.
-pub fn variation_hash(variations: &[Variation]) -> u64 {
-  let mut hasher = FxHasher::default();
-  let mut ordered: BTreeMap<[u8; 4], f32> = BTreeMap::new();
-  for variation in variations {
-    ordered.insert(variation.tag.to_bytes(), variation.value);
-  }
-  for (tag, value) in ordered {
-    tag.hash(&mut hasher);
-    f32_to_canonical_bits(value).hash(&mut hasher);
-  }
-  hasher.finish()
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use ttf_parser::Tag;
-
-  #[test]
-  fn variation_hash_canonicalizes_negative_zero() {
-    let tag = Tag::from_bytes(b"wght");
-    let positive = [Variation { tag, value: 0.0 }];
-    let negative = [Variation { tag, value: -0.0 }];
-
-    assert_eq!(variation_hash(&positive), variation_hash(&negative));
-  }
-}
 
 /// Bounding box for a glyph outline in font units (Y-up).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -201,7 +160,7 @@ impl<'a> FontInstance<'a> {
     let cached_face = face_cache::get_ttf_face(font)?;
     let face = cached_face.face();
     let units_per_em = face.units_per_em() as f32;
-    let variation_hash = variation_hash(variations);
+    let variation_hash = crate::text::variations::variation_hash(variations);
     let is_variable = face.is_variable();
 
     if is_variable {

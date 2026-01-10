@@ -57,13 +57,12 @@ use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
 use crate::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use crate::text::font_db::LoadedFont;
-use crate::text::font_instance::{
-  glyph_transform, variation_hash, FontInstance, GlyphOutlineMetrics,
-};
+use crate::text::font_instance::{glyph_transform, FontInstance, GlyphOutlineMetrics};
 use crate::text::pipeline::{
   record_text_rasterize, text_diagnostics_timer, GlyphPosition, ShapedRun, TextCacheStats,
   TextDiagnosticsStage,
 };
+use crate::text::variations::variation_hash;
 use lru::LruCache;
 use rustybuzz::Variation;
 use std::collections::HashMap;
