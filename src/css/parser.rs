@@ -6973,9 +6973,16 @@ mod tests {
     let CssRule::Style(rule) = &sheet.rules[0] else {
       panic!("expected style rule");
     };
+    assert_eq!(rule.declarations.len(), 1, "expected -ms-grid-row declaration to be preserved");
+    assert_eq!(
+      rule.declarations[0].property.as_str(),
+      "-ms-grid-row",
+      "legacy -ms-grid-* properties must keep their prefixed name (must not alias to `grid-row`)"
+    );
     assert!(
-      rule.declarations.is_empty(),
-      "legacy -ms-grid-* properties should not be treated as modern grid properties"
+      matches!(rule.declarations[0].value, PropertyValue::Number(n) if n == 2.0),
+      "expected numeric value to be parsed, got {:?}",
+      rule.declarations[0].value
     );
   }
 
