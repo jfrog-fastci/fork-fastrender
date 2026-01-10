@@ -153,7 +153,12 @@ we can land a correct classic-script core first:
     `'sha256-...'`).
   - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
 - The `nomodule` attribute behavior
-- `document.write()` and the “ignore-destructive-writes counter”
+- Full HTML `document.write()` / “ignore-destructive-writes counter” semantics
+  - FastRender implements a **limited streaming-parse re-entry subset** (`src/html/document_write.rs`):
+    `document.write()`/`writeln()` inject into the active streaming parser input stream during
+    parser-blocking script execution.
+  - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
+    subset; no implicit `document.open()` / destructive post-load writes).
 - **Stylesheet-blocking scripts** (scripts that wait for render-blocking stylesheets)
   - A prototype exists for the harness (`src/js/html_scripting.rs` +
     `src/js/script_blocking_stylesheets.rs`), but it is not yet fully integrated with the real

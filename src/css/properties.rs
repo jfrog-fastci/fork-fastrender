@@ -571,6 +571,10 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "-ms-flex-pack",
   "-ms-flex-positive",
   "-ms-flex-preferred-size",
+  "-ms-grid-column",
+  "-ms-grid-column-span",
+  "-ms-grid-row",
+  "-ms-grid-row-span",
   "-webkit-box-orient",
   "-webkit-line-clamp",
 ];
@@ -3212,6 +3216,35 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         return true;
       }
       return matches!(parsed, PropertyValue::Length(_) | PropertyValue::Number(0.0));
+    }
+    "-ms-grid-row" | "-ms-grid-column" => {
+      // Legacy IE/MS Grid placement properties. FastRender supports these as aliases for modern
+      // grid item placement (see `style::properties`), but only for positive integer line numbers.
+      return match parsed {
+        PropertyValue::Number(n) if n.is_finite() && n.fract() == 0.0 => {
+          let line = *n as i32;
+          (1..=i32::from(i16::MAX)).contains(&line)
+        }
+        PropertyValue::Keyword(kw) => kw
+          .parse::<i32>()
+          .ok()
+          .is_some_and(|line| (1..=i32::from(i16::MAX)).contains(&line)),
+        _ => false,
+      };
+    }
+    "-ms-grid-row-span" | "-ms-grid-column-span" => {
+      // Legacy IE/MS Grid span properties. Accept positive integer span counts.
+      return match parsed {
+        PropertyValue::Number(n) if n.is_finite() && n.fract() == 0.0 => {
+          let span = *n as i32;
+          (1..=i32::from(u16::MAX)).contains(&span)
+        }
+        PropertyValue::Keyword(kw) => kw
+          .parse::<i32>()
+          .ok()
+          .is_some_and(|span| (1..=i32::from(u16::MAX)).contains(&span)),
+        _ => false,
+      };
     }
     // https://drafts.csswg.org/css-color/#typedef-alpha-value
     // <alpha-value> = <number> | <percentage>

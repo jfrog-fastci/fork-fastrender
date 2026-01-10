@@ -395,7 +395,11 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
 - no module scripts (`type="module"`), no import maps (`type="importmap"`; parsing exists but is not yet
   integrated; see [`docs/import_maps.md`](import_maps.md)), no dynamic `import()`
-- no `document.write()` / parser re-entry
+- `document.write()` support is limited:
+  - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
+    executed during `BrowserTab`'s streaming HTML parse,
+  - it is treated as a no-op when no streaming parser is active (deterministic subset; no destructive
+    post-load writes / implicit `document.open()`).
 - no CSP/SRI/CORS nuances for scripts
 - no full DOM/Web API surface exposed to JS yet (bindings are still being built out)
 

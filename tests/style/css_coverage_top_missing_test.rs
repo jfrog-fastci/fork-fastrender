@@ -108,6 +108,33 @@ fn ms_flex_preferred_size_maps_to_flex_basis() {
 }
 
 #[test]
+fn ms_grid_row_and_column_map_to_grid_placement_raw() {
+  let (_div, span) = styles_for_div_and_span(
+    r#"<div style="display:grid"><span style="-ms-grid-row:2;-ms-grid-column:3"></span></div>"#,
+  );
+  assert_eq!(span.grid_row_raw.as_deref(), Some("2"));
+  assert_eq!(span.grid_column_raw.as_deref(), Some("3"));
+}
+
+#[test]
+fn ms_grid_span_properties_combine_with_ms_grid_row_and_column() {
+  let (_div, span) = styles_for_div_and_span(
+    r#"<div style="display:grid"><span style="-ms-grid-row:2;-ms-grid-row-span:3;-ms-grid-column:1;-ms-grid-column-span:2"></span></div>"#,
+  );
+  assert_eq!(span.grid_row_raw.as_deref(), Some("2 / span 3"));
+  assert_eq!(span.grid_column_raw.as_deref(), Some("1 / span 2"));
+}
+
+#[test]
+fn ms_grid_span_properties_can_appear_before_start() {
+  let (_div, span) = styles_for_div_and_span(
+    r#"<div style="display:grid"><span style="-ms-grid-row-span:3;-ms-grid-row:2;-ms-grid-column-span:2;-ms-grid-column:1"></span></div>"#,
+  );
+  assert_eq!(span.grid_row_raw.as_deref(), Some("2 / span 3"));
+  assert_eq!(span.grid_column_raw.as_deref(), Some("1 / span 2"));
+}
+
+#[test]
 fn justify_content_right_is_accepted_as_legacy_alias() {
   let div = styles_for_first(r#"<div style="display:flex;justify-content:right"></div>"#, "div");
   assert_eq!(div.justify_content, JustifyContent::End);

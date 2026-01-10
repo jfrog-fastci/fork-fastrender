@@ -1146,6 +1146,58 @@ fn dom_document_query_selector(
   }
 }
 
+fn dom_document_write(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  require_this_document(scope, host, this)?;
+
+  // HTML: concatenate arguments after applying ToString.
+  let mut out = String::new();
+  for &arg in args {
+    out.push_str(&to_dom_string(scope, host, arg)?);
+  }
+
+  // Deterministic subset of HTML's ignore-destructive-writes behavior:
+  // only allow writes while a streaming parser is active.
+  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
+    parser.push_front_str(&out);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn dom_document_writeln(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  require_this_document(scope, host, this)?;
+
+  let mut out = String::new();
+  for &arg in args {
+    out.push_str(&to_dom_string(scope, host, arg)?);
+  }
+  out.push('\n');
+
+  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
+    parser.push_front_str(&out);
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn dom_node_append_child(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2384,6 +2436,8 @@ pub fn install_dom_bindings_with_limits(
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_cookie_get = vm.register_native_call(dom_document_cookie_getter)?;
   let call_cookie_set = vm.register_native_call(dom_document_cookie_setter)?;
+  let call_document_write = vm.register_native_call(dom_document_write)?;
+  let call_document_writeln = vm.register_native_call(dom_document_writeln)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
   let call_text_content_set = vm.register_native_call(dom_node_text_content_setter)?;
   let call_class_list_get = vm.register_native_call(dom_element_class_list_getter)?;
@@ -2425,6 +2479,8 @@ pub fn install_dom_bindings_with_limits(
     call_get_elements_by_name,
     1,
   )?;
+  install_method(&mut scope, proto_document, "write", call_document_write, 0)?;
+  install_method(&mut scope, proto_document, "writeln", call_document_writeln, 0)?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
   install_method(&mut scope, proto_node, "cloneNode", call_clone_node, 1)?;
   install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
@@ -2715,6 +2771,8 @@ mod tests {
   use super::*;
 
   use crate::error::Error;
+  use crate::html::document_write::with_active_streaming_parser;
+  use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
   use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
   use std::cell::RefCell;
@@ -2914,6 +2972,95 @@ mod tests {
       scope.heap().get_string(cookie_s)?.to_utf8_lossy(),
       "a=b; b=c; z=1"
     );
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn document_write_injects_into_streaming_parser_when_active() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom, current_script)?;
+
+    let mut scope = heap.scope();
+
+    // Fetch globalThis.document.
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .expect("globalThis.document should exist");
+    let Value::Object(document_obj) = document_val else {
+      panic!("expected document object, got {document_val:?}");
+    };
+
+    let key_write = PropertyKey::from_string(scope.alloc_string("write")?);
+    let write = vm.get(&mut scope, document_obj, key_write)?;
+
+    let html = "<!doctype html><html><body><script>noop</script><div id=\"after\"></div></body></html>";
+    let mut parser = StreamingHtmlParser::new(Some("https://example.com/"));
+    parser.push_str(html);
+    parser.set_eof();
+
+    // Pause at the </script> boundary (parser-inserted script).
+    let script_node = match parser.pump().expect("pump") {
+      StreamingParserYield::Script { script, .. } => script,
+      other => panic!("expected Script yield, got {other:?}"),
+    };
+
+    // Call `document.write(...)` while the parser is active; it should inject the HTML into the
+    // input stream before the already-buffered remainder (`<div id=after>`).
+    let injected_html = Value::String(scope.alloc_string("<div id=\"x\"></div>")?);
+    let result = with_active_streaming_parser(&parser, || {
+      vm.call_without_host(&mut scope, write, document_val, &[injected_html])
+    })?;
+    assert_eq!(result, Value::Undefined);
+
+    let finished = loop {
+      match parser.pump().expect("pump") {
+        StreamingParserYield::Finished { document } => break document,
+        StreamingParserYield::NeedMoreInput => {
+          panic!("parser unexpectedly requested more input after EOF")
+        }
+        StreamingParserYield::Script { .. } => panic!("unexpected additional script yield"),
+      }
+    };
+
+    let body = finished.body().expect("missing <body>");
+    let injected = finished
+      .get_element_by_id("x")
+      .expect("expected element inserted by document.write");
+    let after = finished.get_element_by_id("after").expect("expected #after element");
+
+    let element_children: Vec<NodeId> = finished
+      .node(body)
+      .children
+      .iter()
+      .copied()
+      .filter(|&id| matches!(finished.node(id).kind, NodeKind::Element { .. }))
+      .collect();
+    assert_eq!(
+      element_children.len(),
+      3,
+      "expected <body> to have <script>, injected <div>, and following <div>"
+    );
+    assert_eq!(element_children[0], script_node);
+    assert_eq!(element_children[1], injected);
+    assert_eq!(element_children[2], after);
+
+    // `document.writeln(...)` should also return undefined and be a no-op without an active parser.
+    let key_writeln = PropertyKey::from_string(scope.alloc_string("writeln")?);
+    let writeln = vm.get(&mut scope, document_obj, key_writeln)?;
+    let arg_a = Value::String(scope.alloc_string("a")?);
+    let writeln_result = vm.call_without_host(&mut scope, writeln, document_val, &[arg_a])?;
+    assert_eq!(writeln_result, Value::Undefined);
 
     drop(scope);
     realm.teardown(&mut heap);

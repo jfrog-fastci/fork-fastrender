@@ -12066,6 +12066,52 @@ fn apply_declaration_with_base_internal_with_order(
         _ => {}
       }
     }
+    "-ms-grid-column" => {
+      // Legacy IE/MS Grid placement property emitted by Autoprefixer.
+      //
+      // We translate this into modern `grid-column` placement by wiring it into `grid_column_raw`.
+      // This keeps authored fallback grids functional even when the unprefixed `grid-column` is
+      // missing.
+      let line = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
+        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
+        _ => 0,
+      };
+      if line <= 0 || line > i32::from(i16::MAX) {
+        return;
+      }
+
+      let current_end = styles
+        .grid_column_raw
+        .as_ref()
+        .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+        .unwrap_or("auto");
+      if current_end.eq_ignore_ascii_case("auto") {
+        styles.grid_column_raw = Some(line.to_string());
+      } else {
+        styles.grid_column_raw = Some(format!("{line} / {current_end}"));
+      }
+    }
+    "-ms-grid-column-span" => {
+      // Legacy IE/MS Grid span count. Express it as `span <N>` in the end component.
+      let span = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
+        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
+        _ => 0,
+      };
+      if span <= 0 || span > i32::from(u16::MAX) {
+        return;
+      }
+
+      let current_start = styles
+        .grid_column_raw
+        .as_ref()
+        .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
+        .map(|s| trim_ascii_whitespace(s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("auto");
+      styles.grid_column_raw = Some(format!("{current_start} / span {span}"));
+    }
     "grid-row" => {
       match resolved_value {
         PropertyValue::Keyword(kw) => {
@@ -12080,6 +12126,47 @@ fn apply_declaration_with_base_internal_with_order(
         }
         _ => {}
       }
+    }
+    "-ms-grid-row" => {
+      // Legacy IE/MS Grid placement property emitted by Autoprefixer.
+      let line = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
+        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
+        _ => 0,
+      };
+      if line <= 0 || line > i32::from(i16::MAX) {
+        return;
+      }
+
+      let current_end = styles
+        .grid_row_raw
+        .as_ref()
+        .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+        .unwrap_or("auto");
+      if current_end.eq_ignore_ascii_case("auto") {
+        styles.grid_row_raw = Some(line.to_string());
+      } else {
+        styles.grid_row_raw = Some(format!("{line} / {current_end}"));
+      }
+    }
+    "-ms-grid-row-span" => {
+      let span = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
+        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
+        _ => 0,
+      };
+      if span <= 0 || span > i32::from(u16::MAX) {
+        return;
+      }
+
+      let current_start = styles
+        .grid_row_raw
+        .as_ref()
+        .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
+        .map(|s| trim_ascii_whitespace(s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("auto");
+      styles.grid_row_raw = Some(format!("{current_start} / span {span}"));
     }
     "grid-column-start" => {
       if let PropertyValue::Keyword(kw) = resolved_value {

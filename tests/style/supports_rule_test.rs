@@ -139,8 +139,16 @@ fn supports_vendor_prefixed_backdrop_filter_matches() {
 }
 
 #[test]
-fn supports_legacy_ms_grid_properties_remain_unsupported() {
+fn supports_legacy_ms_grid_properties_are_supported() {
   let css = r"@supports (-ms-grid-row: 1) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_legacy_ms_grid_properties_require_positive_integer_values() {
+  let css = r"@supports (-ms-grid-row: 0) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+  let css = r"@supports (-ms-grid-column-span: 0) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
 }
 
