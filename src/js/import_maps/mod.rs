@@ -33,7 +33,8 @@ pub use parse::{create_import_map_parse_result, parse_import_map_string};
 pub use resolve::{add_module_to_resolved_module_set, resolve_imports_match, resolve_module_specifier};
 pub use types::{
   ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
-  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap, ScopesMap,
+  SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 #[cfg(test)]

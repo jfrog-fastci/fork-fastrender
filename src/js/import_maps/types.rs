@@ -14,11 +14,48 @@ pub struct ImportMap {
   pub integrity: ModuleIntegrityMap,
 }
 
+/// Record stored in the document's "resolved module set".
+///
+/// This is used by the HTML Standard to avoid resolving the same specifier/base URL combination
+/// multiple times.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecifierResolutionRecord {
+  pub serialized_base_url: Option<String>,
+  /// The normalized specifier string (per the import maps spec).
+  pub specifier: String,
+  pub as_url_kind: SpecifierAsUrlKind,
+}
+
+/// The document's "resolved module set".
+pub type ResolvedModuleSet = Vec<SpecifierResolutionRecord>;
+
 /// Host-side global state for import map resolution/merging.
 #[derive(Debug, Clone, Default)]
 pub struct ImportMapState {
   pub import_map: ImportMap,
-  pub resolved_module_set: Vec<SpecifierResolutionRecord>,
+  pub resolved_module_set: ResolvedModuleSet,
+}
+
+impl ImportMapState {
+  pub fn new_empty() -> Self {
+    Self::default()
+  }
+
+  pub fn import_map(&self) -> &ImportMap {
+    &self.import_map
+  }
+
+  pub fn import_map_mut(&mut self) -> &mut ImportMap {
+    &mut self.import_map
+  }
+
+  pub fn resolved_module_set(&self) -> &[SpecifierResolutionRecord] {
+    &self.resolved_module_set
+  }
+
+  pub fn resolved_module_set_mut(&mut self) -> &mut ResolvedModuleSet {
+    &mut self.resolved_module_set
+  }
 }
 
 /// Whether a "specifier as a URL" is null, special, or non-special.
@@ -36,17 +73,15 @@ pub enum SpecifierAsUrlKind {
 }
 
 impl SpecifierAsUrlKind {
+  /// Whether prefix matches are permitted when resolving/merging import map entries.
   pub fn permits_prefix_match(self) -> bool {
     matches!(self, Self::NotUrl | Self::Special)
   }
-}
 
-/// HTML: "specifier resolution record" (stored in the global "resolved module set").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpecifierResolutionRecord {
-  pub serialized_base_url: Option<String>,
-  pub specifier: String,
-  pub as_url_kind: SpecifierAsUrlKind,
+  /// Convenience helper matching the HTML Standard's `asURL is null or is special` checks.
+  pub fn as_url_is_null_or_special(self) -> bool {
+    self.permits_prefix_match()
+  }
 }
 
 /// A "module specifier map" with keys sorted in descending code-unit order.
@@ -57,8 +92,23 @@ pub struct ModuleSpecifierMap {
 }
 
 impl ModuleSpecifierMap {
+  pub fn is_empty(&self) -> bool {
+    self.entries.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.entries.len()
+  }
+
   pub fn iter(&self) -> impl Iterator<Item = (&str, &Option<Url>)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v))
+  }
+
+  /// Iterate entries in deterministic **descending** key order.
+  ///
+  /// This is equivalent to [`ModuleSpecifierMap::iter`].
+  pub fn iter_descending(&self) -> impl Iterator<Item = (&str, &Option<Url>)> {
+    self.iter()
   }
 
   pub fn contains_key(&self, key: &str) -> bool {
@@ -78,14 +128,34 @@ pub struct ScopesMap {
 }
 
 impl ScopesMap {
+  pub fn is_empty(&self) -> bool {
+    self.entries.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.entries.len()
+  }
+
   pub fn iter(&self) -> impl Iterator<Item = (&str, &ModuleSpecifierMap)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v))
+  }
+
+  /// Iterate scopes in deterministic **descending** key order.
+  ///
+  /// This is equivalent to [`ScopesMap::iter`].
+  pub fn iter_descending(&self) -> impl Iterator<Item = (&str, &ModuleSpecifierMap)> {
+    self.iter()
   }
 
   pub fn get(&self, key: &str) -> Option<&ModuleSpecifierMap> {
     self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
   }
 }
+
+/// Alias for [`ScopesMap`].
+///
+/// The HTML Standard calls this a "scope map".
+pub type ScopeMap = ScopesMap;
 
 /// A normalized module integrity map.
 ///
@@ -97,6 +167,14 @@ pub struct ModuleIntegrityMap {
 }
 
 impl ModuleIntegrityMap {
+  pub fn is_empty(&self) -> bool {
+    self.entries.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.entries.len()
+  }
+
   pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v.as_str()))
   }
@@ -119,6 +197,12 @@ pub enum ImportMapError {
   #[error("TypeError: {0}")]
   TypeError(String),
 }
+
+/// Errors raised while resolving module specifiers using an import map.
+///
+/// This is currently an alias to [`ImportMapError`], which already contains the HTML spec's
+/// TypeError conditions (null entries, backtracking, bare specifiers not mapped, ...).
+pub type ModuleResolutionError = ImportMapError;
 
 /// HTML "import map parse result" (script-element `result` slot value for `type="importmap"`).
 #[derive(Debug, Default)]
@@ -171,4 +255,3 @@ pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {
     }
   }
 }
-

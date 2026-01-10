@@ -99,6 +99,11 @@ pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
 };
+pub use import_maps::{
+  ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
+  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap, ScopesMap,
+  SpecifierAsUrlKind, SpecifierResolutionRecord,
+};
 pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use dom_bindings::DomJsRealm;
 pub use html_classic_scripts::{
