@@ -7,9 +7,9 @@
 //! - pixmap pixel sampling for assertions
 //! - concise debug formatting for `WorkerToUi` messages
 
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::OnceLock;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Default per-wait timeout used by integration-test helpers/tests that don't define their own.
@@ -100,8 +100,8 @@ pub fn deterministic_renderer() -> fastrender::FastRender {
 /// Prefer this over `FastRenderFactory::new()` so the test suite does not depend on system-installed
 /// fonts.
 pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
-  let renderer_config = fastrender::api::FastRenderConfig::default()
-    .with_font_sources(deterministic_font_config());
+  let renderer_config =
+    fastrender::api::FastRenderConfig::default().with_font_sources(deterministic_font_config());
   fastrender::api::FastRenderFactory::with_config(
     fastrender::api::FastRenderPoolConfig::new().with_renderer_config(renderer_config),
   )
@@ -349,9 +349,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       let _ = writeln!(
         &mut out,
         "SelectDropdownOpened(tab={}, select_node_id={}, anchor_css={:?})",
-        tab_id.0,
-        select_node_id,
-        anchor_css
+        tab_id.0, select_node_id, anchor_css
       );
       continue;
     }
@@ -385,9 +383,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       let _ = writeln!(
         &mut out,
         "NavigationFailed(tab={}, url={url}, error={error}, back={}, forward={})",
-        tab_id.0,
-        can_go_back,
-        can_go_forward
+        tab_id.0, can_go_back, can_go_forward
       );
       continue;
     }
@@ -518,17 +514,31 @@ pub fn viewport_changed_msg(tab_id: TabId, viewport_css: (u32, u32), dpr: f32) -
 /// Construct a `UiToWorker::Navigate` message.
 #[cfg(feature = "browser_ui")]
 pub fn navigate_msg(tab_id: TabId, url: String, reason: NavigationReason) -> UiToWorker {
-  UiToWorker::Navigate { tab_id, url, reason }
+  UiToWorker::Navigate {
+    tab_id,
+    url,
+    reason,
+  }
 }
 
 /// Construct a `UiToWorker::Scroll` message.
 #[cfg(feature = "browser_ui")]
-pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32, f32)>) -> UiToWorker {
+pub fn scroll_msg(
+  tab_id: TabId,
+  delta_css: (f32, f32),
+  pointer_css: Option<(f32, f32)>,
+) -> UiToWorker {
   UiToWorker::Scroll {
     tab_id,
     delta_css,
     pointer_css,
   }
+}
+
+/// Construct a `UiToWorker::ScrollTo` message.
+#[cfg(feature = "browser_ui")]
+pub fn scroll_to_msg(tab_id: TabId, pos_css: (f32, f32)) -> UiToWorker {
+  UiToWorker::ScrollTo { tab_id, pos_css }
 }
 
 /// Construct a `UiToWorker::Scroll` message that only affects the viewport scroll position.

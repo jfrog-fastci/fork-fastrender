@@ -2,7 +2,9 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
-use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use crate::ui::messages::{
+  NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+};
 use crate::ui::{normalize_user_url, validate_user_navigation_url_scheme};
 use std::collections::VecDeque;
 use url::Url;
@@ -124,6 +126,7 @@ pub struct BrowserTabState {
   /// - lower zoom → more CSS pixels in the viewport + lower DPR
   pub zoom: f32,
   pub scroll_state: ScrollState,
+  pub scroll_metrics: Option<ScrollMetrics>,
   pub latest_frame_meta: Option<LatestFrameMeta>,
   pub favicon_meta: Option<FaviconMeta>,
   debug_log: VecDeque<String>,
@@ -147,6 +150,7 @@ impl BrowserTabState {
       can_go_forward: false,
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
       scroll_state: ScrollState::default(),
+      scroll_metrics: None,
       latest_frame_meta: None,
       favicon_meta: None,
       debug_log: VecDeque::new(),
@@ -293,7 +297,10 @@ mod tab_tests {
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.current_url(), Some("https://example.com/page.html#target"));
+    assert_eq!(
+      tab.current_url(),
+      Some("https://example.com/page.html#target")
+    );
     assert_eq!(tab.error, None);
     assert!(tab.loading);
   }
@@ -517,9 +524,7 @@ impl BrowserAppState {
   }
 
   pub fn commit_address_bar(&mut self) -> Result<String, String> {
-    let tab_id = self
-      .active_tab
-      .ok_or_else(|| "no active tab".to_string())?;
+    let tab_id = self.active_tab.ok_or_else(|| "no active tab".to_string())?;
 
     let normalized = normalize_user_url(&self.chrome.address_bar_text)?;
     validate_user_navigation_url_scheme(&normalized)?;
@@ -548,12 +553,14 @@ impl BrowserAppState {
           viewport_css,
           dpr,
           scroll_state,
+          scroll_metrics,
           wants_ticks,
         } = frame;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.scroll_state = scroll_state;
+          tab.scroll_metrics = Some(scroll_metrics);
           tab.latest_frame_meta = Some(LatestFrameMeta {
             pixmap_px,
             viewport_css,
@@ -885,6 +892,17 @@ mod browser_app_tests {
     let pixmap = tiny_skia::Pixmap::new(2, 3).unwrap();
     let viewport_css = (800, 600);
     let dpr = 2.0;
+    let scroll_metrics = ScrollMetrics {
+      viewport_css,
+      scroll_css: (10.0, 20.0),
+      bounds_css: crate::scroll::ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 0.0,
+        max_y: 0.0,
+      },
+      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+    };
 
     let update = app.apply_worker_msg(WorkerToUi::FrameReady {
       tab_id,
@@ -893,6 +911,7 @@ mod browser_app_tests {
         viewport_css,
         dpr,
         scroll_state: expected_scroll.clone(),
+        scroll_metrics,
         wants_ticks: false,
       },
     });
@@ -1024,8 +1043,14 @@ mod address_bar_tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
 
     app.chrome.address_bar_text = "partially typed".to_string();
     app.chrome.address_bar_editing = true;
@@ -1048,8 +1073,7 @@ mod address_bar_tests {
       url: "https://started.example/".to_string(),
     });
     assert_eq!(
-      app.chrome.address_bar_text,
-      "https://typed.example",
+      app.chrome.address_bar_text, "https://typed.example",
       "worker updates should not clobber user typing"
     );
 
@@ -1062,8 +1086,7 @@ mod address_bar_tests {
     });
 
     assert_eq!(
-      app.chrome.address_bar_text,
-      "https://typed.example",
+      app.chrome.address_bar_text, "https://typed.example",
       "worker updates should not clobber user typing"
     );
     assert_eq!(
@@ -1083,8 +1106,7 @@ mod address_bar_tests {
       can_go_forward: false,
     });
     assert_eq!(
-      app.chrome.address_bar_text,
-      "https://after.example/",
+      app.chrome.address_bar_text, "https://after.example/",
       "after commit, address bar should follow tab display_url again"
     );
   }

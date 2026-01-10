@@ -5,7 +5,7 @@ use crate::interaction::{fragment_tree_with_scroll, InteractionAction, Interacti
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::{BrowserDocument, FastRender, RenderOptions, Result};
 use url::Url;
@@ -59,7 +59,10 @@ impl BrowserTabController {
       .with_device_pixel_ratio(dpr);
 
     let mut document = BrowserDocument::new(renderer, html, options)?;
-    document.set_navigation_urls(Some(document_url.to_string()), Some(document_url.to_string()));
+    document.set_navigation_urls(
+      Some(document_url.to_string()),
+      Some(document_url.to_string()),
+    );
 
     Ok(Self {
       tab_id,
@@ -102,15 +105,16 @@ impl BrowserTabController {
         viewport_css,
         dpr,
       } if tab_id == self.tab_id => self.handle_viewport_changed(viewport_css, dpr),
+      UiToWorker::ScrollTo { tab_id, pos_css } if tab_id == self.tab_id => {
+        self.handle_scroll_to(pos_css)
+      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,
         pointer_css,
       } if tab_id == self.tab_id => self.handle_scroll(delta_css, pointer_css),
       UiToWorker::PointerMove {
-        tab_id,
-        pos_css,
-        ..
+        tab_id, pos_css, ..
       } if tab_id == self.tab_id => self.handle_pointer_move(pos_css),
       UiToWorker::PointerDown {
         tab_id,
@@ -147,7 +151,43 @@ impl BrowserTabController {
     }
   }
 
-  fn handle_viewport_changed(&mut self, viewport_css: (u32, u32), dpr: f32) -> Result<Vec<WorkerToUi>> {
+  fn handle_scroll_to(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
+    let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let target = Point::new(sanitize(pos_css.0), sanitize(pos_css.1));
+
+    // Ensure we have a prepared tree for clamping.
+    if self.document.prepared().is_none() {
+      self.force_repaint()?;
+    }
+
+    if let Some(prepared) = self.document.prepared() {
+      let viewport = prepared.fragment_tree().viewport_size();
+      let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+        .first()
+        .map(|state| state.bounds);
+      let mut next = self.scroll_state.clone();
+      next.viewport = bounds.map(|b| b.clamp(target)).unwrap_or(target);
+      if next != self.scroll_state {
+        self.scroll_state = next;
+        self.document.set_scroll_state(self.scroll_state.clone());
+      }
+    } else {
+      let mut next = self.scroll_state.clone();
+      next.viewport = target;
+      if next != self.scroll_state {
+        self.scroll_state = next;
+        self.document.set_scroll_state(self.scroll_state.clone());
+      }
+    }
+
+    self.paint_if_needed()
+  }
+
+  fn handle_viewport_changed(
+    &mut self,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> Result<Vec<WorkerToUi>> {
     self.viewport_css = viewport_css;
     self.dpr = dpr;
     self.document.set_viewport(viewport_css.0, viewport_css.1);
@@ -174,7 +214,8 @@ impl BrowserTabController {
     let mut next_state = self.scroll_state.clone();
 
     if let Some(pointer_css) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
-      let page_point = Point::new(pointer_css.0, pointer_css.1).translate(self.scroll_state.viewport);
+      let page_point =
+        Point::new(pointer_css.0, pointer_css.1).translate(self.scroll_state.viewport);
       next_state = apply_wheel_scroll_at_point(
         prepared.fragment_tree(),
         &self.scroll_state,
@@ -190,14 +231,23 @@ impl BrowserTabController {
       let mut viewport_scroll = next_state.viewport;
 
       let delta = Point::new(
-        if delta_css.0.is_finite() { delta_css.0 } else { 0.0 },
-        if delta_css.1.is_finite() { delta_css.1 } else { 0.0 },
+        if delta_css.0.is_finite() {
+          delta_css.0
+        } else {
+          0.0
+        },
+        if delta_css.1.is_finite() {
+          delta_css.1
+        } else {
+          0.0
+        },
       );
       if delta != Point::ZERO {
         let viewport = prepared.fragment_tree().viewport_size();
-        let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-          .first()
-          .map(|state| state.bounds);
+        let bounds =
+          crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+            .first()
+            .map(|state| state.bounds);
         let target = Point::new(viewport_scroll.x + delta.x, viewport_scroll.y + delta.y);
         if let Some(bounds) = bounds {
           viewport_scroll = bounds.clamp(target);
@@ -222,7 +272,8 @@ impl BrowserTabController {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      let fragment_tree_ptr =
+        prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       (box_tree_ptr, fragment_tree_ptr)
     };
 
@@ -233,15 +284,13 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
-      self
-        .interaction
-        .pointer_move(
-          dom,
-          unsafe { &*box_tree_ptr },
-          fragment_tree,
-          &self.scroll_state,
-          viewport_point,
-        )
+      self.interaction.pointer_move(
+        dom,
+        unsafe { &*box_tree_ptr },
+        fragment_tree,
+        &self.scroll_state,
+        viewport_point,
+      )
     });
     if changed {
       self.paint_if_needed()
@@ -260,7 +309,8 @@ impl BrowserTabController {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      let fragment_tree_ptr =
+        prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       (box_tree_ptr, fragment_tree_ptr)
     };
 
@@ -271,15 +321,13 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
-      self
-        .interaction
-        .pointer_down(
-          dom,
-          unsafe { &*box_tree_ptr },
-          fragment_tree,
-          &self.scroll_state,
-          viewport_point,
-        )
+      self.interaction.pointer_down(
+        dom,
+        unsafe { &*box_tree_ptr },
+        fragment_tree,
+        &self.scroll_state,
+        viewport_point,
+      )
     });
     if changed {
       self.paint_if_needed()
@@ -303,7 +351,8 @@ impl BrowserTabController {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      let fragment_tree_ptr =
+        prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       (box_tree_ptr, fragment_tree_ptr)
     };
 
@@ -314,20 +363,20 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let mut action = InteractionAction::None;
-     let changed = self.document.mutate_dom(|dom| {
-       let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
-         dom,
-         unsafe { &*box_tree_ptr },
-         fragment_tree,
-         &self.scroll_state,
-         viewport_point,
-         button,
-         modifiers,
-         &self.current_url,
-         &self.base_url,
-       );
-       action = next_action;
-       dom_changed
+    let changed = self.document.mutate_dom(|dom| {
+      let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
+        dom,
+        unsafe { &*box_tree_ptr },
+        fragment_tree,
+        &self.scroll_state,
+        viewport_point,
+        button,
+        modifiers,
+        &self.current_url,
+        &self.base_url,
+      );
+      action = next_action;
+      dom_changed
     });
 
     match action {
@@ -366,8 +415,16 @@ impl BrowserTabController {
           })
           .unwrap_or_else(|| {
             Rect::from_xywh(
-              if viewport_point.x.is_finite() { viewport_point.x } else { 0.0 },
-              if viewport_point.y.is_finite() { viewport_point.y } else { 0.0 },
+              if viewport_point.x.is_finite() {
+                viewport_point.x
+              } else {
+                0.0
+              },
+              if viewport_point.y.is_finite() {
+                viewport_point.y
+              } else {
+                0.0
+              },
               0.0,
               0.0,
             )
@@ -418,7 +475,8 @@ impl BrowserTabController {
 
     let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
     crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
-    let page_rect = crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+    let page_rect =
+      crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
 
     // Convert page-space bounds (includes scroll) to viewport-local coords for UI positioning.
     Some(page_rect.translate(Point::new(
@@ -569,9 +627,16 @@ impl BrowserTabController {
     // Mirror the threaded worker semantics: choosing any option in the dropdown overlay should
     // close the popup even if it results in no DOM mutation (e.g. choosing the currently-selected
     // option).
-    let mut out = vec![WorkerToUi::SelectDropdownClosed { tab_id: self.tab_id }];
+    let mut out = vec![WorkerToUi::SelectDropdownClosed {
+      tab_id: self.tab_id,
+    }];
     let changed = self.document.mutate_dom(|dom| {
-      crate::interaction::dom_mutation::activate_select_option(dom, select_node_id, option_node_id, false)
+      crate::interaction::dom_mutation::activate_select_option(
+        dom,
+        select_node_id,
+        option_node_id,
+        false,
+      )
     });
     if changed {
       out.extend(self.paint_if_needed()?);
@@ -581,7 +646,11 @@ impl BrowserTabController {
     }
   }
 
-  fn handle_navigation_action(&mut self, href: String, reason: NavigationReason) -> Result<Vec<WorkerToUi>> {
+  fn handle_navigation_action(
+    &mut self,
+    href: String,
+    reason: NavigationReason,
+  ) -> Result<Vec<WorkerToUi>> {
     if let Some(fragment) = same_document_fragment(&self.current_url, &href) {
       return self.navigate_to_fragment(&href, &fragment);
     }
@@ -661,7 +730,10 @@ impl BrowserTabController {
         options.clone(),
       )?
     } else {
-      match self.document.navigate_url_with_options(url, options.clone()) {
+      match self
+        .document
+        .navigate_url_with_options(url, options.clone())
+      {
         Ok((committed_url, base_url)) => (committed_url, base_url),
         Err(err) => {
           out.push(WorkerToUi::NavigationFailed {
@@ -738,6 +810,48 @@ impl BrowserTabController {
         viewport_css: self.viewport_css,
         dpr: self.dpr,
         scroll_state: self.scroll_state.clone(),
+        scroll_metrics: {
+          let viewport_css = self.viewport_css;
+          let viewport_size = Size::new(viewport_css.0 as f32, viewport_css.1 as f32);
+          let bounds = self
+            .document
+            .prepared()
+            .and_then(|prepared| {
+              crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[])
+                .last()
+                .map(|s| s.bounds)
+            })
+            .unwrap_or(crate::scroll::ScrollBounds {
+              min_x: 0.0,
+              min_y: 0.0,
+              max_x: 0.0,
+              max_y: 0.0,
+            });
+          let max_scroll_x = if bounds.max_x.is_finite() {
+            bounds.max_x.max(0.0)
+          } else {
+            0.0
+          };
+          let max_scroll_y = if bounds.max_y.is_finite() {
+            bounds.max_y.max(0.0)
+          } else {
+            0.0
+          };
+          ScrollMetrics {
+            viewport_css,
+            scroll_css: (self.scroll_state.viewport.x, self.scroll_state.viewport.y),
+            bounds_css: crate::scroll::ScrollBounds {
+              min_x: 0.0,
+              min_y: 0.0,
+              max_x: max_scroll_x,
+              max_y: max_scroll_y,
+            },
+            content_css: (
+              viewport_size.width + max_scroll_x,
+              viewport_size.height + max_scroll_y,
+            ),
+          }
+        },
         wants_ticks: self.document.prepared().is_some_and(|prepared| {
           let tree = prepared.fragment_tree();
           !tree.keyframes.is_empty() || tree.transition_state.is_some()

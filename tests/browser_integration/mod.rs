@@ -1,5 +1,5 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
- 
+
 // -----------------------------------------------------------------------------
 // Test process initialization
 // -----------------------------------------------------------------------------
@@ -106,6 +106,7 @@ mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_anchor_scroll;
 mod ui_scrolling;
+mod ui_scroll_metrics;
 mod ui_worker_stage_listener_scoping;
 mod ui_worker_anchor_scroll_percent_encoded;
 mod ui_worker_anchor_scroll_percent_escaped_percent;

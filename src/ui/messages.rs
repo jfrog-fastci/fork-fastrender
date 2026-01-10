@@ -1,5 +1,6 @@
 use crate::geometry::Rect;
 use crate::render_control::StageHeartbeat;
+use crate::scroll::ScrollBounds;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
@@ -113,6 +114,24 @@ impl std::ops::BitOrAssign for PointerModifiers {
   }
 }
 
+/// Scroll sizing information for the root scroll container (viewport).
+///
+/// This is intended for UI layers that want to draw scrollbars or otherwise surface scroll state
+/// without having to re-run layout queries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollMetrics {
+  /// Viewport size in CSS pixels (matches [`RenderedFrame::viewport_css`]).
+  pub viewport_css: (u32, u32),
+  /// Current viewport scroll offset in CSS pixels (matches `RenderedFrame.scroll_state.viewport`).
+  pub scroll_css: (f32, f32),
+  /// Scroll bounds for the root scroll container in CSS pixels.
+  ///
+  /// For typical documents this is `min_* = 0` and `max_* = content_* - viewport_*`.
+  pub bounds_css: ScrollBounds,
+  /// Content size for the root scroll container in CSS pixels.
+  pub content_css: (f32, f32),
+}
+
 /// An owned rendered frame produced by the render worker.
 ///
 /// This owns the underlying pixel buffer (`tiny_skia::Pixmap`) and is expected to be sent to the
@@ -122,6 +141,7 @@ pub struct RenderedFrame {
   pub viewport_css: (u32, u32),
   pub dpr: f32,
   pub scroll_state: ScrollState,
+  pub scroll_metrics: ScrollMetrics,
   /// True when the rendered document contains time-based effects (CSS animations/transitions).
   ///
   /// Front-ends that want animated content should drive periodic [`UiToWorker::Tick`] messages for
@@ -136,6 +156,7 @@ impl std::fmt::Debug for RenderedFrame {
       .field("viewport_css", &self.viewport_css)
       .field("dpr", &self.dpr)
       .field("scroll_state", &self.scroll_state)
+      .field("scroll_metrics", &self.scroll_metrics)
       .field("wants_ticks", &self.wants_ticks)
       .finish()
   }
@@ -222,6 +243,14 @@ pub enum UiToWorker {
     /// The worker is responsible for converting viewport-local coords to page coords by adding the
     /// current scroll offset.
     pointer_css: Option<(f32, f32)>,
+  },
+  /// Scroll the viewport to an absolute position (in CSS px).
+  ///
+  /// Unlike [`UiToWorker::Scroll`], this does not attempt to target element scroll containers under
+  /// the pointer; it is intended for UI scrollbars and programmatic scrolling.
+  ScrollTo {
+    tab_id: TabId,
+    pos_css: (f32, f32),
   },
   PointerMove {
     tab_id: TabId,
@@ -360,7 +389,11 @@ pub enum UiToWorker {
 }
 
 impl UiToWorker {
-  pub fn select_dropdown_choose(tab_id: TabId, select_node_id: usize, option_node_id: usize) -> Self {
+  pub fn select_dropdown_choose(
+    tab_id: TabId,
+    select_node_id: usize,
+    option_node_id: usize,
+  ) -> Self {
     UiToWorker::SelectDropdownChoose {
       tab_id,
       select_node_id,

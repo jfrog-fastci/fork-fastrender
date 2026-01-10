@@ -5,8 +5,10 @@
 //! per-tab state (document, interaction engine, history, cancellation) and renders on a dedicated
 //! large-stack thread.
 
-use crate::api::{BrowserDocument, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions};
-use crate::geometry::{Point, Rect};
+use crate::api::{
+  BrowserDocument, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions,
+};
+use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
@@ -22,15 +24,15 @@ use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use image::imageops::FilterType;
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 // -----------------------------------------------------------------------------
 // Test hooks
@@ -66,7 +68,13 @@ pub struct UiThreadWorkerHandle {
 }
 
 impl UiThreadWorkerHandle {
-  pub fn split(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+  pub fn split(
+    self,
+  ) -> (
+    Sender<UiToWorker>,
+    Receiver<WorkerToUi>,
+    std::thread::JoinHandle<()>,
+  ) {
     (self.ui_tx, self.ui_rx, self.join)
   }
 
@@ -174,9 +182,68 @@ fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Poin
   if pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0 {
     Point::new(pos_css.0, pos_css.1)
   } else {
-    let sx = if scroll.viewport.x.is_finite() { scroll.viewport.x } else { 0.0 };
-    let sy = if scroll.viewport.y.is_finite() { scroll.viewport.y } else { 0.0 };
+    let sx = if scroll.viewport.x.is_finite() {
+      scroll.viewport.x
+    } else {
+      0.0
+    };
+    let sy = if scroll.viewport.y.is_finite() {
+      scroll.viewport.y
+    } else {
+      0.0
+    };
     Point::new(-sx - 1.0, -sy - 1.0)
+  }
+}
+
+fn compute_scroll_metrics(
+  doc: Option<&BrowserDocument>,
+  viewport_css: (u32, u32),
+  scroll_state: &ScrollState,
+) -> ScrollMetrics {
+  // `viewport_css` is already clamped by `BrowserLimits` when received from the UI, but keep this
+  // helper robust when called from other code paths.
+  let viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
+  let viewport_size = Size::new(viewport_css.0 as f32, viewport_css.1 as f32);
+
+  let mut bounds = crate::scroll::ScrollBounds {
+    min_x: 0.0,
+    min_y: 0.0,
+    max_x: 0.0,
+    max_y: 0.0,
+  };
+
+  if let Some(prepared) = doc.and_then(|doc| doc.prepared()) {
+    let chain =
+      crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
+    if let Some(root) = chain.last() {
+      bounds = root.bounds;
+    }
+  }
+
+  let sanitize_axis = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+  let max_scroll_x = sanitize_axis(bounds.max_x);
+  let max_scroll_y = sanitize_axis(bounds.max_y);
+
+  let sanitize_scroll = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+  let scroll_css = (
+    sanitize_scroll(scroll_state.viewport.x),
+    sanitize_scroll(scroll_state.viewport.y),
+  );
+
+  ScrollMetrics {
+    viewport_css,
+    scroll_css,
+    bounds_css: crate::scroll::ScrollBounds {
+      min_x: 0.0,
+      min_y: 0.0,
+      max_x: max_scroll_x,
+      max_y: max_scroll_y,
+    },
+    content_css: (
+      viewport_size.width + max_scroll_x,
+      viewport_size.height + max_scroll_y,
+    ),
   }
 }
 
@@ -511,7 +578,11 @@ struct BrowserRuntime {
 }
 
 impl BrowserRuntime {
-  fn new(ui_rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, factory: FastRenderFactory) -> Self {
+  fn new(
+    ui_rx: Receiver<UiToWorker>,
+    ui_tx: Sender<WorkerToUi>,
+    factory: FastRenderFactory,
+  ) -> Self {
     Self {
       ui_rx,
       ui_tx,
@@ -706,7 +777,7 @@ impl BrowserRuntime {
         } => {
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
-        UiToWorker::Scroll { .. } => {
+        UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. } => {
           for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
             self.handle_message(UiToWorker::PointerMove {
               tab_id,
@@ -757,7 +828,10 @@ impl BrowserRuntime {
           self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
         }
       }
-      UiToWorker::NewTab { tab_id, initial_url } => {
+      UiToWorker::NewTab {
+        tab_id,
+        initial_url,
+      } => {
         self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
         self.active_tab.get_or_insert(tab_id);
         if let Some(url) = initial_url {
@@ -796,7 +870,11 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
-      UiToWorker::Navigate { tab_id, url, reason } => {
+      UiToWorker::Navigate {
+        tab_id,
+        url,
+        reason,
+      } => {
         self.schedule_navigation(tab_id, url, reason);
       }
       UiToWorker::GoBack { tab_id } => {
@@ -916,7 +994,9 @@ impl BrowserRuntime {
             if next != tab.scroll_state {
               tab.scroll_state = next;
               if tab.loading {
-                tab.history.update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+                tab
+                  .history
+                  .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
               }
             }
             return;
@@ -965,7 +1045,11 @@ impl BrowserRuntime {
                 return current;
               }
               let value = current + delta;
-              if value.is_finite() { value.max(0.0) } else { current }
+              if value.is_finite() {
+                value.max(0.0)
+              } else {
+                current
+              }
             };
 
             // Force evaluation of `doc.prepared()` so we keep layout alive and let paint apply
@@ -992,6 +1076,51 @@ impl BrowserRuntime {
 
         if let Some(pos_css) = hover_update_pos_css {
           self.handle_pointer_move(tab_id, pos_css);
+        }
+      }
+      UiToWorker::ScrollTo { tab_id, pos_css } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+
+        let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let target = Point::new(sanitize(pos_css.0), sanitize(pos_css.1));
+
+        if let Some(doc) = tab.document.as_mut() {
+          let current = doc.scroll_state();
+          let mut next = current.clone();
+          next.viewport = target;
+
+          // Clamp to the root scroll bounds when layout artifacts are available.
+          if let Some(prepared) = doc.prepared() {
+            let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+            if let Some(root) =
+              crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+                .last()
+            {
+              next.viewport = root.bounds.clamp(next.viewport);
+            }
+          }
+
+          if next != current {
+            doc.set_scroll_state(next.clone());
+            tab.scroll_state = next;
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+            tab.scroll_coalesce = true;
+          }
+        } else {
+          // No document yet; still record the scroll position for the first frame.
+          let mut next = tab.scroll_state.clone();
+          next.viewport = target;
+          if next != tab.scroll_state {
+            tab.scroll_state = next;
+            if tab.loading {
+              tab
+                .history
+                .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+            }
+          }
         }
       }
       UiToWorker::PointerMove {
@@ -1165,7 +1294,9 @@ impl BrowserRuntime {
     // `Reload` must not take this path because callers expect a full reload.
     if reason != NavigationReason::Reload {
       if !tab.loading {
-        if let (Some(current), Some(doc)) = (tab.last_committed_url.as_deref(), tab.document.as_mut()) {
+        if let (Some(current), Some(doc)) =
+          (tab.last_committed_url.as_deref(), tab.document.as_mut())
+        {
           if let Some(target_url) = same_document_fragment_target(current, &url) {
             let url_string = target_url.to_string();
 
@@ -1196,8 +1327,13 @@ impl BrowserRuntime {
             } else {
               match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let viewport = fragment_tree.viewport_size();
-                let offset =
-                  scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
+                let offset = scroll_offset_for_fragment_target(
+                  dom,
+                  box_tree,
+                  fragment_tree,
+                  fragment,
+                  viewport,
+                );
                 (false, offset)
               }) {
                 Ok(Some(offset)) => offset,
@@ -1240,7 +1376,10 @@ impl BrowserRuntime {
     tab.needs_repaint = false;
     tab.pending_navigation = Some(NavigationRequest {
       url: url.clone(),
-      apply_fragment_scroll: matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick),
+      apply_fragment_scroll: matches!(
+        reason,
+        NavigationReason::TypedUrl | NavigationReason::LinkClick
+      ),
     });
     if push_history {
       if !had_pending_navigation {
@@ -1273,7 +1412,9 @@ impl BrowserRuntime {
     }
     tab.pending_history_entry = push_history;
 
-    let _ = self.ui_tx.send(WorkerToUi::NavigationStarted { tab_id, url });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUi::NavigationStarted { tab_id, url });
     let _ = self.ui_tx.send(WorkerToUi::LoadingState {
       tab_id,
       loading: true,
@@ -1795,7 +1936,9 @@ impl BrowserRuntime {
           let mut action = InteractionAction::None;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
-              tab.interaction.key_activate(dom, key, &document_url, &base_url);
+              tab
+                .interaction
+                .key_activate(dom, key, &document_url, &base_url);
             action = next_action;
             dom_changed
           });
@@ -1947,21 +2090,19 @@ impl BrowserRuntime {
 
     // Pull what we need out of `TabState` so we can release the borrow while running the expensive
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
-    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, apply_fragment_scroll, cancel, doc) =
-      {
-        let tab = self.tabs.get_mut(&tab_id)?;
-        (
-          tab.cancel.snapshot_prepare(),
-          tab.cancel.snapshot_paint(),
-          tab.viewport_css,
-          tab.dpr,
-          tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
-          request.apply_fragment_scroll,
-          tab.cancel.clone(),
-          tab.document.take(),
-        )
-      };
-
+    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, apply_fragment_scroll, cancel, doc) = {
+      let tab = self.tabs.get_mut(&tab_id)?;
+      (
+        tab.cancel.snapshot_prepare(),
+        tab.cancel.snapshot_paint(),
+        tab.viewport_css,
+        tab.dpr,
+        tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
+        request.apply_fragment_scroll,
+        tab.cancel.clone(),
+        tab.document.take(),
+      )
+    };
     // Capture the original URL before any redirects/mutations for history bookkeeping.
     let original_url = request.url.clone();
 
@@ -2013,7 +2154,10 @@ impl BrowserRuntime {
 
     let (reported_final_url, base_url) = if about_pages::is_about_url(&original_url) {
       let html = about_pages::html_for_about_url(&original_url).unwrap_or_else(|| {
-        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {original_url}"))
+        about_pages::error_page_html(
+          "Unknown about page",
+          &format!("Unknown URL: {original_url}"),
+        )
       });
 
       let result = {
@@ -2174,7 +2318,9 @@ impl BrowserRuntime {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       match doc.render_if_needed_with_deadlines(Some(&paint_deadline)) {
         Ok(Some(frame)) => Ok(Some(frame)),
-        Ok(None) => doc.render_frame_with_deadlines(Some(&paint_deadline)).map(Some),
+        Ok(None) => doc
+          .render_frame_with_deadlines(Some(&paint_deadline))
+          .map(Some),
         Err(err) => Err(err),
       }
     };
@@ -2364,6 +2510,11 @@ impl BrowserRuntime {
               .map(|p| p.device_pixel_ratio())
               .unwrap_or(dpr),
             scroll_state: tab.scroll_state.clone(),
+            scroll_metrics: compute_scroll_metrics(
+              tab.document.as_ref(),
+              viewport_css,
+              &tab.scroll_state,
+            ),
             wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
           },
         });
@@ -2611,6 +2762,11 @@ impl BrowserRuntime {
               .map(|p| p.device_pixel_ratio())
               .unwrap_or(tab.dpr),
             scroll_state: tab.scroll_state.clone(),
+            scroll_metrics: compute_scroll_metrics(
+              tab.document.as_ref(),
+              tab.viewport_css,
+              &tab.scroll_state,
+            ),
             wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
           },
         },
@@ -2682,7 +2838,9 @@ impl BrowserRuntime {
 
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
-      tab.history.update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+      tab
+        .history
+        .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
       msgs.push(WorkerToUi::FrameReady {
         tab_id,
@@ -2696,6 +2854,11 @@ impl BrowserRuntime {
             .map(|p| p.device_pixel_ratio())
             .unwrap_or(tab.dpr),
           scroll_state: tab.scroll_state.clone(),
+          scroll_metrics: compute_scroll_metrics(
+            tab.document.as_ref(),
+            tab.viewport_css,
+            &tab.scroll_state,
+          ),
           wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
         },
       });
@@ -2713,7 +2876,11 @@ impl BrowserRuntime {
     })
   }
 
-  fn build_initial_document(&self, viewport_css: (u32, u32), dpr: f32) -> crate::Result<BrowserDocument> {
+  fn build_initial_document(
+    &self,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> crate::Result<BrowserDocument> {
     let mut renderer = self.factory.build_renderer()?;
     #[cfg(feature = "browser_ui")]
     UI_WORKER_RENDERER_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -2722,8 +2889,9 @@ impl BrowserRuntime {
     // resolve relative URLs against whatever the renderer last navigated to.
     renderer.set_base_url(about_pages::ABOUT_BASE_URL);
 
-    let html = about_pages::html_for_about_url(about_pages::ABOUT_BLANK)
-      .unwrap_or_else(|| "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>".to_string());
+    let html = about_pages::html_for_about_url(about_pages::ABOUT_BLANK).unwrap_or_else(|| {
+      "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>".to_string()
+    });
 
     let options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
@@ -2767,7 +2935,11 @@ pub fn spawn_ui_worker_for_test(
   name: impl Into<String>,
   test_render_delay_ms: Option<u64>,
 ) -> crate::Result<UiThreadWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), test_render_delay_ms, default_ui_worker_factory()?)
+  spawn_worker_with_factory_inner(
+    name.into(),
+    test_render_delay_ms,
+    default_ui_worker_factory()?,
+  )
 }
 
 /// Spawn a UI worker using a preconfigured [`FastRenderFactory`].
@@ -2842,7 +3014,9 @@ pub fn spawn_browser_worker_with_name(
 
 /// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
 /// factory.
-pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
+pub fn spawn_browser_worker_with_factory(
+  factory: FastRenderFactory,
+) -> crate::Result<BrowserWorkerHandle> {
   let handle = spawn_worker_with_factory_inner("browser_worker".to_string(), None, factory)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,

@@ -214,12 +214,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
-  let mut app = pollster::block_on(App::new(
-    window,
-    &event_loop,
-    ui_to_worker_tx,
-    worker_join,
-  ))?;
+  let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx, worker_join))?;
   app.startup(startup_session);
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
@@ -616,6 +611,18 @@ struct OpenContextMenu {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+struct ScrollbarDragState {
+  tab_id: fastrender::ui::TabId,
+  start_scroll_y: f32,
+  /// Last scroll position derived from the ongoing drag (in viewport-local CSS pixels).
+  ///
+  /// This is used for immediate visual feedback while dragging (the worker may not have produced a
+  /// new frame yet).
+  visual_scroll_y: f32,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -646,9 +653,11 @@ struct App {
   pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
 
   page_rect_points: Option<egui::Rect>,
+  page_scrollbar_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
+  scrollbar_drag: Option<ScrollbarDragState>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
@@ -801,9 +810,11 @@ impl App {
       tab_cancel: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       page_rect_points: None,
+      page_scrollbar_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
+      scrollbar_drag: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
@@ -911,7 +922,10 @@ impl App {
     }
   }
 
-  fn update_control_flow_for_animation_ticks(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
+  fn update_control_flow_for_animation_ticks(
+    &mut self,
+    control_flow: &mut winit::event_loop::ControlFlow,
+  ) {
     let Some(tab_id) = self.desired_animation_tick_tab() else {
       self.animation_tick_tab = None;
       self.next_animation_tick = None;
@@ -943,6 +957,7 @@ impl App {
       | UiToWorker::Tick { tab_id }
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
+      | UiToWorker::ScrollTo { tab_id, .. }
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
@@ -973,6 +988,7 @@ impl App {
         // intermediate frames (e.g. rapid scroll/resize/typing).
         UiToWorker::ViewportChanged { .. }
         | UiToWorker::Scroll { .. }
+        | UiToWorker::ScrollTo { .. }
         | UiToWorker::PointerMove { .. }
         | UiToWorker::PointerDown { .. }
         | UiToWorker::PointerUp { .. }
@@ -1068,7 +1084,10 @@ impl App {
     self.send_worker_msg(msg);
   }
 
-  fn update_open_select_dropdown_selection_for_key(&mut self, key: fastrender::interaction::KeyAction) {
+  fn update_open_select_dropdown_selection_for_key(
+    &mut self,
+    key: fastrender::interaction::KeyAction,
+  ) {
     use fastrender::tree::box_tree::SelectItem;
 
     let Some(dropdown) = self.open_select_dropdown.as_mut() else {
@@ -1242,7 +1261,9 @@ impl App {
         if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
           self.debug_log.pop_front();
         }
-        self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
+        self
+          .debug_log
+          .push_back(format!("[tab {}] {}", tab_id.0, line));
         // Debug log is rendered via a bottom panel regardless of active tab.
         request_redraw = true;
       }
@@ -1626,23 +1647,24 @@ impl App {
                   in_optgroup,
                   ..
                 } => {
-                  let base = if label.trim().is_empty() { value } else { label };
+                  let base = if label.trim().is_empty() {
+                    value
+                  } else {
+                    label
+                  };
                   let text = if *in_optgroup {
                     format!("  {base}")
                   } else {
                     base.to_string()
                   };
 
-                  let response = ui.add_enabled(
-                    !*disabled,
-                    egui::SelectableLabel::new(*selected, text),
-                  );
+                  let response =
+                    ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, text));
                   if response.clicked() {
                     clicked_item_idx = Some(idx);
                   }
                 }
               }
-
             }
             clicked_item_idx
           })
@@ -1854,7 +1876,14 @@ impl App {
           self.cursor_in_page = false;
           return;
         };
-        let now_in_page = rect.contains(pos_points);
+        let mut now_in_page = rect.contains(pos_points);
+        if now_in_page
+          && self
+            .page_scrollbar_rect_points
+            .is_some_and(|scrollbar| scrollbar.contains(pos_points))
+        {
+          now_in_page = false;
+        }
 
         // `page_input_mapping`/`page_input_tab` are populated during the most recent paint. When
         // they are missing, we cannot reliably map points→CSS, so we just track whether the cursor
@@ -1955,7 +1984,8 @@ impl App {
           // popup closed (don't immediately reopen it by forwarding the click to the page).
           let clicked_select_control = self.open_select_dropdown.as_ref().is_some_and(|dropdown| {
             dropdown.anchor_css.is_some_and(|anchor_css| {
-              self.page_input_mapping
+              self
+                .page_input_mapping
                 .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(anchor_css))
                 .is_some_and(|rect_points| rect_points.contains(pos_points))
             })
@@ -1982,6 +2012,12 @@ impl App {
               return;
             };
             if !rect.contains(pos_points) {
+              return;
+            }
+            if self
+              .page_scrollbar_rect_points
+              .is_some_and(|scrollbar| scrollbar.contains(pos_points))
+            {
               return;
             }
             let Some(_viewport_css) = self.page_viewport_css else {
@@ -2094,8 +2130,17 @@ impl App {
             VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter | VirtualKeyCode::Space
           ) {
             let choice = self.open_select_dropdown.as_ref().and_then(|dropdown| {
-              fastrender::select_dropdown::selected_choice(dropdown.select_node_id, &dropdown.control)
-                .map(|choice| (dropdown.tab_id, choice.select_node_id, choice.option_node_id))
+              fastrender::select_dropdown::selected_choice(
+                dropdown.select_node_id,
+                &dropdown.control,
+              )
+              .map(|choice| {
+                (
+                  dropdown.tab_id,
+                  choice.select_node_id,
+                  choice.option_node_id,
+                )
+              })
             });
 
             if let Some((tab_id, select_node_id, option_node_id)) = choice {
@@ -2134,8 +2179,7 @@ impl App {
 
         // Ctrl/Cmd+Tab is reserved for chrome tab switching; don't forward it to the page as a Tab
         // key press.
-        if (self.modifiers.ctrl() || self.modifiers.logo()) && matches!(key, VirtualKeyCode::Tab)
-        {
+        if (self.modifiers.ctrl() || self.modifiers.logo()) && matches!(key, VirtualKeyCode::Tab) {
           return;
         }
 
@@ -2455,7 +2499,9 @@ impl App {
               initial_url: Some(initial_url),
               cancel,
             });
-            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: created_tab });
+            self.send_worker_msg(UiToWorker::SetActiveTab {
+              tab_id: created_tab,
+            });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
             self.hover_sync_pending = true;
@@ -2654,6 +2700,7 @@ impl App {
       self.send_viewport_changed_if_needed(viewport_css, dpr);
 
       self.page_rect_points = None;
+      self.page_scrollbar_rect_points = None;
       self.page_viewport_css = None;
       self.page_input_tab = None;
       self.page_input_mapping = None;
@@ -2684,7 +2731,9 @@ impl App {
           .browser_state
           .tab(active_tab)
           .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css))
-          .or_else(|| (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css))
+          .or_else(|| {
+            (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css)
+          })
           .unwrap_or(viewport_css);
         // Draw the page image at the *logical* viewport size, even when the worker clamps the
         // underlying DPR/viewport for safety. The input mapping (points→CSS) uses
@@ -2708,8 +2757,8 @@ impl App {
 
           let mut delta_css = (0.0, 0.0);
           for (unit, delta) in &wheel_events {
-            let Some((dx, dy)) =
-              mapping.wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
+            let Some((dx, dy)) = mapping
+              .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
             else {
               continue;
             };
@@ -2723,6 +2772,142 @@ impl App {
                 delta_css,
                 pointer_css: Some(pos_css),
               });
+            }
+          }
+        }
+
+        // -----------------------------------------------------------------------------
+        // Overlay scrollbars
+        // -----------------------------------------------------------------------------
+        //
+        // Draw a thin draggable scrollbar on top of the rendered page image. This keeps long pages
+        // usable even when the user does not have a scroll wheel / trackpad.
+        if let Some(tab) = self.browser_state.tab(active_tab) {
+          if let Some(metrics) = tab.scroll_metrics {
+            let max_scroll_y = metrics.bounds_css.max_y;
+            let viewport_h = metrics.viewport_css.1 as f32;
+            let content_h = metrics.content_css.1;
+
+            // Only draw when there is a meaningful scroll range.
+            if max_scroll_y.is_finite()
+              && max_scroll_y > 0.0
+              && content_h.is_finite()
+              && content_h > viewport_h
+            {
+              // Track geometry (in egui points; 1 point == 1 CSS px in our mapping).
+              const THICKNESS: f32 = 6.0;
+              const MARGIN: f32 = 2.0;
+              const MIN_THUMB_LEN: f32 = 24.0;
+
+              let track_rect = egui::Rect::from_min_max(
+                egui::pos2(
+                  response.rect.max.x - MARGIN - THICKNESS,
+                  response.rect.min.y + MARGIN,
+                ),
+                egui::pos2(response.rect.max.x - MARGIN, response.rect.max.y - MARGIN),
+              );
+
+              self.page_scrollbar_rect_points = Some(track_rect);
+
+              // Drag state is per-tab; reset it if we switched tabs.
+              if self
+                .scrollbar_drag
+                .as_ref()
+                .is_some_and(|drag| drag.tab_id != active_tab)
+              {
+                self.scrollbar_drag = None;
+              }
+
+              let track_h = track_rect.height().max(0.0);
+              let thumb_h = (track_h * (viewport_h / content_h))
+                .clamp(MIN_THUMB_LEN, track_h)
+                .max(1.0);
+              let thumb_travel = (track_h - thumb_h).max(1.0);
+
+              let scroll_x = tab.scroll_state.viewport.x;
+              let scroll_y = tab.scroll_state.viewport.y;
+
+              let mut scroll_y_for_interact = scroll_y;
+              if let Some(drag) = self.scrollbar_drag.as_ref() {
+                if drag.tab_id == active_tab {
+                  scroll_y_for_interact = drag.visual_scroll_y;
+                }
+              }
+              let scroll_y_for_interact = scroll_y_for_interact.clamp(0.0, max_scroll_y);
+
+              let thumb_top =
+                track_rect.min.y + (scroll_y_for_interact / max_scroll_y) * thumb_travel;
+              let thumb_rect_interact = egui::Rect::from_min_max(
+                egui::pos2(track_rect.min.x, thumb_top),
+                egui::pos2(track_rect.max.x, thumb_top + thumb_h),
+              );
+
+              let id = egui::Id::new(("fastr_scrollbar_thumb_y", active_tab.0));
+              let thumb_response =
+                ui.interact(thumb_rect_interact, id, egui::Sense::click_and_drag());
+
+              if thumb_response.drag_started() {
+                let start_scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+                self.scrollbar_drag = Some(ScrollbarDragState {
+                  tab_id: active_tab,
+                  start_scroll_y,
+                  visual_scroll_y: start_scroll_y,
+                });
+              }
+              if thumb_response.drag_released() {
+                self.scrollbar_drag = None;
+              }
+
+              let mut scroll_y_for_paint = scroll_y.clamp(0.0, max_scroll_y);
+              if let Some(drag) = self.scrollbar_drag.as_mut() {
+                if drag.tab_id == active_tab && thumb_response.dragged() {
+                  let delta_y = thumb_response.drag_delta().y;
+                  let next = (drag.start_scroll_y + (delta_y / thumb_travel) * max_scroll_y)
+                    .clamp(0.0, max_scroll_y);
+                  drag.visual_scroll_y = next;
+                  scroll_y_for_paint = next;
+
+                  self.send_worker_msg(fastrender::ui::UiToWorker::ScrollTo {
+                    tab_id: active_tab,
+                    pos_css: (scroll_x, next),
+                  });
+
+                  // Ensure we keep drawing while the thumb is dragged, even if the worker hasn't
+                  // produced a new frame yet.
+                  ui.ctx().request_repaint();
+                }
+              }
+
+              let thumb_top = track_rect.min.y + (scroll_y_for_paint / max_scroll_y) * thumb_travel;
+              let thumb_rect = egui::Rect::from_min_max(
+                egui::pos2(track_rect.min.x, thumb_top),
+                egui::pos2(track_rect.max.x, thumb_top + thumb_h),
+              );
+
+              let dark = ui.visuals().dark_mode;
+              let track_color = if dark {
+                egui::Color32::from_white_alpha(32)
+              } else {
+                egui::Color32::from_black_alpha(32)
+              };
+
+              let mut thumb_color = if dark {
+                egui::Color32::from_white_alpha(128)
+              } else {
+                egui::Color32::from_black_alpha(128)
+              };
+
+              if thumb_response.hovered() || thumb_response.dragged() {
+                thumb_color = if dark {
+                  egui::Color32::from_white_alpha(196)
+                } else {
+                  egui::Color32::from_black_alpha(196)
+                };
+              }
+
+              let rounding = egui::Rounding::same(3.0);
+              ui.painter().rect_filled(track_rect, rounding, track_color);
+              ui.painter().rect_filled(thumb_rect, rounding, thumb_color);
             }
           }
         }
