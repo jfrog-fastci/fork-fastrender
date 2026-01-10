@@ -1424,6 +1424,11 @@ impl BrowserTabHost {
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
     }
+    if spec_for_table.script_type == ScriptType::ImportMap && !spec_for_table.src_attr_present {
+      self
+        .js_execution_options
+        .check_script_source(&spec_for_table.inline_text, "source=importmap")?;
+    }
     self.scripts.insert(
       discovered.id,
       ScriptEntry {
@@ -1460,6 +1465,11 @@ impl BrowserTabHost {
       self
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
+    }
+    if spec_for_table.script_type == ScriptType::ImportMap && !spec_for_table.src_attr_present {
+      self
+        .js_execution_options
+        .check_script_source(&spec_for_table.inline_text, "source=importmap")?;
     }
     let discovered = self
       .scheduler
@@ -7697,6 +7707,87 @@ html, body { margin: 0; padding: 0; }
       dom.get_attribute(body, "data-integrity")
         .expect("get_attribute should succeed"),
       Some("123")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_resolve_bare_specifiers_via_import_maps() -> Result<()> {
+    #[derive(Clone)]
+    struct MapFetcher {
+      entries: Arc<HashMap<String, FetchedResource>>,
+    }
+
+    impl ResourceFetcher for MapFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .entries
+          .get(url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
+      }
+
+      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+        self.fetch(req.url)
+      }
+    }
+
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let entry_url = "https://example.invalid/entry.js";
+    let dep_url = "https://example.invalid/foo.js";
+    let document_url = "https://example.invalid/";
+
+    let mut entries: HashMap<String, FetchedResource> = HashMap::new();
+    let mut entry_res = FetchedResource::new(
+      br#"import "foo"; document.body.setAttribute("data-importmap", "1");"#.to_vec(),
+      Some("text/javascript".to_string()),
+    );
+    entry_res.status = Some(200);
+    entry_res.final_url = Some(entry_url.to_string());
+    entry_res.access_control_allow_origin = Some("*".to_string());
+    entry_res.access_control_allow_credentials = true;
+    entries.insert(entry_url.to_string(), entry_res);
+
+    let mut dep_res = FetchedResource::new(
+      br#"export const x = 1;"#.to_vec(),
+      Some("text/javascript".to_string()),
+    );
+    dep_res.status = Some(200);
+    dep_res.final_url = Some(dep_url.to_string());
+    dep_res.access_control_allow_origin = Some("*".to_string());
+    dep_res.access_control_allow_credentials = true;
+    entries.insert(dep_url.to_string(), dep_res);
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher {
+      entries: Arc::new(entries),
+    });
+
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="importmap">{{"imports":{{"foo":"{dep_url}"}}}}</script>
+        <script type="module" src="{entry_url}"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      &html,
+      document_url,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      fetcher,
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-importmap")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected module script to run after resolving bare specifier via import map"
     );
     Ok(())
   }
