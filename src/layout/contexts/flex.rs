@@ -8058,9 +8058,15 @@ impl FlexFormattingContext {
         .map(f32_to_canonical_bits)
         .unwrap_or(0);
 
-      // For a vertical main axis, the content size suggestion depends on the cross size when the
-      // item is stretched (e.g. because wrapping changes the block size). Use the stretched cross
-      // size as part of the cache key and when probing intrinsic block sizes.
+      // For a vertical main axis, the content size suggestion can depend on the used cross size.
+      //
+      // This is most obvious for stretched items (align-self:stretch with `width:auto`), but it
+      // also applies to percentage widths: the item’s used width is resolved against the flex
+      // container’s content box, and the item's content-based minimum block size (e.g. wrapping
+      // text, percentage padding used for aspect-ratio shims) depends on that resolved width.
+      //
+      // When we have a definite container cross size, probe intrinsic block sizes under that
+      // definite width and key the auto-min-size cache on it.
       let effective_align_self = style.align_self.unwrap_or(container.align_items);
       let cross_margins_auto = style.margin_left.is_none() || style.margin_right.is_none();
       let stretch_cross_size = if effective_align_self == AlignItems::Stretch
@@ -8071,7 +8077,17 @@ impl FlexFormattingContext {
       } else {
         None
       };
-      let cross_size_key = stretch_cross_size
+      let width_depends_on_container = style.width.as_ref().is_some_and(Length::has_percentage)
+        || style
+          .width_keyword
+          .is_some_and(|keyword| keyword.has_percentage());
+      let cross_size_for_probe = stretch_cross_size.or_else(|| {
+        width_depends_on_container
+          .then(|| container_content_width_base)
+          .flatten()
+          .map(|v| v.max(0.0))
+      });
+      let cross_size_key = cross_size_for_probe
         .filter(|v| v.is_finite() && *v > 0.0)
         .map(f32_to_canonical_bits)
         .unwrap_or(0);
@@ -8223,7 +8239,7 @@ impl FlexFormattingContext {
         let fragment = item_fc.layout(node, constraints)?;
         Ok(fragment.bounds.height())
       };
-      let intrinsic_result: Result<(f32, f32), LayoutError> = if let Some(cross_size) = stretch_cross_size {
+      let intrinsic_result: Result<(f32, f32), LayoutError> = if let Some(cross_size) = cross_size_for_probe {
         let probe_constraints = LayoutConstraints::definite_width(cross_size);
         let result = if needs_override {
           let mut override_style: ComputedStyle = (*box_node.style).clone();
