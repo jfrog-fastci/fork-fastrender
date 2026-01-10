@@ -97,8 +97,9 @@ tried instead.
   - `data-img-src`
   - `data-img-url`
   - `data-hires`
-- `data-src-retina`
-- `data-default-src`
+  - `data-src-retina`
+  - `data-default-src`
+  - `data-orig-file`
 - `srcset`: if missing/empty or placeholder-only, copy from the first non-empty candidate among:
   - `data-gl-srcset`
   - `data-srcset`
@@ -121,9 +122,13 @@ tried instead.
 
 #### `<iframe>`
 
-- `src`: if missing or placeholder, copy from `data-src`.
-  - `data-src` may be a JSON-ish payload (starting with `{`, `[`, or `"`) commonly found in embed
-    widgets; compat mode will try to parse and extract a URL-like string (e.g. `{"url":"real.html"}`).
+- `src`: if missing or placeholder, copy from the first usable candidate among:
+  - `data-src`
+  - `data-live-path`
+  - Note: `data-src` is sometimes a JSON-ish payload (starting with `{`, `[`, or `"`) commonly found
+    in embed widgets; compat mode will try to parse and extract a URL-like string
+    (e.g. `{"url":"real.html"}`). The same JSON-ish extraction is applied to `data-live-path` (though
+    it is typically a raw URL string). Unparseable JSON-ish values are ignored (not copied verbatim).
 
 #### `<video>`
 
