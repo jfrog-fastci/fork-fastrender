@@ -8,6 +8,7 @@ use fastrender::{ComputedStyle, Rgba};
 use std::sync::Arc;
 
 fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> FragmentNode {
+  let caret = value.chars().count();
   let control = FormControl {
     control: FormControlKind::Text {
       value: value.to_string(),
@@ -15,7 +16,7 @@ fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> Frag
       placeholder_style: None,
       size_attr: None,
       kind: TextControlKind::Plain,
-      caret: value.chars().count(),
+      caret,
       selection: None,
     },
     appearance: Appearance::Auto,

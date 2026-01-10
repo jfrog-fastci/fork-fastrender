@@ -131,6 +131,7 @@ mod float_external_base_x;
 mod float_shrink_to_min;
 mod float_intrinsic_includes_floats;
 mod intrinsic_float_children;
+mod intrinsic_block_child_margins;
 mod button_inline_flex_children;
 mod form_control_baseline;
 mod form_control_pseudo_elements;

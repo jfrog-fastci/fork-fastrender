@@ -6870,6 +6870,39 @@ impl BlockFormattingContext {
         } else {
           factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
         };
+        let inline_sides = inline_axis_sides(&child.style);
+        let margin_start = match inline_sides.0 {
+          PhysicalSide::Left => child.style.margin_left,
+          PhysicalSide::Right => child.style.margin_right,
+          PhysicalSide::Top => child.style.margin_top,
+          PhysicalSide::Bottom => child.style.margin_bottom,
+        }
+        .unwrap_or(Length::px(0.0));
+        let margin_end = match inline_sides.1 {
+          PhysicalSide::Left => child.style.margin_left,
+          PhysicalSide::Right => child.style.margin_right,
+          PhysicalSide::Top => child.style.margin_top,
+          PhysicalSide::Bottom => child.style.margin_bottom,
+        }
+        .unwrap_or(Length::px(0.0));
+        let margin_start = resolve_length_for_width(
+          margin_start,
+          0.0,
+          &child.style,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let margin_end = resolve_length_for_width(
+          margin_end,
+          0.0,
+          &child.style,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let margin_sum = (margin_start + margin_end).max(0.0);
+        let child_min = (child_min + margin_sum).max(0.0);
+        let child_max = (child_max + margin_sum).max(0.0);
+
         block_min_width = block_min_width.max(child_min);
         block_max_width = block_max_width.max(child_max);
         if log_children {
@@ -9296,7 +9329,7 @@ impl FormattingContext for BlockFormattingContext {
           let disp = child.style.display;
           eprintln!(
             "[intrinsic-child] parent_id={} child_id={} selector={} display={:?} min={:.2} max={:.2}",
-            box_node.id, child.id, sel, disp, child_min, child_max
+            box_node.id, child.id, sel, disp, outer_min, outer_max
           );
         }
       } else {

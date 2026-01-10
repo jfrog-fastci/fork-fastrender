@@ -8,6 +8,7 @@ use fastrender::ComputedStyle;
 use std::sync::Arc;
 
 fn text_control(kind: TextControlKind, appearance: Appearance, value: &str) -> FormControl {
+  let caret = value.chars().count();
   FormControl {
     control: FormControlKind::Text {
       value: value.to_string(),
@@ -15,7 +16,7 @@ fn text_control(kind: TextControlKind, appearance: Appearance, value: &str) -> F
       placeholder_style: None,
       size_attr: None,
       kind,
-      caret: value.chars().count(),
+      caret,
       selection: None,
     },
     appearance,
