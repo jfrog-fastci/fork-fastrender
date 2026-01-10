@@ -747,12 +747,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       Ok(intr) => intr,
       Err(err) => return err,
     };
-    crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
-      &mut self.cx.scope,
-      intr,
-      name,
-      message,
-    )
+    crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(&mut self.cx.scope, intr, name, message)
   }
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
@@ -1647,8 +1642,9 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::bindings::DomExceptionClassVmJs;
   use vm_js::{Heap, HeapLimits, JsRuntime as VmJsRuntime, VmOptions};
-  use webidl::{JsRuntime as _, InterfaceId, WebIdlHooks, WebIdlLimits};
+  use webidl::{InterfaceId, JsRuntime as _, WebIdlHooks, WebIdlLimits};
 
   struct NoHooks;
 
@@ -1728,6 +1724,8 @@ mod tests {
       let VmError::Throw(thrown) = err else {
         return Err(VmError::TypeError("expected VmError::Throw"));
       };
+      // Root the thrown value before any further allocations.
+      cx.cx.scope.push_root(thrown)?;
       let Value::Object(obj) = thrown else {
         return Err(VmError::TypeError("expected thrown value to be an object"));
       };
@@ -1764,7 +1762,7 @@ mod tests {
     // real DOMException instance (with `.prototype` on its prototype chain).
     let dom_exception = {
       let mut scope = heap.scope();
-      crate::js::bindings::DomExceptionClassVmJs::install(vm, &mut scope, realm)?
+      DomExceptionClassVmJs::install(vm, &mut scope, realm)?
     };
 
     {
@@ -1774,6 +1772,8 @@ mod tests {
       let VmError::Throw(thrown) = err else {
         return Err(VmError::TypeError("expected VmError::Throw"));
       };
+      // Root the thrown value before any further allocations.
+      cx.cx.scope.push_root(thrown)?;
       let Value::Object(obj) = thrown else {
         return Err(VmError::TypeError("expected thrown value to be an object"));
       };
