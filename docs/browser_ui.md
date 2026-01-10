@@ -383,9 +383,10 @@ Front-ends are encouraged to print these to stderr while developing new protocol
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).
 - **Limited form support** (non-JS):
-  - text input is intentionally minimal (no selection/caret movement beyond append/backspace/delete)
-    - basic clipboard shortcuts (Ctrl/Cmd+A/C/X/V) are supported for focused `<input>`/`<textarea>`,
-      but selection is currently worker-local and is not rendered/highlighted
+  - text input is intentionally minimal
+    - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
+      Home/End, Shift+Arrow, Ctrl/Cmd+A)
+    - basic clipboard shortcuts (Ctrl/Cmd+C/X/V) are supported for focused `<input>`/`<textarea>`
   - `<select>` support is basic (listbox clicks + dropdown popup selection; no typeahead/multi-select yet)
   - many controls are not yet supported (`contenteditable`, file inputs, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
