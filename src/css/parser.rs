@@ -952,12 +952,25 @@ fn parse_import_rule<'i, 't>(
 
   // Capture the remaining prelude up to the semicolon or block.
   let prelude_start = parser.position();
-  while let Ok(token) = parser.next_including_whitespace() {
+  while !parser.is_exhausted() {
     if !css_deadline_allows_progress() {
       break;
     }
+    let token = match parser.next_including_whitespace() {
+      Ok(token) => token,
+      Err(_) => break,
+    };
     match token {
-      Token::Semicolon | Token::CurlyBracketBlock => break,
+      Token::Semicolon => break,
+      Token::CurlyBracketBlock => {
+        // `@import` rules are terminated by semicolon, but tolerate a `{}` block so error recovery
+        // can continue from the token after the closing brace.
+        parser.parse_nested_block(consume_nested_tokens)?;
+        break;
+      }
+      Token::ParenthesisBlock | Token::SquareBracketBlock | Token::Function(_) => {
+        parser.parse_nested_block(consume_nested_tokens)?;
+      }
       _ => {}
     }
   }
@@ -1119,12 +1132,7 @@ fn parse_import_modifiers_and_media(
   // `cssparser::Parser::slice_from` returns the span between `media_start` and the current parser
   // position, so we must advance to the end of the prelude before slicing to capture the media
   // query list (if any).
-  while !parser.is_exhausted() {
-    if !css_deadline_allows_progress() {
-      break;
-    }
-    let _ = parser.next_including_whitespace();
-  }
+  consume_nested_tokens::<()>(&mut parser).ok()?;
 
   let media_tokens = trim_ascii_whitespace(parser.slice_from(media_start));
   let media = if media_tokens.is_empty() {
@@ -6574,6 +6582,7 @@ mod tests {
   use crate::style::color::{Color as CssColor, Rgba};
   use crate::style::custom_properties::CustomPropertyRegistry;
   use crate::style::custom_properties::PropertyRule as RegisteredPropertyRule;
+  use crate::style::media::{MediaFeature, MediaType};
   use crate::style::values::{CustomPropertyTypedValue, Length};
   use crate::PropertyValue;
 
@@ -7019,9 +7028,35 @@ mod tests {
     assert_eq!(stylesheet.rules.len(), 1);
     if let CssRule::Import(import) = &stylesheet.rules[0] {
       assert_eq!(import.href, "https://example.com/base.css");
+      assert_eq!(import.media.len(), 1, "expected one media query to be parsed");
+      assert_eq!(import.media[0].media_type, Some(MediaType::Screen));
+      assert!(
+        import.media[0].modifier.is_none(),
+        "expected no media query modifier"
+      );
+      assert_eq!(
+        import.media[0].features,
+        vec![MediaFeature::MinWidth(Length::px(800.0))],
+        "expected min-width media feature to be parsed"
+      );
     } else {
       panic!("Expected import rule");
     }
+  }
+ 
+  #[test]
+  fn test_parse_import_rule_media_type_only() {
+    let css = r#"@import "base.css" print;"#;
+    let stylesheet = parse_stylesheet(css).unwrap();
+    assert_eq!(stylesheet.rules.len(), 1);
+    let CssRule::Import(import) = &stylesheet.rules[0] else {
+      panic!("Expected import rule");
+    };
+    assert_eq!(import.href, "base.css");
+    assert_eq!(import.media.len(), 1);
+    assert_eq!(import.media[0].media_type, Some(MediaType::Print));
+    assert!(import.media[0].modifier.is_none());
+    assert!(import.media[0].features.is_empty());
   }
 
   #[test]
