@@ -512,6 +512,84 @@ impl<'a> VmJsWebIdlCx<'a> {
       }
     }
   }
+
+  fn to_primitive_hint_str(hint: ToPrimitiveHint) -> &'static str {
+    match hint {
+      ToPrimitiveHint::Default => "default",
+      ToPrimitiveHint::String => "string",
+      ToPrimitiveHint::Number => "number",
+    }
+  }
+
+  /// ECMAScript `ToPrimitive(input, preferredType)`.
+  ///
+  /// This can invoke user code (`@@toPrimitive`, `valueOf`, `toString`) and therefore must call into
+  /// JS via `call_js` (so host hooks overrides / embedder host context are preserved when
+  /// available).
+  fn to_primitive(&mut self, value: Value, preferred_type: ToPrimitiveHint) -> Result<Value, VmError> {
+    let Value::Object(obj) = value else {
+      return Ok(value);
+    };
+
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let to_prim_key = PropertyKey::Symbol(intr.well_known_symbols().to_primitive);
+
+    // 1. Let exoticToPrim be ? GetMethod(input, @@toPrimitive).
+    let exotic = self.get_method(obj, to_prim_key)?;
+    if let Some(exotic) = exotic {
+      // 2.a. Let hint be "default"/"string"/"number".
+      let hint_s = self.scope.alloc_string(Self::to_primitive_hint_str(preferred_type))?;
+      // 2.b. Let result be ? Call(exoticToPrim, input, « hint »).
+      let result = self.call_js(exotic, Value::Object(obj), &[Value::String(hint_s)])?;
+      // 2.c. If result is not an Object, return result.
+      if !matches!(result, Value::Object(_)) {
+        self.root(result)?;
+        return Ok(result);
+      }
+      // 2.d. Throw a TypeError exception.
+      return Err(VmError::TypeError("Cannot convert object to primitive value"));
+    }
+
+    // OrdinaryToPrimitive (spec-shaped ordering).
+    let preferred_type = match preferred_type {
+      ToPrimitiveHint::Default => ToPrimitiveHint::Number,
+      other => other,
+    };
+    let method_names = match preferred_type {
+      ToPrimitiveHint::String => ["toString", "valueOf"],
+      ToPrimitiveHint::Number | ToPrimitiveHint::Default => ["valueOf", "toString"],
+    };
+
+    for name in method_names {
+      let key_s = self.scope.alloc_string(name)?;
+      let key = PropertyKey::String(key_s);
+      let method = self.get(obj, key)?;
+      if matches!(method, Value::Undefined | Value::Null) {
+        continue;
+      }
+      if !self.scope.heap().is_callable(method)? {
+        continue;
+      }
+      let result = self.call_js(method, Value::Object(obj), &[])?;
+      if !matches!(result, Value::Object(_)) {
+        self.root(result)?;
+        return Ok(result);
+      }
+    }
+
+    Err(VmError::TypeError("Cannot convert object to primitive value"))
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+enum ToPrimitiveHint {
+  Default,
+  String,
+  Number,
 }
 
 impl JsRuntime for VmJsWebIdlCx<'_> {
@@ -612,40 +690,24 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
   }
 
   fn to_string(&mut self, value: Self::Value) -> Result<Self::String, Self::Error> {
-    // Prefer a spec-shaped `ToString` implementation when we have access to host hooks (so
-    // `ToPrimitive` can call back into JS via `@@toPrimitive` / `valueOf` / `toString`).
-    //
-    // When no realm/intrinsics exist yet, fall back to the heap-level conversion (which is limited
-    // to primitives).
-    let s = if self.vm.intrinsics().is_some() && self.host_hooks.is_some() {
-      match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
-        (Some(host), Some(hooks)) => self.scope.to_string(self.vm, host, hooks, value)?,
-        (None, Some(hooks)) => {
-          let mut dummy_host = ();
-          self.scope.to_string(self.vm, &mut dummy_host, hooks, value)?
-        }
-        _ => self.scope.heap_mut().to_string(value)?,
+    let s = match value {
+      Value::Object(_) => {
+        let prim = self.to_primitive(value, ToPrimitiveHint::String)?;
+        self.scope.heap_mut().to_string(prim)?
       }
-    } else {
-      self.scope.heap_mut().to_string(value)?
+      other => self.scope.heap_mut().to_string(other)?,
     };
     self.root(Value::String(s))?;
     Ok(s)
   }
 
   fn to_number(&mut self, value: Self::Value) -> Result<f64, Self::Error> {
-    // Like `to_string`, prefer the spec-shaped conversion when host hooks are available.
-    if self.vm.intrinsics().is_some() && self.host_hooks.is_some() {
-      match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
-        (Some(host), Some(hooks)) => self.scope.to_number(self.vm, host, hooks, value),
-        (None, Some(hooks)) => {
-          let mut dummy_host = ();
-          self.scope.to_number(self.vm, &mut dummy_host, hooks, value)
-        }
-        _ => self.scope.heap_mut().to_number(value),
+    match value {
+      Value::Object(_) => {
+        let prim = self.to_primitive(value, ToPrimitiveHint::Number)?;
+        self.scope.heap_mut().to_number(prim)
       }
-    } else {
-      self.scope.heap_mut().to_number(value)
+      other => self.scope.heap_mut().to_number(other),
     }
   }
 
@@ -2006,6 +2068,100 @@ mod tests {
 
     realm.teardown(&mut heap);
     result
+  }
+
+  #[test]
+  fn to_number_calls_value_of_propagates_embedder_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_hooks = TestHostHooks::default();
+
+    let result = vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
+      let value_of_id = vm.register_native_call(value_of_observes_host_ctx_and_hooks)?;
+
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+
+      let value_of_name = scope.alloc_string("valueOf")?;
+      let value_of_fn = scope.alloc_native_function(value_of_id, None, value_of_name, 0)?;
+      scope.push_root(Value::Object(value_of_fn))?;
+
+      let value_of_key = VmPropertyKey::from_string(scope.alloc_string("valueOf")?);
+      scope.define_property(
+        obj,
+        value_of_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(value_of_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let mut cx = VmJsWebIdlCx::new_in_scope(vm, &mut scope, limits, &webidl_hooks);
+      cx.scope.push_root(Value::Object(obj))?;
+      let n = cx.to_number(Value::Object(obj))?;
+      assert_eq!(n, 42.0);
+      Ok(())
+    });
+
+    realm.teardown(&mut heap);
+    result?;
+    assert_eq!(host_hooks.value_of_calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn to_string_calls_to_string_propagates_embedder_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_hooks = TestHostHooks::default();
+
+    let result = vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
+      let to_string_id = vm.register_native_call(to_string_observes_host_hooks)?;
+
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+
+      let to_string_name = scope.alloc_string("toString")?;
+      let to_string_fn = scope.alloc_native_function(to_string_id, None, to_string_name, 0)?;
+      scope.push_root(Value::Object(to_string_fn))?;
+
+      let to_string_key = VmPropertyKey::from_string(scope.alloc_string("toString")?);
+      scope.define_property(
+        obj,
+        to_string_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(to_string_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let mut cx = VmJsWebIdlCx::new_in_scope(vm, &mut scope, limits, &webidl_hooks);
+      cx.scope.push_root(Value::Object(obj))?;
+      let s = cx.to_string(Value::Object(obj))?;
+      assert_eq!(cx.scope.heap().get_string(s)?.to_utf8_lossy(), "hello");
+      Ok(())
+    });
+
+    realm.teardown(&mut heap);
+    result?;
+    assert_eq!(host_hooks.to_string_calls, 1);
+    Ok(())
   }
 
   #[test]
