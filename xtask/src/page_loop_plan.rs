@@ -83,8 +83,6 @@ pub fn build_render_fixtures_command(
 ) -> Command {
   let render_fixtures_exe = render_fixtures_executable(repo_root, debug);
   let mut cmd = cmd::run_limited_command_default(repo_root);
-  // Keep renders deterministic across machines.
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg(render_fixtures_exe);
   cmd.arg("--fixtures-dir").arg(fixtures_dir);
   cmd.arg("--out-dir").arg(out_dir);
@@ -133,7 +131,6 @@ pub fn build_inspect_frag_command(
 ) -> Command {
   let inspect_frag_exe = inspect_frag_executable(repo_root, debug);
   let mut cmd = cmd::run_limited_command_default(repo_root);
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg(inspect_frag_exe);
   cmd.arg(&args.fixture_html);
   if let Some(overlay) = args.overlay_png.as_ref() {

@@ -346,13 +346,15 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
   fn dom_exception_class_from_global(
     &mut self,
   ) -> Result<Option<crate::js::bindings::DomExceptionClassVmJs>, VmError> {
+    // Prefer the real `DOMException` class when available. This is installed by `WindowRealm`
+    // initialization (and other embeddings) on the global object.
+    //
+    // When missing, fall back to throwing an `Error`-like object so WebIDL conversions can still
+    // report failures in non-DOM contexts.
     let mut scope = self.cx.scope.reborrow();
     let global = self.state.global_object;
     scope.push_root(Value::Object(global))?;
 
-    // `DOMException` should be installed on the global object for window/worker realms. Bindings
-    // runtime tests may not install it, so treat absence as "not available" and fall back to an
-    // `Error`-shaped object.
     let key_dom_exception_s = scope.alloc_string("DOMException")?;
     scope.push_root(Value::String(key_dom_exception_s))?;
     let key_dom_exception = PropertyKey::from_string(key_dom_exception_s);

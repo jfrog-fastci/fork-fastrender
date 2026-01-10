@@ -1622,8 +1622,6 @@ fn build_render_fixtures_command(
 ) -> Result<Command> {
   let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
   cmd.arg(render_fixtures_exe);
-  // Keep renders deterministic across machines.
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg("--fixtures-dir").arg(fixtures_root);
   cmd.arg("--out-dir").arg(&layout.fastrender);
   cmd
@@ -1713,7 +1711,6 @@ fn build_inspect_frag_overlay_command(
 
   let overlay_png = layout.overlay.join(format!("{stem}.png"));
   let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg(inspect_frag_exe);
   cmd.arg(fixture_html);
   cmd.arg("--render-overlay").arg(overlay_png);

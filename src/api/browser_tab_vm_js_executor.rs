@@ -118,6 +118,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .unwrap_or("source=inline");
     let source = Arc::new(SourceText::new(source_name, script_text));
 
+    // The `vm-js` entry points used by `WindowRealm` pass a dummy `VmHost` (`()`), so bindings that
+    // need embedder state must downcast via `VmHostHooks::as_any_mut()`. Use the `BrowserDocumentDom2`
+    // as the host context so Web APIs can access the current document/fetcher state.
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
     let result = with_event_loop(event_loop, || {
       realm.exec_script_source_with_hooks(&mut hooks, source)

@@ -1313,6 +1313,14 @@ fn dry_run_with_overlay_prints_deterministic_overlay_paths() {
     a_pos < b_pos,
     "expected overlay commands to be printed in stem order (a then b); stdout:\n{stdout}"
   );
+  let inspect_line = stdout
+    .lines()
+    .find(|line| line.contains(&a_overlay))
+    .expect("inspect_frag overlay command line should be printed");
+  assert!(
+    !inspect_line.contains("FASTR_USE_BUNDLED_FONTS=1"),
+    "fixture-chrome-diff should not force bundled-only fonts for inspect_frag overlay; got:\n{inspect_line}"
+  );
 
   assert!(
     stdout.contains("--viewport 800x600"),

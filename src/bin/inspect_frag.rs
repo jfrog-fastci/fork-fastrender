@@ -10,6 +10,7 @@ use fastrender::dom::DomNodeType;
 use fastrender::geometry::{Point, Rect};
 use fastrender::image_output::encode_image;
 use fastrender::pageset::{pageset_short_hash, pageset_stem};
+use fastrender::text::font_db::FontConfig;
 #[cfg(feature = "disk_cache")]
 use fastrender::HttpFetcher;
 #[cfg(not(feature = "disk_cache"))]
@@ -1279,10 +1280,12 @@ fn run(args: Args) -> Result<(), DynError> {
 
   let fetcher = build_fetcher(&args)?;
 
+  let font_config = inspect_frag_font_config();
   let mut renderer = FastRender::builder()
     .device_pixel_ratio(args.dpr)
     .compat_mode(args.compat.compat_profile())
     .dom_compatibility_mode(args.compat.dom_compat_mode())
+    .font_sources(font_config)
     .fetcher(fetcher)
     .runtime_toggles(runtime_toggles)
     .build()?;
@@ -1561,6 +1564,16 @@ fn run(args: Args) -> Result<(), DynError> {
   Ok(())
 }
 
+fn inspect_frag_font_config() -> FontConfig {
+  let mut config = FontConfig::default();
+  if config.use_system_fonts {
+    // Align with `render_fixtures`: when using system fonts, keep bundled fallbacks enabled so
+    // sparse host font sets (and scripts/emoji fallbacks) still render deterministically.
+    config.use_bundled_fonts = true;
+  }
+  config
+}
+
 fn main() -> Result<(), DynError> {
   // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
   let default_hook = std::panic::take_hook();
@@ -1764,6 +1777,7 @@ mod tests {
       .device_pixel_ratio(offline_args.dpr)
       .compat_mode(offline_args.compat.compat_profile())
       .dom_compatibility_mode(offline_args.compat.dom_compat_mode())
+      .font_sources(inspect_frag_font_config())
       .fetcher(fetcher)
       .runtime_toggles(runtime_toggles)
       .build()

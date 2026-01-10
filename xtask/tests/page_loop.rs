@@ -20,6 +20,9 @@ fn write_progress_file(dir: &std::path::Path, stem: &str, json: &str) {
 fn dry_run_prints_expected_plan() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
+    // Ensure binary paths resolve deterministically even if the outer environment sets
+    // CARGO_TARGET_DIR.
+    .env("CARGO_TARGET_DIR", "")
     .args(["page-loop", "--fixture", "example.com", "--dry-run"])
     .output()
     .expect("run xtask page-loop --dry-run");
@@ -44,9 +47,17 @@ fn dry_run_prints_expected_plan() {
     stdout.contains("scripts/cargo_agent.sh build --release --bin render_fixtures"),
     "expected render_fixtures build command to be present; got:\n{stdout}"
   );
+  let render_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures") && line.contains("--fixtures-dir"))
+    .expect("render_fixtures command line should be printed");
   assert!(
-    stdout.contains("target/release/render_fixtures"),
-    "expected render_fixtures execution to use target/release; got:\n{stdout}"
+    render_line.contains("target/release/render_fixtures"),
+    "expected render_fixtures to use target/release; got:\n{render_line}"
+  );
+  assert!(
+    !render_line.contains("FASTR_USE_BUNDLED_FONTS=1"),
+    "page-loop should not force bundled-only fonts for render_fixtures; got:\n{render_line}"
   );
   assert!(
     stdout.contains("target/page_loop") && stdout.contains("example.com") && stdout.contains("fastrender"),
@@ -78,20 +89,17 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
     .find(|line| line.contains("scripts/cargo_agent.sh build") && line.contains("--bin render_fixtures"))
     .expect("render_fixtures build command line should be printed");
   assert!(
-    build_line.contains("scripts/cargo_agent.sh build") && build_line.contains("--bin render_fixtures"),
-    "expected render_fixtures build command line; got:\n{build_line}"
-  );
-  assert!(
     !build_line.contains("--release"),
     "expected --debug to omit `--release` for render_fixtures build; got:\n{build_line}"
   );
-  let run_line = stdout
+
+  let render_line = stdout
     .lines()
-    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures"))
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures") && line.contains("--fixtures-dir"))
     .expect("render_fixtures execution command line should be printed");
   assert!(
-    run_line.contains("target/debug/render_fixtures"),
-    "expected --debug to use target/debug/render_fixtures; got:\n{run_line}"
+    render_line.contains("target/debug/render_fixtures"),
+    "expected --debug to use target/debug/render_fixtures; got:\n{render_line}"
   );
 }
 
@@ -254,8 +262,16 @@ fn dry_run_with_inspect_dump_json_includes_inspect_frag_dump_json_command() {
   let expected_out = repo_root().join("target/page_loop/example.com/inspect");
   let expected_arg = format!("--dump-json {}", expected_out.display());
   assert!(
-    stdout.contains("--bin inspect_frag"),
+    stdout.contains("inspect_frag"),
     "expected inspect_frag command in plan; got:\n{stdout}"
+  );
+  let inspect_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("inspect_frag") && line.contains("--dump-json"))
+    .expect("inspect_frag execution command line should be printed");
+  assert!(
+    !inspect_line.contains("FASTR_USE_BUNDLED_FONTS=1"),
+    "page-loop should not force bundled-only fonts for inspect_frag; got:\n{inspect_line}"
   );
   assert!(
     stdout.contains(&expected_arg),
