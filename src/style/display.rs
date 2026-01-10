@@ -469,17 +469,19 @@ impl Display {
       "none" => Ok(Display::None),
       "block" => Ok(Display::Block),
       "inline" => Ok(Display::Inline),
-      // Legacy -webkit-box values from the 2009 flexbox draft.
+      // Legacy `*-box` values from the 2009 flexbox draft.
       //
       // These values are heavily used as a compatibility fallback. FastRender treats them as
-      // equivalent to modern flex containers (the legacy `-webkit-box-*` properties are mapped to
-      // modern flexbox semantics during style application).
+      // equivalent to modern flex containers (the legacy `*-box-*` properties are mapped to modern
+      // flexbox semantics during style application).
       //
       // Note: the classic `-webkit-line-clamp` pattern relies on `display: -webkit-box` but needs
       // flow layout behavior. That compatibility quirk is handled when applying declarations (see
       // `ComputedStyle::display_is_webkit_box`), not here.
       "-webkit-box" => Ok(Display::Flex),
       "-webkit-inline-box" => Ok(Display::InlineFlex),
+      "-moz-box" => Ok(Display::Flex),
+      "-moz-inline-box" => Ok(Display::InlineFlex),
       "ruby" => Ok(Display::Ruby),
       "ruby-base" => Ok(Display::RubyBase),
       "ruby-text" => Ok(Display::RubyText),

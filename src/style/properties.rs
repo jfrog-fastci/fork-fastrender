@@ -9840,10 +9840,12 @@ fn apply_declaration_with_base_internal_with_order(
     // Display
     "display" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        if kw.eq_ignore_ascii_case("-webkit-box") {
+        if kw.eq_ignore_ascii_case("-webkit-box") || kw.eq_ignore_ascii_case("-moz-box") {
           styles.display = Display::Flex;
           styles.display_is_webkit_box = true;
-        } else if kw.eq_ignore_ascii_case("-webkit-inline-box") {
+        } else if kw.eq_ignore_ascii_case("-webkit-inline-box")
+          || kw.eq_ignore_ascii_case("-moz-inline-box")
+        {
           styles.display = Display::InlineFlex;
           styles.display_is_webkit_box = true;
         } else if let Ok(display) = Display::parse(kw) {
@@ -24065,6 +24067,28 @@ mod tests {
     assert_eq!(styles.webkit_box_orient, WebkitBoxOrient::Vertical);
     assert_eq!(styles.flex_direction, FlexDirection::Column);
     assert_eq!(styles.display, Display::Flex);
+  }
+
+  #[test]
+  fn display_moz_box_values_set_legacy_box_flag() {
+    let parent = ComputedStyle::default();
+
+    for (kw, expected_display) in [
+      ("-moz-box", Display::Flex),
+      ("-moz-inline-box", Display::InlineFlex),
+    ] {
+      let mut styles = ComputedStyle::default();
+      let decl = Declaration {
+        property: "display".into(),
+        value: PropertyValue::Keyword(kw.into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      };
+      apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+      assert_eq!(styles.display, expected_display);
+      assert!(styles.display_is_webkit_box);
+    }
   }
 
   #[test]

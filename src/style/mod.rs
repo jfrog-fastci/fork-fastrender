@@ -870,13 +870,13 @@ pub struct CustomPropertyDeclaration {
 pub struct ComputedStyle {
   // Display and positioning
   pub display: Display,
-  /// Whether `display` was specified as the legacy `-webkit-box` value.
+  /// Whether `display` was specified as a legacy 2009 flexbox `*-box` value.
   ///
-  /// This legacy keyword is commonly paired with `-webkit-line-clamp` and legacy `-webkit-box-*`
-  /// flexbox properties. FastRender treats `-webkit-box` / `-webkit-inline-box` as flex containers
-  /// (see the legacy property mapping in `style::properties`), but the classic line-clamp pattern
-  /// expects flow layout; when the pattern is active, the used display is forced back to a flow
-  /// display type while this flag remains true.
+  /// These legacy keywords (`-webkit-box`, `-webkit-inline-box`, `-moz-box`, `-moz-inline-box`) are
+  /// commonly paired with `-webkit-line-clamp` and legacy `*-box-*` flexbox properties. FastRender
+  /// treats them as flex containers (see the legacy property mapping in `style::properties`), but
+  /// the classic line-clamp pattern expects flow layout; when the pattern is active, the used
+  /// display is forced back to a flow display type while this flag remains true.
   pub display_is_webkit_box: bool,
   /// Legacy axis orientation for `display: -webkit-box` (2009 flexbox draft).
   ///

@@ -195,9 +195,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn supports_legacy_webkit_box_display_values() {
+  fn supports_legacy_box_display_values() {
     assert!(supports_declaration("display", "-webkit-box"));
     assert!(supports_declaration("display", "-webkit-inline-box"));
+    assert!(supports_declaration("display", "-moz-box"));
+    assert!(supports_declaration("display", "-moz-inline-box"));
   }
 
   #[test]
