@@ -372,6 +372,75 @@ impl EventListenerRegistry {
     Self::default()
   }
 
+  /// Returns `true` if there is at least one listener registered for `type_` on `target`.
+  pub fn has_event_listeners(&self, target: EventTargetId, type_: &str) -> bool {
+    let target = target.normalize();
+    self
+      .listeners
+      .borrow()
+      .get(&target)
+      .and_then(|by_type| by_type.get(type_))
+      .is_some_and(|listeners| !listeners.is_empty())
+  }
+
+  /// Returns `true` if `dispatch_event` for an event with the given `target`, `type_`, and `bubbles`
+  /// flag would invoke any listeners.
+  ///
+  /// This is useful as an optimization for hosts: queueing a task to dispatch an event that cannot
+  /// possibly observe a listener is wasted work and can affect deterministic "task turn" tests.
+  pub fn has_listeners_for_dispatch(
+    &self,
+    target: EventTargetId,
+    type_: &str,
+    dom: &dom2::Document,
+    bubbles: bool,
+  ) -> bool {
+    fn has_matching_listener(
+      registry: &EventListenerRegistry,
+      target: EventTargetId,
+      type_: &str,
+      capture: bool,
+    ) -> bool {
+      let target = target.normalize();
+      registry
+        .listeners
+        .borrow()
+        .get(&target)
+        .and_then(|by_type| by_type.get(type_))
+        .is_some_and(|listeners| listeners.iter().any(|l| l.options.capture == capture))
+    }
+
+    let path = build_event_path(target, dom, self);
+    if path.is_empty() {
+      return false;
+    }
+    let target_index = path.len() - 1;
+
+    // Capturing phase: only capture listeners on ancestors are invoked.
+    for idx in 0..target_index {
+      if has_matching_listener(self, path[idx].target, type_, /* capture */ true) {
+        return true;
+      }
+    }
+
+    // At-target phase invokes both capture and bubble listeners (regardless of `bubbles`).
+    if self.has_event_listeners(path[target_index].target, type_) {
+      return true;
+    }
+
+    // Bubbling phase: only bubble listeners on ancestors are invoked, and only if the event
+    // actually bubbles.
+    if bubbles {
+      for idx in (0..target_index).rev() {
+        if has_matching_listener(self, path[idx].target, type_, /* capture */ false) {
+          return true;
+        }
+      }
+    }
+
+    false
+  }
+
   pub fn add_event_listener(
     &self,
     target: EventTargetId,

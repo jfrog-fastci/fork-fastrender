@@ -387,7 +387,13 @@ impl ModuleLoader {
       ModuleReferrer::Realm(_) | ModuleReferrer::Script(_) => self.document_url.as_deref(),
     };
 
-    let base_url = base_url.ok_or(ModuleResolveError::RelativeWithoutBase)?;
+    let Some(base_url) = base_url else {
+      // If there's no base URL for this realm/script, we can still resolve URL-like specifiers
+      // (e.g. `data:` or `https:`). Relative URLs and bare specifiers require a base URL.
+      return Url::parse(request.specifier.as_str())
+        .map(|url| url.to_string())
+        .map_err(|_| ModuleResolveError::RelativeWithoutBase);
+    };
     let base_url = Url::parse(base_url).map_err(|_| ModuleResolveError::Url)?;
     resolve_import_map_specifier(&mut self.import_map_state, request.specifier.as_str(), &base_url)
       .map(|url| url.to_string())

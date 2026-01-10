@@ -152,6 +152,10 @@ struct ScriptEntry<NodeId> {
 
 pub struct HtmlScriptScheduler<NodeId> {
   next_script_id: u64,
+  /// Whether this document supports module scripts (and related features such as import maps).
+  ///
+  /// When `false`, `<script type="module">` and `<script type="importmap">` are treated as unknown
+  /// and ignored, and the `nomodule` attribute has no effect on classic scripts.
   modules_supported: bool,
 
   scripts: HashMap<HtmlScriptId, ScriptEntry<NodeId>>,
@@ -253,6 +257,17 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     // `nomodule` only applies to classic scripts when modules are supported.
     if element.script_type == ScriptType::Classic && element.nomodule_attr && self.modules_supported {
       return Ok(HtmlDiscoveredScript { id, actions });
+    }
+
+    // If module scripts are not supported, treat module/importmap scripts as unknown and ignore
+    // them entirely.
+    if !self.modules_supported {
+      match element.script_type {
+        ScriptType::Module | ScriptType::ImportMap => {
+          return Ok(HtmlDiscoveredScript { id, actions });
+        }
+        _ => {}
+      }
     }
 
     match element.script_type {
@@ -513,28 +528,63 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     script_id: HtmlScriptId,
     module_source_text: Option<String>,
   ) -> Result<Vec<HtmlScriptSchedulerAction<NodeId>>> {
-    let Some(entry) = self.scripts.get_mut(&script_id) else {
-      return Err(Error::Other(format!(
-        "module_graph_completed called for unknown script_id={}",
-        script_id.as_u64()
-      )));
+    let failed = module_source_text.is_none();
+    let (node_id, mode) = {
+      let Some(entry) = self.scripts.get_mut(&script_id) else {
+        return Err(Error::Other(format!(
+          "module_graph_completed called for unknown script_id={}",
+          script_id.as_u64()
+        )));
+      };
+      if entry.kind != ScriptKind::Module {
+        return Err(Error::Other(format!(
+          "module_graph_completed called for non-module script_id={}",
+          script_id.as_u64()
+        )));
+      }
+      if entry.ready.is_some() {
+        return Err(Error::Other(format!(
+          "module_graph_completed called more than once for script_id={}",
+          script_id.as_u64()
+        )));
+      }
+
+      entry.ready = Some(ReadyPayload::ModuleSource(module_source_text));
+      // Module fetch failures should dispatch `error` as soon as the graph fetch completes,
+      // regardless of whether the script would otherwise be deferred until parsing is complete.
+      //
+      // Mark the script as "queued" so ordered/deferred queues can advance past it.
+      if failed {
+        entry.queued_for_execution = true;
+      }
+      (entry.node_id.clone(), entry.mode)
     };
-    if entry.kind != ScriptKind::Module {
-      return Err(Error::Other(format!(
-        "module_graph_completed called for non-module script_id={}",
-        script_id.as_u64()
-      )));
-    }
-    if entry.ready.is_some() {
-      return Err(Error::Other(format!(
-        "module_graph_completed called more than once for script_id={}",
-        script_id.as_u64()
-      )));
+
+    if failed {
+      let mut actions = vec![HtmlScriptSchedulerAction::QueueScriptEventTask {
+        script_id,
+        node_id,
+        event: ScriptEventKind::Error,
+      }];
+
+      // Unblock any ordered script queues now that this script is considered completed.
+      match mode {
+        ScheduleMode::ParserBlocking => {
+          // Module scripts never block the parser.
+          debug_assert!(false, "module scripts should never be parser-blocking");
+        }
+        ScheduleMode::Async => {}
+        ScheduleMode::OrderedAsap => {
+          actions.extend(self.queue_ordered_asap_if_ready()?);
+        }
+        ScheduleMode::PostParse => {
+          actions.extend(self.queue_post_parse_if_ready()?);
+        }
+      }
+      return Ok(actions);
     }
 
-    entry.ready = Some(ReadyPayload::ModuleSource(module_source_text));
-
-    match entry.mode {
+    match mode {
       ScheduleMode::ParserBlocking => {
         // Module scripts never block the parser.
         debug_assert!(false, "module scripts should never be parser-blocking");

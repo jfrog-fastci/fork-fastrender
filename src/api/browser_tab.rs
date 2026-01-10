@@ -3310,14 +3310,19 @@ impl BrowserTab {
     {
       // When navigation parsing is initiated outside the event loop (as a synchronous call to
       // `navigate_to_url`), we still want "fast" async scripts to be able to execute before we
-      // enqueue the parse-resume task. Running pending tasks *before* scheduling parse resumption
-      // ensures the async script fetch + execution tasks observe a lower global task sequence
-      // number than the eventual parse task, matching browser-visible interleaving semantics.
+      // enqueue the parse-resume task.
+      //
+      // The async script's execution task is queued *after* its fetch task runs. If we scheduled the
+      // parse-resume task immediately, it could receive a lower task sequence number than the async
+      // script's eventual execution task, causing parsing to resume and discover later scripts
+      // before the async script executes.
+      //
+      // Instead, run the event loop once now (draining any currently queued work, including the
+      // async script's fetch + execution tasks) and then enqueue the parse-resume task.
       let trace = self.trace.clone();
       let diagnostics = self.diagnostics.clone();
-      let limits = self.host.js_execution_options.event_loop_run_limits;
       let _ = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
-        limits,
+        self.host.js_execution_options.event_loop_run_limits,
         /*render_between_turns=*/ false,
         move |err| {
           let message = err.to_string();

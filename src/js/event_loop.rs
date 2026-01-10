@@ -1329,7 +1329,7 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
-  fn pending_task_count(&self) -> usize {
+  pub(crate) fn pending_task_count(&self) -> usize {
     self.task_queues.values().map(VecDeque::len).sum()
   }
 

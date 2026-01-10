@@ -615,14 +615,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       }
       ModuleLoadOutcome::InFlight => {}
       ModuleLoadOutcome::StartFetch(key) => {
-        // If we're already in a networking task (e.g. BrowserTab module graph prefetch), perform
-        // the load synchronously so `vm_js::load_requested_modules` can be observed synchronously by
-        // the caller.
-        let in_networking_task = current_event_loop_mut::<Host>()
-          .and_then(|event_loop| event_loop.currently_running_task())
-          .is_some_and(|task| task.source == TaskSource::Networking);
-
-        if in_networking_task {
+        let mut complete_fetch_synchronously = |hooks: &mut VmJsEventLoopHooks<Host>,
+                                               vm: &mut Vm,
+                                               scope: &mut Scope<'_>,
+                                               modules: &mut ModuleGraph,
+                                               key: crate::js::realm_module_loader::ModuleKey|
+         -> Result<(), VmError> {
           let (waiters, result) = module_loader
             .borrow_mut()
             .fetch_and_register(modules, key)
@@ -649,13 +647,34 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
             vm.finish_loading_imported_module(
               scope,
               modules,
-              self,
+              hooks,
               waiter.referrer,
               waiter.request,
               waiter.payload,
               completion.clone(),
             )?;
           }
+
+          Ok(())
+        };
+
+        // `vm-js` expects module loading to be observable synchronously in some embedder entry
+        // points (e.g. `Vm::load_requested_modules` / executor unit tests) that call into the VM
+        // directly rather than via a queued `EventLoop` task. In those cases,
+        // `EventLoop::currently_running_task()` is `None`.
+        //
+        // We also load synchronously when already running inside a networking task (e.g. BrowserTab
+        // module graph prefetch) to avoid queueing nested networking work.
+        let running_task = current_event_loop_mut::<Host>().and_then(|event_loop| {
+          event_loop.currently_running_task()
+        });
+        let should_load_synchronously = match running_task {
+          None => true,
+          Some(task) => task.source == TaskSource::Networking,
+        };
+
+        if should_load_synchronously {
+          complete_fetch_synchronously(self, vm, scope, modules, key)?;
           return Ok(());
         }
 
@@ -663,39 +682,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         // module-loading continuation later.
         let Some(event_loop) = current_event_loop_mut::<Host>() else {
           // Not executing inside a FastRender `EventLoop`; fall back to synchronous loading.
-          let (waiters, result) = module_loader
-            .borrow_mut()
-            .fetch_and_register(modules, key)
-            .ok_or(VmError::InvariantViolation(
-              "module loader missing inflight continuation",
-            ))?;
-
-          let completion = match result {
-            Ok(id) => Ok(id),
-            Err(VmError::Syntax(diags)) => {
-              let message =
-                vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
-              let value = make_syntax_error_value(vm, scope, &message)?;
-              Err(VmError::Throw(value))
-            }
-            Err(VmError::TypeError(message)) => {
-              let value = make_type_error_value(vm, scope, message)?;
-              Err(VmError::Throw(value))
-            }
-            Err(other) => Err(other),
-          };
-
-          for waiter in waiters {
-            vm.finish_loading_imported_module(
-              scope,
-              modules,
-              self,
-              waiter.referrer,
-              waiter.request,
-              waiter.payload,
-              completion.clone(),
-            )?;
-          }
+          complete_fetch_synchronously(self, vm, scope, modules, key)?;
           return Ok(());
         };
 
