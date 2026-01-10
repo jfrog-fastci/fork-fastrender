@@ -8,8 +8,8 @@
 //!   `font-src`, `connect-src`, `frame-src`, `script-src`, `script-src-elem`, `script-src-attr`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
-//!   - `'unsafe-inline'` (inline `<script>`/`<style>` only; ignored when a nonce/hash is present, matching
-//!     modern browser behavior)
+//!   - `'unsafe-inline'` (inline `<script>`/`<style>` and `style=""` attributes; ignored when a nonce/hash is
+//!     present, matching modern browser behavior)
 //!   - `'strict-dynamic'` (only affects script directives; treated conservatively)
 //!   - `'nonce-…'` (inline `<script>`/`<style>` + external `<script nonce=...>`)
 //!   - `'sha256-…'` (inline `<script>`/`<style>` only; base64-encoded SHA-256 of the inline source bytes)
@@ -23,7 +23,7 @@
 //!   present alongside a nonce/hash, we conservatively treat URL-based allowlisting as disabled,
 //!   requiring explicit nonces on `<script>` elements.
 //! - Hash sources other than `'sha256-…'` (sha384/sha512, etc.).
-//! - Nonce/hash/`'unsafe-inline'` semantics for inline *attributes* (event handlers, `style=""`, etc.).
+//! - Nonce/hash/`'unsafe-inline'` semantics for inline *event handler* attributes (e.g. `onclick=`).
 //!   These tokens are also ignored for URL-based matching (they do not allow external loads by
 //!   themselves).
 
@@ -195,6 +195,17 @@ impl CspPolicy {
       .policies
       .iter()
       .all(|set| set_allows_inline_style_element(set, nonce, source_text))
+  }
+
+  /// True if this policy allows a `style="..."` attribute to apply.
+  ///
+  /// This is a subset of CSP inline semantics and uses `style-src-attr` (fallback:
+  /// `style-src` → `default-src`).
+  pub fn allows_inline_style_attribute(&self, source_text: &str) -> bool {
+    self
+      .policies
+      .iter()
+      .all(|set| set_allows_inline_style_attribute(set, source_text))
   }
 
   /// True if this policy allows a classic external `<script src=...>` element to load/execute.
@@ -633,6 +644,30 @@ fn set_allows_inline_style_element(
   }
 
   // `unsafe-inline` is ignored when a nonce/hash is present (modern browsers).
+  if !has_nonce_or_hash && list.iter().any(|s| matches!(s, CspSource::UnsafeInline)) {
+    return true;
+  }
+
+  false
+}
+
+fn set_allows_inline_style_attribute(set: &CspDirectiveSet, _source_text: &str) -> bool {
+  // Inline `style="..."` attributes use `style-src-attr` (fallback: `style-src` → `default-src`).
+  let list = directive_sources_for_set(set, CspDirective::StyleSrcAttr);
+  let Some(list) = list else {
+    // No directive and no default-src => allow.
+    return true;
+  };
+  if list.is_empty() {
+    return false;
+  }
+
+  let has_nonce_or_hash = list
+    .iter()
+    .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)));
+
+  // Hash matching for `style=""` requires `'unsafe-hashes'`, which we do not model. Treat nonces
+  // and hashes as "disables `unsafe-inline`" only.
   if !has_nonce_or_hash && list.iter().any(|s| matches!(s, CspSource::UnsafeInline)) {
     return true;
   }
@@ -1324,6 +1359,34 @@ mod tests {
     assert!(
       policy.allows_inline_style_element(Some("abc"), "body { color: red }"),
       "expected matching nonce to allow inline <style> elements"
+    );
+  }
+
+  #[test]
+  fn style_src_attr_none_blocks_inline_style_attributes() {
+    let policy = CspPolicy::from_values(["style-src-attr 'none'"]).expect("parse");
+    assert!(
+      !policy.allows_inline_style_attribute("color: red"),
+      "expected style-src-attr 'none' to block style=\"\" attributes"
+    );
+  }
+
+  #[test]
+  fn style_src_attr_falls_back_to_style_src() {
+    let policy = CspPolicy::from_values(["style-src 'unsafe-inline'"]).expect("parse");
+    assert!(
+      policy.allows_inline_style_attribute("color: red"),
+      "expected style-src 'unsafe-inline' to allow style=\"\" attributes via fallback"
+    );
+  }
+
+  #[test]
+  fn style_src_attr_overrides_style_src_for_style_attributes() {
+    let policy =
+      CspPolicy::from_values(["style-src-attr 'none'; style-src 'unsafe-inline'"]).expect("parse");
+    assert!(
+      !policy.allows_inline_style_attribute("color: red"),
+      "expected style-src-attr to override style-src for style=\"\" attributes"
     );
   }
 }

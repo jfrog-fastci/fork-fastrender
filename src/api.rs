@@ -11055,6 +11055,38 @@ impl FastRender {
     })
   }
 
+  fn strip_inline_style_attributes_blocked_by_csp(dom: &mut DomNode, csp: &CspPolicy) {
+    // Fast path: when the policy allows inline style attributes, there's nothing to do.
+    if csp.allows_inline_style_attribute("") {
+      return;
+    }
+
+    // Avoid recursion for extremely deep/degenerate DOM trees.
+    let mut stack: Vec<*mut DomNode> = Vec::new();
+    stack.push(dom as *mut DomNode);
+
+    while let Some(ptr) = stack.pop() {
+      // SAFETY: pointers come from `DomNode` allocations owned by `dom`, and we do not mutate the
+      // `children` vectors while iterating (only attributes).
+      let node = unsafe { &mut *ptr };
+
+      let should_remove_style_attr = match node.get_attribute_ref("style") {
+        Some(style_attr) => !csp.allows_inline_style_attribute(style_attr),
+        None => false,
+      };
+      if should_remove_style_attr {
+        node.remove_attribute("style");
+      }
+
+      if node.template_contents_are_inert() {
+        continue;
+      }
+      for child in node.children.iter_mut().rev() {
+        stack.push(child as *mut DomNode);
+      }
+    }
+  }
+
   fn layout_document_for_media_with_artifacts_owned(
     &mut self,
     mut dom_with_state: DomNode,
@@ -11073,6 +11105,17 @@ impl FastRender {
   ) -> Result<LayoutArtifacts> {
     let base_width = width;
     let base_height = height;
+
+    if let Some(csp) = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.csp.as_ref())
+    {
+      // CSP `style-src-attr` controls whether `style="..."` attributes apply. Keep the style
+      // system CSP-agnostic by stripping blocked `style` attributes from the cloned DOM before we
+      // build the styled tree.
+      Self::strip_inline_style_attributes_blocked_by_csp(&mut dom_with_state, csp);
+    }
 
     // Viewport scrollbars are not relevant in paged media.
     if media_type == MediaType::Print {
@@ -27994,6 +28037,35 @@ mod tests {
       blocked.data(),
       baseline.data(),
       "expected CSP style-src-elem 'none' to suppress inline <style> rules"
+    );
+  }
+
+  #[test]
+  fn csp_style_src_attr_none_blocks_style_attribute() {
+    // Regression test: `style-src-attr` should apply to `style="..."` attributes.
+    //
+    // Also ensure per-document CSP state does not leak across repeated `render_html` calls on a
+    // reused `FastRender` instance.
+    let baseline_html = "<!doctype html><html><body></body></html>";
+    let styled_html = r#"<!doctype html><html><body style="background: rgb(1, 2, 3)"></body></html>"#;
+    let blocked_html = r#"<!doctype html><html><head>
+        <meta http-equiv="Content-Security-Policy" content="style-src-attr 'none'">
+      </head><body style="background: rgb(1, 2, 3)"></body></html>"#;
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let baseline = renderer.render_html(baseline_html, 16, 16).expect("baseline render");
+    let blocked = renderer.render_html(blocked_html, 16, 16).expect("blocked render");
+    let styled = renderer.render_html(styled_html, 16, 16).expect("styled render");
+
+    assert_ne!(
+      styled.data(),
+      baseline.data(),
+      "expected style attribute to affect rendering when no CSP blocks it"
+    );
+    assert_eq!(
+      blocked.data(),
+      baseline.data(),
+      "expected CSP style-src-attr 'none' to suppress style=\"\" attributes"
     );
   }
 
