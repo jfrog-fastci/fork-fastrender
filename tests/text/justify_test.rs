@@ -928,6 +928,33 @@ fn distribute_mode_spreads_mixed_scripts() {
 }
 
 #[test]
+fn distribute_mode_includes_word_boundaries_and_inter_character_gaps() {
+  let text = "AB C";
+  let mut glyphs = vec![
+    glyph_with_cluster(0, 0.0, 10.0, false, 0), // A
+    glyph_with_cluster(1, 10.0, 10.0, false, 1), // B
+    glyph_with_cluster(2, 20.0, 10.0, false, 2), // space
+    glyph_with_cluster(3, 30.0, 10.0, false, 3), // C
+  ];
+
+  mark_word_boundaries(&mut glyphs, text);
+  assert!(glyphs[1].is_word_boundary, "B should end a word before the space");
+
+  let options = JustificationOptions::default()
+    .with_text_justify(TextJustify::Distribute)
+    .with_min_fill_ratio(0.0);
+  let result = justify_line_with_text(&mut glyphs, 60.0, 40.0, &options, Some(text));
+
+  assert!(result.is_justified);
+  // Extra space (20) should be split between:
+  // - inter-character gap A|B
+  // - word boundary after B
+  assert_approx_eq(glyphs[1].x, 20.0, "B shifted by first gap");
+  assert_approx_eq(glyphs[2].x, 40.0, "space shifted by both opportunities");
+  assert_approx_eq(glyphs[3].x, 50.0, "C shifted by total distributed extra");
+}
+
+#[test]
 fn apply_alignment_with_axis_offsets_vertical_inline() {
   let mut glyphs = vec![
     GlyphPosition::with_cluster(0, 5.0, 0.0, 0.0, 10.0, false, 0),

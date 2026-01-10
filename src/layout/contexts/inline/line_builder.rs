@@ -1381,6 +1381,36 @@ impl TextItem {
       .count()
   }
 
+  /// Counts internal justification opportunities for `text-justify: distribute`.
+  ///
+  /// `distribute` combines inter-word (expandable ASCII spaces/tabs) and inter-character expansion.
+  /// Evaluated at shaped cluster boundaries to avoid splitting grapheme clusters.
+  pub fn count_distribute_justify_opportunities(&self) -> usize {
+    if self.text.is_empty() || self.is_marker {
+      return 0;
+    }
+
+    self
+      .cluster_advances
+      .iter()
+      .filter_map(|b| {
+        let offset = b.byte_offset;
+        if offset == 0 || offset >= self.text.len() {
+          return None;
+        }
+        // `cluster_advances` byte offsets are aligned to UTF-8 char boundaries.
+        let prev = self.text[..offset].chars().next_back()?;
+        let next = self.text[offset..].chars().next()?;
+        Some((prev, next))
+      })
+      .filter(|(prev, next)| {
+        let inter_word = Self::is_expandable_space_for_justify(*prev)
+          && !Self::is_expandable_space_for_justify(*next);
+        inter_word || allows_inter_character_expansion(Some(*prev), Some(*next))
+      })
+      .count()
+  }
+
   /// Applies in-place `text-justify: inter-word` expansion inside a single shaped `TextItem`.
   ///
   /// Returns the number of opportunities expanded.
@@ -1400,6 +1430,20 @@ impl TextItem {
     }
     self.apply_internal_justification(gap_extra, |prev, next| {
       allows_inter_character_expansion(Some(prev), Some(next))
+    })
+  }
+
+  /// Applies in-place `text-justify: distribute` expansion inside a single shaped `TextItem`.
+  ///
+  /// `distribute` expands both inter-word (spaces/tabs) and inter-character opportunities.
+  /// Returns the number of opportunities expanded.
+  pub fn apply_distribute_justification(&mut self, gap_extra: f32) -> usize {
+    if self.is_marker {
+      return 0;
+    }
+    self.apply_internal_justification(gap_extra, |prev, next| {
+      (Self::is_expandable_space_for_justify(prev) && !Self::is_expandable_space_for_justify(next))
+        || allows_inter_character_expansion(Some(prev), Some(next))
     })
   }
 

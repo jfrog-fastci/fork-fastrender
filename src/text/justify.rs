@@ -464,10 +464,17 @@ pub fn justify_line_with_text(
   let text_chars_ref = text_chars.as_deref();
 
   match text_mode {
-    TextJustify::InterCharacter | TextJustify::Distribute => {
+    TextJustify::InterCharacter => {
       let gaps = collect_inter_character_gaps(glyphs, text_chars_ref);
       if !gaps.is_empty() {
         result = distribute_space_between_letters(glyphs, extra_space, options, axis, &gaps, false);
+      }
+    }
+    TextJustify::Distribute => {
+      let word_boundaries: usize = glyphs.iter().filter(|g| g.is_word_boundary).count();
+      let gaps = collect_inter_character_gaps(glyphs, text_chars_ref);
+      if word_boundaries > 0 || !gaps.is_empty() {
+        result = distribute_space_distribute_mode(glyphs, extra_space, axis, word_boundaries, &gaps);
       }
     }
     _ => {
@@ -597,6 +604,56 @@ fn distribute_space_between_letters(
     space_per_letter: space_per_gap,
     word_boundaries_used: 0,
     letter_spaces_used: gaps.len(),
+    is_justified: actual_extra_space > 0.0,
+  }
+}
+
+fn distribute_space_distribute_mode(
+  glyphs: &mut [GlyphPosition],
+  extra_space: f32,
+  axis: InlineAxis,
+  word_boundaries: usize,
+  letter_gaps: &[usize],
+) -> JustificationResult {
+  let total = word_boundaries + letter_gaps.len();
+  if glyphs.len() <= 1 || total == 0 {
+    return JustificationResult::default();
+  }
+
+  let space_per_opportunity = extra_space / (total as f32);
+  let actual_extra_space = space_per_opportunity * total as f32;
+
+  let mut cumulative_offset = 0.0;
+  let mut gap_iter = letter_gaps.iter().copied();
+  let mut next_gap = gap_iter.next();
+
+  for (i, glyph) in glyphs.iter_mut().enumerate() {
+    apply_inline_offset(glyph, axis, cumulative_offset);
+
+    if next_gap.is_some_and(|gap| gap == i) {
+      cumulative_offset += space_per_opportunity;
+      next_gap = gap_iter.next();
+    }
+
+    if glyph.is_word_boundary {
+      cumulative_offset += space_per_opportunity;
+    }
+  }
+
+  JustificationResult {
+    extra_space_added: actual_extra_space,
+    space_per_word: if word_boundaries > 0 {
+      space_per_opportunity
+    } else {
+      0.0
+    },
+    space_per_letter: if letter_gaps.is_empty() {
+      0.0
+    } else {
+      space_per_opportunity
+    },
+    word_boundaries_used: word_boundaries,
+    letter_spaces_used: letter_gaps.len(),
     is_justified: actual_extra_space > 0.0,
   }
 }
@@ -992,7 +1049,7 @@ fn collect_inter_character_gaps(glyphs: &[GlyphPosition], text: Option<&[char]>)
     if glyphs[i].cluster == glyphs[i + 1].cluster {
       continue;
     }
-    if glyphs[i].is_word_boundary || glyphs[i + 1].is_word_boundary {
+    if glyphs[i].is_word_boundary {
       continue;
     }
     if let Some(chars) = text {

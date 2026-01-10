@@ -6486,9 +6486,8 @@ impl InlineFormattingContext {
   fn count_internal_justify_opportunities(item: &InlineItem, mode: TextJustify) -> usize {
     match item {
       InlineItem::Text(t) => match mode {
-        TextJustify::InterCharacter | TextJustify::Distribute => {
-          t.count_inter_character_justify_opportunities()
-        }
+        TextJustify::InterCharacter => t.count_inter_character_justify_opportunities(),
+        TextJustify::Distribute => t.count_distribute_justify_opportunities(),
         _ => t.count_inter_word_justify_opportunities(),
       },
       InlineItem::InlineBox(b) => b
@@ -6512,8 +6511,11 @@ impl InlineFormattingContext {
   fn apply_internal_justification(item: &mut InlineItem, mode: TextJustify, gap_extra: f32) {
     match item {
       InlineItem::Text(t) => match mode {
-        TextJustify::InterCharacter | TextJustify::Distribute => {
+        TextJustify::InterCharacter => {
           t.apply_inter_character_justification(gap_extra);
+        }
+        TextJustify::Distribute => {
+          t.apply_distribute_justification(gap_extra);
         }
         _ => {
           t.apply_inter_word_justification(gap_extra);
@@ -6544,12 +6546,23 @@ impl InlineFormattingContext {
   }
 
   fn count_justifiable_gaps(items: &[PositionedItem], mode: TextJustify) -> usize {
-    if matches!(mode, TextJustify::InterCharacter | TextJustify::Distribute) {
+    if matches!(mode, TextJustify::InterCharacter) {
       return items
         .windows(2)
         .filter(|pair| allows_inter_character_gap(&pair[0].item, &pair[1].item))
         .count();
     }
+    if matches!(mode, TextJustify::Distribute) {
+      return items
+        .windows(2)
+        .filter(|pair| {
+          let prev = &pair[0].item;
+          let next = &pair[1].item;
+          allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next)
+        })
+        .count();
+    }
+
     items
       .windows(2)
       .filter(|pair| {
@@ -6564,8 +6577,13 @@ impl InlineFormattingContext {
     if index + 1 >= items.len() {
       return false;
     }
-    if matches!(mode, TextJustify::InterCharacter | TextJustify::Distribute) {
+    if matches!(mode, TextJustify::InterCharacter) {
       return allows_inter_character_gap(&items[index].item, &items[index + 1].item);
+    }
+    if matches!(mode, TextJustify::Distribute) {
+      let prev = &items[index].item;
+      let next = &items[index + 1].item;
+      return allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next);
     }
     let prev = &items[index].item;
     let next = &items[index + 1].item;
@@ -13993,13 +14011,23 @@ fn has_justify_opportunities(items: &[PositionedItem], mode: TextJustify) -> boo
     items.iter().filter(|p| !is_marker_item(&p.item)).collect();
 
   match mode {
-    TextJustify::InterCharacter | TextJustify::Distribute => {
+    TextJustify::InterCharacter => {
       non_marker
         .windows(2)
         .any(|pair| allows_inter_character_gap(&pair[0].item, &pair[1].item))
         || non_marker
           .iter()
           .any(|pos| item_has_interchar_opportunity(&pos.item))
+    }
+    TextJustify::Distribute => {
+      non_marker.windows(2).any(|pair| {
+        let prev = &pair[0].item;
+        let next = &pair[1].item;
+        allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next)
+      }) || non_marker.iter().any(|pos| {
+        let item = &pos.item;
+        item_has_interchar_opportunity(item) || item_has_space_boundary(item)
+      })
     }
     _ => {
       if non_marker
