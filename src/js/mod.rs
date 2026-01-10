@@ -36,6 +36,14 @@ pub mod dom_scripts;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
+
+// Legacy DOM script integration helpers (dynamic `<script>` preparation for dom2 mutations).
+//
+// This is not part of the canonical vm-js WindowRealm pipeline, but is still referenced by some
+// integration tests (e.g. streaming pipeline tests) while the newer vm-js/WebIDL plumbing is being
+// rolled out.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
