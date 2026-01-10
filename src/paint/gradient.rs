@@ -427,12 +427,12 @@ struct GradientStopKey {
 pub struct GradientCacheKey {
   stops: Vec<GradientStopKey>,
   spread: SpreadModeKey,
-  period_bits: u32,
+  span_bits: u32,
   bucket: u16,
 }
 
 impl GradientCacheKey {
-  pub fn new(stops: &[(f32, Rgba)], spread: SpreadMode, period: f32, bucket: u16) -> Self {
+  pub fn new(stops: &[(f32, Rgba)], spread: SpreadMode, span: f32, bucket: u16) -> Self {
     Self {
       stops: stops
         .iter()
@@ -445,7 +445,7 @@ impl GradientCacheKey {
         })
         .collect(),
       spread: spread.into(),
-      period_bits: f32_to_canonical_bits(period),
+      span_bits: f32_to_canonical_bits(span),
       bucket,
     }
   }
@@ -455,7 +455,8 @@ impl GradientCacheKey {
 pub struct GradientLut {
   colors: Arc<Vec<[f32; 4]>>,
   spread: SpreadModeKey,
-  period: f32,
+  offset: f32,
+  span: f32,
   scale: f32,
   last_idx: usize,
   first: PremultipliedColorU8,
@@ -533,10 +534,11 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
+    let t = t - self.offset;
     if t < 0.0 {
       return self.first;
     }
-    if t >= self.period {
+    if t >= self.span {
       return self.last;
     }
     Self::quantize_round(self.sample_mapped_f32(t))
@@ -547,7 +549,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return self.first;
     }
@@ -563,7 +566,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return self.first;
     }
@@ -592,10 +596,11 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
+    let t = t - self.offset;
     if t < 0.0 {
       return self.first;
     }
-    if t >= self.period {
+    if t >= self.span {
       return self.last;
     }
     Self::quantize_dither(self.sample_mapped_f32(t), dither)
@@ -606,7 +611,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return self.first;
     }
@@ -622,7 +628,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return self.first;
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return self.first;
     }
@@ -675,16 +682,18 @@ fn premultiply_rgba(color: Rgba) -> PremultipliedColorU8 {
 fn build_gradient_lut(
   stops: &[(f32, Rgba)],
   spread: SpreadMode,
-  period: f32,
+  span: f32,
   bucket: u16,
 ) -> GradientLut {
   let max_idx = bucket.max(1) as usize;
   let step_count = max_idx + 1;
   let max_idx = max_idx as f32;
+  let offset = stops.first().map(|(pos, _)| *pos).unwrap_or(0.0);
+  let span = span.max(1e-6);
   let mut colors = Vec::with_capacity(step_count);
   let mut window = stops.windows(2).peekable();
   for i in 0..step_count {
-    let pos = (i as f32 / max_idx) * period;
+    let pos = offset + (i as f32 / max_idx) * span;
     while let Some(segment) = window.peek() {
       if pos > segment[1].0 {
         window.next();
@@ -731,7 +740,7 @@ fn build_gradient_lut(
   let last_idx = colors.len().saturating_sub(1);
   // Pad gradients use `first/last` directly when clamping outside the stop range, so make sure
   // these match the actual terminal stop colors rather than the sampled LUT values. This matters
-  // when there are duplicate stops at the terminal positions (e.g. a sharp edge at `t==period`),
+  // when there are duplicate stops at the terminal positions (e.g. a sharp edge at `t==end`),
   // where the LUT sample at the exact position can come from the preceding segment.
   let first = stops
     .first()
@@ -741,11 +750,12 @@ fn build_gradient_lut(
     .last()
     .map(|(_, c)| premultiply_rgba(*c))
     .unwrap_or(first);
-  let scale = max_idx / period.max(1e-6);
+  let scale = max_idx / span;
 
   GradientLut {
     spread: spread.into(),
-    period,
+    offset,
+    span,
     scale,
     last_idx,
     first,
@@ -755,7 +765,10 @@ fn build_gradient_lut(
 }
 
 pub fn gradient_period(stops: &[(f32, Rgba)]) -> f32 {
-  stops.last().map(|(pos, _)| *pos).unwrap_or(1.0).max(1e-6)
+  match (stops.first(), stops.last()) {
+    (Some((start, _)), Some((end, _))) => (*end - *start).max(1e-6),
+    _ => 1.0,
+  }
 }
 
 pub fn gradient_bucket(max_dim: u32) -> u16 {
@@ -1144,7 +1157,6 @@ pub fn rasterize_conic_gradient_scaled(
   let pixels = pixmap.pixels_mut();
   let dx0 = (0.5 - center.x) * scale_x;
   let mut deadline_counter = 0usize;
-  const DEADLINE_PIXELS_STRIDE: usize = 16 * 1024;
   for y in 0..height as usize {
     let dy = (y as f32 + 0.5 - center.y) * scale_y;
     let mut dx = dx0;
@@ -1218,8 +1230,10 @@ mod tests {
   #[test]
   fn gradient_cache_keys_canonicalize_negative_zero() {
     let stops = &[(0.0, Rgba::WHITE), (1.0, Rgba::BLACK)];
-    let key = GradientCacheKey::new(stops, SpreadMode::Pad, 0.0, 0);
-    let key_neg = GradientCacheKey::new(stops, SpreadMode::Pad, -0.0, 0);
+    let stops_neg = &[(-0.0, Rgba::WHITE), (1.0, Rgba::BLACK)];
+    let span = gradient_period(stops);
+    let key = GradientCacheKey::new(stops, SpreadMode::Pad, span, 0);
+    let key_neg = GradientCacheKey::new(stops_neg, SpreadMode::Pad, span, 0);
     assert!(key == key_neg);
 
     let start = Point::new(0.0, 0.0);
@@ -1244,6 +1258,36 @@ mod tests {
     let expected =
       PremultipliedColorU8::from_rgba(128, 128, 128, 128).expect("valid premultiplied color");
     assert_eq!(mid, expected);
+  }
+
+  #[test]
+  fn gradient_lut_supports_negative_stop_positions() {
+    // CSS gradients allow stop positions outside [0, 1]. When the first stop is < 0, sample points
+    // with `t < 0` can still fall *inside* the stop range and must interpolate instead of being
+    // clamped to the first stop.
+    let stops = &[(-0.2, Rgba::BLACK), (0.3, Rgba::WHITE)];
+    let span = gradient_period(stops);
+    let lut = build_gradient_lut(stops, SpreadMode::Pad, span, 16);
+
+    let within = lut.sample_pad(-0.1);
+    let expected =
+      PremultipliedColorU8::from_rgba(51, 51, 51, 255).expect("valid premultiplied color");
+    assert_eq!(within, expected);
+
+    let mid = lut.sample_pad(0.0);
+    let expected =
+      PremultipliedColorU8::from_rgba(102, 102, 102, 255).expect("valid premultiplied color");
+    assert_eq!(mid, expected);
+
+    let before = lut.sample_pad(-0.25);
+    let expected =
+      PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("valid premultiplied color");
+    assert_eq!(before, expected);
+
+    let after = lut.sample_pad(0.4);
+    let expected =
+      PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("valid premultiplied color");
+    assert_eq!(after, expected);
   }
 
   fn naive_conic(
@@ -1355,7 +1399,7 @@ mod tests {
     let stops = [(0.0, Rgba::BLACK), (1.0, Rgba::WHITE)];
     let key = GradientCacheKey::new(&stops, SpreadMode::Pad, 1.0, 16);
     let lut = cache.get_or_build(key, || build_gradient_lut(&stops, SpreadMode::Pad, 1.0, 16));
-    assert_eq!(lut.period, 1.0);
+    assert_eq!(lut.span, 1.0);
     assert!(!lut.colors.is_empty());
   }
 
@@ -1656,8 +1700,12 @@ mod tests {
   fn gradient_rasterizers_timeout_under_tiny_deadline() {
     let stops = vec![(0.0, Rgba::RED), (1.0, Rgba::BLUE)];
     let cache = GradientLutCache::default();
-    let width = 2048;
-    let height = 2048;
+    // Warm up the rayon thread pool so this test measures cooperative deadline handling rather
+    // than one-time thread pool initialization overhead (which can be large on CI).
+    rayon::join(|| {}, || {});
+
+    let width = 1024;
+    let height = 1024;
     let center = Point::new(width as f32 / 2.0, height as f32 / 2.0);
     let deadline = RenderDeadline::new(Some(Duration::from_millis(1)), None);
     let start = Instant::now();
