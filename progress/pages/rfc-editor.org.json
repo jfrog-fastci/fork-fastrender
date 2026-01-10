@@ -17,11 +17,11 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 205464,
-    "diff_percent": 15.9324,
-    "perceptual": 0.2631,
+    "diff_pixels": 176571,
+    "diff_percent": 18.3928,
+    "perceptual": 0.2948,
     "first_mismatch": {
-      "x": 34,
+      "x": 42,
       "y": 0,
       "baseline_rgba": [
         255,
@@ -38,7 +38,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59b0436222ca26834c8b124c2f26218d20c39050"
+    "computed_at_commit": "b5bc84734753f948f21267575f1b8b1987f2a645"
   },
   "hotspot": "paint",
   "failure_stage": null,
