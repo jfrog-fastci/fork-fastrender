@@ -572,6 +572,40 @@ fn inline_svg_inlines_overflow_visible_for_nested_svg_when_document_css_injectio
 }
 
 #[test]
+fn inline_svg_serializes_css_transform_overriding_authored_transform_attribute_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { transform: translate(10px, 0px); }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="10" height="10" fill="rgb(255, 0, 0)" transform="scale(2)" />
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 5, 5),
+        [255, 255, 255, 255],
+        "CSS transform should override the authored SVG transform attribute"
+      );
+      assert_eq!(
+        pixel(&pixmap, 15, 5),
+        [255, 0, 0, 255],
+        "rect should be translated via serialized transform attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_inlines_mask_url_fragment_from_css_when_document_css_injection_disabled() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

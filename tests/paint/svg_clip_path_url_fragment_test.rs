@@ -128,3 +128,47 @@ fn svg_clip_path_url_fragment_respects_clip_path_units_object_bounding_box() {
   assert_eq!(pixel(&pixmap, 10, 50), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 90, 50), (255, 255, 255, 255));
 }
+
+#[test]
+fn svg_clip_path_url_fragment_serializes_css_transform_overriding_transform_attribute() {
+  let html = r##"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: white; }
+      #box {
+        width: 100px;
+        height: 100px;
+        background: rgb(255 0 0);
+        clip-path: url(#c);
+      }
+      #shape { transform: translate(50px, 0px); }
+    </style>
+    <svg width="0" height="0" style="position:absolute" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="c">
+          <rect id="shape" x="0" y="0" width="50" height="100" transform="translate(0 0)" />
+        </clipPath>
+      </defs>
+    </svg>
+    <div id="box"></div>
+  "##;
+
+  let (list, font_ctx, fragments) = build_display_list(html, 100, 100);
+
+  assert!(
+    fragments.svg_id_defs.as_ref().is_some_and(|defs| defs.contains_key("c")),
+    "layout should retain defs required by url(#c) clip-path"
+  );
+
+  let pixmap = DisplayListRenderer::new(100, 100, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(
+    pixel(&pixmap, 10, 50),
+    (255, 255, 255, 255),
+    "CSS transform should override the authored SVG transform attribute inside defs"
+  );
+  assert_eq!(pixel(&pixmap, 90, 50), (255, 0, 0, 255));
+}

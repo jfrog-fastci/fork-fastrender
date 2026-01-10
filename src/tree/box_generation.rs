@@ -1284,6 +1284,41 @@ fn svg_transform_attribute_name(tag_name: &str) -> &'static str {
   }
 }
 
+fn apply_svg_transform_presentation_attribute_override(
+  attrs: &mut Vec<(String, String)>,
+  transform_attr_name: &str,
+  style: &ComputedStyle,
+) {
+  // Elements like <pattern>/<linearGradient>/<radialGradient> use dedicated attributes
+  // (`patternTransform`/`gradientTransform`) rather than the generic `transform`.
+  //
+  // If the element expects one of those attributes, strip any accidental `transform=""` so we
+  // don't emit invalid SVG markup.
+  if transform_attr_name != "transform" {
+    attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+  }
+
+  let has_transform_attr = attrs
+    .iter()
+    .any(|(name, _)| name.eq_ignore_ascii_case(transform_attr_name));
+
+  if !style.has_transform() {
+    // `transform: none` cancels any SVG transform presentation attribute.
+    if has_transform_attr {
+      attrs.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
+    }
+  } else if let Some(transform) = svg_transform_attribute(style) {
+    attrs.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
+    attrs.push((transform_attr_name.to_string(), transform));
+  } else if let Some(extra) = svg_transform_style_declaration(style) {
+    // If we can't represent the computed transform as an SVG `*Transform=""` attribute (e.g.
+    // percent/calc/viewport-relative/3D transforms), emit it as a CSS declaration. resvg/usvg
+    // currently ignores CSS `transform`, but preserving it keeps the serialized SVG faithful
+    // for other consumers and lets us avoid dropping any authored SVG `*Transform=""`.
+    merge_style_attribute(attrs, &extra);
+  }
+}
+
 fn svg_transform_attribute(style: &ComputedStyle) -> Option<String> {
   use crate::css::types::{RotateValue, ScaleValue, Transform as CssTransform, TranslateValue};
   use std::fmt::Write as _;
@@ -2281,37 +2316,11 @@ fn serialize_svg_mask_subtree_with_namespaces(
       let mut attrs = attributes.clone();
       if current_ns == SVG_NAMESPACE {
         let transform_attr_name = svg_transform_attribute_name(tag_name);
-
-        // Elements like <pattern>/<linearGradient>/<radialGradient> use dedicated attributes
-        // (`patternTransform`/`gradientTransform`) rather than the generic `transform`.
-        //
-        // If the element expects one of those attributes, strip any accidental `transform=""` so we
-        // don't emit invalid SVG markup.
-        if transform_attr_name != "transform" {
-          attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
-        }
-
-        let has_transform_attr = attrs
-          .iter()
-          .any(|(name, _)| name.eq_ignore_ascii_case(transform_attr_name));
-
-        if !styled.styles.has_transform() {
-          if has_transform_attr {
-            attrs.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
-          }
-        } else if let Some(transform) = svg_transform_attribute(&styled.styles) {
-          attrs.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
-          attrs.push((transform_attr_name.to_string(), transform));
-        } else {
-          // If we can't represent the computed transform as an SVG `*Transform=""` attribute (e.g.
-          // percent/calc/viewport-relative/3D transforms), emit it as a CSS declaration. resvg/usvg
-          // currently ignores CSS `transform`, but preserving it keeps the serialized SVG faithful
-          // for other consumers and lets us avoid dropping any authored SVG `*Transform=""`.
-          if let Some(extra) = svg_transform_style_declaration(&styled.styles) {
-            merge_style_attribute(&mut attrs, &extra);
-          }
-        }
-
+        apply_svg_transform_presentation_attribute_override(
+          &mut attrs,
+          transform_attr_name,
+          &styled.styles,
+        );
         if attrs_need_svg_inlined_presentation_stripping(&attrs) {
           strip_svg_inlined_presentation_attrs(&mut attrs);
         }
@@ -4082,28 +4091,11 @@ fn serialize_svg_subtree(
 
             if has_transform_attr || has_invalid_transform_attr || styled.styles.has_transform() {
               let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
-
-              // Elements like <pattern>/<linearGradient>/<radialGradient> use `patternTransform`/
-              // `gradientTransform`, not `transform`. Strip any accidental `transform=""` attribute
-              // so we don't emit invalid SVG markup.
-              if transform_attr_name != "transform" {
-                attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
-              }
-
-              if !styled.styles.has_transform() {
-                // `transform: none` cancels any SVG transform presentation attribute.
-                if has_transform_attr {
-                  attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
-                }
-              } else if let Some(transform) = svg_transform_attribute(&styled.styles) {
-                attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case(transform_attr_name));
-                attrs_mut.push((transform_attr_name.to_string(), transform));
-              } else if let Some(extra) = svg_transform_style_declaration(&styled.styles) {
-                // See comment in `serialize_svg_mask_subtree_with_namespaces` for why we fall back
-                // to emitting a CSS `transform:` declaration when the computed transform cannot be
-                // serialized as an SVG attribute.
-                merge_style_attribute(attrs_mut, &extra);
-              }
+              apply_svg_transform_presentation_attribute_override(
+                attrs_mut,
+                transform_attr_name,
+                &styled.styles,
+              );
             }
           }
           if let Some(extra) = svg_overflow_style(
