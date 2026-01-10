@@ -248,14 +248,14 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   ///
   /// - writable: false
   /// - configurable: false
-  /// - enumerable: true
+  /// - enumerable: false
   fn define_constant(
     &mut self,
     obj: Self::JsValue,
     name: &str,
     value: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(obj, name, value, false, true, false)
+    self.define_data_property_str_with_attrs(obj, name, value, false, false, false)
   }
 
   /// Defines an interface constructor, wiring `.prototype` and `prototype.constructor`.
@@ -568,7 +568,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       Ok(intr) => intr,
       Err(err) => return err,
     };
-    crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(&mut self.cx.scope, intr, name, message)
+    crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
+      &mut self.cx.scope,
+      intr,
+      name,
+      message,
+    )
   }
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {

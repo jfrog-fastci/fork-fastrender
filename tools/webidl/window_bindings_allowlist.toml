@@ -16,15 +16,21 @@ attributes = []
 operations = ["addEventListener", "removeEventListener", "dispatchEvent"]
 
 [[interface]]
+name = "Node"
+constructors = false
+attributes = []
+operations = []
+
+[[interface]]
 name = "URL"
 constructors = true
-attributes = []
+attributes = ["href"]
 operations = ["toJSON", "canParse", "parse"]
 
 [[interface]]
 name = "URLSearchParams"
 constructors = true
-attributes = []
+attributes = ["size"]
 # Intentionally exclude `sort` so a unit test can validate the allowlist is honored.
 operations = ["append", "delete", "get", "getAll", "has", "set"]
 

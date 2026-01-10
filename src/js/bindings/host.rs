@@ -45,6 +45,29 @@ where
     overload: usize,
     args: Vec<BindingValue<R::JsValue>>,
   ) -> Result<BindingValue<R::JsValue>, R::Error>;
+
+  fn get_attribute(
+    &mut self,
+    rt: &mut R,
+    receiver: Option<R::JsValue>,
+    interface: &'static str,
+    name: &'static str,
+  ) -> Result<BindingValue<R::JsValue>, R::Error> {
+    let _ = (receiver, interface, name);
+    Err(rt.throw_type_error("unimplemented host attribute getter"))
+  }
+
+  fn set_attribute(
+    &mut self,
+    rt: &mut R,
+    receiver: Option<R::JsValue>,
+    interface: &'static str,
+    name: &'static str,
+    value: BindingValue<R::JsValue>,
+  ) -> Result<(), R::Error> {
+    let _ = (receiver, interface, name, value);
+    Err(rt.throw_type_error("unimplemented host attribute setter"))
+  }
 }
 
 /// Host-defined behavior implementation for *realm-based* (`vm-js`) WebIDL bindings.

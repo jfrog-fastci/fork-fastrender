@@ -101,7 +101,6 @@ pub enum WebIdlBindingsGenerationMode {
 #[derive(Debug, Clone, Default)]
 pub struct WebIdlInterfaceAllowlist {
   pub constructors: bool,
-  #[allow(dead_code)]
   pub attributes: BTreeSet<String>,
   pub operations: BTreeSet<String>,
 }
@@ -572,15 +571,6 @@ fn window_parse_interface_entry(
         iface.name
       );
     }
-  }
-
-  // Window-facing bindings codegen does not support installing accessor properties yet. Fail fast
-  // rather than silently ignoring allowlisted attributes.
-  if !attributes.is_empty() {
-    bail!(
-      "attributes are not yet supported in Window bindings generation (interface={})",
-      iface.name
-    );
   }
 
   Ok(WebIdlInterfaceAllowlist {
@@ -1264,6 +1254,9 @@ struct SelectedInterface {
   operations: BTreeMap<String, Vec<OperationSig>>,
   static_operations: BTreeMap<String, Vec<OperationSig>>,
   iterable: Option<IterableInfo>,
+  attributes: BTreeMap<String, AttributeSig>,
+  static_attributes: BTreeMap<String, AttributeSig>,
+  constants: BTreeMap<String, ConstantSig>,
 }
 
 #[derive(Debug, Clone)]
@@ -1285,6 +1278,20 @@ struct OperationSig {
 struct ArgumentList {
   raw: String,
   arguments: Vec<Argument>,
+}
+
+#[derive(Debug, Clone)]
+struct AttributeSig {
+  name: String,
+  type_: IdlType,
+  readonly: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ConstantSig {
+  name: String,
+  type_: IdlType,
+  value: IdlLiteral,
 }
 
 fn generate_bindings_module_unformatted(
@@ -1435,6 +1442,18 @@ fn generate_bindings_module_for_target_unformatted(
         config,
       )?;
     }
+    for attr in iface.attributes.values() {
+      write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, false);
+      if !attr.readonly {
+        write_attribute_setter_wrapper(&mut out, resolved, &iface.name, &attr.name, &attr.type_, false);
+      }
+    }
+    for attr in iface.static_attributes.values() {
+      write_attribute_getter_wrapper(&mut out, &iface.name, &attr.name, true);
+      if !attr.readonly {
+        write_attribute_setter_wrapper(&mut out, resolved, &iface.name, &attr.name, &attr.type_, true);
+      }
+    }
     if !iface.constructors.is_empty() {
       write_constructor_wrapper(
         &mut out,
@@ -1445,6 +1464,19 @@ fn generate_bindings_module_for_target_unformatted(
         config,
       )?;
     }
+  }
+
+  // Shared illegal constructor stub for interfaces that expose a constructor object but are not
+  // constructible (e.g. Node, which hosts constants on `Node`).
+  let needs_illegal_constructor = selected.values().any(|iface| {
+    let needs_ctor_obj = !iface.constructors.is_empty()
+      || !iface.static_operations.is_empty()
+      || !iface.static_attributes.is_empty()
+      || !iface.constants.is_empty();
+    needs_ctor_obj && iface.constructors.is_empty()
+  });
+  if needs_illegal_constructor {
+    out.push_str("#[allow(dead_code)]\nfn illegal_constructor<Host, R>(rt: &mut R, _host: &mut Host, _this: R::JsValue, _args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  Err(rt.throw_type_error(\"Illegal constructor\"))\n}\n\n");
   }
 
   // Install entrypoint.
@@ -1540,12 +1572,43 @@ fn generate_bindings_module_for_target_unformatted(
       }
     }
 
-    if iface.constructors.is_empty() && iface.static_operations.is_empty() {
+    // Prototype attributes.
+    for attr in iface.attributes.values() {
+      out.push_str(&format!(
+        "  let get = rt.create_function(\"get {name}\", 0, {getter}::<Host, R>)?;\n",
+        name = attr.name,
+        getter = attr_getter_fn_name(&iface.name, &attr.name, false)
+      ));
+      if attr.readonly {
+        out.push_str("  let set = rt.js_undefined();\n");
+      } else {
+        out.push_str(&format!(
+          "  let set = rt.create_function(\"set {name}\", 1, {setter}::<Host, R>)?;\n",
+          name = attr.name,
+          setter = attr_setter_fn_name(&iface.name, &attr.name, false)
+        ));
+      }
+      out.push_str(&format!(
+        "  rt.define_attribute_accessor({proto}, \"{name}\", get, set)?;\n",
+        proto = proto_var.as_str(),
+        name = attr.name
+      ));
+    }
+
+    let needs_ctor_obj = !iface.constructors.is_empty()
+      || !iface.static_operations.is_empty()
+      || !iface.static_attributes.is_empty()
+      || !iface.constants.is_empty();
+    if !needs_ctor_obj {
       continue;
     }
 
     // Constructor function (even for static-only interfaces like URL).
-    let ctor_fn = ctor_wrapper_fn_name(&iface.name);
+    let ctor_fn = if iface.constructors.is_empty() {
+      "illegal_constructor".to_string()
+    } else {
+      ctor_wrapper_fn_name(&iface.name)
+    };
     let ctor_length = iface
       .constructors
       .iter()
@@ -1579,6 +1642,40 @@ fn generate_bindings_module_for_target_unformatted(
         name = op_name,
         length = length,
         func = op_wrapper_fn_name(&iface.name, op_name)
+      ));
+    }
+
+    // Static attributes.
+    for attr in iface.static_attributes.values() {
+      out.push_str(&format!(
+        "  let get = rt.create_function(\"get {name}\", 0, {getter}::<Host, R>)?;\n",
+        name = attr.name,
+        getter = attr_getter_fn_name(&iface.name, &attr.name, true)
+      ));
+      if attr.readonly {
+        out.push_str("  let set = rt.js_undefined();\n");
+      } else {
+        out.push_str(&format!(
+          "  let set = rt.create_function(\"set {name}\", 1, {setter}::<Host, R>)?;\n",
+          name = attr.name,
+          setter = attr_setter_fn_name(&iface.name, &attr.name, true)
+        ));
+      }
+      out.push_str(&format!(
+        "  rt.define_attribute_accessor(ctor_{snake}, \"{name}\", get, set)?;\n",
+        snake = to_snake_ident(&iface.name),
+        name = attr.name
+      ));
+    }
+
+    // Constants.
+    for constant in iface.constants.values() {
+      let expr = emit_constant_js_value_expr(&constant.value);
+      out.push_str(&format!(
+        "  rt.define_constant(ctor_{snake}, \"{name}\", {expr})?;\n",
+        snake = to_snake_ident(&iface.name),
+        name = constant.name,
+        expr = expr,
       ));
     }
   }
@@ -1616,6 +1713,9 @@ fn select_interfaces(
     let mut operations: BTreeMap<String, Vec<OperationSig>> = BTreeMap::new();
     let mut static_operations: BTreeMap<String, Vec<OperationSig>> = BTreeMap::new();
     let mut iterable: Option<IterableInfo> = None;
+    let mut attributes: BTreeMap<String, AttributeSig> = BTreeMap::new();
+    let mut static_attributes: BTreeMap<String, AttributeSig> = BTreeMap::new();
+    let mut constants: BTreeMap<String, ConstantSig> = BTreeMap::new();
 
     for member in &iface.members {
       match &member.parsed {
@@ -1783,11 +1883,61 @@ fn select_interfaces(
             );
           }
         }
+
+        InterfaceMember::Attribute {
+          name,
+          type_,
+          readonly,
+          static_,
+          ..
+        } => {
+          let allowed = match config.mode {
+            WebIdlBindingsGenerationMode::AllMembers => true,
+            WebIdlBindingsGenerationMode::Allowlist => {
+              allow.is_some_and(|a| a.attributes.contains(name))
+            }
+          };
+          if allowed {
+            let sig = AttributeSig {
+              name: name.clone(),
+              type_: type_.clone(),
+              readonly: *readonly,
+            };
+            if *static_ {
+              // Attributes can't overload; keep the first definition we see.
+              static_attributes.entry(name.clone()).or_insert(sig);
+            } else {
+              attributes.entry(name.clone()).or_insert(sig);
+            }
+          }
+        }
+        InterfaceMember::Constant { name, type_, value } => {
+          // The Window bindings allowlist does not currently expose per-constant selection.
+          // Include all constants for selected interfaces so common Web APIs (e.g. `Node.ELEMENT_NODE`)
+          // are available without additional host dispatch.
+          let allowed = match config.mode {
+            WebIdlBindingsGenerationMode::AllMembers => true,
+            WebIdlBindingsGenerationMode::Allowlist => true,
+          };
+          if allowed {
+            constants.entry(name.clone()).or_insert(ConstantSig {
+              name: name.clone(),
+              type_: type_.clone(),
+              value: value.clone(),
+            });
+          }
+        }
         _ => {}
       }
     }
 
-    if constructors.is_empty() && operations.is_empty() && static_operations.is_empty() {
+    if constructors.is_empty()
+      && operations.is_empty()
+      && static_operations.is_empty()
+      && attributes.is_empty()
+      && static_attributes.is_empty()
+      && constants.is_empty()
+    {
       // Allow generating prototype-only scaffolding when prototype chains are enabled.
       if config.mode == WebIdlBindingsGenerationMode::Allowlist && config.prototype_chains {
         // Keep the interface with empty member lists so it can participate in prototype chains.
@@ -1805,6 +1955,9 @@ fn select_interfaces(
         operations,
         static_operations,
         iterable,
+        attributes,
+        static_attributes,
+        constants,
       },
     );
   }
@@ -1863,6 +2016,13 @@ fn collect_referenced_dictionaries(
           queue.push(arg.type_.clone());
         }
       }
+    }
+    for attr in iface
+      .attributes
+      .values()
+      .chain(iface.static_attributes.values())
+    {
+      queue.push(attr.type_.clone());
     }
   }
 
@@ -2826,6 +2986,72 @@ fn emit_no_matching_overload_expr(
   )
 }
 
+fn write_attribute_getter_wrapper(out: &mut String, interface: &str, attr_name: &str, is_static: bool) {
+  let fn_name = attr_getter_fn_name(interface, attr_name, is_static);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, _args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
+
+  let receiver_expr = if interface == "Window" || is_static {
+    "None"
+  } else {
+    "Some(this)"
+  };
+  if receiver_expr == "Some(this)" {
+    out.push_str("  if !rt.is_object(this) {\n");
+    out.push_str("    return Err(rt.throw_type_error(\"Illegal invocation\"));\n");
+    out.push_str("  }\n");
+  }
+
+  out.push_str(&format!(
+    "  let result = host.get_attribute(rt, {receiver_expr}, {iface_lit}, {attr_lit})?;\n",
+    receiver_expr = receiver_expr,
+    iface_lit = rust_string_literal(interface),
+    attr_lit = rust_string_literal(attr_name),
+  ));
+  out.push_str("  binding_value_to_js::<Host, R>(rt, result)\n");
+  out.push_str("}\n\n");
+}
+
+fn write_attribute_setter_wrapper(
+  out: &mut String,
+  resolved: &ResolvedWebIdlWorld,
+  interface: &str,
+  attr_name: &str,
+  ty: &IdlType,
+  is_static: bool,
+) {
+  let fn_name = attr_setter_fn_name(interface, attr_name, is_static);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+  ));
+
+  let receiver_expr = if interface == "Window" || is_static {
+    "None"
+  } else {
+    "Some(this)"
+  };
+  if receiver_expr == "Some(this)" {
+    out.push_str("  if !rt.is_object(this) {\n");
+    out.push_str("    return Err(rt.throw_type_error(\"Illegal invocation\"));\n");
+    out.push_str("  }\n");
+  }
+
+  out.push_str("  let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };\n");
+  out.push_str(&format!(
+    "  let converted = {};\n",
+    emit_conversion_expr(resolved, ty, &[], "v0")
+  ));
+  out.push_str(&format!(
+    "  host.set_attribute(rt, {receiver_expr}, {iface_lit}, {attr_lit}, converted)?;\n",
+    receiver_expr = receiver_expr,
+    iface_lit = rust_string_literal(interface),
+    attr_lit = rust_string_literal(attr_name),
+  ));
+  out.push_str("  Ok(rt.js_undefined())\n");
+  out.push_str("}\n\n");
+}
+
 fn write_operation_wrapper(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
@@ -3337,6 +3563,56 @@ fn emit_default_literal(lit: &IdlLiteral) -> String {
     IdlLiteral::EmptyObject => "BindingValue::Dictionary(BTreeMap::new())".to_string(),
     IdlLiteral::EmptyArray => "BindingValue::Sequence(Vec::new())".to_string(),
     IdlLiteral::Identifier(_id) => "BindingValue::Undefined".to_string(),
+  }
+}
+
+fn emit_constant_js_value_expr(lit: &IdlLiteral) -> String {
+  fn parse_idl_number_literal(text: &str) -> Option<f64> {
+    let s = text.trim();
+    if s.eq_ignore_ascii_case("nan") {
+      return Some(f64::NAN);
+    }
+    if s.eq_ignore_ascii_case("infinity") {
+      return Some(f64::INFINITY);
+    }
+    if s.eq_ignore_ascii_case("-infinity") {
+      return Some(f64::NEG_INFINITY);
+    }
+
+    let (sign, rest) = if let Some(rest) = s.strip_prefix('-') {
+      (-1.0, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+      (1.0, rest)
+    } else {
+      (1.0, s)
+    };
+
+    let rest = rest.trim();
+    let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+      (16, hex)
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+      (8, oct)
+    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+      (2, bin)
+    } else {
+      // Plain decimal / exponent form.
+      return rest.parse::<f64>().ok().map(|v| v * sign);
+    };
+
+    let int = u64::from_str_radix(digits.trim(), radix).ok()?;
+    Some(sign * int as f64)
+  }
+
+  match lit {
+    IdlLiteral::Undefined => "rt.js_undefined()".to_string(),
+    IdlLiteral::Null => "rt.js_null()".to_string(),
+    IdlLiteral::Boolean(b) => format!("rt.js_bool({})", if *b { "true" } else { "false" }),
+    IdlLiteral::Number(n) => {
+      let v = parse_idl_number_literal(n).unwrap_or(0.0);
+      format!("rt.js_number({v:?})")
+    }
+    IdlLiteral::String(s) => format!("rt.js_string({})?", rust_string_literal(s)),
+    IdlLiteral::EmptyObject | IdlLiteral::EmptyArray | IdlLiteral::Identifier(_) => "rt.js_undefined()".to_string(),
   }
 }
 
@@ -3952,6 +4228,38 @@ fn emit_ctor_overload_call(
 
 fn op_wrapper_fn_name(interface: &str, op_name: &str) -> String {
   format!("{}_{}", to_snake_ident(interface), to_snake_ident(op_name))
+}
+
+fn attr_getter_fn_name(interface: &str, attr_name: &str, is_static: bool) -> String {
+  if is_static {
+    format!(
+      "{}_get_static_attribute_{}",
+      to_snake_ident(interface),
+      to_snake_ident(attr_name)
+    )
+  } else {
+    format!(
+      "{}_get_attribute_{}",
+      to_snake_ident(interface),
+      to_snake_ident(attr_name)
+    )
+  }
+}
+
+fn attr_setter_fn_name(interface: &str, attr_name: &str, is_static: bool) -> String {
+  if is_static {
+    format!(
+      "{}_set_static_attribute_{}",
+      to_snake_ident(interface),
+      to_snake_ident(attr_name)
+    )
+  } else {
+    format!(
+      "{}_set_attribute_{}",
+      to_snake_ident(interface),
+      to_snake_ident(attr_name)
+    )
+  }
 }
 
 fn ctor_wrapper_fn_name(interface: &str) -> String {
