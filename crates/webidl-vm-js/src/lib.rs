@@ -1725,6 +1725,7 @@ mod tests {
   struct TestHostHooks {
     iterator_calls: usize,
     getter_calls: usize,
+    to_primitive_calls: usize,
     value_of_calls: usize,
     to_string_calls: usize,
   }
@@ -1835,6 +1836,63 @@ mod tests {
       }
     }
     Ok(Value::Number(42.0))
+  }
+
+  fn to_primitive_observes_host_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.to_primitive_calls += 1;
+      }
+    }
+ 
+    let hint = args.get(0).copied().unwrap_or(Value::Undefined);
+    let Value::String(hint_s) = hint else {
+      return Err(VmError::TypeError("@@toPrimitive hint is not a string"));
+    };
+    let hint = scope.heap().get_string(hint_s)?.to_utf8_lossy();
+    Ok(if hint == "string" {
+      Value::String(scope.alloc_string("hello")?)
+    } else {
+      Value::Number(42.0)
+    })
+  }
+
+  fn to_primitive_observes_host_ctx_and_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = host.as_any_mut().downcast_mut::<TestHostCtx>() {
+      any.host_calls += 1;
+    }
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.to_primitive_calls += 1;
+      }
+    }
+ 
+    let hint = args.get(0).copied().unwrap_or(Value::Undefined);
+    let Value::String(hint_s) = hint else {
+      return Err(VmError::TypeError("@@toPrimitive hint is not a string"));
+    };
+    let hint = scope.heap().get_string(hint_s)?.to_utf8_lossy();
+    Ok(if hint == "string" {
+      Value::String(scope.alloc_string("hello")?)
+    } else {
+      Value::Number(42.0)
+    })
   }
 
   fn to_string_observes_host_hooks(
@@ -2161,6 +2219,118 @@ mod tests {
     realm.teardown(&mut heap);
     result?;
     assert_eq!(host_hooks.to_string_calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn to_number_calls_to_primitive_propagates_embedder_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_hooks = TestHostHooks::default();
+ 
+    let result = vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
+      let to_prim_id = vm.register_native_call(to_primitive_observes_host_hooks)?;
+ 
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+ 
+      let to_prim_name = scope.alloc_string("[Symbol.toPrimitive]")?;
+      let to_prim_fn = scope.alloc_native_function(to_prim_id, None, to_prim_name, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+ 
+      let sym = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
+        .well_known_symbols()
+        .to_primitive;
+      let key = VmPropertyKey::from_symbol(sym);
+      scope.define_property(
+        obj,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(to_prim_fn),
+            writable: true,
+          },
+        },
+      )?;
+ 
+      let mut cx = VmJsWebIdlCx::new_in_scope(vm, &mut scope, limits, &webidl_hooks);
+      cx.scope.push_root(Value::Object(obj))?;
+      assert_eq!(cx.to_number(Value::Object(obj))?, 42.0);
+      Ok(())
+    });
+ 
+    realm.teardown(&mut heap);
+    result?;
+    assert_eq!(host_hooks.to_primitive_calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn to_number_calls_to_primitive_propagates_host_context_from_native_call() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let webidl_hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+ 
+    let result = (|| -> Result<(TestHostCtx, TestHostHooks), VmError> {
+      let to_prim_id = vm.register_native_call(to_primitive_observes_host_ctx_and_hooks)?;
+ 
+      let mut scope = heap.scope();
+      let obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(obj))?;
+ 
+      let to_prim_name = scope.alloc_string("[Symbol.toPrimitive]")?;
+      let to_prim_fn = scope.alloc_native_function(to_prim_id, None, to_prim_name, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+ 
+      let sym = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
+        .well_known_symbols()
+        .to_primitive;
+      let key = VmPropertyKey::from_symbol(sym);
+      scope.define_property(
+        obj,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(to_prim_fn),
+            writable: true,
+          },
+        },
+      )?;
+ 
+      let mut host_ctx = TestHostCtx::default();
+      let mut host_hooks = TestHostHooks::default();
+      let mut cx = VmJsWebIdlCx::from_native_call(
+        &mut vm,
+        &mut scope,
+        &mut host_ctx,
+        &mut host_hooks,
+        limits,
+        &webidl_hooks,
+      );
+      cx.scope.push_root(Value::Object(obj))?;
+      assert_eq!(cx.to_number(Value::Object(obj))?, 42.0);
+      drop(cx);
+      Ok((host_ctx, host_hooks))
+    })();
+ 
+    realm.teardown(&mut heap);
+    let (host_ctx, host_hooks) = result?;
+    assert_eq!(host_ctx.host_calls, 1);
+    assert_eq!(host_hooks.to_primitive_calls, 1);
     Ok(())
   }
 
