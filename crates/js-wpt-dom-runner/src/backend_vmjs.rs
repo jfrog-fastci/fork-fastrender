@@ -1896,22 +1896,40 @@ impl JsWptRuntime {
     // URLSearchParams prototype.
     let params_proto = self.alloc_object()?;
     let get_fn = self.alloc_native_function(native_urlsearchparams_get)?;
+    let get_all_fn = self.alloc_native_function(native_urlsearchparams_get_all)?;
     let append_fn = self.alloc_native_function(native_urlsearchparams_append)?;
+    let set_fn = self.alloc_native_function(native_urlsearchparams_set)?;
+    let sort_fn = self.alloc_native_function(native_urlsearchparams_sort)?;
     let to_string_fn = self.alloc_native_function(native_urlsearchparams_to_string)?;
     let get_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("get")?)
     };
+    let get_all_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("getAll")?)
+    };
     let append_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("append")?)
+    };
+    let set_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("set")?)
+    };
+    let sort_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("sort")?)
     };
     let to_string_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("toString")?)
     };
     self.define_data_prop(params_proto, get_key, Value::Object(get_fn))?;
+    self.define_data_prop(params_proto, get_all_key, Value::Object(get_all_fn))?;
     self.define_data_prop(params_proto, append_key, Value::Object(append_fn))?;
+    self.define_data_prop(params_proto, set_key, Value::Object(set_fn))?;
+    self.define_data_prop(params_proto, sort_key, Value::Object(sort_fn))?;
     self.define_data_prop(params_proto, to_string_key, Value::Object(to_string_fn))?;
     self.url_search_params_proto = Some(params_proto);
 
@@ -1932,12 +1950,22 @@ impl JsWptRuntime {
     // URL prototype.
     let url_proto = self.alloc_object()?;
     let href_get = self.alloc_native_function(native_url_get_href)?;
+    let origin_get = self.alloc_native_function(native_url_get_origin)?;
+    let pathname_get = self.alloc_native_function(native_url_get_pathname)?;
     let search_get = self.alloc_native_function(native_url_get_search)?;
     let search_set = self.alloc_native_function(native_url_set_search)?;
     let search_params_get = self.alloc_native_function(native_url_get_search_params)?;
     let href_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("href")?)
+    };
+    let origin_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("origin")?)
+    };
+    let pathname_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("pathname")?)
     };
     let search_key = {
       let mut scope = self.heap.scope();
@@ -1948,6 +1976,18 @@ impl JsWptRuntime {
       PropertyKey::from_string(scope.alloc_string("searchParams")?)
     };
     self.define_accessor_prop(url_proto, href_key, Value::Object(href_get), Value::Undefined)?;
+    self.define_accessor_prop(
+      url_proto,
+      origin_key,
+      Value::Object(origin_get),
+      Value::Undefined,
+    )?;
+    self.define_accessor_prop(
+      url_proto,
+      pathname_key,
+      Value::Object(pathname_get),
+      Value::Undefined,
+    )?;
     self.define_accessor_prop(
       url_proto,
       search_key,
@@ -4239,10 +4279,21 @@ fn native_url_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result
   let url = match args.get(1).copied() {
     None | Some(Value::Undefined) => Url::parse(&input),
     Some(base_value) => {
-      let base_s = rt.heap.to_string(base_value)?;
-      let base_s = rt.heap.get_string(base_s)?.to_utf8_lossy();
-      let base = Url::parse(&base_s);
-      base.and_then(|b| b.join(&input))
+      // The spec `URL(url, base)` runs `ToString` on `base`. Our vm-js harness only supports
+      // `ToString` on primitives, but common code (and the curated WPT corpus) passes a `URL`
+      // object as the base. Support that case explicitly by extracting its underlying href.
+      let base_url = match base_value {
+        Value::Object(obj) => rt.urls.get(&obj).map(|state| state.url.clone()),
+        _ => None,
+      };
+      if let Some(base) = base_url {
+        base.join(&input)
+      } else {
+        let base_s = rt.heap.to_string(base_value)?;
+        let base_s = rt.heap.get_string(base_s)?.to_utf8_lossy();
+        let base = Url::parse(&base_s);
+        base.and_then(|b| b.join(&input))
+      }
     }
   };
   let url = match url {
@@ -4271,6 +4322,32 @@ fn native_url_get_href(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> R
   };
   let href = state.url.as_str().to_string();
   Ok(rt.alloc_string_value(&href)?)
+}
+
+fn native_url_get_origin(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.origin getter called on non-object");
+  };
+  let Some(state) = rt.urls.get(&url_obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URL.origin getter called on non-URL object");
+  };
+  let origin = serialized_origin_for_document_url(state.url.as_str());
+  Ok(rt.alloc_string_value(&origin)?)
+}
+
+fn native_url_get_pathname(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.pathname getter called on non-object");
+  };
+  let Some(state) = rt.urls.get(&url_obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URL.pathname getter called on non-URL object");
+  };
+  let pathname = state.url.path().to_string();
+  Ok(rt.alloc_string_value(&pathname)?)
 }
 
 fn native_url_get_search(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
@@ -4440,6 +4517,60 @@ fn native_urlsearchparams_get(rt: &mut JsWptRuntime, this: Value, args: &[Value]
   }
 }
 
+fn native_urlsearchparams_get_all(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.getAll called on non-object");
+  };
+  let Some(state) = rt.url_search_params.get(&obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.getAll called on invalid receiver");
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name = rt.heap.to_string(name_value)?;
+  let name = rt.heap.get_string(name)?.to_utf8_lossy();
+
+  // Collect matching values first; allocating JS strings mutates the heap and cannot happen while
+  // holding an immutable borrow of the URLSearchParams state.
+  let values: Vec<String> = state
+    .pairs
+    .iter()
+    .filter_map(|(k, v)| if k == &name { Some(v.clone()) } else { None })
+    .collect();
+  let mut elements = Vec::<Value>::with_capacity(values.len());
+  for value in values {
+    elements.push(rt.alloc_string_value(&value)?);
+  }
+
+  let proto = rt
+    .array_prototype
+    .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Array prototype")))?;
+  let arr_obj = rt.alloc_object()?;
+  rt.heap.object_set_prototype(arr_obj, Some(proto))?;
+
+  // Mirror `eval_lit_arr` semantics for dense arrays so `Array.prototype.join` works.
+  rt.arrays.insert(arr_obj, elements.clone());
+
+  let length_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("length")?)
+  };
+  rt.define_data_prop(arr_obj, length_key, Value::Number(elements.len() as f64))?;
+
+  for (idx, value) in elements.iter().copied().enumerate() {
+    let key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
+    };
+    rt.define_data_prop(arr_obj, key, value)?;
+  }
+
+  Ok(Value::Object(arr_obj))
+}
+
 fn native_urlsearchparams_append(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -4459,6 +4590,95 @@ fn native_urlsearchparams_append(
     let value = rt.heap.to_string(value_value)?;
     let value = rt.heap.get_string(value)?.to_utf8_lossy();
     state.pairs.push((name, value));
+    let serialized = serialize_urlencoded_pairs(&state.pairs);
+    (state.url, serialized)
+  };
+
+  if let Some(url_obj) = linked_url {
+    if let Some(url_state) = rt.urls.get_mut(&url_obj) {
+      url_state.raw_query = serialized.clone();
+      if serialized.is_empty() {
+        url_state.url.set_query(None);
+      } else {
+        url_state.url.set_query(Some(&serialized));
+      }
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn native_urlsearchparams_set(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.set called on non-object");
+  };
+
+  let (linked_url, serialized) = {
+    let Some(state) = rt.url_search_params.get_mut(&obj) else {
+      return dom_throw_named_error(rt, "TypeError", "URLSearchParams.set called on invalid receiver");
+    };
+
+    let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let value_value = args.get(1).copied().unwrap_or(Value::Undefined);
+    let name = rt.heap.to_string(name_value)?;
+    let name = rt.heap.get_string(name)?.to_utf8_lossy();
+    let value = rt.heap.to_string(value_value)?;
+    let value = rt.heap.get_string(value)?.to_utf8_lossy();
+
+    let mut found = false;
+    let mut next = Vec::<(String, String)>::with_capacity(state.pairs.len() + 1);
+    for (k, v) in &state.pairs {
+      if k == &name {
+        if !found {
+          next.push((name.clone(), value.clone()));
+          found = true;
+        }
+      } else {
+        next.push((k.clone(), v.clone()));
+      }
+    }
+    if !found {
+      next.push((name, value));
+    }
+    state.pairs = next;
+    let serialized = serialize_urlencoded_pairs(&state.pairs);
+    (state.url, serialized)
+  };
+
+  if let Some(url_obj) = linked_url {
+    if let Some(url_state) = rt.urls.get_mut(&url_obj) {
+      url_state.raw_query = serialized.clone();
+      if serialized.is_empty() {
+        url_state.url.set_query(None);
+      } else {
+        url_state.url.set_query(Some(&serialized));
+      }
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn native_urlsearchparams_sort(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.sort called on non-object");
+  };
+
+  let (linked_url, serialized) = {
+    let Some(state) = rt.url_search_params.get_mut(&obj) else {
+      return dom_throw_named_error(rt, "TypeError", "URLSearchParams.sort called on invalid receiver");
+    };
+
+    // Use a stable sort so duplicate keys preserve their relative order.
+    state.pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let serialized = serialize_urlencoded_pairs(&state.pairs);
     (state.url, serialized)
   };
