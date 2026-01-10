@@ -1387,8 +1387,7 @@ fn promise_resolve_abstract(
 
   // Root the promise + resolving function for the duration of the resolve call (which may
   // allocate/GC).
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
+  scope.push_roots(&[capability.promise, capability.resolve])?;
   let _ = vm.call_with_host_and_hooks(
     host,
     &mut scope,
@@ -1980,8 +1979,7 @@ pub fn promise_reject(
 ) -> Result<Value, VmError> {
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.reject])?;
   let _ = vm.call_with_host_and_hooks(
     host,
     scope,
@@ -2393,9 +2391,7 @@ pub fn promise_try(
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
 
   // Root the promise + resolving functions for the duration of the callback call.
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let callback_args = args.get(1..).unwrap_or(&[]);
   match vm.call_with_host_and_hooks(
@@ -2445,9 +2441,7 @@ pub fn promise_with_resolvers(
 
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   // Root the new promise and resolving functions before allocating the result object.
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
@@ -2773,9 +2767,7 @@ pub fn promise_all(
 
   // Root the resulting promise and resolving functions so `IfAbruptRejectPromise` can call them
   // even if the iterator acquisition/loop allocates and triggers GC.
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
@@ -2861,9 +2853,7 @@ pub fn promise_race(
   // `Promise.race(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
@@ -3059,9 +3049,7 @@ pub fn promise_all_settled(
   // `Promise.allSettled(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
@@ -3241,9 +3229,7 @@ pub fn promise_any(
   // `Promise.any(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
   let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
-  scope.push_root(capability.promise)?;
-  scope.push_root(capability.resolve)?;
-  scope.push_root(capability.reject)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
   let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,

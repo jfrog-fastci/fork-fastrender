@@ -1,237 +1,51 @@
 use fastrender::dom::DomNode;
 use fastrender::dom2::{Document, NodeId, NodeKind};
-use fastrender::js::dom_integration::{
-  prepare_dynamic_script_on_children_changed, prepare_dynamic_script_on_src_attribute_change,
-  prepare_dynamic_scripts_on_subtree_insertion,
-};
+use fastrender::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion;
+use fastrender::js::runtime::with_event_loop;
+use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
-  ClassicScriptScheduler, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
-  ScriptElementEvent, ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
-  ScriptOrchestrator, VirtualClock,
+  install_window_animation_frame_bindings, install_window_timers_bindings, ClassicScriptScheduler,
+  DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementEvent, ScriptElementSpec,
+  ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, VirtualClock, WindowHostState,
+  WindowRealm, WindowRealmHost,
 };
 use fastrender::{Error, Result};
-use rquickjs::{Context, Function, Object, Runtime};
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use vm_js::{GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, VmError};
 
-thread_local! {
-  static CURRENT_ENV: RefCell<Vec<EnvPointers>> = const { RefCell::new(Vec::new()) };
-}
-
-#[derive(Clone, Copy)]
-struct EnvPointers {
-  host: *mut HostState,
-  event_loop: *mut EventLoop<HostState>,
-}
-
-fn with_current_env<R>(
-  host: *mut HostState,
-  event_loop: *mut EventLoop<HostState>,
-  f: impl FnOnce() -> R,
-) -> R {
-  CURRENT_ENV.with(|stack| {
-    stack.borrow_mut().push(EnvPointers { host, event_loop });
-    let out = f();
-    let popped = stack.borrow_mut().pop();
-    debug_assert!(popped.is_some(), "env stack underflow");
-    out
-  })
-}
-
-fn with_env_mut<R>(f: impl FnOnce(&mut HostState, &mut EventLoop<HostState>) -> R) -> R {
-  CURRENT_ENV.with(|stack| {
-    let env = stack
-      .borrow()
-      .last()
-      .copied()
-      .expect("JS harness env not installed");
-    // Safety: env pointers are installed by `with_current_env` which guarantees they are valid for
-    // the duration of the call.
-    let host = unsafe { &mut *env.host };
-    let event_loop = unsafe { &mut *env.event_loop };
-    f(host, event_loop)
-  })
-}
-
-fn js_fire_timer(
-  host: *mut HostState,
-  event_loop: *mut EventLoop<HostState>,
-  id: i32,
-) -> Result<()> {
-  let result = with_current_env(host, event_loop, || unsafe {
-    (*host).js_ctx.with(|ctx| -> rquickjs::Result<()> {
-      let globals = ctx.globals();
-      let func: Function = globals.get("__fastrender_fire_timer")?;
-      func.call::<_, ()>((id,))?;
-      Ok(())
-    })
-  });
-  result.map_err(|e| Error::Other(format!("JS error: {e}")))?;
-  drain_promise_jobs(host, event_loop)?;
-  Ok(())
-}
-
-fn js_eval(host: *mut HostState, event_loop: *mut EventLoop<HostState>, src: &str) -> Result<()> {
-  let result = with_current_env(host, event_loop, || unsafe {
-    (*host).js_ctx.with(|ctx| ctx.eval::<(), _>(src))
-  });
-  result.map_err(|e| Error::Other(format!("JS eval error: {e}")))?;
-  drain_promise_jobs(host, event_loop)?;
-  Ok(())
-}
-
-fn drain_promise_jobs(host: *mut HostState, event_loop: *mut EventLoop<HostState>) -> Result<()> {
-  let result = with_current_env(host, event_loop, || unsafe {
-    loop {
-      match (*host).js_rt.execute_pending_job() {
-        Ok(true) => continue,
-        Ok(false) => return Ok(()),
-        Err(err) => return Err(err),
-      }
-    }
-  });
-  result.map_err(|e| Error::Other(format!("JS promise job error: {e}")))?;
-  Ok(())
-}
-
-const JS_BOOTSTRAP: &str = r##"
+const JS_BOOTSTRAP: &str = r#"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
 
-  // console shim used by Rust-side tests.
-  g.console = {
-    log: function () {
-      var parts = [];
-      for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
-      g.__fastrender_console_log(parts.join(" "));
+  g.__log = {};
+  g.__log_len = 0;
+
+  if (!g.console) g.console = {};
+  g.console.log = function () {
+    // vm-js does not currently implement Array.prototype.push/join, so avoid any array helpers
+    // here. Keep this compatible with minimal builtins so tests can depend on console.log.
+    var s = "";
+    for (var i = 0; i < arguments.length; i++) {
+      if (i) s += " ";
+      s += String(arguments[i]);
     }
+    g.__log[g.__log_len] = s;
+    g.__log_len = g.__log_len + 1;
   };
 
-  // Basic deterministic time.
-  g.performance = { now: function () { return g.__fastrender_host_performance_now(); } };
-  if (g.Date && typeof g.Date.now === "function") {
-    g.Date.now = function () { return g.__fastrender_host_date_now(); };
-  }
-
-  // Minimal DOM facade.
-  function Node(handle) { this.__h = handle; }
-  Node.prototype.setAttribute = function (name, value) {
-    g.__fastrender_dom_set_attribute(this.__h, String(name), String(value));
-  };
-  Node.prototype.getAttribute = function (name) {
-    return g.__fastrender_dom_get_attribute(this.__h, String(name));
-  };
-  Node.prototype.appendChild = function (child) {
-    g.__fastrender_dom_append_child(this.__h, child.__h);
-    return child;
-  };
-  Node.prototype.insertBefore = function (child, ref) {
-    var refHandle = ref && ref.__h ? ref.__h : 0;
-    g.__fastrender_dom_insert_before(this.__h, child.__h, refHandle);
-    return child;
-  };
-  Node.prototype.replaceChild = function (child, oldChild) {
-    g.__fastrender_dom_replace_child(this.__h, child.__h, oldChild.__h);
-    return oldChild;
-  };
-
-  function wrap(handle) { return handle ? new Node(handle) : null; }
-
-  var document = {
-    URL: g.location && g.location.href ? g.location.href : "",
-    location: g.location,
-    querySelector: function (sel) { return wrap(g.__fastrender_dom_query_selector(String(sel))); },
-    getElementById: function (id) { return this.querySelector("#" + String(id)); },
-    createElement: function (tag) { return wrap(g.__fastrender_dom_create_element(String(tag))); },
-    createTextNode: function (data) { return wrap(g.__fastrender_dom_create_text(String(data))); },
-    createDocumentFragment: function () { return wrap(g.__fastrender_dom_create_document_fragment()); },
-  };
-  Object.defineProperty(document, "body", {
-    get: function () { return document.querySelector("body"); }
-  });
-  Object.defineProperty(document, "currentScript", {
-    get: function () { return wrap(g.__fastrender_dom_current_script()); }
-  });
-
-  g.document = document;
-
-  // Timer shims backed by the Rust event loop.
-  var callbacks = new Map(); // id -> { cb, interval, microtask, args }
-
-  g.__fastrender_fire_timer = function (id) {
-    var entry = callbacks.get(id);
-    if (!entry) return;
-    if (!entry.interval || entry.microtask) callbacks.delete(id);
-    var args = entry.args || [];
-    if (entry.microtask) {
-      entry.cb.apply(undefined, args);
-    } else {
-      entry.cb.apply(g, args);
-    }
-  };
-
-  function normalizeDelay(ms) {
-    var n = Number(ms);
-    if (!isFinite(n) || isNaN(n)) n = 0;
-    if (n < 0) n = 0;
-    return n;
-  }
-
-  g.setTimeout = function (cb, ms /*, ...args */) {
-    if (typeof cb === "string") throw new TypeError("setTimeout does not currently support string handlers");
-    if (typeof cb !== "function") throw new TypeError("setTimeout callback is not callable");
-    var args = [];
-    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-    var id = g.__fastrender_host_set_timeout(normalizeDelay(ms));
-    callbacks.set(id, { cb: cb, interval: false, args: args });
-    return id;
-  };
-  g.clearTimeout = function (id) {
-    id = Number(id);
-    g.__fastrender_host_clear_timeout(id);
-    callbacks.delete(id);
-  };
-
-  g.setInterval = function (cb, ms /*, ...args */) {
-    if (typeof cb === "string") throw new TypeError("setInterval does not currently support string handlers");
-    if (typeof cb !== "function") throw new TypeError("setInterval callback is not callable");
-    var args = [];
-    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-    var id = g.__fastrender_host_set_interval(normalizeDelay(ms));
-    callbacks.set(id, { cb: cb, interval: true, args: args });
-    return id;
-  };
-  g.clearInterval = function (id) {
-    id = Number(id);
-    g.__fastrender_host_clear_interval(id);
-    callbacks.delete(id);
-  };
-
-  g.queueMicrotask = function (cb) {
-    if (typeof cb === "string") throw new TypeError("queueMicrotask does not currently support string callbacks");
-    if (typeof cb !== "function") throw new TypeError("queueMicrotask callback is not callable");
-    // Use the engine's promise jobs as the microtask queue so ordering matches Promise callbacks.
-    Promise.resolve().then(function () {
-      cb.apply(undefined, []);
-    });
-  };
+  // `WindowHostState` installs Fetch bindings that are specialized for `WindowHostState` as the
+  // event-loop host type. This harness executes JS with a different host type, so remove these
+  // globals to prevent accidental UB from calling them.
+  g.fetch = undefined;
+  g.Headers = undefined;
+  g.Request = undefined;
+  g.Response = undefined;
 })();
-"##;
+"#;
 
-fn insertion_roots_for_dom_insert(dom: &Document, node: NodeId) -> Vec<NodeId> {
-  if matches!(dom.node(node).kind, NodeKind::DocumentFragment) {
-    dom
-      .children(node)
-      .expect("failed to read fragment children")
-      .to_vec()
-  } else {
-    vec![node]
-  }
-}
-
+#[derive(Default)]
 struct ScriptLoaderState {
   sources: HashMap<String, String>,
   next_handle: usize,
@@ -239,376 +53,30 @@ struct ScriptLoaderState {
   completed: VecDeque<(usize, String)>,
 }
 
-impl Default for ScriptLoaderState {
-  fn default() -> Self {
-    Self {
-      sources: HashMap::new(),
-      next_handle: 0,
-      handles_by_url: HashMap::new(),
-      completed: VecDeque::new(),
-    }
-  }
-}
-
 pub struct HostState {
-  dom: Document,
-  node_handles: Vec<NodeId>,
-  microtask_id: i32,
-  log: Vec<String>,
-  script_scheduler: ClassicScriptScheduler<HostState>,
+  window: WindowHostState,
   loader: ScriptLoaderState,
-  current_script_state: CurrentScriptStateHandle,
-  orchestrator: ScriptOrchestrator,
-  document_url: String,
-  js_ctx: Context,
-  js_rt: Runtime,
 }
 
 impl HostState {
-  fn alloc_node_handle(&mut self, node: NodeId) -> u32 {
-    self.node_handles.push(node);
-    u32::try_from(self.node_handles.len()).unwrap_or(u32::MAX)
-  }
-
-  fn resolve_node_handle(&self, handle: u32) -> Option<NodeId> {
-    if handle == 0 {
-      return None;
-    }
-    let idx = usize::try_from(handle).ok()?.saturating_sub(1);
-    self.node_handles.get(idx).copied()
-  }
-
-  fn init_realm(&mut self) -> Result<()> {
-    let document_url = self.document_url.clone();
-    self
-      .js_ctx
-      .with(|ctx| -> rquickjs::Result<()> {
-        let globals = ctx.globals();
-
-        // window / self should refer to the global object in a window realm.
-        globals.set("window", globals.clone())?;
-        globals.set("self", globals.clone())?;
-
-        // Minimal location object.
-        let location = Object::new(ctx.clone())?;
-        location.set("href", document_url)?;
-        globals.set("location", location)?;
-
-        // Host hooks.
-        globals.set(
-          "__fastrender_host_set_timeout",
-          Function::new(ctx.clone(), |ms: f64| -> rquickjs::Result<i32> {
-            Ok(with_env_mut(|_host, event_loop| {
-              let delay_ms = ms.max(0.0) as u64;
-              let delay = Duration::from_millis(delay_ms);
-              let id_cell: Rc<Cell<i32>> = Rc::new(Cell::new(0));
-              let id_cell_for_cb = Rc::clone(&id_cell);
-              let id = event_loop
-                .set_timeout(delay, move |host, event_loop| {
-                  let host_ptr: *mut HostState = host;
-                  let loop_ptr: *mut EventLoop<HostState> = event_loop;
-                  js_fire_timer(host_ptr, loop_ptr, id_cell_for_cb.get())
-                })
-                .expect("setTimeout scheduling failed");
-              id_cell.set(id);
-              id
-            }))
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_clear_timeout",
-          Function::new(ctx.clone(), |id: i32| {
-            with_env_mut(|_host, event_loop| event_loop.clear_timeout(id));
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_set_interval",
-          Function::new(ctx.clone(), |ms: f64| -> rquickjs::Result<i32> {
-            Ok(with_env_mut(|_host, event_loop| {
-              let delay_ms = ms.max(0.0) as u64;
-              let interval = Duration::from_millis(delay_ms);
-              let id_cell: Rc<Cell<i32>> = Rc::new(Cell::new(0));
-              let id_cell_for_cb = Rc::clone(&id_cell);
-              let id = event_loop
-                .set_interval(interval, move |host, event_loop| {
-                  let host_ptr: *mut HostState = host;
-                  let loop_ptr: *mut EventLoop<HostState> = event_loop;
-                  js_fire_timer(host_ptr, loop_ptr, id_cell_for_cb.get())
-                })
-                .expect("setInterval scheduling failed");
-              id_cell.set(id);
-              id
-            }))
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_clear_interval",
-          Function::new(ctx.clone(), |id: i32| {
-            with_env_mut(|_host, event_loop| event_loop.clear_interval(id));
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_queue_microtask",
-          Function::new(ctx.clone(), || -> rquickjs::Result<i32> {
-            Ok(with_env_mut(|host, event_loop| {
-              let id = host.microtask_id;
-              host.microtask_id = host.microtask_id.saturating_sub(1);
-              event_loop
-                .queue_microtask(move |host, event_loop| {
-                  let host_ptr: *mut HostState = host;
-                  let loop_ptr: *mut EventLoop<HostState> = event_loop;
-                  js_fire_timer(host_ptr, loop_ptr, id)
-                })
-                .expect("queueMicrotask scheduling failed");
-              id
-            }))
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_performance_now",
-          Function::new(ctx.clone(), || -> rquickjs::Result<f64> {
-            with_env_mut(|_host, event_loop| {
-              let now = event_loop.now();
-              Ok(now.as_secs_f64() * 1000.0)
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_host_date_now",
-          Function::new(ctx.clone(), || -> rquickjs::Result<f64> {
-            // Fixed, deterministic UNIX ms origin (arbitrary, but stable).
-            const ORIGIN_MS: f64 = 1_000.0;
-            with_env_mut(|_host, event_loop| {
-              let now = event_loop.now();
-              Ok(ORIGIN_MS + now.as_secs_f64() * 1000.0)
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_console_log",
-          Function::new(ctx.clone(), |msg: String| {
-            with_env_mut(|host, _event_loop| host.log.push(msg));
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_query_selector",
-          Function::new(ctx.clone(), |selector: String| -> rquickjs::Result<u32> {
-            with_env_mut(|host, _event_loop| {
-              let found = host.dom.query_selector(&selector, None).ok().flatten();
-              Ok(found.map(|id| host.alloc_node_handle(id)).unwrap_or(0))
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_create_element",
-          Function::new(ctx.clone(), |tag: String| -> rquickjs::Result<u32> {
-            with_env_mut(|host, _event_loop| {
-              let id = host.dom.create_element(&tag, "");
-              Ok(host.alloc_node_handle(id))
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_create_text",
-          Function::new(ctx.clone(), |data: String| -> rquickjs::Result<u32> {
-            with_env_mut(|host, _event_loop| {
-              let id = host.dom.create_text(&data);
-              Ok(host.alloc_node_handle(id))
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_create_document_fragment",
-          Function::new(ctx.clone(), || -> rquickjs::Result<u32> {
-            with_env_mut(|host, _event_loop| {
-              let id = host.dom.create_document_fragment();
-              Ok(host.alloc_node_handle(id))
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_append_child",
-          Function::new(ctx.clone(), |parent: u32, child: u32| {
-            with_env_mut(|host, event_loop| {
-              let parent = host
-                .resolve_node_handle(parent)
-                .expect("invalid parent node handle");
-              let child = host
-                .resolve_node_handle(child)
-                .expect("invalid child node handle");
-              let insertion_roots = insertion_roots_for_dom_insert(&host.dom, child);
-              let changed = host
-                .dom
-                .append_child(parent, child)
-                .expect("appendChild failed");
-              if !changed {
-                return;
-              }
-
-              let mut scheduler = std::mem::take(&mut host.script_scheduler);
-              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
-                .expect("prepare_dynamic_script_on_children_changed failed");
-              for root in insertion_roots {
-                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
-                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
-              }
-              host.script_scheduler = scheduler;
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_insert_before",
-          Function::new(ctx.clone(), |parent: u32, child: u32, reference: u32| {
-            with_env_mut(|host, event_loop| {
-              let parent = host
-                .resolve_node_handle(parent)
-                .expect("invalid parent node handle");
-              let child = host
-                .resolve_node_handle(child)
-                .expect("invalid child node handle");
-              let reference = if reference == 0 {
-                None
-              } else {
-                Some(
-                  host
-                    .resolve_node_handle(reference)
-                    .expect("invalid reference node handle"),
-                )
-              };
-              let insertion_roots: Vec<NodeId> = {
-                insertion_roots_for_dom_insert(&host.dom, child)
-              };
-              let changed = host
-                .dom
-                .insert_before(parent, child, reference)
-                .expect("insertBefore failed");
-              if !changed {
-                return;
-              }
-
-              let mut scheduler = std::mem::take(&mut host.script_scheduler);
-              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
-                .expect("prepare_dynamic_script_on_children_changed failed");
-              for root in insertion_roots {
-                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
-                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
-              }
-              host.script_scheduler = scheduler;
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_replace_child",
-          Function::new(ctx.clone(), |parent: u32, new_child: u32, old_child: u32| {
-            with_env_mut(|host, event_loop| {
-              let parent = host
-                .resolve_node_handle(parent)
-                .expect("invalid parent node handle");
-              let new_child = host
-                .resolve_node_handle(new_child)
-                .expect("invalid child node handle");
-              let old_child = host
-                .resolve_node_handle(old_child)
-                .expect("invalid old child node handle");
-              let insertion_roots = insertion_roots_for_dom_insert(&host.dom, new_child);
-
-              let changed = host
-                .dom
-                .replace_child(parent, new_child, old_child)
-                .expect("replaceChild failed");
-              if !changed {
-                return;
-              }
-
-              let mut scheduler = std::mem::take(&mut host.script_scheduler);
-              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
-                .expect("prepare_dynamic_script_on_children_changed failed");
-              for root in insertion_roots {
-                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
-                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
-              }
-              host.script_scheduler = scheduler;
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_set_attribute",
-          Function::new(ctx.clone(), |node: u32, name: String, value: String| {
-            with_env_mut(|host, event_loop| {
-              let node = host.resolve_node_handle(node).expect("invalid node handle");
-              let changed = host
-                .dom
-                .set_attribute(node, &name, &value)
-                .expect("setAttribute failed");
-              if !changed {
-                return;
-              }
-
-              if name.eq_ignore_ascii_case("src") {
-                let mut scheduler = std::mem::take(&mut host.script_scheduler);
-                prepare_dynamic_script_on_src_attribute_change(
-                  host,
-                  &mut scheduler,
-                  event_loop,
-                  node,
-                )
-                .expect("prepare_dynamic_script_on_src_attribute_change failed");
-                host.script_scheduler = scheduler;
-              }
-            })
-          })?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_get_attribute",
-          Function::new(
-            ctx.clone(),
-            |node: u32, name: String| -> rquickjs::Result<Option<String>> {
-              with_env_mut(|host, _event_loop| {
-                let node = host.resolve_node_handle(node).expect("invalid node handle");
-                Ok(
-                  host
-                    .dom
-                    .get_attribute(node, &name)
-                    .ok()
-                    .flatten()
-                    .map(|v| v.to_string()),
-                )
-              })
-            },
-          )?,
-        )?;
-
-        globals.set(
-          "__fastrender_dom_current_script",
-          Function::new(ctx.clone(), || -> rquickjs::Result<u32> {
-            with_env_mut(|host, _event_loop| {
-              let node = host.current_script_state.borrow().current_script;
-              Ok(node.map(|id| host.alloc_node_handle(id)).unwrap_or(0))
-            })
-          })?,
-        )?;
-
-        ctx.eval::<(), _>(JS_BOOTSTRAP)?;
-        Ok(())
-      })
-      .map_err(|e| Error::Other(format!("JS init error: {e}")))?;
-    Ok(())
+  fn exec_script_in_event_loop(
+    &mut self,
+    event_loop: &mut EventLoop<HostState>,
+    source: &str,
+  ) -> Result<Value> {
+    with_event_loop(event_loop, || {
+      let (vm_host, window) = self.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let mut hooks = VmJsEventLoopHooks::<HostState>::new(&mut *vm_host);
+      let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(Error::Other(format_vm_error(window.heap_mut(), err))),
+      }
+    })
   }
 
   fn complete_external_script(&mut self, url: &str) -> Result<()> {
@@ -633,15 +101,20 @@ impl DomHost for HostState {
   where
     F: FnOnce(&Document) -> R,
   {
-    f(&self.dom)
+    self.window.with_dom(f)
   }
 
   fn mutate_dom<R, F>(&mut self, f: F) -> R
   where
     F: FnOnce(&mut Document) -> (R, bool),
   {
-    let (result, _changed) = f(&mut self.dom);
-    result
+    self.window.mutate_dom(f)
+  }
+}
+
+impl WindowRealmHost for HostState {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    self.window.vm_host_and_window_realm()
   }
 }
 
@@ -652,6 +125,7 @@ impl ScriptLoader for HostState {
     &mut self,
     url: &str,
     _destination: fastrender::resource::FetchDestination,
+    _credentials_mode: fastrender::resource::FetchCredentialsMode,
   ) -> Result<String> {
     self
       .loader
@@ -665,18 +139,30 @@ impl ScriptLoader for HostState {
     &mut self,
     url: &str,
     _destination: fastrender::resource::FetchDestination,
+    _credentials_mode: fastrender::resource::FetchCredentialsMode,
   ) -> Result<Self::Handle> {
     let handle = self.loader.next_handle;
     self.loader.next_handle += 1;
-    self
-      .loader
-      .handles_by_url
-      .insert(url.to_string(), handle);
+    self.loader.handles_by_url.insert(url.to_string(), handle);
     Ok(handle)
   }
 
   fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
     Ok(self.loader.completed.pop_front())
+  }
+}
+
+fn node_root_is_shadow_root(dom: &Document, mut node: NodeId) -> bool {
+  loop {
+    match &dom.node(node).kind {
+      NodeKind::ShadowRoot { .. } => return true,
+      NodeKind::Document { .. } => return false,
+      _ => {}
+    }
+    let Some(parent) = dom.node(node).parent else {
+      return false;
+    };
+    node = parent;
   }
 }
 
@@ -687,23 +173,37 @@ impl ScriptExecutor for HostState {
     spec: &ScriptElementSpec,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    let host_ptr: *mut HostState = self;
-    let loop_ptr: *mut EventLoop<HostState> = event_loop;
+    // The HTML "execute the script block" algorithm is only observable via `document.currentScript`
+    // in our unit tests. We keep the bookkeeping minimal: set currentScript to the executing script
+    // element for classic scripts in the document tree, and always restore afterward.
+    let state = self.window.document_host().current_script_handle().clone();
+
+    let mut new_current: Option<NodeId> = None;
+
     if let Some(script_node) = spec.node_id {
-      let mut orchestrator = std::mem::take(&mut self.orchestrator);
-      let state = self.current_script_state.clone();
-      let script_type = spec.script_type;
-      let result = {
-        let dom = &self.dom;
-        orchestrator.execute_with_current_script_state(&state, dom, script_node, script_type, || {
-          js_eval(host_ptr, loop_ptr, script_text)
-        })
-      };
-      self.orchestrator = orchestrator;
-      return result;
+      let (connected_for_scripting, in_shadow_root) = self.with_dom(|dom| {
+        (
+          dom.is_connected_for_scripting(script_node),
+          node_root_is_shadow_root(dom, script_node),
+        )
+      });
+
+      if !connected_for_scripting {
+        return Ok(());
+      }
+
+      if spec.script_type == ScriptType::Classic && !in_shadow_root {
+        new_current = Some(script_node);
+      }
     }
 
-    js_eval(host_ptr, loop_ptr, script_text)
+    let prev_current = state.borrow().current_script;
+    state.borrow_mut().current_script = new_current;
+
+    let result = self.exec_script_in_event_loop(event_loop, script_text);
+
+    state.borrow_mut().current_script = prev_current;
+    result.map(|_| ())
   }
 }
 
@@ -721,6 +221,7 @@ pub struct Harness {
   clock: Arc<VirtualClock>,
   host: HostState,
   event_loop: EventLoop<HostState>,
+  script_scheduler: ClassicScriptScheduler<HostState>,
 }
 
 impl Harness {
@@ -731,36 +232,50 @@ impl Harness {
     let clock = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::<HostState>::with_clock(clock.clone());
 
-    let js_rt = Runtime::new().map_err(|e| Error::Other(format!("JS runtime: {e}")))?;
-    let js_ctx = Context::full(&js_rt).map_err(|e| Error::Other(format!("JS context: {e}")))?;
-
     let mut host = HostState {
-      dom,
-      node_handles: Vec::new(),
-      microtask_id: -1,
-      log: Vec::new(),
-      script_scheduler: ClassicScriptScheduler::new(),
+      window: WindowHostState::new(dom, document_url.to_string())?,
       loader: ScriptLoaderState::default(),
-      current_script_state: CurrentScriptStateHandle::default(),
-      orchestrator: ScriptOrchestrator::new(),
-      document_url: document_url.to_string(),
-      js_ctx,
-      js_rt,
     };
 
-    host.init_realm()?;
+    // `WindowHostState` installs global bindings specialized for `WindowHostState`. Re-install the
+    // timer bindings for this harness's host type so `current_event_loop_mut::<HostState>()` is
+    // sound.
+    {
+      let realm = host.window.window_mut();
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<HostState>(vm, realm_ref, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      install_window_animation_frame_bindings::<HostState>(vm, realm_ref, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
 
-    Ok(Self {
+    let mut this = Self {
       clock,
       host,
       event_loop,
-    })
+      script_scheduler: ClassicScriptScheduler::new(),
+    };
+
+    // Initialize logging + disable UB-prone globals.
+    this.exec_script(JS_BOOTSTRAP)?;
+    this.take_log();
+
+    Ok(this)
   }
 
   pub fn exec_script(&mut self, src: &str) -> Result<()> {
-    let host_ptr: *mut HostState = &mut self.host;
-    let loop_ptr: *mut EventLoop<HostState> = &mut self.event_loop;
-    js_eval(host_ptr, loop_ptr, src)
+    self
+      .host
+      .exec_script_in_event_loop(&mut self.event_loop, src)
+      .map_err(|e| Error::Other(format!("exec_script failed: {e}")))?;
+    self
+      .event_loop
+      .perform_microtask_checkpoint(&mut self.host)
+      .map_err(|e| Error::Other(format!("microtask checkpoint failed: {e}")))?;
+    self
+      .prepare_dynamic_scripts()
+      .map_err(|e| Error::Other(format!("dynamic script scan failed: {e}")))?;
+    Ok(())
   }
 
   pub fn advance_time(&mut self, ms: u64) {
@@ -768,7 +283,15 @@ impl Harness {
   }
 
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    self.event_loop.run_until_idle(&mut self.host, limits)
+    let scheduler = &mut self.script_scheduler;
+    self.event_loop.run_until_idle_with_hook(
+      &mut self.host,
+      limits,
+      |host, event_loop| {
+        let root = host.with_dom(|dom| dom.root());
+        prepare_dynamic_scripts_on_subtree_insertion(host, scheduler, event_loop, root)
+      },
+    )
   }
 
   pub fn host_mut(&mut self) -> &mut HostState {
@@ -784,11 +307,16 @@ impl Harness {
   }
 
   pub fn snapshot_dom(&self) -> DomNode {
-    self.host.dom.to_renderer_dom()
+    self.host.with_dom(|dom| dom.to_renderer_dom())
   }
 
   pub fn take_log(&mut self) -> Vec<String> {
-    std::mem::take(&mut self.host.log)
+    let realm = self.host.window.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let log = read_log_object(heap, global).expect("failed to read js_harness log");
+    reset_log_object(heap, global).expect("failed to reset js_harness log");
+    log
   }
 
   pub fn set_external_script_sources(&mut self, sources: HashMap<String, String>) {
@@ -824,21 +352,165 @@ impl Harness {
     Ok(self.host.loader.completed.pop_front())
   }
 
-  /// Mark an external script load as completed without polling the harness-owned scheduler.
-  ///
-  /// Some integration tests drive their own [`ClassicScriptScheduler`] instance (rather than the
-  /// one embedded in [`HostState`]). Those tests need a way to enqueue script completions into the
-  /// host's [`ScriptLoader`] queue without the harness consuming them eagerly.
   pub fn complete_external_script_only(&mut self, url: &str) -> Result<()> {
     self.host.complete_external_script(url)
   }
 
   pub fn complete_external_script(&mut self, url: &str) -> Result<()> {
     self.host.complete_external_script(url)?;
-    let mut scheduler = std::mem::take(&mut self.host.script_scheduler);
-    scheduler.poll(&mut self.host, &mut self.event_loop)?;
-    self.host.script_scheduler = scheduler;
+    self.script_scheduler.poll(&mut self.host, &mut self.event_loop)?;
     Ok(())
+  }
+
+  fn prepare_dynamic_scripts(&mut self) -> Result<()> {
+    let root = self.host.with_dom(|dom| dom.root());
+    prepare_dynamic_scripts_on_subtree_insertion(
+      &mut self.host,
+      &mut self.script_scheduler,
+      &mut self.event_loop,
+      root,
+    )
+  }
+}
+
+fn data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn alloc_key(scope: &mut Scope<'_>, name: &str) -> std::result::Result<PropertyKey, VmError> {
+  let s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(s))?;
+  Ok(PropertyKey::from_string(s))
+}
+
+fn get_string(heap: &Heap, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string value");
+  };
+  heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
+fn get_data_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Value {
+  let key_s = scope.alloc_string(name).unwrap();
+  let key = PropertyKey::from_string(key_s);
+  scope
+    .heap()
+    .object_get_own_data_property_value(obj, &key)
+    .unwrap()
+    .unwrap_or(Value::Undefined)
+}
+
+fn read_log_object(heap: &mut Heap, global: GcObject) -> Result<Vec<String>> {
+  let mut scope = heap.scope();
+  scope
+    .push_root(Value::Object(global))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let log_obj = match get_data_prop(&mut scope, global, "__log") {
+    Value::Object(obj) => obj,
+    _ => return Err(Error::Other("__log missing".to_string())),
+  };
+  scope
+    .push_root(Value::Object(log_obj))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let len = match get_data_prop(&mut scope, global, "__log_len") {
+    Value::Number(n) => n as u32,
+    _ => return Err(Error::Other("__log_len missing".to_string())),
+  };
+
+  let mut out = Vec::with_capacity(len as usize);
+  for idx in 0..len {
+    let key_s = scope
+      .alloc_string(&idx.to_string())
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::String(key_s))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(log_obj, &key)
+      .map_err(|e| Error::Other(e.to_string()))?
+      .unwrap_or(Value::Undefined);
+    out.push(get_string(scope.heap(), value));
+  }
+
+  Ok(out)
+}
+
+fn reset_log_object(heap: &mut Heap, global: GcObject) -> Result<()> {
+  let mut scope = heap.scope();
+  scope
+    .push_root(Value::Object(global))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let log_obj = scope.alloc_object().map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .push_root(Value::Object(log_obj))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let log_key = alloc_key(&mut scope, "__log").map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .define_property(global, log_key, data_desc(Value::Object(log_obj)))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let len_key = alloc_key(&mut scope, "__log_len").map_err(|e| Error::Other(e.to_string()))?;
+  scope
+    .define_property(global, len_key, data_desc(Value::Number(0.0)))
+    .map_err(|e| Error::Other(e.to_string()))?;
+  Ok(())
+}
+
+fn format_vm_error(heap: &mut Heap, err: VmError) -> String {
+  if let Some(value) = err.thrown_value() {
+    if let Value::String(s) = value {
+      if let Ok(js) = heap.get_string(s) {
+        return js.to_utf8_lossy();
+      }
+    }
+
+    if let Value::Object(obj) = value {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj)).ok();
+
+      let mut get_prop_str = |name: &str| -> Option<String> {
+        let key_s = scope.alloc_string(name).ok()?;
+        scope.push_root(Value::String(key_s)).ok()?;
+        let key = PropertyKey::from_string(key_s);
+        let value = scope
+          .heap()
+          .object_get_own_data_property_value(obj, &key)
+          .ok()?
+          .unwrap_or(Value::Undefined);
+        match value {
+          Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+          _ => None,
+        }
+      };
+
+      let name = get_prop_str("name");
+      let message = get_prop_str("message");
+      return match (name, message) {
+        (Some(name), Some(message)) if !message.is_empty() => format!("{name}: {message}"),
+        (Some(name), _) => name,
+        (_, Some(message)) => message,
+        _ => "uncaught exception".to_string(),
+      };
+    }
+    return "uncaught exception".to_string();
+  }
+
+  match err {
+    VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
+    other => other.to_string(),
   }
 }
 

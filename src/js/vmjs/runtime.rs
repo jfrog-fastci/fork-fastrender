@@ -1,6 +1,7 @@
 use crate::error::Result;
 
 use super::event_loop::EventLoop;
+use std::any::TypeId;
 use std::cell::RefCell;
 use vm_js::Value;
 
@@ -30,11 +31,17 @@ thread_local! {
   /// `vm-js` native functions do not receive an `&mut EventLoop`, but Web APIs like `setTimeout`
   /// need to schedule work on the currently executing event loop. The embedding installs the event
   /// loop pointer before calling into JS.
-  static EVENT_LOOP_STACK: RefCell<Vec<*mut ()>> = RefCell::new(Vec::new());
+  static EVENT_LOOP_STACK: RefCell<Vec<EventLoopStackEntry>> = RefCell::new(Vec::new());
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EventLoopStackEntry {
+  host_type: TypeId,
+  ptr: *mut (),
 }
 
 struct EventLoopStackGuard {
-  expected_ptr: *mut (),
+  expected: EventLoopStackEntry,
 }
 
 impl Drop for EventLoopStackGuard {
@@ -44,7 +51,7 @@ impl Drop for EventLoopStackGuard {
       debug_assert!(popped.is_some(), "event loop stack underflow");
       if let Some(popped) = popped {
         debug_assert_eq!(
-          popped, self.expected_ptr,
+          popped, self.expected,
           "event loop stack corruption (expected different pointer)"
         );
       }
@@ -62,8 +69,12 @@ impl Drop for EventLoopStackGuard {
 /// later be retrieved via [`current_event_loop_mut`].
 unsafe fn push_event_loop_ptr<Host: 'static>(event_loop: *mut EventLoop<Host>) -> EventLoopStackGuard {
   let ptr = event_loop as *mut ();
-  EVENT_LOOP_STACK.with(|stack| stack.borrow_mut().push(ptr));
-  EventLoopStackGuard { expected_ptr: ptr }
+  let entry = EventLoopStackEntry {
+    host_type: TypeId::of::<Host>(),
+    ptr,
+  };
+  EVENT_LOOP_STACK.with(|stack| stack.borrow_mut().push(entry));
+  EventLoopStackGuard { expected: entry }
 }
 
 /// RAII guard that temporarily moves the `EventLoop` out of a `&mut` reference while JS is
@@ -108,12 +119,15 @@ pub fn with_event_loop<Host: 'static, R>(
 
 /// Returns the currently installed event loop pointer.
 pub(crate) fn current_event_loop_mut<Host: 'static>() -> Option<&'static mut EventLoop<Host>> {
-  let ptr = EVENT_LOOP_STACK.with(|stack| stack.borrow().last().copied());
-  let ptr = ptr?;
+  let entry = EVENT_LOOP_STACK.with(|stack| stack.borrow().last().copied());
+  let entry = entry?;
+  if entry.host_type != TypeId::of::<Host>() {
+    return None;
+  }
   // SAFETY: `with_event_loop` installs a valid pointer for the duration of a JS call. The pointer
   // is only used during that dynamic extent. Callers must ensure the `Host` type parameter matches
   // the installed event loop.
-  Some(unsafe { &mut *(ptr as *mut EventLoop<Host>) })
+  Some(unsafe { &mut *(entry.ptr as *mut EventLoop<Host>) })
 }
 
 #[cfg(test)]

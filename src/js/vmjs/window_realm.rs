@@ -8579,6 +8579,15 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
     return Ok(());
   }
 
+  // Dynamic script preparation must enqueue tasks onto the HTML-like event loop. When this
+  // `WindowRealm` is embedded without an active `EventLoop<WindowHostState>` (e.g. alternate host
+  // types used by some test harnesses), we cannot schedule the script task/fetch. In that case,
+  // treat this as a no-op and do **not** set "already started" so another integration layer can
+  // prepare the script later.
+  if runtime::current_event_loop_mut::<WindowHostState>().is_none() {
+    return Ok(());
+  }
+
   dom.node_mut(script).script_already_started = true;
 
   // `integrity` attribute clamping: if present but too large, the metadata is invalid and the script
