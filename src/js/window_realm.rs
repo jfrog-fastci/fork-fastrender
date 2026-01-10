@@ -714,6 +714,43 @@ const ELEMENT_CLASS_LIST_CONTAINS_KEY: &str = "__fastrender_element_class_list_c
 const ELEMENT_CLASS_LIST_REPLACE_KEY: &str = "__fastrender_element_class_list_replace";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
+const ELEMENT_SRC_GET_KEY: &str = "__fastrender_element_src_get";
+const ELEMENT_SRC_SET_KEY: &str = "__fastrender_element_src_set";
+const ELEMENT_SRCSET_GET_KEY: &str = "__fastrender_element_srcset_get";
+const ELEMENT_SRCSET_SET_KEY: &str = "__fastrender_element_srcset_set";
+const ELEMENT_SIZES_GET_KEY: &str = "__fastrender_element_sizes_get";
+const ELEMENT_SIZES_SET_KEY: &str = "__fastrender_element_sizes_set";
+const ELEMENT_HREF_GET_KEY: &str = "__fastrender_element_href_get";
+const ELEMENT_HREF_SET_KEY: &str = "__fastrender_element_href_set";
+const ELEMENT_REL_GET_KEY: &str = "__fastrender_element_rel_get";
+const ELEMENT_REL_SET_KEY: &str = "__fastrender_element_rel_set";
+const ELEMENT_TYPE_GET_KEY: &str = "__fastrender_element_type_get";
+const ELEMENT_TYPE_SET_KEY: &str = "__fastrender_element_type_set";
+const ELEMENT_CHARSET_GET_KEY: &str = "__fastrender_element_charset_get";
+const ELEMENT_CHARSET_SET_KEY: &str = "__fastrender_element_charset_set";
+const ELEMENT_CROSS_ORIGIN_GET_KEY: &str = "__fastrender_element_cross_origin_get";
+const ELEMENT_CROSS_ORIGIN_SET_KEY: &str = "__fastrender_element_cross_origin_set";
+const ELEMENT_ASYNC_GET_KEY: &str = "__fastrender_element_async_get";
+const ELEMENT_ASYNC_SET_KEY: &str = "__fastrender_element_async_set";
+const ELEMENT_DEFER_GET_KEY: &str = "__fastrender_element_defer_get";
+const ELEMENT_DEFER_SET_KEY: &str = "__fastrender_element_defer_set";
+const ELEMENT_HEIGHT_GET_KEY: &str = "__fastrender_element_height_get";
+const ELEMENT_HEIGHT_SET_KEY: &str = "__fastrender_element_height_set";
+const ELEMENT_WIDTH_GET_KEY: &str = "__fastrender_element_width_get";
+const ELEMENT_WIDTH_SET_KEY: &str = "__fastrender_element_width_set";
+const STYLE_GET_PROPERTY_VALUE_KEY: &str = "__fastrender_style_get_property_value";
+const STYLE_SET_PROPERTY_KEY: &str = "__fastrender_style_set_property";
+const STYLE_REMOVE_PROPERTY_KEY: &str = "__fastrender_style_remove_property";
+const STYLE_CSS_TEXT_GET_KEY: &str = "__fastrender_style_css_text_get";
+const STYLE_CSS_TEXT_SET_KEY: &str = "__fastrender_style_css_text_set";
+const STYLE_DISPLAY_GET_KEY: &str = "__fastrender_style_display_get";
+const STYLE_DISPLAY_SET_KEY: &str = "__fastrender_style_display_set";
+const STYLE_CURSOR_GET_KEY: &str = "__fastrender_style_cursor_get";
+const STYLE_CURSOR_SET_KEY: &str = "__fastrender_style_cursor_set";
+const STYLE_HEIGHT_GET_KEY: &str = "__fastrender_style_height_get";
+const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
+const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
+const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
 const NODE_INSERT_BEFORE_KEY: &str = "__fastrender_node_insert_before";
 const NODE_REMOVE_CHILD_KEY: &str = "__fastrender_node_remove_child";
@@ -1461,6 +1498,102 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_ID_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let src_get = {
+    let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let src_set = {
+    let key = alloc_key(scope, ELEMENT_SRC_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let srcset_get = {
+    let key = alloc_key(scope, ELEMENT_SRCSET_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let srcset_set = {
+    let key = alloc_key(scope, ELEMENT_SRCSET_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let sizes_get = {
+    let key = alloc_key(scope, ELEMENT_SIZES_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let sizes_set = {
+    let key = alloc_key(scope, ELEMENT_SIZES_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let href_get = {
+    let key = alloc_key(scope, ELEMENT_HREF_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let href_set = {
+    let key = alloc_key(scope, ELEMENT_HREF_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let rel_get = {
+    let key = alloc_key(scope, ELEMENT_REL_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let rel_set = {
+    let key = alloc_key(scope, ELEMENT_REL_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let type_get = {
+    let key = alloc_key(scope, ELEMENT_TYPE_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let type_set = {
+    let key = alloc_key(scope, ELEMENT_TYPE_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let charset_get = {
+    let key = alloc_key(scope, ELEMENT_CHARSET_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let charset_set = {
+    let key = alloc_key(scope, ELEMENT_CHARSET_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let cross_origin_get = {
+    let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let cross_origin_set = {
+    let key = alloc_key(scope, ELEMENT_CROSS_ORIGIN_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let async_get = {
+    let key = alloc_key(scope, ELEMENT_ASYNC_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let async_set = {
+    let key = alloc_key(scope, ELEMENT_ASYNC_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let defer_get = {
+    let key = alloc_key(scope, ELEMENT_DEFER_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let defer_set = {
+    let key = alloc_key(scope, ELEMENT_DEFER_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let height_get = {
+    let key = alloc_key(scope, ELEMENT_HEIGHT_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let height_set = {
+    let key = alloc_key(scope, ELEMENT_HEIGHT_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let width_get = {
+    let key = alloc_key(scope, ELEMENT_WIDTH_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let width_set = {
+    let key = alloc_key(scope, ELEMENT_WIDTH_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let append_child = {
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1535,6 +1668,58 @@ fn get_or_create_node_wrapper(
   };
   let insert_adjacent_text = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_get_property_value = {
+    let key = alloc_key(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_set_property = {
+    let key = alloc_key(scope, STYLE_SET_PROPERTY_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_remove_property = {
+    let key = alloc_key(scope, STYLE_REMOVE_PROPERTY_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_css_text_get = {
+    let key = alloc_key(scope, STYLE_CSS_TEXT_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_css_text_set = {
+    let key = alloc_key(scope, STYLE_CSS_TEXT_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_display_get = {
+    let key = alloc_key(scope, STYLE_DISPLAY_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_display_set = {
+    let key = alloc_key(scope, STYLE_DISPLAY_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_cursor_get = {
+    let key = alloc_key(scope, STYLE_CURSOR_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_cursor_set = {
+    let key = alloc_key(scope, STYLE_CURSOR_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_height_get = {
+    let key = alloc_key(scope, STYLE_HEIGHT_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_height_set = {
+    let key = alloc_key(scope, STYLE_HEIGHT_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_width_get = {
+    let key = alloc_key(scope, STYLE_WIDTH_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let style_width_set = {
+    let key = alloc_key(scope, STYLE_WIDTH_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
 
@@ -1618,6 +1803,198 @@ fn get_or_create_node_wrapper(
     )?;
   }
 
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (src_get, src_set) {
+    let key = alloc_key(scope, "src")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (srcset_get, srcset_set) {
+    let key = alloc_key(scope, "srcset")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (sizes_get, sizes_set) {
+    let key = alloc_key(scope, "sizes")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (href_get, href_set) {
+    let key = alloc_key(scope, "href")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (rel_get, rel_set) {
+    let key = alloc_key(scope, "rel")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (type_get, type_set) {
+    let key = alloc_key(scope, "type")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (charset_get, charset_set) {
+    let key = alloc_key(scope, "charset")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (cross_origin_get, cross_origin_set) {
+    let key = alloc_key(scope, "crossOrigin")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (async_get, async_set) {
+    let key = alloc_key(scope, "async")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (defer_get, defer_set) {
+    let key = alloc_key(scope, "defer")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (height_get, height_set) {
+    let key = alloc_key(scope, "height")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (width_get, width_set) {
+    let key = alloc_key(scope, "width")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
   if let Value::Number(_) = dom_source_id_value {
     if let (
       Some(Value::Object(add)),
@@ -1678,6 +2055,141 @@ fn get_or_create_node_wrapper(
 
       let key = alloc_key(scope, "classList")?;
       scope.define_property(wrapper, key, data_desc(Value::Object(class_list)))?;
+    }
+  }
+
+  if let Value::Number(_) = dom_source_id_value {
+    if let (
+      Some(Value::Object(get_property_value)),
+      Some(Value::Object(set_property)),
+      Some(Value::Object(remove_property)),
+      Some(Value::Object(css_text_get)),
+      Some(Value::Object(css_text_set)),
+      Some(Value::Object(display_get)),
+      Some(Value::Object(display_set)),
+      Some(Value::Object(cursor_get)),
+      Some(Value::Object(cursor_set)),
+      Some(Value::Object(height_get)),
+      Some(Value::Object(height_set)),
+      Some(Value::Object(width_get)),
+      Some(Value::Object(width_set)),
+    ) = (
+      style_get_property_value,
+      style_set_property,
+      style_remove_property,
+      style_css_text_get,
+      style_css_text_set,
+      style_display_get,
+      style_display_set,
+      style_cursor_get,
+      style_cursor_set,
+      style_height_get,
+      style_height_set,
+      style_width_get,
+      style_width_set,
+    ) {
+      let style = scope.alloc_object()?;
+      scope.push_root(Value::Object(style))?;
+
+      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+      scope.define_property(
+        style,
+        node_id_key,
+        data_desc(Value::Number(node_id.index() as f64)),
+      )?;
+
+      let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+      scope.define_property(style, source_id_key, data_desc(dom_source_id_value))?;
+
+      let get_property_value_key = alloc_key(scope, "getPropertyValue")?;
+      scope.define_property(
+        style,
+        get_property_value_key,
+        data_desc(Value::Object(get_property_value)),
+      )?;
+
+      let set_property_key = alloc_key(scope, "setProperty")?;
+      scope.define_property(style, set_property_key, data_desc(Value::Object(set_property)))?;
+
+      let remove_property_key = alloc_key(scope, "removeProperty")?;
+      scope.define_property(
+        style,
+        remove_property_key,
+        data_desc(Value::Object(remove_property)),
+      )?;
+
+      let css_text_key = alloc_key(scope, "cssText")?;
+      scope.define_property(
+        style,
+        css_text_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(css_text_get),
+            set: Value::Object(css_text_set),
+          },
+        },
+      )?;
+
+      let display_key = alloc_key(scope, "display")?;
+      scope.define_property(
+        style,
+        display_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(display_get),
+            set: Value::Object(display_set),
+          },
+        },
+      )?;
+
+      let cursor_key = alloc_key(scope, "cursor")?;
+      scope.define_property(
+        style,
+        cursor_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(cursor_get),
+            set: Value::Object(cursor_set),
+          },
+        },
+      )?;
+
+      let height_key = alloc_key(scope, "height")?;
+      scope.define_property(
+        style,
+        height_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(height_get),
+            set: Value::Object(height_set),
+          },
+        },
+      )?;
+
+      let width_key = alloc_key(scope, "width")?;
+      scope.define_property(
+        style,
+        width_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(width_get),
+            set: Value::Object(width_set),
+          },
+        },
+      )?;
+
+      let key = alloc_key(scope, "style")?;
+      scope.define_property(wrapper, key, data_desc(Value::Object(style)))?;
     }
   }
 
@@ -3848,6 +4360,345 @@ fn element_id_set_native(
   dom
     .set_element_id(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
+
+  Ok(Value::Undefined)
+}
+
+fn native_slot_string(scope: &Scope<'_>, callee: GcObject) -> Result<String, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let slot = slots.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::String(s) = slot else {
+    return Err(VmError::InvariantViolation(
+      "expected native slot string argument",
+    ));
+  };
+  Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn dom_node_id_from_obj(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<Option<(NonNull<dom2::Document>, NodeId)>, VmError> {
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(None),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(None),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(None);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  Ok(Some((dom_ptr, node_id)))
+}
+
+fn element_reflected_string_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let attr = native_slot_string(scope, callee)?;
+  let Some((dom_ptr, node_id)) = dom_node_id_from_obj(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let value = dom.get_attribute(node_id, &attr).ok().flatten().unwrap_or("");
+  Ok(Value::String(scope.alloc_string(value)?))
+}
+
+fn element_reflected_string_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let attr = native_slot_string(scope, callee)?;
+  let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  if let Err(err) = dom.set_attribute(node_id, &attr, &new_value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_reflected_bool_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let attr = native_slot_string(scope, callee)?;
+  let Some((dom_ptr, node_id)) = dom_node_id_from_obj(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::Bool(dom.has_attribute(node_id, &attr).unwrap_or(false)))
+}
+
+fn element_reflected_bool_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let attr = native_slot_string(scope, callee)?;
+  let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let present_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let present = scope.heap().to_boolean(present_value)?;
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  if let Err(err) = dom.set_bool_attribute(node_id, &attr, present) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn css_style_get_property_value_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration.getPropertyValue must be called on a style object",
+    ));
+  };
+  let Some((dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let value = dom.style_get_property_value(node_id, &name);
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn css_style_set_property_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration.setProperty must be called on a style object",
+    ));
+  };
+  let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let value_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let value_value = scope.heap_mut().to_string(value_value)?;
+  let value = scope
+    .heap()
+    .get_string(value_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  if let Err(err) = dom.style_set_property(node_id, &name, &value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn css_style_remove_property_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration.removeProperty must be called on a style object",
+    ));
+  };
+  let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let prev = dom.style_get_property_value(node_id, &name);
+  if let Err(err) = dom.style_set_property(node_id, &name, "") {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::String(scope.alloc_string(&prev)?))
+}
+
+fn css_style_named_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration property getter must be called on a style object",
+    ));
+  };
+  let prop = native_slot_string(scope, callee)?;
+  let Some((dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let value = dom.style_get_property_value(node_id, &prop);
+  Ok(Value::String(scope.alloc_string(&value)?))
+}
+
+fn css_style_named_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration property setter must be called on a style object",
+    ));
+  };
+  let prop = native_slot_string(scope, callee)?;
+  let Some((mut dom_ptr, node_id)) = dom_node_id_from_obj(scope, style_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let value_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value_value = scope.heap_mut().to_string(value_value)?;
+  let value = scope
+    .heap()
+    .get_string(value_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  if let Err(err) = dom.style_set_property(node_id, &prop, &value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
 
   Ok(Value::Undefined)
 }
@@ -6090,6 +6941,256 @@ fn init_window_globals(
   let id_set_key = alloc_key(&mut scope, ELEMENT_ID_SET_KEY)?;
   scope.define_property(document_obj, id_set_key, data_desc(Value::Object(id_set_func)))?;
 
+  // Store shared reflected attribute accessors on `document` so wrappers can reuse them.
+  let reflected_string_get_call_id = vm.register_native_call(element_reflected_string_get_native)?;
+  let reflected_string_set_call_id = vm.register_native_call(element_reflected_string_set_native)?;
+  let reflected_bool_get_call_id = vm.register_native_call(element_reflected_bool_get_native)?;
+  let reflected_bool_set_call_id = vm.register_native_call(element_reflected_bool_set_native)?;
+
+  for (prop, attr, get_key_name, set_key_name) in [
+    ("src", "src", ELEMENT_SRC_GET_KEY, ELEMENT_SRC_SET_KEY),
+    ("srcset", "srcset", ELEMENT_SRCSET_GET_KEY, ELEMENT_SRCSET_SET_KEY),
+    ("sizes", "sizes", ELEMENT_SIZES_GET_KEY, ELEMENT_SIZES_SET_KEY),
+    ("href", "href", ELEMENT_HREF_GET_KEY, ELEMENT_HREF_SET_KEY),
+    ("rel", "rel", ELEMENT_REL_GET_KEY, ELEMENT_REL_SET_KEY),
+    ("type", "type", ELEMENT_TYPE_GET_KEY, ELEMENT_TYPE_SET_KEY),
+    ("charset", "charset", ELEMENT_CHARSET_GET_KEY, ELEMENT_CHARSET_SET_KEY),
+    (
+      "crossOrigin",
+      "crossorigin",
+      ELEMENT_CROSS_ORIGIN_GET_KEY,
+      ELEMENT_CROSS_ORIGIN_SET_KEY,
+    ),
+    ("height", "height", ELEMENT_HEIGHT_GET_KEY, ELEMENT_HEIGHT_SET_KEY),
+    ("width", "width", ELEMENT_WIDTH_GET_KEY, ELEMENT_WIDTH_SET_KEY),
+  ] {
+    let attr_s = scope.alloc_string(attr)?;
+    scope.push_root(Value::String(attr_s))?;
+
+    let get_name = scope.alloc_string(&format!("get {prop}"))?;
+    scope.push_root(Value::String(get_name))?;
+    let get_func = scope.alloc_native_function_with_slots(
+      reflected_string_get_call_id,
+      None,
+      get_name,
+      0,
+      &[Value::String(attr_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(get_func))?;
+    let get_key = alloc_key(&mut scope, get_key_name)?;
+    scope.define_property(document_obj, get_key, data_desc(Value::Object(get_func)))?;
+
+    let set_name = scope.alloc_string(&format!("set {prop}"))?;
+    scope.push_root(Value::String(set_name))?;
+    let set_func = scope.alloc_native_function_with_slots(
+      reflected_string_set_call_id,
+      None,
+      set_name,
+      1,
+      &[Value::String(attr_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(set_func))?;
+    let set_key = alloc_key(&mut scope, set_key_name)?;
+    scope.define_property(document_obj, set_key, data_desc(Value::Object(set_func)))?;
+  }
+
+  for (prop, attr, get_key_name, set_key_name) in [
+    ("async", "async", ELEMENT_ASYNC_GET_KEY, ELEMENT_ASYNC_SET_KEY),
+    ("defer", "defer", ELEMENT_DEFER_GET_KEY, ELEMENT_DEFER_SET_KEY),
+  ] {
+    let attr_s = scope.alloc_string(attr)?;
+    scope.push_root(Value::String(attr_s))?;
+
+    let get_name = scope.alloc_string(&format!("get {prop}"))?;
+    scope.push_root(Value::String(get_name))?;
+    let get_func = scope.alloc_native_function_with_slots(
+      reflected_bool_get_call_id,
+      None,
+      get_name,
+      0,
+      &[Value::String(attr_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(get_func))?;
+    let get_key = alloc_key(&mut scope, get_key_name)?;
+    scope.define_property(document_obj, get_key, data_desc(Value::Object(get_func)))?;
+
+    let set_name = scope.alloc_string(&format!("set {prop}"))?;
+    scope.push_root(Value::String(set_name))?;
+    let set_func = scope.alloc_native_function_with_slots(
+      reflected_bool_set_call_id,
+      None,
+      set_name,
+      1,
+      &[Value::String(attr_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(set_func))?;
+    let set_key = alloc_key(&mut scope, set_key_name)?;
+    scope.define_property(document_obj, set_key, data_desc(Value::Object(set_func)))?;
+  }
+
+  // Store shared CSSStyleDeclaration methods on `document` so wrappers can reuse them.
+  let style_get_property_value_call_id =
+    vm.register_native_call(css_style_get_property_value_native)?;
+  let style_get_property_value_name = scope.alloc_string("getPropertyValue")?;
+  scope.push_root(Value::String(style_get_property_value_name))?;
+  let style_get_property_value_func = scope.alloc_native_function(
+    style_get_property_value_call_id,
+    None,
+    style_get_property_value_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    style_get_property_value_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(style_get_property_value_func))?;
+  let style_get_property_value_key = alloc_key(&mut scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
+  scope.define_property(
+    document_obj,
+    style_get_property_value_key,
+    data_desc(Value::Object(style_get_property_value_func)),
+  )?;
+
+  let style_set_property_call_id = vm.register_native_call(css_style_set_property_native)?;
+  let style_set_property_name = scope.alloc_string("setProperty")?;
+  scope.push_root(Value::String(style_set_property_name))?;
+  let style_set_property_func =
+    scope.alloc_native_function(style_set_property_call_id, None, style_set_property_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    style_set_property_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(style_set_property_func))?;
+  let style_set_property_key = alloc_key(&mut scope, STYLE_SET_PROPERTY_KEY)?;
+  scope.define_property(
+    document_obj,
+    style_set_property_key,
+    data_desc(Value::Object(style_set_property_func)),
+  )?;
+
+  let style_remove_property_call_id = vm.register_native_call(css_style_remove_property_native)?;
+  let style_remove_property_name = scope.alloc_string("removeProperty")?;
+  scope.push_root(Value::String(style_remove_property_name))?;
+  let style_remove_property_func = scope.alloc_native_function(
+    style_remove_property_call_id,
+    None,
+    style_remove_property_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    style_remove_property_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(style_remove_property_func))?;
+  let style_remove_property_key = alloc_key(&mut scope, STYLE_REMOVE_PROPERTY_KEY)?;
+  scope.define_property(
+    document_obj,
+    style_remove_property_key,
+    data_desc(Value::Object(style_remove_property_func)),
+  )?;
+
+  // CSSStyleDeclaration.cssText reflects the element's raw `style` attribute.
+  let style_attr_s = scope.alloc_string("style")?;
+  scope.push_root(Value::String(style_attr_s))?;
+  let css_text_get_name = scope.alloc_string("get cssText")?;
+  scope.push_root(Value::String(css_text_get_name))?;
+  let css_text_get_func = scope.alloc_native_function_with_slots(
+    reflected_string_get_call_id,
+    None,
+    css_text_get_name,
+    0,
+    &[Value::String(style_attr_s)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    css_text_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(css_text_get_func))?;
+  let css_text_get_key = alloc_key(&mut scope, STYLE_CSS_TEXT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    css_text_get_key,
+    data_desc(Value::Object(css_text_get_func)),
+  )?;
+
+  let css_text_set_name = scope.alloc_string("set cssText")?;
+  scope.push_root(Value::String(css_text_set_name))?;
+  let css_text_set_func = scope.alloc_native_function_with_slots(
+    reflected_string_set_call_id,
+    None,
+    css_text_set_name,
+    1,
+    &[Value::String(style_attr_s)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    css_text_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(css_text_set_func))?;
+  let css_text_set_key = alloc_key(&mut scope, STYLE_CSS_TEXT_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    css_text_set_key,
+    data_desc(Value::Object(css_text_set_func)),
+  )?;
+
+  let style_named_get_call_id = vm.register_native_call(css_style_named_get_native)?;
+  let style_named_set_call_id = vm.register_native_call(css_style_named_set_native)?;
+
+  for (prop, get_key_name, set_key_name) in [
+    ("display", STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY),
+    ("cursor", STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY),
+    ("height", STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY),
+    ("width", STYLE_WIDTH_GET_KEY, STYLE_WIDTH_SET_KEY),
+  ] {
+    let prop_s = scope.alloc_string(prop)?;
+    scope.push_root(Value::String(prop_s))?;
+
+    let get_name = scope.alloc_string(&format!("get {prop}"))?;
+    scope.push_root(Value::String(get_name))?;
+    let get_func = scope.alloc_native_function_with_slots(
+      style_named_get_call_id,
+      None,
+      get_name,
+      0,
+      &[Value::String(prop_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(get_func))?;
+    let get_key = alloc_key(&mut scope, get_key_name)?;
+    scope.define_property(document_obj, get_key, data_desc(Value::Object(get_func)))?;
+
+    let set_name = scope.alloc_string(&format!("set {prop}"))?;
+    scope.push_root(Value::String(set_name))?;
+    let set_func = scope.alloc_native_function_with_slots(
+      style_named_set_call_id,
+      None,
+      set_name,
+      1,
+      &[Value::String(prop_s)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(set_func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(set_func))?;
+    let set_key = alloc_key(&mut scope, set_key_name)?;
+    scope.define_property(document_obj, set_key, data_desc(Value::Object(set_func)))?;
+  }
+
   // Store shared Element.innerHTML/outerHTML accessors on `document` so wrappers can reuse them.
   let inner_html_get_call_id = vm.register_native_call(element_inner_html_get_native)?;
   let inner_html_get_name = scope.alloc_string("get innerHTML")?;
@@ -6700,6 +7801,92 @@ mod tests {
 
     let target = dom.get_element_by_id("target").expect("missing #target");
     assert_eq!(dom.element_class_name(target), "f c d e");
+    Ok(())
+  }
+
+  #[test]
+  fn element_reflected_attributes_mutate_dom2_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const script = document.createElement('script');\n\
+        script.id = 's';\n\
+        script.src = 'https://example.com/app.js';\n\
+        script.type = 'module';\n\
+        script.charset = 'utf-8';\n\
+        script.crossOrigin = 'anonymous';\n\
+        script.async = true;\n\
+        script.defer = true;\n\
+        document.body.appendChild(script);\n\
+        return script.src === 'https://example.com/app.js'\n\
+          && script.type === 'module'\n\
+          && script.charset === 'utf-8'\n\
+          && script.crossOrigin === 'anonymous'\n\
+          && script.async === true\n\
+          && script.defer === true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let script = dom.get_element_by_id("s").expect("missing #s");
+    assert_eq!(
+      dom.get_attribute(script, "src").unwrap(),
+      Some("https://example.com/app.js")
+    );
+    assert_eq!(dom.get_attribute(script, "type").unwrap(), Some("module"));
+    assert_eq!(dom.get_attribute(script, "charset").unwrap(), Some("utf-8"));
+    assert_eq!(
+      dom.get_attribute(script, "crossorigin").unwrap(),
+      Some("anonymous")
+    );
+    assert_eq!(dom.has_attribute(script, "async").unwrap(), true);
+    assert_eq!(dom.has_attribute(script, "defer").unwrap(), true);
+
+    Ok(())
+  }
+
+  #[test]
+  fn element_style_shim_mutates_dom2_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const div = document.createElement('div');\n\
+        div.id = 't';\n\
+        div.style.display = 'none';\n\
+        div.style.setProperty('cursor', 'pointer');\n\
+        div.style.height = '10px';\n\
+        div.style.setProperty('backgroundColor', 'red');\n\
+        const removed = div.style.removeProperty('display');\n\
+        document.body.appendChild(div);\n\
+        return removed === 'none'\n\
+          && div.style.getPropertyValue('background-color') === 'red'\n\
+          && div.style.display === '';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let div = dom.get_element_by_id("t").expect("missing #t");
+    assert_eq!(
+      dom.get_attribute(div, "style").unwrap(),
+      Some("background-color: red; cursor: pointer; height: 10px;")
+    );
+
     Ok(())
   }
 
