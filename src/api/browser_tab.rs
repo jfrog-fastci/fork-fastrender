@@ -7404,6 +7404,7 @@ html, body { margin: 0; padding: 0; }
       host_snapshot_committed: false,
       last_synced_host_dom_generation: 0,
     });
+    host.streaming_parse_active = true;
 
     // Simulate a pending script-blocking stylesheet. Async scripts must not be delayed by this.
     host.script_blocking_stylesheets.register_blocking_stylesheet(0);

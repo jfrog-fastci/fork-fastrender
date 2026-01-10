@@ -346,6 +346,10 @@ impl BrowserDocument {
     self.dom = dom;
     self.options = options;
     self.prepared = None;
+    // Reset per-document CSP state. Callers using `reset_with_dom` are replacing the entire DOM
+    // (i.e. a new navigation/document), so carrying over the previous document's CSP would be
+    // incorrect once CSP enforcement is enabled for BrowserDocument renders.
+    self.renderer.document_csp = None;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.invalidate_all();
@@ -1068,6 +1072,23 @@ pub(super) fn prepare_dom_inner(
   // / referrer policy extraction) finishes quickly without checking the deadline.
   crate::render_control::check_active(RenderStage::DomParse).map_err(Error::Render)?;
 
+  // `BrowserDocument`/`BrowserDocumentDom2` share a long-lived `FastRender` instance across multiple
+  // navigations. Unlike `FastRender::prepare_html`/`prepare_url`, the BrowserDocument pipeline
+  // builds a fresh `ResourceContext` for each layout pass, so we must explicitly seed it with the
+  // document-level CSP (e.g. header-delivered CSP from `prepare_url`).
+  //
+  // Additionally, scan for `<meta http-equiv="Content-Security-Policy">` so DOM-based entrypoints
+  // enforce CSP consistently with HTML-string entrypoints.
+  if let Some(doc_csp) = renderer.document_csp.clone() {
+    if let Some(mut ctx) = renderer.resource_context.clone() {
+      let needs_update = ctx.csp.as_ref() != Some(&doc_csp);
+      if needs_update {
+        ctx.csp = Some(doc_csp);
+        renderer.push_resource_context(Some(ctx));
+      }
+    }
+  }
+
   renderer.update_base_url_from_dom(dom);
   if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
     let needs_update = renderer
@@ -1079,6 +1100,32 @@ pub(super) fn prepare_dom_inner(
         ctx.referrer_policy = policy;
         // Propagate the updated policy to all caches/fetchers that hold a copy of the current
         // resource context.
+        renderer.push_resource_context(Some(ctx));
+      }
+    }
+  }
+
+  if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+    // Persist CSP at the document level so follow-up layout passes (and any host integrations that
+    // consult `FastRender::document_csp`) observe the parsed policy.
+    match renderer.document_csp.as_mut() {
+      Some(existing) => {
+        existing.extend(meta_csp.clone());
+      }
+      None => {
+        renderer.document_csp = Some(meta_csp.clone());
+      }
+    }
+
+    if let Some(mut ctx) = renderer.resource_context.clone() {
+      let changed = match ctx.csp.as_mut() {
+        Some(existing) => existing.extend(meta_csp),
+        None => {
+          ctx.csp = Some(meta_csp);
+          true
+        }
+      };
+      if changed {
         renderer.push_resource_context(Some(ctx));
       }
     }
@@ -1221,6 +1268,56 @@ mod tests {
     let nbsp = "\u{00A0}".to_string();
     document.set_navigation_urls(None, Some(nbsp.clone()));
     assert_eq!(document.renderer.base_url.as_deref(), Some(nbsp.as_str()));
+    Ok(())
+  }
+
+  #[test]
+  fn csp_style_src_attr_meta_blocks_style_attributes_and_does_not_leak_across_reset() -> Result<()> {
+    let options = RenderOptions::default().with_viewport(20, 20);
+    let html_blocked = r#"<!doctype html>
+      <html>
+        <head>
+          <meta http-equiv="Content-Security-Policy" content="style-src-attr 'none'">
+          <style>
+            html, body { margin: 0; background: rgb(0, 255, 0); }
+            #box { width: 10px; height: 10px; }
+          </style>
+        </head>
+        <body>
+          <div id="box" style="background: rgb(255, 0, 0);"></div>
+        </body>
+      </html>"#;
+    let html_allowed = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; background: rgb(0, 255, 0); }
+            #box { width: 10px; height: 10px; }
+          </style>
+        </head>
+        <body>
+          <div id="box" style="background: rgb(255, 0, 0);"></div>
+        </body>
+      </html>"#;
+
+    let mut document = BrowserDocument::new(renderer_for_tests(), html_blocked, options.clone())?;
+    let pixmap_blocked = document.render_frame()?;
+    let blocked = pixmap_blocked.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!(
+      [blocked.red(), blocked.green(), blocked.blue(), blocked.alpha()],
+      [0, 255, 0, 255],
+      "expected style attribute to be blocked by CSP meta"
+    );
+
+    document.reset_with_html(html_allowed, options.clone())?;
+    let pixmap_allowed = document.render_frame()?;
+    let allowed = pixmap_allowed.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!(
+      [allowed.red(), allowed.green(), allowed.blue(), allowed.alpha()],
+      [255, 0, 0, 255],
+      "expected CSP state not to leak across reset_with_html"
+    );
+
     Ok(())
   }
 

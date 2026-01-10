@@ -240,6 +240,9 @@ impl BrowserDocumentDom2 {
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
+    // Reset per-document CSP state. `reset_with_dom` replaces the entire document, so any previously
+    // captured CSP headers/meta should not leak into the new DOM.
+    self.renderer.document_csp = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.animation_timeline_origin = None;
     self.invalidate_all();
