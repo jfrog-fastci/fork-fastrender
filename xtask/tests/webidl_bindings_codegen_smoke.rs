@@ -18,12 +18,19 @@ fn generated_bindings_snapshots_contain_known_members() {
   let window_bindings = fs::read_to_string(&window_bindings_path)
     .unwrap_or_else(|_| panic!("read {}", window_bindings_path.display()));
 
+  // rustfmt (or codegen) may reflow argument lists across multiple lines, so make
+  // these substring checks insensitive to whitespace.
+  let window_bindings_no_whitespace: String = window_bindings
+    .chars()
+    .filter(|c| !c.is_whitespace())
+    .collect();
+
   assert!(
-    window_bindings.contains("rt.define_data_property_str(global, \"URL\","),
+    window_bindings_no_whitespace.contains("rt.define_constructor(global,\"URL\","),
     "expected window bindings to install URL constructor"
   );
   assert!(
-    window_bindings.contains("rt.define_data_property_str(global, \"URLSearchParams\","),
+    window_bindings_no_whitespace.contains("rt.define_constructor(global,\"URLSearchParams\","),
     "expected window bindings to install URLSearchParams constructor"
   );
   assert!(

@@ -554,6 +554,18 @@ impl VmJsRuntime {
   where
     F: Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError> + 'static,
   {
+    self.alloc_function_value_with_name_length("host", 0, f)
+  }
+
+  pub fn alloc_function_value_with_name_length<F>(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: F,
+  ) -> Result<Value, VmError>
+  where
+    F: Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError> + 'static,
+  {
     // Allocate a real `vm-js` function object so callers can treat it like a normal JS Function:
     // - it has `[[Call]]` so `typeof`/callability checks in `vm-js` can evolve naturally, and
     // - it participates in the regular object/prototype/property APIs.
@@ -562,8 +574,8 @@ impl VmJsRuntime {
     // tables), so we use a dummy `NativeFunctionId` here.
     let obj = {
       let mut scope = self.heap.scope();
-      let name = scope.alloc_string("host")?;
-      scope.alloc_native_function(NativeFunctionId(0), None, name, 0)?
+      let name = scope.alloc_string(name)?;
+      scope.alloc_native_function(NativeFunctionId(0), None, name, length)?
     };
     self.host_objects.insert(
       WeakGcObject::from(obj),
@@ -1597,10 +1609,15 @@ impl WebIdlJsRuntime for VmJsRuntime {
 }
 
 impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
-  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Value, VmError> {
+  fn create_function(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: NativeHostFunction<Self, Host>,
+  ) -> Result<Value, VmError> {
     let host_type_id = TypeId::of::<Host>();
 
-    self.alloc_function_value(move |rt, this, args| {
+    self.alloc_function_value_with_name_length(name, length, move |rt, this, args| {
       let Some(ptr) = rt.bindings_host_ptr else {
         return Err(rt.throw_type_error(
           "WebIDL bindings host context is not active (missing VmJsRuntime::with_host_context)",
@@ -1619,6 +1636,52 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
       let host: &mut Host = unsafe { ptr.cast::<Host>().as_mut() };
       f(rt, host, this, args)
     })
+  }
+
+  fn define_data_property_with_attrs(
+    &mut self,
+    obj: Value,
+    key: PropertyKey,
+    value: Value,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), VmError> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("define_data_property_with_attrs: receiver is not an object"));
+    };
+
+    let desc = PropertyDescriptor {
+      enumerable,
+      configurable,
+      kind: PropertyKind::Data { value, writable },
+    };
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, key, desc)
+  }
+
+  fn define_accessor_property_with_attrs(
+    &mut self,
+    obj: Value,
+    key: PropertyKey,
+    get: Value,
+    set: Value,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), VmError> {
+    let Value::Object(obj) = obj else {
+      return Err(
+        self.throw_type_error("define_accessor_property_with_attrs: receiver is not an object"),
+      );
+    };
+
+    let desc = PropertyDescriptor {
+      enumerable,
+      configurable,
+      kind: PropertyKind::Accessor { get, set },
+    };
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, key, desc)
   }
 
   fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {

@@ -107,7 +107,16 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
-  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error>;
+  /// Create a host-defined function object with WebIDL-visible metadata.
+  ///
+  /// - `name` is used for the function's `.name` property.
+  /// - `length` is used for the function's `.length` property (required argument count).
+  fn create_function(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error>;
 
   /// Root and return a WebIDL callback function handle.
   ///
@@ -125,13 +134,41 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
+  fn define_data_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error>;
+
+  fn define_accessor_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error>;
+
+  fn set_prototype(
+    &mut self,
+    obj: Self::JsValue,
+    proto: Option<Self::JsValue>,
+  ) -> Result<(), Self::Error>;
+
   fn define_data_property(
     &mut self,
     obj: Self::JsValue,
     key: Self::PropertyKey,
     value: Self::JsValue,
     enumerable: bool,
-  ) -> Result<(), Self::Error>;
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_with_attrs(obj, key, value, true, enumerable, true)
+  }
 
   fn define_data_property_str(
     &mut self,
@@ -139,7 +176,99 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     name: &str,
     value: Self::JsValue,
     enumerable: bool,
-  ) -> Result<(), Self::Error>;
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key(name)?;
+    self.define_data_property(obj, key, value, enumerable)
+  }
+
+  fn define_data_property_str_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key(name)?;
+    self.define_data_property_with_attrs(obj, key, value, writable, enumerable, configurable)
+  }
+
+  fn define_accessor_property_str_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key(name)?;
+    self.define_accessor_property_with_attrs(obj, key, get, set, enumerable, configurable)
+  }
+
+  /// Defines a WebIDL operation method property.
+  ///
+  /// This follows the Web IDL JavaScript binding:
+  /// - writable: true
+  /// - configurable: true
+  /// - enumerable: true
+  fn define_method(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    func: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(obj, name, func, true, true, true)
+  }
+
+  /// Defines a WebIDL attribute accessor property.
+  ///
+  /// - configurable: true
+  /// - enumerable: true
+  fn define_attribute_accessor(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    get: Self::JsValue,
+    set: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_accessor_property_str_with_attrs(obj, name, get, set, true, true)
+  }
+
+  /// Defines a WebIDL constant property.
+  ///
+  /// - writable: false
+  /// - configurable: false
+  /// - enumerable: true
+  fn define_constant(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    value: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(obj, name, value, false, true, false)
+  }
+
+  /// Defines an interface constructor, wiring `.prototype` and `prototype.constructor`.
+  ///
+  /// The property attributes are chosen to match WebIDL's requirements for interface objects and
+  /// prototype objects:
+  /// - `global[name]`: writable + configurable, non-enumerable
+  /// - `ctor.prototype`: non-writable, non-enumerable, non-configurable
+  /// - `proto.constructor`: writable + configurable, non-enumerable
+  fn define_constructor(
+    &mut self,
+    global: Self::JsValue,
+    name: &str,
+    ctor: Self::JsValue,
+    proto: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
+    self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
+    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    Ok(())
+  }
 }
 
 /// Long-lived bindings state associated with a `vm-js` realm.
@@ -494,7 +623,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(Value::Object(obj))
   }
 
-  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error> {
+  fn create_function(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
     let call_id = if let Some(id) = self.state.native_call_id.get() {
       id
     } else {
@@ -506,10 +640,13 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     let intr = self.intrinsics()?;
 
     // Root the name across allocation of the function object.
-    let name = self.cx.scope.alloc_string("webidl binding")?;
-    self.cx.scope.push_root(Value::String(name))?;
+    let name_s = self.cx.scope.alloc_string(name)?;
+    self.cx.scope.push_root(Value::String(name_s))?;
 
-    let func = self.cx.scope.alloc_native_function(call_id, None, name, 0)?;
+    let func = self
+      .cx
+      .scope
+      .alloc_native_function(call_id, None, name_s, length)?;
     self.cx.scope.push_root(Value::Object(func))?;
     self.cx
       .scope
@@ -545,6 +682,100 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     self.cx.scope.push_root(Value::Object(self.state.global_object))?;
     Ok(Value::Object(self.state.global_object))
+  }
+
+  fn define_data_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("define_data_property_with_attrs: expected object receiver"));
+    };
+
+    // Root `obj`, `key`, and `value` across `define_property`, which may allocate and GC.
+    let mut scope = self.cx.scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    match key {
+      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
+    };
+    scope.push_root(value)?;
+
+    scope.define_property(
+      obj,
+      key,
+      PropertyDescriptor {
+        enumerable,
+        configurable,
+        kind: PropertyKind::Data { value, writable },
+      },
+    )
+  }
+
+  fn define_accessor_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error(
+        "define_accessor_property_with_attrs: expected object receiver",
+      ));
+    };
+
+    // Root `obj`, `key`, `get`, and `set` across `define_property`, which may allocate and GC.
+    let mut scope = self.cx.scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    match key {
+      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
+    };
+    scope.push_root(get)?;
+    scope.push_root(set)?;
+
+    scope.define_property(
+      obj,
+      key,
+      PropertyDescriptor {
+        enumerable,
+        configurable,
+        kind: PropertyKind::Accessor { get, set },
+      },
+    )
+  }
+
+  fn set_prototype(
+    &mut self,
+    obj: Self::JsValue,
+    proto: Option<Self::JsValue>,
+  ) -> Result<(), Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("set_prototype: expected object receiver"));
+    };
+    let proto_obj = match proto {
+      None => None,
+      Some(Value::Null) => None,
+      Some(Value::Object(o)) => Some(o),
+      Some(_) => return Err(self.throw_type_error("set_prototype: expected object or null prototype")),
+    };
+
+    let mut scope = self.cx.scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    if let Some(proto_obj) = proto_obj {
+      scope.push_root(Value::Object(proto_obj))?;
+    }
+
+    scope.heap_mut().object_set_prototype(obj, proto_obj)?;
+    Ok(())
   }
 
   fn define_data_property(
@@ -821,8 +1052,15 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     )
   }
 
-  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error> {
-    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(self, f)
+  fn create_function(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(
+      self, name, length, f,
+    )
   }
 
   fn root_callback_function(&mut self, value: Self::JsValue) -> Result<CallbackHandle, Self::Error> {
@@ -839,6 +1077,56 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::global_object(self)
+  }
+
+  fn define_data_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::define_data_property_with_attrs(
+      self,
+      obj,
+      key,
+      value,
+      writable,
+      enumerable,
+      configurable,
+    )
+  }
+
+  fn define_accessor_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::define_accessor_property_with_attrs(
+      self,
+      obj,
+      key,
+      get,
+      set,
+      enumerable,
+      configurable,
+    )
+  }
+
+  fn set_prototype(
+    &mut self,
+    obj: Self::JsValue,
+    proto: Option<Self::JsValue>,
+  ) -> Result<(), Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::set_prototype(
+      self, obj, proto,
+    )
   }
 
   fn define_data_property(
@@ -920,7 +1208,7 @@ mod tests {
       let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
       let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
 
-      let func = cx.create_function(add)?;
+      let func = cx.create_function("add", 2, add)?;
       let global = cx.global_object()?;
       cx.define_data_property_str(global, "add", func, true)?;
     }

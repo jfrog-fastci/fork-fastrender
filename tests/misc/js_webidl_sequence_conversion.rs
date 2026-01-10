@@ -197,6 +197,8 @@ fn generated_bindings_convert_sequence_long_from_iterable() -> Result<(), VmErro
   let func =
     <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
       &mut rt,
+      "takesSequence",
+      1,
       takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
     )?;
   // Keep the wrapper function alive across the allocations performed while constructing the test
@@ -234,6 +236,8 @@ fn generated_bindings_enforce_max_sequence_length() -> Result<(), VmError> {
   let func =
     <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
       &mut rt,
+      "takesSequence",
+      1,
       takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
     )?;
   let _func_root = rt.heap_mut().add_root(func)?;

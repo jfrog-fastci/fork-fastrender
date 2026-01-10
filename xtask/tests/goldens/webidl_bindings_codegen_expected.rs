@@ -287,14 +287,14 @@ pub mod window {
   {
     let global = rt.global_object()?;
     let proto_foo = rt.create_object()?;
-    let func = rt.create_function(foo_baz::<Host, R>)?;
-    rt.define_data_property_str(proto_foo, "baz", func, false)?;
-    let func = rt.create_function(foo_qux::<Host, R>)?;
-    rt.define_data_property_str(proto_foo, "qux", func, false)?;
-    let func = rt.create_function(foo_takes_frozen_array::<Host, R>)?;
-    rt.define_data_property_str(proto_foo, "takesFrozenArray", func, false)?;
-    let func = rt.create_function(foo_takes_sequence::<Host, R>)?;
-    rt.define_data_property_str(proto_foo, "takesSequence", func, false)?;
+    let func = rt.create_function("baz", 1, foo_baz::<Host, R>)?;
+    rt.define_method(proto_foo, "baz", func)?;
+    let func = rt.create_function("qux", 0, foo_qux::<Host, R>)?;
+    rt.define_method(proto_foo, "qux", func)?;
+    let func = rt.create_function("takesFrozenArray", 1, foo_takes_frozen_array::<Host, R>)?;
+    rt.define_method(proto_foo, "takesFrozenArray", func)?;
+    let func = rt.create_function("takesSequence", 1, foo_takes_sequence::<Host, R>)?;
+    rt.define_method(proto_foo, "takesSequence", func)?;
     let _ = host;
     Ok(())
   }

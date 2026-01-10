@@ -286,7 +286,38 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
     self.alloc_object()
   }
 
-  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error>;
+  /// Create a host-defined function object with WebIDL-visible metadata.
+  ///
+  /// - `name` is used for the function's `.name` property.
+  /// - `length` is used for the function's `.length` property (required argument count).
+  fn create_function(
+    &mut self,
+    name: &str,
+    length: u32,
+    f: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error>;
+
+  /// Define a data property with explicit ECMAScript attributes.
+  fn define_data_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error>;
+
+  /// Define an accessor property with explicit ECMAScript attributes.
+  fn define_accessor_property_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error>;
 
   fn set_prototype(
     &mut self,
@@ -319,5 +350,95 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   ) -> Result<(), Self::Error> {
     let key = self.property_key_from_str(name)?;
     self.define_data_property(obj, key, value, enumerable)
+  }
+
+  fn define_data_property_str_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    value: Self::JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key_from_str(name)?;
+    self.define_data_property_with_attrs(obj, key, value, writable, enumerable, configurable)
+  }
+
+  fn define_accessor_property_str_with_attrs(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    get: Self::JsValue,
+    set: Self::JsValue,
+    enumerable: bool,
+    configurable: bool,
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key_from_str(name)?;
+    self.define_accessor_property_with_attrs(obj, key, get, set, enumerable, configurable)
+  }
+
+  /// Defines a WebIDL operation method property.
+  ///
+  /// This follows the Web IDL JavaScript binding:
+  /// - writable: true
+  /// - configurable: true
+  /// - enumerable: true
+  fn define_method(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    func: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(obj, name, func, true, true, true)
+  }
+
+  /// Defines a WebIDL attribute accessor property.
+  ///
+  /// - configurable: true
+  /// - enumerable: true
+  fn define_attribute_accessor(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    get: Self::JsValue,
+    set: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_accessor_property_str_with_attrs(obj, name, get, set, true, true)
+  }
+
+  /// Defines a WebIDL constant property.
+  ///
+  /// - writable: false
+  /// - configurable: false
+  /// - enumerable: true
+  fn define_constant(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    value: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(obj, name, value, false, true, false)
+  }
+
+  /// Defines an interface constructor, wiring `.prototype` and `prototype.constructor`.
+  ///
+  /// This is a convenience for generated bindings that need to produce WebIDL-shaped interface
+  /// objects. The property attributes are chosen to match WebIDL's requirements for interface
+  /// objects and prototype objects:
+  /// - `global[name]`: writable + configurable, non-enumerable
+  /// - `ctor.prototype`: non-writable, non-enumerable, non-configurable
+  /// - `proto.constructor`: writable + configurable, non-enumerable
+  fn define_constructor(
+    &mut self,
+    global: Self::JsValue,
+    name: &str,
+    ctor: Self::JsValue,
+    proto: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
+    self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
+    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    Ok(())
   }
 }

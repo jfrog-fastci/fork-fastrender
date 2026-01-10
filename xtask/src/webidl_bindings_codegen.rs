@@ -1476,10 +1476,16 @@ fn generate_bindings_module_for_target_unformatted(
     let iface = &selected[iface_name];
     if is_global_iface(&iface.name) {
       // Global functions live on the global object.
-      for op_name in iface.operations.keys() {
+      for (op_name, overloads) in &iface.operations {
+        let length = overloads
+          .iter()
+          .map(|sig| required_arg_count(&sig.arguments))
+          .min()
+          .unwrap_or(0);
         out.push_str(&format!(
-          "  let func = rt.create_function({func}::<Host, R>)?;\n  rt.define_data_property_str(global, \"{name}\", func, false)?;\n",
+          "  let func = rt.create_function(\"{name}\", {length}, {func}::<Host, R>)?;\n  rt.define_method(global, \"{name}\", func)?;\n",
           name = op_name,
+          length = length,
           func = op_wrapper_fn_name(&iface.name, op_name)
         ));
       }
@@ -1496,11 +1502,17 @@ fn generate_bindings_module_for_target_unformatted(
     });
 
     // Prototype methods.
-    for op_name in iface.operations.keys() {
+    for (op_name, overloads) in &iface.operations {
+      let length = overloads
+        .iter()
+        .map(|sig| required_arg_count(&sig.arguments))
+        .min()
+        .unwrap_or(0);
       out.push_str(&format!(
-        "  let func = rt.create_function({func}::<Host, R>)?;\n  rt.define_data_property_str({proto}, \"{name}\", func, false)?;\n",
+        "  let func = rt.create_function(\"{name}\", {length}, {func}::<Host, R>)?;\n  rt.define_method({proto}, \"{name}\", func)?;\n",
         proto = proto_var.as_str(),
         name = op_name,
+        length = length,
         func = op_wrapper_fn_name(&iface.name, op_name)
       ));
       if iterable_iterator_alias.is_some_and(|target| target == op_name.as_str()) {
@@ -1517,33 +1529,38 @@ fn generate_bindings_module_for_target_unformatted(
 
     // Constructor function (even for static-only interfaces like URL).
     let ctor_fn = ctor_wrapper_fn_name(&iface.name);
+    let ctor_length = iface
+      .constructors
+      .iter()
+      .map(|sig| required_arg_count(&sig.arguments))
+      .min()
+      .unwrap_or(0);
     out.push_str(&format!(
-      "  let ctor_{snake} = rt.create_function({ctor_fn}::<Host, R>)?;\n",
+      "  let ctor_{snake} = rt.create_function(\"{name}\", {length}, {ctor_fn}::<Host, R>)?;\n",
       snake = to_snake_ident(&iface.name),
+      name = iface.name.as_str(),
+      length = ctor_length,
       ctor_fn = ctor_fn
     ));
     out.push_str(&format!(
-      "  rt.define_data_property_str(global, \"{name}\", ctor_{snake}, false)?;\n",
+      "  rt.define_constructor(global, \"{name}\", ctor_{snake}, {proto})?;\n",
       name = iface.name.as_str(),
-      snake = to_snake_ident(&iface.name)
-    ));
-    out.push_str(&format!(
-      "  rt.define_data_property_str(ctor_{snake}, \"prototype\", {proto}, false)?;\n",
       snake = to_snake_ident(&iface.name),
       proto = proto_var.as_str()
     ));
-    out.push_str(&format!(
-      "  rt.define_data_property_str({proto}, \"constructor\", ctor_{snake}, false)?;\n",
-      proto = proto_var.as_str(),
-      snake = to_snake_ident(&iface.name)
-    ));
 
     // Static methods.
-    for op_name in iface.static_operations.keys() {
+    for (op_name, overloads) in &iface.static_operations {
+      let length = overloads
+        .iter()
+        .map(|sig| required_arg_count(&sig.arguments))
+        .min()
+        .unwrap_or(0);
       out.push_str(&format!(
-        "  let func = rt.create_function({func}::<Host, R>)?;\n  rt.define_data_property_str(ctor_{snake}, \"{name}\", func, false)?;\n",
+        "  let func = rt.create_function(\"{name}\", {length}, {func}::<Host, R>)?;\n  rt.define_method(ctor_{snake}, \"{name}\", func)?;\n",
         snake = to_snake_ident(&iface.name),
         name = op_name,
+        length = length,
         func = op_wrapper_fn_name(&iface.name, op_name)
       ));
     }

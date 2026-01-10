@@ -992,73 +992,65 @@ pub mod window {
     let proto_event_target = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
-    let func = rt.create_function(event_target_add_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "addEventListener", func, false)?;
-    let func = rt.create_function(event_target_dispatch_event::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, false)?;
-    let func = rt.create_function(event_target_remove_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "removeEventListener", func, false)?;
-    let ctor_event_target = rt.create_function(event_target_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "EventTarget", ctor_event_target, false)?;
-    rt.define_data_property_str(ctor_event_target, "prototype", proto_event_target, false)?;
-    rt.define_data_property_str(proto_event_target, "constructor", ctor_event_target, false)?;
-    let func = rt.create_function(u_r_l_to_j_s_o_n::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l, "toJSON", func, false)?;
-    let ctor_u_r_l = rt.create_function(u_r_l_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URL", ctor_u_r_l, false)?;
-    rt.define_data_property_str(ctor_u_r_l, "prototype", proto_u_r_l, false)?;
-    rt.define_data_property_str(proto_u_r_l, "constructor", ctor_u_r_l, false)?;
-    let func = rt.create_function(u_r_l_can_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "canParse", func, false)?;
-    let func = rt.create_function(u_r_l_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "parse", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_append::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_delete::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_entries::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "entries", func, false)?;
+    let func =
+      rt.create_function("addEventListener", 2, event_target_add_event_listener::<Host, R>)?;
+    rt.define_method(proto_event_target, "addEventListener", func)?;
+    let func = rt.create_function("dispatchEvent", 1, event_target_dispatch_event::<Host, R>)?;
+    rt.define_method(proto_event_target, "dispatchEvent", func)?;
+    let func =
+      rt.create_function("removeEventListener", 2, event_target_remove_event_listener::<Host, R>)?;
+    rt.define_method(proto_event_target, "removeEventListener", func)?;
+    let ctor_event_target =
+      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
+    let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
+    rt.define_method(proto_u_r_l, "toJSON", func)?;
+    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
+    let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
+    rt.define_method(ctor_u_r_l, "canParse", func)?;
+    let func = rt.create_function("parse", 1, u_r_l_parse::<Host, R>)?;
+    rt.define_method(ctor_u_r_l, "parse", func)?;
+    let func = rt.create_function("append", 2, u_r_l_search_params_append::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "append", func)?;
+    let func = rt.create_function("delete", 1, u_r_l_search_params_delete::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "delete", func)?;
+    let func = rt.create_function("entries", 0, u_r_l_search_params_entries::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "entries", func)?;
     let iterator_key = rt.symbol_iterator()?;
     rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
-    let func = rt.create_function(u_r_l_search_params_for_each::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "forEach", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_get::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_get_all::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_has::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_keys::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "keys", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_values::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "values", func, false)?;
+    let func = rt.create_function("forEach", 1, u_r_l_search_params_for_each::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "forEach", func)?;
+    let func = rt.create_function("get", 1, u_r_l_search_params_get::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "get", func)?;
+    let func = rt.create_function("getAll", 1, u_r_l_search_params_get_all::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "getAll", func)?;
+    let func = rt.create_function("has", 1, u_r_l_search_params_has::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "has", func)?;
+    let func = rt.create_function("keys", 0, u_r_l_search_params_keys::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "keys", func)?;
+    let func = rt.create_function("set", 2, u_r_l_search_params_set::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "set", func)?;
+    let func = rt.create_function("values", 0, u_r_l_search_params_values::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "values", func)?;
     let ctor_u_r_l_search_params =
-      rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, false)?;
-    rt.define_data_property_str(
+      rt.create_function("URLSearchParams", 0, u_r_l_search_params_constructor::<Host, R>)?;
+    rt.define_constructor(
+      global,
+      "URLSearchParams",
       ctor_u_r_l_search_params,
-      "prototype",
       proto_u_r_l_search_params,
-      false,
     )?;
-    rt.define_data_property_str(
-      proto_u_r_l_search_params,
-      "constructor",
-      ctor_u_r_l_search_params,
-      false,
-    )?;
-    let func = rt.create_function(window_clear_interval::<Host, R>)?;
-    rt.define_data_property_str(global, "clearInterval", func, false)?;
-    let func = rt.create_function(window_clear_timeout::<Host, R>)?;
-    rt.define_data_property_str(global, "clearTimeout", func, false)?;
-    let func = rt.create_function(window_queue_microtask::<Host, R>)?;
-    rt.define_data_property_str(global, "queueMicrotask", func, false)?;
-    let func = rt.create_function(window_set_interval::<Host, R>)?;
-    rt.define_data_property_str(global, "setInterval", func, false)?;
-    let func = rt.create_function(window_set_timeout::<Host, R>)?;
-    rt.define_data_property_str(global, "setTimeout", func, false)?;
+    let func = rt.create_function("clearInterval", 0, window_clear_interval::<Host, R>)?;
+    rt.define_method(global, "clearInterval", func)?;
+    let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
+    rt.define_method(global, "clearTimeout", func)?;
+    let func = rt.create_function("queueMicrotask", 1, window_queue_microtask::<Host, R>)?;
+    rt.define_method(global, "queueMicrotask", func)?;
+    let func = rt.create_function("setInterval", 1, window_set_interval::<Host, R>)?;
+    rt.define_method(global, "setInterval", func)?;
+    let func = rt.create_function("setTimeout", 1, window_set_timeout::<Host, R>)?;
+    rt.define_method(global, "setTimeout", func)?;
     let _ = host;
     Ok(())
   }
@@ -1877,62 +1869,54 @@ pub mod worker {
     let proto_event_target = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
-    let func = rt.create_function(event_target_add_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "addEventListener", func, false)?;
-    let func = rt.create_function(event_target_dispatch_event::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, false)?;
-    let func = rt.create_function(event_target_remove_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "removeEventListener", func, false)?;
-    let ctor_event_target = rt.create_function(event_target_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "EventTarget", ctor_event_target, false)?;
-    rt.define_data_property_str(ctor_event_target, "prototype", proto_event_target, false)?;
-    rt.define_data_property_str(proto_event_target, "constructor", ctor_event_target, false)?;
-    let func = rt.create_function(u_r_l_to_j_s_o_n::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l, "toJSON", func, false)?;
-    let ctor_u_r_l = rt.create_function(u_r_l_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URL", ctor_u_r_l, false)?;
-    rt.define_data_property_str(ctor_u_r_l, "prototype", proto_u_r_l, false)?;
-    rt.define_data_property_str(proto_u_r_l, "constructor", ctor_u_r_l, false)?;
-    let func = rt.create_function(u_r_l_can_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "canParse", func, false)?;
-    let func = rt.create_function(u_r_l_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "parse", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_append::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_delete::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_entries::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "entries", func, false)?;
+    let func =
+      rt.create_function("addEventListener", 2, event_target_add_event_listener::<Host, R>)?;
+    rt.define_method(proto_event_target, "addEventListener", func)?;
+    let func = rt.create_function("dispatchEvent", 1, event_target_dispatch_event::<Host, R>)?;
+    rt.define_method(proto_event_target, "dispatchEvent", func)?;
+    let func =
+      rt.create_function("removeEventListener", 2, event_target_remove_event_listener::<Host, R>)?;
+    rt.define_method(proto_event_target, "removeEventListener", func)?;
+    let ctor_event_target =
+      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
+    let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
+    rt.define_method(proto_u_r_l, "toJSON", func)?;
+    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
+    let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
+    rt.define_method(ctor_u_r_l, "canParse", func)?;
+    let func = rt.create_function("parse", 1, u_r_l_parse::<Host, R>)?;
+    rt.define_method(ctor_u_r_l, "parse", func)?;
+    let func = rt.create_function("append", 2, u_r_l_search_params_append::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "append", func)?;
+    let func = rt.create_function("delete", 1, u_r_l_search_params_delete::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "delete", func)?;
+    let func = rt.create_function("entries", 0, u_r_l_search_params_entries::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "entries", func)?;
     let iterator_key = rt.symbol_iterator()?;
     rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
-    let func = rt.create_function(u_r_l_search_params_for_each::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "forEach", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_get::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_get_all::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_has::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_keys::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "keys", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, false)?;
-    let func = rt.create_function(u_r_l_search_params_values::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "values", func, false)?;
+    let func = rt.create_function("forEach", 1, u_r_l_search_params_for_each::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "forEach", func)?;
+    let func = rt.create_function("get", 1, u_r_l_search_params_get::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "get", func)?;
+    let func = rt.create_function("getAll", 1, u_r_l_search_params_get_all::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "getAll", func)?;
+    let func = rt.create_function("has", 1, u_r_l_search_params_has::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "has", func)?;
+    let func = rt.create_function("keys", 0, u_r_l_search_params_keys::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "keys", func)?;
+    let func = rt.create_function("set", 2, u_r_l_search_params_set::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "set", func)?;
+    let func = rt.create_function("values", 0, u_r_l_search_params_values::<Host, R>)?;
+    rt.define_method(proto_u_r_l_search_params, "values", func)?;
     let ctor_u_r_l_search_params =
-      rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, false)?;
-    rt.define_data_property_str(
+      rt.create_function("URLSearchParams", 0, u_r_l_search_params_constructor::<Host, R>)?;
+    rt.define_constructor(
+      global,
+      "URLSearchParams",
       ctor_u_r_l_search_params,
-      "prototype",
       proto_u_r_l_search_params,
-      false,
-    )?;
-    rt.define_data_property_str(
-      proto_u_r_l_search_params,
-      "constructor",
-      ctor_u_r_l_search_params,
-      false,
     )?;
     let _ = host;
     Ok(())
