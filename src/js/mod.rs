@@ -33,15 +33,14 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
+// Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
+//
+// This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
+// and streaming execution are still being integrated.
 pub mod dom_integration;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
-// Legacy dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
-// This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
-// and streaming execution are still being integrated.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
@@ -119,10 +118,8 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
-// NOTE: `dom_integration` lives under `legacy/` but is declared above to keep the stable
-// `crate::js::dom_integration` path. It provides HTML "prepare the script element" helpers for
-// dynamically inserted `<script>` elements, and is still referenced by integration tests and
-// DOM-mutation plumbing. Do not re-declare it here.
+// NOTE: `dom_integration` is declared above (it is used by tests and DOM-mutation plumbing). Do not
+// re-declare it here.
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
