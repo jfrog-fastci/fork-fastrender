@@ -3937,6 +3937,75 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn navigate_to_url_navigation_request_from_script_commits_new_document() -> Result<()> {
+    struct NavigationRequestExecutor {
+      target_url: String,
+      pending: Option<LocationNavigationRequest>,
+    }
+ 
+    impl BrowserTabJsExecutor for NavigationRequestExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: false,
+          });
+        }
+        Ok(())
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let dir = tempdir().map_err(Error::Io)?;
+    let first_path = dir.path().join("first.html");
+    let second_path = dir.path().join("second.html");
+    std::fs::write(
+      &first_path,
+      "<!doctype html><html><body><div id=first></div><script>NAVIGATE</script></body></html>",
+    )
+    .map_err(Error::Io)?;
+    std::fs::write(
+      &second_path,
+      "<!doctype html><html><body><div id=second></div></body></html>",
+    )
+    .map_err(Error::Io)?;
+
+    let first_url = Url::from_file_path(&first_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+    let second_url = Url::from_file_path(&second_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let executor = NavigationRequestExecutor {
+      target_url: second_url.clone(),
+      pending: None,
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+    tab.navigate_to_url(&first_url, RenderOptions::default())?;
+
+    assert!(
+      tab.dom().get_element_by_id("second").is_some(),
+      "expected navigation request to commit second document"
+    );
+    assert!(
+      tab.dom().get_element_by_id("first").is_none(),
+      "expected navigation request to replace first document"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
     std::fs::write(temp.path().join("print.css"), "body { color: green; }")
