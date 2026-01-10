@@ -25,17 +25,17 @@ fn plan_for_page(page: &str) -> FreezePageFixturePlanArgs {
 
 #[test]
 fn normalizes_url_to_cache_stem_fixture_name() {
-  let args = plan_for_page("https://www.example.com/");
+  let args = plan_for_page("https://www.figma.com/");
   let plan = plan_freeze_page_fixture(&args).expect("plan");
   assert_eq!(plan.pages.len(), 1);
-  assert_eq!(plan.pages[0].fixture_name, "example.com");
+  assert_eq!(plan.pages[0].fixture_name, "figma.com");
 }
 
 #[test]
 fn planned_bundle_page_cache_command_includes_required_args() {
   let temp = TempDir::new().expect("tempdir");
   let args = FreezePageFixturePlanArgs {
-    pages: vec!["https://www.example.com/".to_string()],
+    pages: vec!["https://www.figma.com/".to_string()],
     html_dir: temp.path().join("html"),
     asset_cache_dir: temp.path().join("assets"),
     fixtures_root: temp.path().join("fixtures"),
@@ -116,7 +116,7 @@ fn planned_prefetch_assets_command_includes_prefetch_scripts_when_enabled() {
 fn planned_bundle_page_cache_command_includes_bundle_scripts_when_enabled() {
   let temp = TempDir::new().expect("tempdir");
   let args = FreezePageFixturePlanArgs {
-    pages: vec!["https://www.example.com/".to_string()],
+    pages: vec!["https://www.figma.com/".to_string()],
     html_dir: temp.path().join("html"),
     asset_cache_dir: temp.path().join("assets"),
     fixtures_root: temp.path().join("fixtures"),

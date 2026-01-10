@@ -154,6 +154,7 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
       dump_custom_properties: true,
       custom_property_prefix: vec!["--color".to_string()],
       custom_properties_limit: Some(10),
+      patch_html_for_chrome_baseline: false,
       viewport: (1040, 1240),
       dpr: 1.0,
       media: "screen".to_string(),

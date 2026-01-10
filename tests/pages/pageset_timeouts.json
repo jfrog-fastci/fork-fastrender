@@ -91,17 +91,6 @@
       "budget_ms": 23200.0
     },
     {
-      "name": "netflix.com",
-      "url": "https://www.netflix.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 11500.0
-    },
-    {
       "name": "ebay.com",
       "url": "https://www.ebay.com/",
       "viewport": [
@@ -177,6 +166,17 @@
       "dpr": 1.0,
       "media": "screen",
       "budget_ms": 33300.0
+    },
+    {
+      "name": "netflix.com",
+      "url": "https://www.netflix.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 11500.0
     },
     {
       "name": "washington.edu",
