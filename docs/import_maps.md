@@ -16,7 +16,7 @@ Key host-facing entry points:
 * `create_import_map_parse_result(...)` (HTML “import map parse result”)
 * `register_import_map(...)` / `merge_existing_and_new_import_maps(...)` (HTML “register/merge import maps”)
 * `resolve_module_specifier(...)` (HTML “resolve a module specifier” entry point)
-* `resolve_imports_match(...)` (HTML “resolve an imports match” helper; non-throwing wrapper for tests)
+* `resolve_imports_match(...)` (HTML “resolve an imports match” helper; returns `Result` and throws `ImportMapError` for blocked cases)
 
 Module script fetching/execution is separate, but module loading must call into the import map APIs
 described here.
@@ -51,7 +51,7 @@ What exists today:
 * **Implemented:** full module specifier resolution (`resolve_module_specifier`) and resolved-module-set
   updates (`add_module_to_resolved_module_set`).
 * **Implemented:** the core matching helper (`resolve_imports_match`) for "resolve an imports match"
-  (non-throwing wrapper used by tests/debugging; full resolution uses the throwing implementation).
+  (returns `Err(ImportMapError::TypeError(...))` for blocked cases like null entries/backtracking).
 
 What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline and
 the module graph loader. This document describes the intended integration surface for those
@@ -382,16 +382,15 @@ register_import_map(&mut state, result).unwrap();
 Rust API:
 
 * `fastrender::js::import_maps::resolve_imports_match(normalized_specifier, as_url, specifier_map)
-  -> Option<Option<url::Url>>`
+  -> Result<Option<url::Url>, ImportMapError>`
 
 Spec mapping: “resolve an imports match”.
 
 This is a low-level helper used by the full “resolve a module specifier” algorithm.
 
-It is intentionally **non-throwing** for tests/debugging: if a match is found but would have thrown
-(null entry, backtracking, etc.), this returns `Some(None)` rather than returning an error.
-
-The full `resolve_module_specifier(...)` API uses the throwing implementation.
+Most callers should prefer `resolve_module_specifier(...)`, which applies scope fallback rules and
+updates the resolved module set. `resolve_imports_match(...)` is exposed primarily for implementing
+or testing parts of the resolution algorithm.
 
 It implements:
 
@@ -401,11 +400,11 @@ It implements:
 
 Return values:
 
-* `None`: no matching entry was found in the given `ModuleSpecifierMap` (caller should fall back).
-* `Some(Some(url))`: a URL mapping was found (success).
-* `Some(None)`: a match was found, but resolution is blocked/invalid (e.g. null entry, invalid
-  join/backtracking). In the full spec this should translate into a thrown exception and **must not**
-  fall back to other candidates.
+* `Ok(None)`: no matching entry was found in the given `ModuleSpecifierMap` (caller should fall back).
+* `Ok(Some(url))`: a URL mapping was found (success).
+* `Err(ImportMapError::TypeError(...))`: a match was found, but resolution is blocked/invalid (e.g.
+  null entry, invalid join/backtracking). In the full spec this should translate into a thrown
+  exception and **must not** fall back to other candidates.
 
 Example:
 
@@ -424,7 +423,7 @@ let normalized_specifier = "pkg/util.js";
 let resolved = resolve_imports_match(normalized_specifier, as_url.as_ref(), &map.imports);
 
 assert!(
-    matches!(resolved, Some(Some(url)) if url.as_str() == "https://example.com/static/pkg/util.js")
+    matches!(resolved, Ok(Some(url)) if url.as_str() == "https://example.com/static/pkg/util.js")
 );
 ```
 
@@ -580,8 +579,8 @@ normalizes the key to `"https://example.com/"` (a prefix key), generates a `Trai
 warning, and stores a `null` entry (`None`) for that normalized key.
 
 When resolving, `resolve_imports_match(...)` will treat any match against that key as blocked
-(`Some(None)`), and should never hit its prefix-invariant debug assertion for maps produced by
-`parse_import_map_string(...)`.
+(returns `Err(ImportMapError::TypeError(...))`), and should never hit its prefix-invariant debug
+assertion for maps produced by `parse_import_map_string(...)`.
 
 ---
 
@@ -595,12 +594,11 @@ These matter when implementing “resolve an imports match”, and are enforced 
 * Backtracking protection: after resolving `afterPrefix` relative to the mapped URL, the resulting
   URL must still have the mapped base URL serialization as a prefix.
 
-Note: `resolve_imports_match` currently reports “blocked/invalid” cases as `Some(None)` (so the caller
-can treat them as blocked) and intentionally drops the specific error message.
+Note: `resolve_imports_match` returns `ImportMapError::TypeError(...)` for blocked cases. Error
+strings are not yet guaranteed to be spec-accurate.
 
-For host-facing error reporting, use `resolve_module_specifier(...)`, which returns
-`ImportMapError::TypeError(...)` for blocked cases. Error strings are not yet guaranteed to be
-spec-accurate.
+For host-facing resolution, use `resolve_module_specifier(...)`, which applies full scope/imports
+fallback and updates the resolved module set.
 
 #### Computing `normalized_specifier` / `as_url` (caller responsibility)
 

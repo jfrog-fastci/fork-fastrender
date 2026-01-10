@@ -160,7 +160,7 @@ Key modules:
 - `src/js/import_maps/`
   - WHATWG HTML import map parsing/normalization (`parse_import_map_string`, `create_import_map_parse_result`)
   - host-side state + merging + resolution (`ImportMapState`, `register_import_map`, `resolve_module_specifier`, ...)
-  - `resolve_imports_match` helper (non-throwing wrapper used by tests/debugging)
+  - `resolve_imports_match` helper (throws `ImportMapError` for blocked cases)
   - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)

@@ -51,8 +51,8 @@ What exists today (in-tree):
     - host-side state: `ImportMapState` + resolved-module-set record types (`types.rs`)
     - registration + merging: `register_import_map(...)` / `merge_existing_and_new_import_maps(...)` (`merge.rs`)
     - full module specifier resolution: `resolve_module_specifier(...)` + `add_module_to_resolved_module_set(...)` (`resolve.rs`)
-    - test/debug helper: `resolve_imports_match(...)` (`resolve.rs`) — non-throwing wrapper for the spec’s
-      "resolve an imports match" algorithm
+    - helper: `resolve_imports_match(...)` (`resolve.rs`) — implements the spec’s "resolve an imports match"
+      algorithm and throws `ImportMapError` for blocked cases
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
