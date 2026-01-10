@@ -20,6 +20,28 @@ use vm_js::{
   ModuleRequest, PromiseState, PropertyKey, Scope, Value, Vm, VmError, VmHostHooks,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportMapThrowKind {
+  TypeError,
+  SyntaxError,
+}
+
+fn import_map_error_to_throw_kind_and_message(err: ImportMapError) -> (ImportMapThrowKind, String) {
+  match err {
+    ImportMapError::TypeError(msg) => (ImportMapThrowKind::TypeError, msg),
+    ImportMapError::LimitExceeded(msg) => {
+      // `ImportMapError::LimitExceeded` already implies the "limit exceeded" context; keep the
+      // message itself consistent with other TypeError messages and avoid duplicating the prefix.
+      let msg = msg
+        .strip_prefix("import map limit exceeded:")
+        .map(|s| s.trim_start())
+        .unwrap_or(msg.as_str());
+      (ImportMapThrowKind::TypeError, format!("import map limit exceeded: {msg}"))
+    }
+    ImportMapError::Json(err) => (ImportMapThrowKind::SyntaxError, err.to_string()),
+  }
+}
+
 /// Per-document module loader and cache for `vm-js` modules.
 ///
 /// This is used by tooling entry points like `fetch_and_render --js` to execute `<script type="module">`
@@ -174,6 +196,14 @@ impl VmJsModuleLoader {
       let budget = window_realm.vm_budget_now();
       let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
       let mut vm = vm.push_budget(budget);
+      // Attach the loader's module graph to the VM while we load + evaluate modules. `vm-js` uses
+      // this pointer to support dynamic `import()` expressions from nested function calls.
+      //
+      // Note: this guard scopes the pointer to this evaluation call. If the embedding needs dynamic
+      // `import()` from callbacks executed *after* this function returns (e.g. Promise reactions run
+      // at a later microtask checkpoint), the embedding must ensure the module graph remains
+      // attached for that dynamic extent as well.
+      let _module_graph_guard = VmModuleGraphGuard::new(&mut vm, module_graph);
       let global_object = realm.global_object();
       let realm_id = realm.id();
 
@@ -307,6 +337,37 @@ fn vm_error_to_error_with_fresh_scope(heap: &mut vm_js::Heap, err: VmError) -> E
   vm_error_to_error_in_scope(&mut scope, err)
 }
 
+struct VmModuleGraphGuard {
+  vm: *mut Vm,
+  prev_graph: Option<*mut ModuleGraph>,
+}
+
+impl VmModuleGraphGuard {
+  fn new(vm: &mut Vm, graph: &mut ModuleGraph) -> Self {
+    let prev_graph = vm.module_graph_ptr();
+    vm.set_module_graph(graph);
+    Self {
+      vm: vm as *mut Vm,
+      prev_graph,
+    }
+  }
+}
+
+impl Drop for VmModuleGraphGuard {
+  fn drop(&mut self) {
+    // Safety: `VmModuleGraphGuard::new` captures a stable pointer to the VM borrowed by the caller.
+    // The guard is only used within the dynamic extent of module loading/evaluation, so the VM is
+    // still live when `drop` runs.
+    unsafe {
+      let vm = &mut *self.vm;
+      match self.prev_graph {
+        Some(ptr) => vm.set_module_graph(&mut *ptr),
+        None => vm.clear_module_graph(),
+      }
+    }
+  }
+}
+
 struct VmJsModuleHooks<'a, Host: WindowRealmHost + 'static> {
   inner: VmJsEventLoopHooks<Host>,
   fetcher: Arc<dyn ResourceFetcher>,
@@ -346,7 +407,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     }
 
     let source = Arc::new(vm_js::SourceText::new(url.to_string(), source_text.to_string()));
-    let record = vm_js::SourceTextModuleRecord::parse_source(source)?;
+    let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
@@ -424,7 +485,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     })?;
 
     let source = Arc::new(vm_js::SourceText::new(url.to_string(), source_text));
-    let record = vm_js::SourceTextModuleRecord::parse_source(source)?;
+    let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
@@ -464,17 +525,14 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       };
       return match resolved {
         Ok(url) => Ok(url.to_string()),
-        Err(err) => match err {
-          ImportMapError::TypeError(msg) => Err(self.throw_type_error(vm, scope, msg.as_str())),
-          ImportMapError::Json(err) => {
-            let msg = err.to_string();
-            Err(self.throw_syntax_error(vm, scope, msg.as_str()))
-          }
-          ImportMapError::LimitExceeded(detail) => {
-            let msg = format!("import map limit exceeded: {detail}");
-            Err(self.throw_type_error(vm, scope, msg.as_str()))
-          }
-        },
+        Err(err) => {
+          let (kind, msg) = import_map_error_to_throw_kind_and_message(err);
+          let thrown = match kind {
+            ImportMapThrowKind::TypeError => self.throw_type_error(vm, scope, msg.as_str()),
+            ImportMapThrowKind::SyntaxError => self.throw_syntax_error(vm, scope, msg.as_str()),
+          };
+          Err(thrown)
+        }
       };
     }
 
@@ -679,7 +737,9 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::dom2;
-  use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
+  use crate::js::import_maps::{
+    create_import_map_parse_result, create_import_map_parse_result_with_limits, register_import_map, ImportMapLimits,
+  };
   use crate::resource::FetchedResource;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine;
@@ -952,6 +1012,44 @@ mod tests {
     )?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn import_map_limit_exceeded_is_type_error_with_single_prefix() -> Result<()> {
+    let base_url = Url::parse("https://example.com/index.html")
+      .map_err(|err| Error::Other(format!("invalid test base URL: {err}")))?;
+
+    // Force a deterministic limit exceeded error by allowing zero `"imports"` entries.
+    let limits = ImportMapLimits {
+      max_imports_entries: 0,
+      ..ImportMapLimits::default()
+    };
+    let parse_result = create_import_map_parse_result_with_limits(
+      r#"{"imports":{"dep":"./dep.js"}}"#,
+      &base_url,
+      &limits,
+    );
+    let err = parse_result
+      .error_to_rethrow
+      .expect("expected LimitExceeded error_to_rethrow");
+
+    let (kind, msg) = import_map_error_to_throw_kind_and_message(err);
+    assert_eq!(kind, ImportMapThrowKind::TypeError);
+    assert!(
+      msg.starts_with("import map limit exceeded:"),
+      "expected prefix in message, got: {msg:?}"
+    );
+    assert!(
+      !msg.contains("TypeError:"),
+      "expected bare message (TypeError name should be on the thrown object), got: {msg:?}"
+    );
+    assert_eq!(
+      msg.match_indices("import map limit exceeded:").count(),
+      1,
+      "expected single prefix, got: {msg:?}"
+    );
+
     Ok(())
   }
 
