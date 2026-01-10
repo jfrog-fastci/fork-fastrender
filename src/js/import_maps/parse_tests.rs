@@ -358,3 +358,54 @@ fn imports_sorting_uses_utf16_code_units_not_scalar_values() {
   let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
   assert_eq!(keys, vec!["a\u{FFFF}", "a💩"]);
 }
+
+fn read_fixture(rel_path: &str) -> String {
+  let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+  std::fs::read_to_string(&fixture_path)
+    .unwrap_or_else(|err| panic!("failed to read fixture {fixture_path:?}: {err}"))
+}
+
+fn extract_first_importmap_script_text(html: &str) -> String {
+  let marker = r#"<script type="importmap""#;
+  let start = html
+    .find(marker)
+    .unwrap_or_else(|| panic!("expected HTML fixture to contain {marker}"));
+  let after_start = &html[start..];
+  let open_tag_end = after_start
+    .find('>')
+    .unwrap_or_else(|| panic!("expected {marker} tag to have a closing '>'"))
+    + start;
+  let close_tag_start = html[open_tag_end + 1..]
+    .find("</script>")
+    .unwrap_or_else(|| panic!("expected importmap <script> to have a </script> closing tag"))
+    + open_tag_end
+    + 1;
+  html[open_tag_end + 1..close_tag_start].trim().to_string()
+}
+
+#[test]
+fn parses_wordpress_importmap_from_techcrunch_fixture() {
+  let html = read_fixture("tests/pages/fixtures/techcrunch.com/index.html");
+  let importmap_json = extract_first_importmap_script_text(&html);
+  let base = Url::parse("https://techcrunch.com/").unwrap();
+
+  let (map, warnings) = parse_import_map_string(&importmap_json, &base).unwrap();
+
+  let addr = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "@wordpress/interactivity")
+    .and_then(|(_, v)| v.as_ref())
+    .expect("expected @wordpress/interactivity to resolve to a URL");
+  assert!(
+    addr
+      .as_str()
+      .starts_with("https://techcrunch.com/wp-includes/js/dist/script-modules/interactivity/"),
+    "unexpected interactivity URL: {addr}"
+  );
+
+  // Warnings are allowed (real-world import maps may contain non-fatal oddities), but should not
+  // prevent successful parsing.
+  let _ = warnings;
+}

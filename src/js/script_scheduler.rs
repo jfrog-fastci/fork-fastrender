@@ -2030,7 +2030,7 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn non_parser_inline_scripts_execute_immediately() -> Result<()> {
+  fn non_parser_inline_scripts_execute_as_task() -> Result<()> {
     let mut h = Harness::new();
 
     h.discover_dynamic(classic_inline_dynamic("x"))?;

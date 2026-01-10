@@ -8782,6 +8782,8 @@ impl FlexFormattingContext {
         rect.size.height = 0.0;
       }
 
+      let rect_eps = 0.01;
+
       let width_base_for_vertical_edges = constraints
         .width()
         .or(constraints.inline_percentage_base)
