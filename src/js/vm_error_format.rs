@@ -7,6 +7,9 @@ const MAX_STACK_TRACE_FRAMES: usize = 32;
 const MAX_STACK_FRAME_TEXT_BYTES: usize = 256;
 const MAX_STACK_TRACE_BYTES: usize = 16 * 1024;
 const MAX_THROWN_OBJECT_PROTOTYPE_CHAIN: usize = 16;
+const MAX_SYNTAX_DIAGNOSTICS: usize = 8;
+const MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 1024;
+const MAX_SYNTAX_ERROR_BYTES: usize = 8 * 1024;
 
 fn format_number_fallback(n: f64) -> String {
   if n.is_nan() {
@@ -212,7 +215,49 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
   }
 
   match err {
-    VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
+    VmError::Syntax(diags) => {
+      let mut out = String::from("syntax error");
+      let mut truncated = false;
+      let mut wrote_any = false;
+
+      for diag in diags.iter().take(MAX_SYNTAX_DIAGNOSTICS) {
+        let message = diag.message.trim();
+        if message.is_empty() {
+          continue;
+        }
+
+        let message = truncate_utf8(message, MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES);
+        let (sep, extra) = if wrote_any {
+          ('\n', 1)
+        } else {
+          (':', 2) // ": "
+        };
+
+        if out.len() + extra + message.len() > MAX_SYNTAX_ERROR_BYTES {
+          truncated = true;
+          break;
+        }
+        out.push(sep);
+        if !wrote_any {
+          out.push(' ');
+          wrote_any = true;
+        }
+        out.push_str(&message);
+      }
+
+      if diags.len() > MAX_SYNTAX_DIAGNOSTICS {
+        truncated = true;
+      }
+
+      if truncated {
+        const TRUNCATED: &str = "\n...";
+        if out.len() + TRUNCATED.len() <= MAX_SYNTAX_ERROR_BYTES {
+          out.push_str(TRUNCATED);
+        }
+      }
+
+      out
+    }
     other => other.to_string(),
   }
 }
@@ -220,6 +265,7 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use std::sync::Arc;
   use vm_js::{HeapLimits, PropertyDescriptor, PropertyKind};
 
@@ -466,6 +512,59 @@ mod tests {
     assert!(
       msg.contains("at f (<test>:1:2)"),
       "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn syntax_error_is_formatted_without_debug_noise() {
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
+    let err = realm.exec_script("function(").expect_err("expected syntax error");
+    let msg = vm_error_to_string(realm.heap_mut(), err);
+    assert!(
+      msg.starts_with("syntax error:"),
+      "expected syntax error to include message, got {msg:?}"
+    );
+    assert!(
+      !msg.contains("Diagnostic"),
+      "expected syntax error formatting to avoid debug output, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn syntax_error_output_is_bounded_and_truncated() {
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("create realm");
+    let err = realm.exec_script("function(").expect_err("expected syntax error");
+    let VmError::Syntax(mut diags) = err else {
+      panic!("expected VmError::Syntax");
+    };
+    assert!(!diags.is_empty(), "expected at least one diagnostic");
+
+    diags[0].message = format!(
+      "{}TAIL",
+      "a".repeat(MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES + 1)
+    );
+
+    while diags.len() <= MAX_SYNTAX_DIAGNOSTICS + 1 {
+      let mut diag = diags[0].clone();
+      diag.message = format!("diag {}", diags.len());
+      diags.push(diag);
+    }
+
+    let msg = vm_error_to_string(realm.heap_mut(), VmError::Syntax(diags));
+    assert!(
+      msg.len() <= MAX_SYNTAX_ERROR_BYTES,
+      "expected syntax error string to be bounded, got len={} msg={msg:?}",
+      msg.len()
+    );
+    assert!(
+      !msg.contains("TAIL"),
+      "expected long diagnostic messages to be truncated, got {msg:?}"
+    );
+    assert!(
+      msg.ends_with("\n..."),
+      "expected syntax error output to include truncation marker, got {msg:?}"
     );
   }
 }
