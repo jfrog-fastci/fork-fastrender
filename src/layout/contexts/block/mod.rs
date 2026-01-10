@@ -31,6 +31,7 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::layout::axis::FragmentAxes;
+use crate::layout::axis::PhysicalAxis;
 use crate::layout::constraints::AvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::width::MarginValue;
@@ -1590,6 +1591,28 @@ impl BlockFormattingContext {
           }
           .with_inline_percentage_base(Some(containing_width))
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
+
+          let _fragmentainer_offset_guard = if matches!(
+            fc_type,
+            FormattingContextType::Flex | FormattingContextType::Grid
+          ) {
+            let axes =
+              crate::layout::formatting_context::fragmentainer_axes_hint().unwrap_or_default();
+            if axes.block_positive() {
+              let origin = match axes.block_axis() {
+                PhysicalAxis::Y => child_border_origin.y,
+                PhysicalAxis::X => child_border_origin.x,
+              };
+              let origin = if origin.is_finite() { origin } else { 0.0 };
+              Some(crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+                crate::layout::formatting_context::fragmentainer_block_offset_hint() + origin,
+              ))
+            } else {
+              None
+            }
+          } else {
+            None
+          };
 
           let mut fragment = FormattingContextFactory::with_viewport_scroll_override(
             child_scroll,

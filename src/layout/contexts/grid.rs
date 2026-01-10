@@ -39,9 +39,13 @@ use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::flex_cache::ShardedFlexCache;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::formatting_context::fragmentainer_axes_hint;
+use crate::layout::formatting_context::fragmentainer_block_offset_hint;
 use crate::layout::formatting_context::fragmentainer_block_size_hint;
 use crate::layout::formatting_context::intrinsic_block_cache_lookup;
 use crate::layout::formatting_context::intrinsic_block_cache_store;
+use crate::layout::formatting_context::set_fragmentainer_axes_hint;
+use crate::layout::formatting_context::set_fragmentainer_block_offset_hint;
+use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
 #[cfg(not(test))]
 use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
@@ -939,7 +943,7 @@ impl GridFormattingContext {
     let fragment_axes = fragmentainer_axes_hint()?;
     let fragmentainer_block_size =
       fragmentainer_block_size_hint().filter(|size| size.is_finite() && *size > 0.0)?;
-    let first_fragment_block_size = match match fragment_axes.block_axis() {
+    let mut first_fragment_block_size = match match fragment_axes.block_axis() {
       PhysicalAxis::X => constraints.available_width,
       PhysicalAxis::Y => constraints.available_height,
     } {
@@ -948,6 +952,24 @@ impl GridFormattingContext {
       }
       _ => fragmentainer_block_size,
     };
+
+    // Grid item bounds are local to the grid container origin. In paged media, the container can
+    // begin mid-fragmentainer; adjust the first fragment size so continuation detection uses the
+    // container's absolute block offset within the fragmentainer slice.
+    if fragment_axes.block_positive() {
+      let container_abs_block_start = fragmentainer_block_offset_hint();
+      if !container_abs_block_start.is_finite() {
+        return None;
+      }
+      let offset_in_fragment = container_abs_block_start.rem_euclid(fragmentainer_block_size);
+      if !offset_in_fragment.is_finite() {
+        return None;
+      }
+      let remaining_in_fragment = (fragmentainer_block_size - offset_in_fragment).max(0.0);
+      if remaining_in_fragment.is_finite() {
+        first_fragment_block_size = first_fragment_block_size.min(remaining_in_fragment);
+      }
+    }
 
     let physical_block_start = match fragment_axes.block_axis() {
       PhysicalAxis::X => bounds.x(),
@@ -4659,6 +4681,10 @@ impl GridFormattingContext {
     }
 
     let factory = std::sync::Arc::new(self.factory.clone());
+    let fragmentainer_size_hint = fragmentainer_block_size_hint();
+    let fragmentainer_axes = fragmentainer_axes_hint();
+    let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
+    let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
 
     let deadline = active_deadline();
     let stage = active_stage();
@@ -4690,6 +4716,18 @@ impl GridFormattingContext {
               Point::ZERO
             };
             let child_scroll = Point::new(parent_scroll.x - origin.x, parent_scroll.y - origin.y);
+
+            let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
+              PhysicalAxis::Y => origin.y,
+              PhysicalAxis::X => origin.x,
+            };
+            let _fragmentainer_hint_guard =
+              set_fragmentainer_block_size_hint(fragmentainer_size_hint);
+            let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
+            let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
+              set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
+            });
+
             let child_factory = factory.translated_for_child(origin);
             let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block)
             {
@@ -4823,8 +4861,25 @@ impl GridFormattingContext {
             let fc_type = child
               .formatting_context()
               .unwrap_or(FormattingContextType::Block);
-            let child_factory =
-              factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
+            let origin = Point::new(bounds.x(), bounds.y());
+            let origin = if origin.x.is_finite() && origin.y.is_finite() {
+              origin
+            } else {
+              Point::ZERO
+            };
+
+            let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
+              PhysicalAxis::Y => origin.y,
+              PhysicalAxis::X => origin.x,
+            };
+            let _fragmentainer_hint_guard =
+              set_fragmentainer_block_size_hint(fragmentainer_size_hint);
+            let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
+            let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
+              set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
+            });
+
+            let child_factory = factory.translated_for_child(origin);
             let fc: std::sync::Arc<dyn FormattingContext> =
               if matches!(fc_type, FormattingContextType::Block) {
                 std::sync::Arc::new(
@@ -5297,6 +5352,20 @@ impl GridFormattingContext {
         Point::ZERO
       };
       let child_scroll = Point::new(parent_scroll.x - origin.x, parent_scroll.y - origin.y);
+
+      let fragmentainer_size_hint = fragmentainer_block_size_hint();
+      let fragmentainer_axes = fragmentainer_axes_hint();
+      let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
+      let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
+      let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
+        PhysicalAxis::Y => origin.y,
+        PhysicalAxis::X => origin.x,
+      };
+      let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
+      let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
+      let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
+        set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
+      });
 
       let child_factory = self.factory.translated_for_child(origin);
       let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
@@ -11659,13 +11728,16 @@ mod tests {
   use super::*;
   use crate::api::{DiagnosticsLevel, FastRender, FastRenderConfig, RenderOptions};
   use crate::debug::runtime;
-  use crate::layout::formatting_context::{set_fragmentainer_axes_hint, set_fragmentainer_block_size_hint};
+  use crate::layout::formatting_context::{
+    set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
+  };
   use crate::style::display::FormattingContextType;
   use crate::style::properties::apply_content_visibility_implied_containment;
   use crate::style::types::AlignItems;
   use crate::style::types::AspectRatio;
   use crate::style::types::BorderStyle;
   use crate::style::types::ContentVisibility;
+  use crate::style::types::Direction;
   use crate::style::types::GridAutoFlow;
   use crate::style::types::GridTrack;
   use crate::style::types::Overflow;
@@ -11955,6 +12027,31 @@ mod tests {
       "expected continuation relayout to clamp item width to remaining fragmentainer space (80px), got {:.2}",
       target_fragment.bounds.width()
     );
+  }
+
+  #[test]
+  fn grid_item_continuation_available_block_size_accounts_for_fragmentainer_offset() {
+    let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(
+      WritingMode::HorizontalTb,
+      Direction::Ltr,
+    )));
+    let ctx = GridFormattingContext::new();
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    let bounds = Rect::from_xywh(0.0, 160.0, 10.0, 10.0);
+
+    let _offset = set_fragmentainer_block_offset_hint(0.0);
+    let remaining = ctx
+      .grid_item_continuation_available_block_size(bounds, &constraints, 1000.0)
+      .expect("expected continuation fragment");
+    assert!((remaining - 40.0).abs() < 0.001);
+
+    drop(_offset);
+    let _offset = set_fragmentainer_block_offset_hint(60.0);
+    let remaining = ctx
+      .grid_item_continuation_available_block_size(bounds, &constraints, 1000.0)
+      .expect("expected continuation fragment");
+    assert!((remaining - 80.0).abs() < 0.001);
   }
 
   #[test]

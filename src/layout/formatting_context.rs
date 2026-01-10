@@ -232,6 +232,10 @@ thread_local! {
 }
 
 thread_local! {
+  static FRAGMENTAINER_BLOCK_OFFSET_HINT: Cell<f32> = Cell::new(0.0);
+}
+
+thread_local! {
   static FRAGMENTAINER_AXES_HINT: Cell<Option<FragmentAxes>> = Cell::new(None);
 }
 
@@ -1444,6 +1448,43 @@ pub(crate) fn set_fragmentainer_block_size_hint(
     previous
   });
   FragmentainerBlockSizeHintGuard { previous }
+}
+
+pub(crate) struct FragmentainerBlockOffsetHintGuard {
+  previous: f32,
+}
+
+impl Drop for FragmentainerBlockOffsetHintGuard {
+  fn drop(&mut self) {
+    FRAGMENTAINER_BLOCK_OFFSET_HINT.with(|hint| {
+      hint.set(self.previous);
+    });
+  }
+}
+
+/// Absolute block-start of the active formatting-context root in fragmentation *flow* coordinates.
+///
+/// The coordinate system matches `FragmentationAnalyzer` (monotonic along the fragmentainer block
+/// axis), not viewport scroll space.
+///
+/// Note: For reversed block progression (`FragmentAxes::block_positive() == false`), converting a
+/// physical origin into this flow coordinate requires the parent's block-size (and often the
+/// child's block-size). Call sites that propagate the offset by simply adding `origin.x`/`origin.y`
+/// therefore only support block-positive axes.
+pub(crate) fn fragmentainer_block_offset_hint() -> f32 {
+  FRAGMENTAINER_BLOCK_OFFSET_HINT.with(|hint| hint.get())
+}
+
+pub(crate) fn set_fragmentainer_block_offset_hint(
+  offset: f32,
+) -> FragmentainerBlockOffsetHintGuard {
+  let offset = if offset.is_finite() { offset } else { 0.0 };
+  let previous = FRAGMENTAINER_BLOCK_OFFSET_HINT.with(|cell| {
+    let previous = cell.get();
+    cell.set(offset);
+    previous
+  });
+  FragmentainerBlockOffsetHintGuard { previous }
 }
 
 pub(crate) struct FragmentainerAxesHintGuard {

@@ -44,6 +44,9 @@ use crate::layout::flex_profile::record_node_measure_hit;
 use crate::layout::flex_profile::record_node_measure_store;
 use crate::layout::flex_profile::DimState;
 use crate::layout::flex_profile::{self};
+use crate::layout::formatting_context::fragmentainer_axes_hint;
+use crate::layout::formatting_context::fragmentainer_block_offset_hint;
+use crate::layout::formatting_context::fragmentainer_block_size_hint;
 use crate::layout::formatting_context::count_flex_intrinsic_call;
 use crate::layout::formatting_context::intrinsic_block_cache_lookup;
 use crate::layout::formatting_context::intrinsic_block_cache_store;
@@ -53,6 +56,9 @@ use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
 use crate::layout::formatting_context::remembered_size_cache_lookup;
 use crate::layout::formatting_context::remembered_size_cache_store;
+use crate::layout::formatting_context::set_fragmentainer_axes_hint;
+use crate::layout::formatting_context::set_fragmentainer_block_offset_hint;
+use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -9149,6 +9155,10 @@ impl FlexFormattingContext {
       let layout_work_count = layout_work.len();
       let should_parallel_layout = self.parallelism.should_parallelize(layout_work_count)
         && layout_work_count >= self.parallelism.min_fanout;
+      let fragmentainer_size_hint = fragmentainer_block_size_hint();
+      let fragmentainer_axes = fragmentainer_axes_hint();
+      let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
+      let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
       let deadline = active_deadline();
       let run_layout = |deadline_counter: &mut usize,
                          work: &ChildLayoutWorkItem<'_>|
@@ -9187,6 +9197,22 @@ impl FlexFormattingContext {
         };
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
         let child_scroll = Point::new(parent_scroll.x - work.origin.x, parent_scroll.y - work.origin.y);
+
+        let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
+          PhysicalAxis::Y => work.origin.y,
+          PhysicalAxis::X => work.origin.x,
+        };
+        let origin_in_fragmentation_axis = if origin_in_fragmentation_axis.is_finite() {
+          origin_in_fragmentation_axis
+        } else {
+          0.0
+        };
+        let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
+        let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
+        let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
+          set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
+        });
+
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
           && matches!(

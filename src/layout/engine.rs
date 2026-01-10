@@ -30,6 +30,7 @@ use crate::layout::formatting_context::layout_cache_entry_limit_for_box_tree;
 use crate::layout::formatting_context::layout_cache_stats;
 use crate::layout::formatting_context::layout_cache_use_epoch;
 use crate::layout::formatting_context::set_fragmentainer_axes_hint;
+use crate::layout::formatting_context::set_fragmentainer_block_offset_hint;
 use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -1070,7 +1071,6 @@ impl LayoutEngine {
       let dir = root_style.direction;
       let inline_is_horizontal = inline_axis_is_horizontal(wm);
       let block_is_horizontal = block_axis_is_horizontal(wm);
-
       fragmentainer_axes_hint = Some(FragmentAxes::from_writing_mode_and_direction(wm, dir));
 
       let mut available_width = icb.width;
@@ -1113,6 +1113,8 @@ impl LayoutEngine {
       fragmentainer_block_hint.map(|hint| set_fragmentainer_block_size_hint(Some(hint)));
     let _fragmentainer_axes_hint_guard =
       fragmentainer_axes_hint.map(|hint| set_fragmentainer_axes_hint(Some(hint)));
+    let _fragmentainer_offset_guard =
+      fragmentainer_block_hint.map(|_| set_fragmentainer_block_offset_hint(0.0));
 
     let constraints = LayoutConstraints::definite(base_width, base_height);
     let root_fragment = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
