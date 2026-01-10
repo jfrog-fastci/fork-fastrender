@@ -155,6 +155,11 @@ fn runs_dom_shims_window_js() {
 }
 
 #[test]
+fn runs_document_head_body_smoke_test() {
+  assert_wpt_pass("smoke/document_head_body.window.js");
+}
+
+#[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   for (backend, result) in run_test_id_all_backends(
     "smoke/timeout_long.window.js",
@@ -168,6 +173,14 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
       result.outcome,
       RunOutcome::Pass,
       "timeout_long should pass under backend {backend}"
+    );
+    let report = result
+      .wpt_report
+      .unwrap_or_else(|| panic!("timeout_long should include report payload under backend {backend}"));
+    assert_eq!(report.file_status, "pass");
+    assert!(
+      !report.subtests.is_empty(),
+      "timeout_long should include at least one subtest under backend {backend}: {report:#?}"
     );
   }
 }
