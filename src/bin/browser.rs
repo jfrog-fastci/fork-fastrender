@@ -1705,6 +1705,51 @@ error: {err}",
     });
   }
 
+  fn render_hover_status(&mut self, ctx: &egui::Context) {
+    let Some(url) = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.hovered_url.as_deref())
+    else {
+      return;
+    };
+    let Some(page_rect) = self.page_rect_points else {
+      return;
+    };
+
+    let overlay_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
+      self
+        .open_select_dropdown_rect
+        .is_some_and(|rect| rect.contains(pos))
+        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+    });
+
+    if !self.cursor_in_page || overlay_intercepts {
+      return;
+    }
+
+    // Position the status overlay at the bottom-left of the rendered page rect (in egui points).
+    let padding = 4.0;
+    let approx_height = 22.0;
+    let pos = egui::pos2(
+      page_rect.min.x + padding,
+      (page_rect.max.y - padding - approx_height).max(page_rect.min.y + padding),
+    );
+
+    egui::Area::new(egui::Id::new("fastr_hover_status"))
+      .order(egui::Order::Foreground)
+      .fixed_pos(pos)
+      .show(ctx, |ui| {
+        egui::Frame::none()
+          .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200))
+          .rounding(egui::Rounding::same(2.0))
+          .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+          .show(ui, |ui| {
+            ui.label(egui::RichText::new(url).small().color(egui::Color32::WHITE));
+          });
+      });
+  }
+
   fn render_context_menu(&mut self, ctx: &egui::Context) {
     use fastrender::ui::ChromeAction;
 
@@ -3231,6 +3276,7 @@ error: {err}",
       }
     });
 
+    self.render_hover_status(&ctx);
     self.render_select_dropdown(&ctx);
     self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);

@@ -10,15 +10,15 @@ const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. })
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
   })
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
-  match msg {
-    WorkerToUi::FrameReady { .. } => {}
-    WorkerToUi::NavigationFailed { url, error, .. } => {
-      panic!("navigation failed for {url}: {error}");
-    }
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
+
+  if let WorkerToUi::NavigationFailed { url, error, .. } = msg {
+    panic!("navigation failed for {url}: {error}");
   }
 }
 
@@ -86,36 +86,32 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::navigate_msg(
-      tab_id,
-      page_url,
-      NavigationReason::TypedUrl,
-    ))
+    .send(support::navigate_msg(tab_id, page_url, NavigationReason::TypedUrl))
     .unwrap();
 
   next_frame_ready(&worker.ui_rx, tab_id);
 
-  // Hover link.
+  // Hover the link.
   worker
     .ui_tx
-    .send(support::pointer_move(
-      tab_id,
-      (15.0, 15.0),
-      PointerButton::None,
-    ))
+    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Pointer);
   assert_eq!(hovered_url.as_deref(), Some(expected_hover_url.as_str()));
 
-  // Hover input.
+  // Hovering the same position again should not emit a duplicate HoverChanged message. By sending the
+  // next PointerMove to a different target before waiting, we ensure we'd observe any unwanted
+  // duplicate HoverChanged first.
   worker
     .ui_tx
-    .send(support::pointer_move(
-      tab_id,
-      (15.0, 60.0),
-      PointerButton::None,
-    ))
+    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
+    .unwrap();
+
+  // Hover the input.
+  worker
+    .ui_tx
+    .send(support::pointer_move(tab_id, (15.0, 60.0), PointerButton::None))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Text);
@@ -124,11 +120,25 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   // Move to non-interactive region: hovered_url should clear.
   worker
     .ui_tx
-    .send(support::pointer_move(
-      tab_id,
-      (15.0, 100.0),
-      PointerButton::None,
-    ))
+    .send(support::pointer_move(tab_id, (15.0, 100.0), PointerButton::None))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Default);
+  assert_eq!(hovered_url, None);
+
+  // Hover the link again.
+  worker
+    .ui_tx
+    .send(support::pointer_move(tab_id, (15.0, 15.0), PointerButton::None))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Pointer);
+  assert_eq!(hovered_url.as_deref(), Some(expected_hover_url.as_str()));
+
+  // Leaving the page clears hover state.
+  worker
+    .ui_tx
+    .send(support::pointer_move(tab_id, (-1.0, -1.0), PointerButton::None))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::Default);

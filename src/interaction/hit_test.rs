@@ -4,6 +4,7 @@ use crate::style::computed::Visibility;
 use crate::style::types::PointerEvents;
 use crate::tree::box_tree::{BoxNode, BoxTree};
 use crate::tree::fragment_tree::FragmentTree;
+use crate::ui::messages::CursorKind;
 use std::ptr;
 
 use super::image_maps;
@@ -233,6 +234,60 @@ fn node_is_form_control(node: &DomNode) -> bool {
   tag.eq_ignore_ascii_case("textarea")
     || tag.eq_ignore_ascii_case("select")
     || tag.eq_ignore_ascii_case("button")
+}
+
+fn node_is_text_input(node: &DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+  if !tag.eq_ignore_ascii_case("input") {
+    return false;
+  }
+
+  let ty = trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or(""));
+  let ty = if ty.is_empty() { "text" } else { ty };
+
+  // MVP heuristic: treat any non-button-ish, non-choice-ish input as a text control (mirrors
+  // `interaction::engine::is_text_input`).
+  !ty.eq_ignore_ascii_case("checkbox")
+    && !ty.eq_ignore_ascii_case("radio")
+    && !ty.eq_ignore_ascii_case("button")
+    && !ty.eq_ignore_ascii_case("submit")
+    && !ty.eq_ignore_ascii_case("reset")
+    && !ty.eq_ignore_ascii_case("hidden")
+    && !ty.eq_ignore_ascii_case("range")
+    && !ty.eq_ignore_ascii_case("color")
+    && !ty.eq_ignore_ascii_case("file")
+    && !ty.eq_ignore_ascii_case("image")
+}
+
+fn node_is_text_control(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+    || node_is_text_input(node)
+}
+
+/// Determine the desired cursor kind for a hit-tested hover target.
+///
+/// This is used by the windowed browser UI to set the OS cursor icon over page content.
+pub fn cursor_kind_for_hover(dom: &DomNode, hit: Option<&HitTestResult>) -> CursorKind {
+  let Some(hit) = hit else {
+    return CursorKind::Default;
+  };
+
+  match hit.kind {
+    HitTestKind::Link => CursorKind::Pointer,
+    HitTestKind::FormControl => {
+      let dom_index = DomIndex::new(dom);
+      dom_index
+        .node(hit.dom_node_id)
+        .is_some_and(node_is_text_control)
+        .then_some(CursorKind::Text)
+        .unwrap_or(CursorKind::Default)
+    }
+    HitTestKind::Label | HitTestKind::Other => CursorKind::Default,
+  }
 }
 
 fn resolve_styled_node_id_from_box_ancestors(
@@ -480,5 +535,67 @@ mod tests {
       None,
       "NBSP must not be treated as ASCII whitespace when resolving label for= associations"
     );
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_none_is_default() {
+    let dom = crate::dom::parse_html("<html><body>hi</body></html>").expect("parse");
+    assert_eq!(cursor_kind_for_hover(&dom, None), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_link_is_pointer() {
+    let dom = crate::dom::parse_html("<html><body><a href=\"x\">Link</a></body></html>").expect("parse");
+    let a_id = find_element_node_id(&dom, "a");
+    let hit = HitTestResult {
+      box_id: 1,
+      styled_node_id: a_id,
+      dom_node_id: a_id,
+      kind: HitTestKind::Link,
+      href: Some("x".to_string()),
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Pointer);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_text_input_is_text() {
+    let dom = crate::dom::parse_html("<html><body><input></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Text);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_checkbox_input_is_default() {
+    let dom = crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_textarea_is_text() {
+    let dom = crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&dom, "textarea");
+    let hit = HitTestResult {
+      box_id: 1,
+      styled_node_id: textarea_id,
+      dom_node_id: textarea_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Text);
   }
 }

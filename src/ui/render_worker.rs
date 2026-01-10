@@ -1662,10 +1662,9 @@ impl BrowserRuntime {
                   .href
                   .as_deref()
                   .and_then(|href| resolve_link_url(&base_url, href));
-                match resolved {
-                  Some(url) => (Some(url), CursorKind::Pointer),
-                  None => (None, CursorKind::Default),
-                }
+                // Keep showing the hand cursor over links even when we reject the URL scheme (e.g.
+                // `javascript:`).
+                (resolved, CursorKind::Pointer)
               }
               HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
               _ => (None, CursorKind::Default),
