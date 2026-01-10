@@ -559,7 +559,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
   // `event_loop.queue_task` is fallible (queue limits); ensure the root is removed on failure.
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-    let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+    let (vm_host, window_realm) = host.vm_host_and_window_realm();
     window_realm.reset_interrupt();
     let global_obj = window_realm.global_object();
     let budget = window_realm.vm_budget_now();
@@ -570,7 +570,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
       vm.tick()
         .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
 
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
+      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
       let handled_after_dispatch = (|| -> Result<bool, VmError> {
         let promise_value = heap.get_root(root).unwrap_or(Value::Undefined);
         let Value::Object(promise_obj) = promise_value else {
@@ -619,7 +619,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         let (event_value, needs_payload_define) =
           if scope.heap().is_callable(promise_rejection_ctor).unwrap_or(false) {
             (
-              vm.call_with_host(
+              vm.call_with_host_and_hooks(
+                vm_host,
                 &mut scope,
                 &mut hooks,
                 promise_rejection_ctor,
@@ -633,7 +634,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
             let event_ctor = vm.get(&mut scope, global_obj, event_ctor_key)?;
             scope.push_root(event_ctor)?;
             (
-              vm.call_with_host(
+              vm.call_with_host_and_hooks(
+                vm_host,
                 &mut scope,
                 &mut hooks,
                 event_ctor,
@@ -667,7 +669,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
         let _ = vm.call_with_host_and_hooks(
-          host_ctx,
+          vm_host,
           &mut scope,
           &mut hooks,
           dispatch,
@@ -2257,6 +2259,97 @@ mod tests {
       get_prop(&mut scope, global, "__timeout_fired")
     };
     assert_eq!(fired, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn timer_and_promise_jobs_invoke_callbacks_with_embedder_vm_host(
+  ) -> crate::error::Result<()> {
+    #[derive(Default)]
+    struct CounterVmHost {
+      count: usize,
+    }
+
+    struct HostWithVmHost {
+      window: WindowRealm,
+      vm_host: CounterVmHost,
+    }
+
+    impl HostWithVmHost {
+      fn new() -> Self {
+        let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+        Self {
+          window,
+          vm_host: CounterVmHost::default(),
+        }
+      }
+    }
+
+    impl WindowRealmHost for HostWithVmHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        (&mut self.vm_host, &mut self.window)
+      }
+    }
+
+    fn bump_counter_native(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Some(counter) = host.as_any_mut().downcast_mut::<CounterVmHost>() else {
+        return Err(VmError::TypeError(
+          "expected timer/Promise job callback to receive embedder VmHost",
+        ));
+      };
+      counter.count += 1;
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<HostWithVmHost>::with_clock(clock);
+    let mut host = HostWithVmHost::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<HostWithVmHost>(vm, realm, heap).unwrap();
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+      let cb = make_callback(vm, &mut scope, global, "__bump_counter", bump_counter_native);
+      set_prop(&mut scope, global, "__bump_counter", Value::Object(cb));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let (vm_host, window) = host.vm_host_and_window_realm();
+        let mut hooks = VmJsEventLoopHooks::<HostWithVmHost>::new(&mut *vm_host);
+        window
+          .exec_script_with_host_and_hooks(
+            vm_host,
+            &mut hooks,
+            "setTimeout(globalThis.__bump_counter, 0);\n\
+             Promise.resolve().then(globalThis.__bump_counter);\n",
+          )
+          .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        if let Some(err) = hooks.finish(window.heap_mut()) {
+          return Err(err);
+        }
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.vm_host.count, 2);
     Ok(())
   }
 

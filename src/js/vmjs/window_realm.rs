@@ -155,6 +155,7 @@ pub struct WindowRealm {
   time_bindings: Option<TimeBindings>,
   interrupt_flag: Arc<AtomicBool>,
   js_execution_options: JsExecutionOptions,
+  vm_host: (),
 }
 
 pub(crate) struct WindowRealmUserData {
@@ -275,6 +276,7 @@ impl WindowRealm {
       time_bindings: Some(time_bindings),
       interrupt_flag,
       js_execution_options,
+      vm_host: (),
     })
   }
 
@@ -620,13 +622,14 @@ impl vm_js::VmJobContext for WindowRealm {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let realm_id = self.realm_id;
-    let (vm, heap) = self.vm_and_heap_mut();
+    let (vm_host, runtime) = (&mut self.vm_host, &mut self.runtime);
+    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
     let mut scope = heap.scope();
     let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
       realm: realm_id,
       script_or_module: None,
     });
-    vm.call_with_host(&mut scope, host, callee, this, args)
+    vm.call_with_host_and_hooks(vm_host, &mut scope, host, callee, this, args)
   }
 
   fn construct(
@@ -637,13 +640,14 @@ impl vm_js::VmJobContext for WindowRealm {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let realm_id = self.realm_id;
-    let (vm, heap) = self.vm_and_heap_mut();
+    let (vm_host, runtime) = (&mut self.vm_host, &mut self.runtime);
+    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
     let mut scope = heap.scope();
     let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
       realm: realm_id,
       script_or_module: None,
     });
-    vm.construct_with_host(&mut scope, host, callee, args, new_target)
+    vm.construct_with_host_and_hooks(vm_host, &mut scope, host, callee, args, new_target)
   }
 
   fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
@@ -1280,9 +1284,9 @@ pub(crate) fn dataset_exotic_get(
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  // `host_exotic_get` is called for *all* objects, including VM-internal object kinds like
-  // Promises/TypedArrays. `Heap::object_host_slots` only supports ordinary objects/functions; for
-  // other object kinds, treat this as "no host slots" rather than failing the property access.
+  // `host_exotic_get` is called for *all* objects, including VM-internal kinds like Promises and
+  // typed arrays. `Heap::object_host_slots` only supports ordinary objects/functions; for other
+  // object kinds, treat this as "no host slots" rather than failing the property access.
   let slots = match scope.heap().object_host_slots(obj) {
     Ok(slots) => slots,
     Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
@@ -5624,7 +5628,7 @@ impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
 struct VmJsDomEventInvoker<'a, 'host, 'hooks> {
   vm: *mut Vm,
   scope: *mut Scope<'a>,
-  host: *mut (dyn VmHost + 'host),
+  vm_host: *mut (dyn VmHost + 'host),
   hooks: *mut (dyn VmHostHooks + 'hooks),
   window_obj: GcObject,
   document_obj: GcObject,
@@ -5714,7 +5718,7 @@ impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
   fn report_listener_exception(&mut self, err: VmError) {
     let scope = unsafe { &mut *self.scope };
     let vm = unsafe { &mut *self.vm };
-    let host = unsafe { &mut *self.host };
+    let vm_host = unsafe { &mut *self.vm_host };
     let hooks = unsafe { &mut *self.hooks };
     let message = crate::js::vm_error_format::vm_error_to_string(scope.heap_mut(), err);
 
@@ -5755,7 +5759,7 @@ impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
       Err(_) => return,
     };
     let _ = vm.call_with_host_and_hooks(
-      host,
+      vm_host,
       scope,
       hooks,
       func,
@@ -5773,7 +5777,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
   ) -> std::result::Result<(), web_events::DomError> {
     let scope = unsafe { &mut *self.scope };
     let vm = unsafe { &mut *self.vm };
-    let host = unsafe { &mut *self.host };
+    let vm_host = unsafe { &mut *self.vm_host };
     let hooks = unsafe { &mut *self.hooks };
     let registry = unsafe { &*self.registry };
 
@@ -5832,7 +5836,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
     let call_result = (|| -> Result<(), VmError> {
       let event_value = Value::Object(self.event_obj);
       if scope.heap().is_callable(callback)? {
-        vm.call_with_host_and_hooks(host, scope, hooks, callback, current_target, &[event_value])?;
+        vm.call_with_host_and_hooks(vm_host, scope, hooks, callback, current_target, &[event_value])?;
         Ok(())
       } else if let Value::Object(callback_obj) = callback {
         let handle_event_key = alloc_key(scope, "handleEvent")?;
@@ -5842,7 +5846,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
             "EventTarget listener callback has no callable handleEvent",
           ));
         }
-        vm.call_with_host_and_hooks(host, scope, hooks, handle_event, callback, &[event_value])?;
+        vm.call_with_host_and_hooks(vm_host, scope, hooks, handle_event, callback, &[event_value])?;
         Ok(())
       } else {
         Err(VmError::TypeError(
@@ -6072,7 +6076,7 @@ fn event_target_remove_event_listener_native(
 fn event_target_dispatch_event_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  vm_host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
@@ -6129,7 +6133,7 @@ fn event_target_dispatch_event_native(
   let mut invoker = VmJsDomEventInvoker {
     vm,
     scope,
-    host,
+    vm_host,
     hooks,
     window_obj: resolved.window_obj,
     document_obj: resolved.document_obj,
@@ -13696,12 +13700,12 @@ mod tests {
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
 
+      let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
-      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
-        host: &mut host_ctx,
+        vm_host: &mut vm_host,
         hooks: &mut hooks,
         window_obj: global,
         document_obj,
@@ -13770,12 +13774,12 @@ mod tests {
         other => panic!("expected Event object, got {other:?}"),
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
-      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
-        host: &mut host_ctx,
+        vm_host: &mut vm_host,
         hooks: &mut hooks,
         window_obj: global,
         document_obj,
@@ -13844,12 +13848,12 @@ mod tests {
         other => panic!("expected Event object, got {other:?}"),
       };
       let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let mut vm_host = ();
       let mut hooks = NoopHostHooks::default();
-      let mut host_ctx = ();
       let mut invoker = super::VmJsDomEventInvoker {
         vm: &mut *vm,
         scope: &mut scope,
-        host: &mut host_ctx,
+        vm_host: &mut vm_host,
         hooks: &mut hooks,
         window_obj: global,
         document_obj,
@@ -14074,13 +14078,12 @@ mod tests {
       other => panic!("expected Event object, got {other:?}"),
     };
     let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-
+    let mut vm_host = ();
     let mut hooks = NoopHostHooks::default();
-    let mut host_ctx = ();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,
       scope: &mut scope,
-      host: &mut host_ctx,
+      vm_host: &mut vm_host,
       hooks: &mut hooks,
       window_obj: global,
       document_obj,

@@ -239,6 +239,7 @@ pub struct WindowHostState {
   pub base_url: Option<String>,
   import_map_state: ImportMapState,
   dom_source_id: Option<u64>,
+  /// Host-owned document state used as the `vm-js` [`vm_js::VmHost`] context.
   document: Box<DocumentHostState>,
   window: WindowRealm,
   fetcher: Arc<dyn ResourceFetcher>,
@@ -544,8 +545,7 @@ impl CurrentScriptHost for WindowHostState {
 
 impl WindowRealmHost for WindowHostState {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    let WindowHostState { document, window, .. } = self;
-    (document.as_mut(), window)
+    (&mut *self.document, &mut self.window)
   }
 }
 
