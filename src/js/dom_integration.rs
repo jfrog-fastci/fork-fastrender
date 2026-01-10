@@ -17,8 +17,8 @@ use super::{
 ///
 /// Supported subset:
 /// - Classic scripts only (`type`/`language` mapped via [`determine_script_type_dom2`]).
-/// - External scripts (`src` present and non-empty) are treated as async by default because
-///   `parser_inserted=false` is passed into [`ClassicScriptScheduler`].
+/// - External scripts (`src` present and non-empty) are treated as async-by-default because
+///   `force_async=true` is passed into [`ClassicScriptScheduler`] for dynamically inserted scripts.
 /// - Inline scripts are queued as `TaskSource::Script` tasks (rather than executing synchronously
 ///   inside the DOM mutation call). The event loop's post-task microtask checkpoint naturally
 ///   applies.
