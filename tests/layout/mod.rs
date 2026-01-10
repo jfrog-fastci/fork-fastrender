@@ -99,6 +99,7 @@ mod flex_fragmentation_writing_modes;
 mod flex_item_used_border_box_width;
 mod flex_width_calc_percentage;
 mod flex_zero_main_size;
+mod font_relative_units_test;
 mod float_line_box_intrusion;
 mod float_line_boxes_do_not_spurious_clear;
 mod float_logical_sides;

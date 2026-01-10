@@ -77,6 +77,28 @@ pub enum LengthUnit {
   /// Line-height units (lh) - relative to the element's computed line-height
   Lh,
 
+  /// Cap-height units (cap) - relative to the cap-height of the font.
+  Cap,
+
+  /// Ideographic character units (ic) - relative to the inline-axis advance of a representative
+  /// ideograph (typically U+6C34 '水').
+  Ic,
+
+  /// Root-ex units (rex) - relative to the root element's x-height.
+  Rex,
+
+  /// Root-ch units (rch) - relative to the root element's '0' advance.
+  Rch,
+
+  /// Root-cap units (rcap) - relative to the root element's cap-height.
+  Rcap,
+
+  /// Root-ic units (ric) - relative to the root element's ideograph advance.
+  Ric,
+
+  /// Root line-height units (rlh) - relative to the root element's computed line-height.
+  Rlh,
+
   /// Viewport width percentage (vw) - 1% of viewport width
   Vw,
 
@@ -181,7 +203,21 @@ impl LengthUnit {
   /// assert!(!LengthUnit::Px.is_font_relative());
   /// ```
   pub fn is_font_relative(self) -> bool {
-    matches!(self, Self::Em | Self::Rem | Self::Ex | Self::Ch | Self::Lh)
+    matches!(
+      self,
+      Self::Em
+        | Self::Rem
+        | Self::Ex
+        | Self::Ch
+        | Self::Lh
+        | Self::Cap
+        | Self::Ic
+        | Self::Rex
+        | Self::Rch
+        | Self::Rcap
+        | Self::Ric
+        | Self::Rlh
+    )
   }
 
   /// Returns true if this is a viewport-relative unit (vw, vh, vmin, vmax)
@@ -252,6 +288,13 @@ impl LengthUnit {
       Self::Ex => "ex",
       Self::Ch => "ch",
       Self::Lh => "lh",
+      Self::Cap => "cap",
+      Self::Ic => "ic",
+      Self::Rex => "rex",
+      Self::Rch => "rch",
+      Self::Rcap => "rcap",
+      Self::Ric => "ric",
+      Self::Rlh => "rlh",
       Self::Vw => "vw",
       Self::Vh => "vh",
       Self::Vi => "vi",
@@ -1546,6 +1589,12 @@ impl CalcLength {
         LengthUnit::Em => Some(term.value * font_size_px),
         LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
         LengthUnit::Rem => Some(term.value * root_font_size_px),
+        LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
+        LengthUnit::Ic => Some(term.value * font_size_px),
+        LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
+        LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
+        LengthUnit::Ric => Some(term.value * root_font_size_px),
+        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
@@ -1673,6 +1722,12 @@ impl CalcLength {
         LengthUnit::Em => Some(term.value * font_size_px),
         LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
         LengthUnit::Rem => Some(term.value * root_font_size_px),
+        LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
+        LengthUnit::Ic => Some(term.value * font_size_px),
+        LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
+        LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
+        LengthUnit::Ric => Some(term.value * root_font_size_px),
+        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
@@ -2679,6 +2734,76 @@ impl Length {
         return None;
       }
 
+      let term_is_root_font_relative = |unit: LengthUnit| {
+        matches!(
+          unit,
+          LengthUnit::Rex
+            | LengthUnit::Rch
+            | LengthUnit::Rcap
+            | LengthUnit::Ric
+            | LengthUnit::Rlh
+        )
+      };
+
+      let calc_contains_root_font_relative = match calc {
+        LengthCalc::Linear(calc) => calc
+          .terms()
+          .iter()
+          .any(|t| t.value != 0.0 && term_is_root_font_relative(t.unit)),
+        LengthCalc::Expr(id) => {
+          let arena_lock = length_calc_expr_arena();
+          let arena = arena_lock.read();
+
+          fn has_root_terms(
+            value: LengthCalc,
+            arena: &LengthCalcExprArena,
+            term_is_root_font_relative: &impl Fn(LengthUnit) -> bool,
+            depth: u32,
+          ) -> bool {
+            if depth > 128 {
+              // Cycle/degenerate expression; be conservative and require full context.
+              return true;
+            }
+            match value {
+              LengthCalc::Linear(calc) => calc
+                .terms()
+                .iter()
+                .any(|t| t.value != 0.0 && term_is_root_font_relative(t.unit)),
+              LengthCalc::Expr(id) => {
+                let Some(entry) = arena.entries.get(id.index() as usize) else {
+                  return true;
+                };
+                match &entry.expr {
+                  LengthCalcExpr::Add { left, right, .. } => {
+                    has_root_terms(*left, arena, term_is_root_font_relative, depth + 1)
+                      || has_root_terms(*right, arena, term_is_root_font_relative, depth + 1)
+                  }
+                  LengthCalcExpr::Scale { value, .. } => {
+                    has_root_terms(*value, arena, term_is_root_font_relative, depth + 1)
+                  }
+                  LengthCalcExpr::MinMax { values, .. } => values.iter().copied().any(|v| {
+                    has_root_terms(v, arena, term_is_root_font_relative, depth + 1)
+                  }),
+                  LengthCalcExpr::Clamp { min, preferred, max } => {
+                    has_root_terms(*min, arena, term_is_root_font_relative, depth + 1)
+                      || has_root_terms(*preferred, arena, term_is_root_font_relative, depth + 1)
+                      || has_root_terms(*max, arena, term_is_root_font_relative, depth + 1)
+                  }
+                }
+              }
+            }
+          }
+
+          has_root_terms(LengthCalc::Expr(id), &arena, &term_is_root_font_relative, 0)
+        }
+      };
+
+      if calc_contains_root_font_relative {
+        // Root font-relative units (rex/rch/rcap/ric/rlh) require access to the root font size.
+        // `resolve_with_font_size` only has a single font size parameter, so refuse to guess.
+        return None;
+      }
+
       return match calc {
         LengthCalc::Linear(calc) => calc.resolve(None, 0.0, 0.0, font_size_px, font_size_px),
         LengthCalc::Expr(_) => self.resolve_with_context(None, 0.0, 0.0, font_size_px, font_size_px),
@@ -2690,6 +2815,10 @@ impl Length {
       LengthUnit::Ex | LengthUnit::Ch => Some(self.value * font_size_px * 0.5),
       // Without the computed `line-height` property, treat `lh` as `normal` (1.2 * font-size).
       LengthUnit::Lh => Some(self.value * font_size_px * 1.2),
+      // Without font metrics, approximate cap-height as 0.7em.
+      LengthUnit::Cap => Some(self.value * font_size_px * 0.7),
+      // Without font metrics, approximate `ic` as 1em.
+      LengthUnit::Ic => Some(self.value * font_size_px),
       _ if self.unit.is_absolute() => Some(self.to_px()),
       _ => None,
     }
@@ -2833,11 +2962,14 @@ impl Length {
     } else if self.unit.is_viewport_relative() {
       self.resolve_with_viewport_for_writing_mode(vw, vh, writing_mode)
     } else if self.unit.is_font_relative() {
-      self.resolve_with_font_size(if self.unit == LengthUnit::Rem {
-        root_px
-      } else {
-        font_px
-      })
+      match self.unit {
+        LengthUnit::Rem => self.resolve_with_font_size(root_px),
+        LengthUnit::Rex | LengthUnit::Rch => Some(self.value * root_px * 0.5),
+        LengthUnit::Rcap => Some(self.value * root_px * 0.7),
+        LengthUnit::Ric => Some(self.value * root_px),
+        LengthUnit::Rlh => Some(self.value * root_px * 1.2),
+        _ => self.resolve_with_font_size(font_px),
+      }
     } else if self.unit.is_absolute() {
       Some(self.to_px())
     } else {
@@ -2905,11 +3037,14 @@ impl Length {
     } else if self.unit.is_viewport_relative() {
       self.resolve_with_viewport(vw, vh)
     } else if self.unit.is_font_relative() {
-      self.resolve_with_font_size(if self.unit == LengthUnit::Rem {
-        root_px
-      } else {
-        font_px
-      })
+      match self.unit {
+        LengthUnit::Rem => self.resolve_with_font_size(root_px),
+        LengthUnit::Rex | LengthUnit::Rch => Some(self.value * root_px * 0.5),
+        LengthUnit::Rcap => Some(self.value * root_px * 0.7),
+        LengthUnit::Ric => Some(self.value * root_px),
+        LengthUnit::Rlh => Some(self.value * root_px * 1.2),
+        _ => self.resolve_with_font_size(font_px),
+      }
     } else if self.unit.is_absolute() {
       Some(self.to_px())
     } else {
@@ -2953,10 +3088,17 @@ impl Length {
         }
         LengthUnit::Em => value * font_size_px,
         LengthUnit::Ex | LengthUnit::Ch => value * font_size_px * 0.5,
+        LengthUnit::Cap => value * font_size_px * 0.7,
+        LengthUnit::Ic => value * font_size_px,
         LengthUnit::Rem => value * root_font_size_px,
+        LengthUnit::Rex | LengthUnit::Rch => value * root_font_size_px * 0.5,
+        LengthUnit::Rcap => value * root_font_size_px * 0.7,
+        LengthUnit::Ric => value * root_font_size_px,
         // Treat `lh` as `normal` (1.2 * font-size) at computed-value time. This matches the
         // existing `Length::resolve_with_context` fallback for lack of full font metrics.
         LengthUnit::Lh => value * font_size_px * 1.2,
+        // Until root line-height metrics are plumbed, approximate `rlh` as `normal` on the root font size.
+        LengthUnit::Rlh => value * root_font_size_px * 1.2,
         // At this point container query units should have been resolved via
         // `resolve_container_query_units`. If any remain, bail out and preserve the original value.
         u if u.is_container_query_relative() => return None,

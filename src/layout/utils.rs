@@ -11,6 +11,8 @@ use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::Overflow;
 use crate::style::types::ScrollbarWidth;
+use crate::style::types::TextOrientation;
+use crate::style::types::WritingMode;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthCalc;
@@ -685,6 +687,8 @@ pub fn resolve_font_relative_length(
     style.font_style,
     style.font_stretch,
     style.font_size_adjust,
+    style.writing_mode,
+    style.text_orientation,
     font_context,
   )
 }
@@ -708,6 +712,8 @@ pub fn resolve_font_relative_length_for_positioned(
     font_style,
     style.font_stretch,
     style.font_size_adjust,
+    style.writing_mode,
+    TextOrientation::Mixed,
     font_context,
   )
 }
@@ -746,6 +752,8 @@ fn resolve_font_relative_length_with_params(
   font_style: CssFontStyle,
   font_stretch: crate::style::types::FontStretch,
   font_size_adjust: crate::style::types::FontSizeAdjust,
+  writing_mode: WritingMode,
+  text_orientation: TextOrientation,
   font_context: &FontContext,
 ) -> f32 {
   let face_style = match font_style {
@@ -759,21 +767,72 @@ fn resolve_font_relative_length_with_params(
     .get_font_full(font_family, font_weight, face_style, face_stretch)
     .or_else(|| font_context.get_sans_serif());
 
-  let (used_size, x_height, ch_width) = if let Some(font) = maybe_font {
+  let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
+
+  // In vertical writing modes, the used metric depends on whether the relevant glyph is rendered
+  // upright or sideways (CSS Values 4 "advance measure in inline axis").
+  let digit_is_upright_in_vertical = matches!(text_orientation, TextOrientation::Upright);
+  let ideograph_is_upright_in_vertical =
+    matches!(text_orientation, TextOrientation::Mixed | TextOrientation::Upright);
+
+  let (used_size, x_height, cap_height, ch_advance, ic_advance) = if let Some(font) = maybe_font {
     let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
-    let x_height = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ExHeight) * used_size;
-    let ch_width = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ChWidth) * used_size;
-    (used_size, x_height, ch_width)
+    let x_height =
+      font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ExHeight) * used_size;
+    let cap_height =
+      font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::CapHeight) * used_size;
+
+    let ch_width_ratio = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ChWidth);
+    let ch_width = ch_width_ratio * used_size;
+    let ch_height_ratio = crate::text::face_cache::with_face(&font, |face| {
+      let units_per_em = face.units_per_em();
+      if units_per_em == 0 {
+        return None;
+      }
+      let glyph_id = face.glyph_index('0')?;
+      if glyph_id.0 == 0 {
+        return None;
+      }
+      let advance = face.glyph_ver_advance(glyph_id)?;
+      let ratio = advance as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    })
+    .flatten()
+    .unwrap_or(ch_width_ratio);
+    let ch_height = ch_height_ratio * used_size;
+    let ch_advance = if inline_axis_is_horizontal || !digit_is_upright_in_vertical {
+      ch_width
+    } else {
+      ch_height
+    };
+
+    let ic_metric = if inline_axis_is_horizontal {
+      FontSizeAdjustMetric::IcWidth
+    } else if ideograph_is_upright_in_vertical {
+      FontSizeAdjustMetric::IcHeight
+    } else {
+      FontSizeAdjustMetric::IcWidth
+    };
+    let ic_advance = font.font_size_adjust_metric_ratio_or_fallback(ic_metric) * used_size;
+
+    (used_size, x_height, cap_height, ch_advance, ic_advance)
   } else {
     let used_size = font_size;
-    (used_size, used_size * 0.5, used_size * 0.5)
+    (used_size, used_size * 0.5, used_size * 0.7, used_size * 0.5, used_size)
   };
 
   match length.unit {
     LengthUnit::Em => length.value * used_size,
     LengthUnit::Ex => length.value * x_height,
-    LengthUnit::Ch => length.value * ch_width,
+    LengthUnit::Ch => length.value * ch_advance,
+    LengthUnit::Cap => length.value * cap_height,
+    LengthUnit::Ic => length.value * ic_advance,
     LengthUnit::Rem => length.value * root_font_size,
+    LengthUnit::Rex | LengthUnit::Rch => length.value * root_font_size * 0.5,
+    LengthUnit::Rcap => length.value * root_font_size * 0.7,
+    LengthUnit::Ric => length.value * root_font_size,
+    // Until root line-height is plumbed through layout, approximate `rlh` as `normal` on the root font size.
+    LengthUnit::Rlh => length.value * root_font_size * 1.2,
     _ => length
       .resolve_with_font_size(font_size)
       .unwrap_or(length.value * font_size),
@@ -1213,7 +1272,13 @@ fn resolve_font_relative(len: Length, font_size: f32, root_font_size: f32) -> f3
     LengthUnit::Em => len.value * font_size,
     LengthUnit::Ex => len.value * font_size * 0.5,
     LengthUnit::Ch => len.value * font_size * 0.5,
+    LengthUnit::Cap => len.value * font_size * 0.7,
+    LengthUnit::Ic => len.value * font_size,
     LengthUnit::Rem => len.value * root_font_size,
+    LengthUnit::Rex | LengthUnit::Rch => len.value * root_font_size * 0.5,
+    LengthUnit::Rcap => len.value * root_font_size * 0.7,
+    LengthUnit::Ric => len.value * root_font_size,
+    LengthUnit::Rlh => len.value * root_font_size * 1.2,
     _ => len
       .resolve_with_font_size(font_size)
       .unwrap_or(len.value * font_size),
