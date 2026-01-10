@@ -94,3 +94,36 @@ fn promise_then_native_string_handler_rejects_on_to_primitive_typeerror() {
   let logged = rt.exec_script("logged").unwrap();
   assert_eq!(value_as_utf8(&rt, logged), "TypeError");
 }
+
+#[test]
+fn string_constructor_call_special_cases_symbol() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        const s1 = Symbol('x');\n\
+        const s2 = Symbol();\n\
+        return String(s1) === 'Symbol(x)' && String(s2) === 'Symbol()';\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}
+
+#[test]
+fn string_constructor_construct_throws_on_symbol() {
+  let mut rt = new_runtime();
+  let ok = rt
+    .exec_script(
+      "(() => {\n\
+        try {\n\
+          new String(Symbol('x'));\n\
+          return false;\n\
+        } catch (e) {\n\
+          return e && e.name === 'TypeError';\n\
+        }\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(ok, Value::Bool(true));
+}

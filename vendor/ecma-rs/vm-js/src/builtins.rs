@@ -40,6 +40,37 @@ fn require_callable(this: Value) -> Result<GcObject, VmError> {
   }
 }
 
+// https://tc39.es/ecma262/#sec-symboldescriptivestring
+fn symbol_descriptive_string(scope: &mut Scope<'_>, sym: crate::GcSymbol) -> Result<crate::GcString, VmError> {
+  // Extract the description code units up-front so we don't hold borrows across the final string
+  // allocation (which can trigger GC).
+  let desc_units: Vec<u16> = match scope.heap().get_symbol_description(sym)? {
+    None => Vec::new(),
+    Some(desc) => scope.heap().get_string(desc)?.as_code_units().to_vec(),
+  };
+
+  const PREFIX: [u16; 7] = [
+    b'S' as u16,
+    b'y' as u16,
+    b'm' as u16,
+    b'b' as u16,
+    b'o' as u16,
+    b'l' as u16,
+    b'(' as u16,
+  ];
+
+  let total_len = PREFIX.len().saturating_add(desc_units.len()).saturating_add(1);
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.extend_from_slice(&PREFIX);
+  out.extend_from_slice(&desc_units);
+  out.push(b')' as u16);
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
 fn slice_index_from_value(
   scope: &mut Scope<'_>,
   value: Value,
@@ -3757,6 +3788,9 @@ pub fn string_constructor_call(
 ) -> Result<Value, VmError> {
   let s = match args.first().copied() {
     None => scope.alloc_string("")?,
+    // ECMA-262 `String ( value )` special-case: `String(Symbol("x"))` does not throw even though
+    // `ToString(Symbol("x"))` would.
+    Some(Value::Symbol(sym)) => symbol_descriptive_string(scope, sym)?,
     Some(v) => scope.to_string(vm, host, hooks, v)?,
   };
   Ok(Value::String(s))
