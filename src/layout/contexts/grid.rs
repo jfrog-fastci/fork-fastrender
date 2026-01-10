@@ -1205,6 +1205,57 @@ impl GridFormattingContext {
     )
   }
 
+  fn axis_padding_border_px(&self, style: &ComputedStyle, axis: Axis, percentage_base: f32) -> f32 {
+    let percentage_base = if percentage_base.is_finite() && percentage_base >= 0.0 {
+      percentage_base
+    } else {
+      0.0
+    };
+
+    let resolve = |len: Length| {
+      let mut px = self.resolve_length_for_width(len, percentage_base, style);
+      if !px.is_finite() {
+        px = 0.0;
+      }
+      px.max(0.0)
+    };
+
+    match axis {
+      Axis::Horizontal => {
+        resolve(style.padding_left)
+          + resolve(style.padding_right)
+          + resolve(style.used_border_left_width())
+          + resolve(style.used_border_right_width())
+      }
+      Axis::Vertical => {
+        resolve(style.padding_top)
+          + resolve(style.padding_bottom)
+          + resolve(style.used_border_top_width())
+          + resolve(style.used_border_bottom_width())
+      }
+    }
+  }
+
+  fn border_box_to_taffy_style_size(
+    &self,
+    border_box: f32,
+    style: &ComputedStyle,
+    axis: Axis,
+    percentage_base: f32,
+  ) -> f32 {
+    let border_box = if border_box.is_finite() && border_box >= 0.0 {
+      border_box
+    } else {
+      0.0
+    };
+    if style.box_sizing == BoxSizing::ContentBox {
+      let edges = self.axis_padding_border_px(style, axis, percentage_base);
+      (border_box - edges).max(0.0)
+    } else {
+      border_box
+    }
+  }
+
   fn specified_size_for_border_box(
     &self,
     border_box: f32,
@@ -2208,6 +2259,16 @@ impl GridFormattingContext {
       return Ok(());
     }
 
+    let horizontal_edges = self.edges_px(style, Axis::Horizontal).unwrap_or(0.0);
+    let vertical_edges = self.edges_px(style, Axis::Vertical).unwrap_or(0.0);
+    let to_taffy_size = |border_box: f32, axis: Axis| {
+      let edges = match axis {
+        Axis::Horizontal => horizontal_edges,
+        Axis::Vertical => vertical_edges,
+      };
+      self.specified_size_for_border_box(border_box, edges, style.box_sizing)
+    };
+
     let item_fc_type = box_node
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
@@ -2275,7 +2336,8 @@ impl GridFormattingContext {
         match intrinsic_physical_width(mode) {
           Ok(border_box) => {
             if border_box.is_finite() {
-              taffy_style.size.width = Dimension::length(border_box.max(0.0));
+              taffy_style.size.width =
+                Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
             }
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2289,7 +2351,8 @@ impl GridFormattingContext {
         match intrinsic_physical_height(mode) {
           Ok(border_box) => {
             if border_box.is_finite() {
-              taffy_style.size.height = Dimension::length(border_box.max(0.0));
+              taffy_style.size.height =
+                Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
             }
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2302,7 +2365,8 @@ impl GridFormattingContext {
       match intrinsic_physical_width(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.min_size.width = Dimension::length(border_box.max(0.0));
+            taffy_style.min_size.width =
+              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2314,7 +2378,8 @@ impl GridFormattingContext {
       match intrinsic_physical_height(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.min_size.height = Dimension::length(border_box.max(0.0));
+            taffy_style.min_size.height =
+              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2326,7 +2391,8 @@ impl GridFormattingContext {
       match intrinsic_physical_width(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.max_size.width = Dimension::length(border_box.max(0.0));
+            taffy_style.max_size.width =
+              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2338,7 +2404,8 @@ impl GridFormattingContext {
       match intrinsic_physical_height(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.max_size.height = Dimension::length(border_box.max(0.0));
+            taffy_style.max_size.height =
+              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -2844,6 +2911,14 @@ impl GridFormattingContext {
   ) -> TaffyStyle {
     let mut taffy_style = TaffyStyle::default();
     taffy_style.item_is_replaced = item_is_replaced;
+    // CSS `box-sizing` controls whether `width/height/min/max` apply to the content box or the
+    // border box. Use Taffy's native support rather than manually converting sizes (which breaks
+    // percentage sizing for content-box elements with padding/border).
+    taffy_style.box_sizing = if style.box_sizing == BoxSizing::ContentBox {
+      taffy::style::BoxSizing::ContentBox
+    } else {
+      taffy::style::BoxSizing::BorderBox
+    };
     let is_grid = is_grid_node && !simple_grid;
     let container_axis_style = if is_grid {
       GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
@@ -3662,13 +3737,7 @@ impl GridFormattingContext {
   }
 
   fn dimension_for_box_sizing(&self, len: &Length, style: &ComputedStyle, axis: Axis) -> Dimension {
-    if style.box_sizing == BoxSizing::ContentBox {
-      if let Some(edges) = self.edges_px(style, axis) {
-        if let Some(px) = self.resolve_length_px(len, style) {
-          return Dimension::length((px + edges).max(0.0));
-        }
-      }
-    }
+    let _ = axis;
     self.convert_length_to_dimension(len, style)
   }
 
@@ -3858,8 +3927,8 @@ impl GridFormattingContext {
     let mut updated = existing.clone();
     let mut changed = false;
 
-    // Patch edge properties first so we can use the resolved values when converting content-box
-    // sizing into Taffy's border-box sizing model.
+    // Patch edge properties first so cached template conversion never leaks bogus `calc(%)`
+    // resolution into layout.
     let mut patch_edge = |len: Length, base: Option<f32>, slot: &mut LengthPercentage| {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
         let px = resolve(len, base).unwrap_or(0.0).max(0.0);
@@ -3902,55 +3971,17 @@ impl GridFormattingContext {
     patch_margin(style.margin_top, cb_width, &mut updated.margin.top);
     patch_margin(style.margin_bottom, cb_width, &mut updated.margin.bottom);
 
-    let edges_base = cb_width.unwrap_or(0.0).max(0.0);
-    let resolve_edge_px = |len: Length| -> f32 {
-      // When the containing block width is unknown, treat `calc(% + length)` edges as `0` instead
-      // of leaking the absolute term into layout.
-      if len.unit == LengthUnit::Calc && len.has_percentage() && cb_width.is_none() {
-        return 0.0;
-      }
-      let mut px = self.resolve_length_for_width(len, edges_base, style);
-      if !px.is_finite() {
-        px = 0.0;
-      }
-      px.max(0.0)
-    };
-    let padding_left_px = resolve_edge_px(style.padding_left);
-    let padding_right_px = resolve_edge_px(style.padding_right);
-    let padding_top_px = resolve_edge_px(style.padding_top);
-    let padding_bottom_px = resolve_edge_px(style.padding_bottom);
-    let border_left_px = resolve_edge_px(style.used_border_left_width());
-    let border_right_px = resolve_edge_px(style.used_border_right_width());
-    let border_top_px = resolve_edge_px(style.used_border_top_width());
-    let border_bottom_px = resolve_edge_px(style.used_border_bottom_width());
-
-    let horizontal_edges = padding_left_px + padding_right_px + border_left_px + border_right_px;
-    let vertical_edges = padding_top_px + padding_bottom_px + border_top_px + border_bottom_px;
-
-    let to_border_box = |specified: f32, axis: Axis| -> f32 {
-      let specified = specified.max(0.0);
-      if style.box_sizing == BoxSizing::ContentBox {
-        match axis {
-          Axis::Horizontal => (specified + horizontal_edges).max(0.0),
-          Axis::Vertical => (specified + vertical_edges).max(0.0),
-        }
-      } else {
-        specified
-      }
-    };
-
-    let resolve_dimension =
-      |len: &Length, axis: Axis, base: Option<f32>| -> Dimension {
-        let Some(px) = resolve(*len, base) else {
-          return Dimension::auto();
-        };
-        Dimension::length(to_border_box(px, axis))
+    let resolve_dimension = |len: &Length, base: Option<f32>| -> Dimension {
+      let Some(px) = resolve(*len, base) else {
+        return Dimension::auto();
       };
+      Dimension::length(px.max(0.0))
+    };
 
     if constraints.used_border_box_width.is_none() {
       if let Some(len) = style.width.as_ref() {
         if len.unit == LengthUnit::Calc && len.has_percentage() {
-          updated.size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+          updated.size.width = resolve_dimension(len, cb_width);
           changed = true;
         }
       }
@@ -3958,7 +3989,7 @@ impl GridFormattingContext {
     if constraints.used_border_box_height.is_none() {
       if let Some(len) = style.height.as_ref() {
         if len.unit == LengthUnit::Calc && len.has_percentage() {
-          updated.size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+          updated.size.height = resolve_dimension(len, cb_height);
           changed = true;
         }
       }
@@ -3966,25 +3997,25 @@ impl GridFormattingContext {
 
     if let Some(len) = style.min_width.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.min_size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+        updated.min_size.width = resolve_dimension(len, cb_width);
         changed = true;
       }
     }
     if let Some(len) = style.min_height.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.min_size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+        updated.min_size.height = resolve_dimension(len, cb_height);
         changed = true;
       }
     }
     if let Some(len) = style.max_width.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.max_size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+        updated.max_size.width = resolve_dimension(len, cb_width);
         changed = true;
       }
     }
     if let Some(len) = style.max_height.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.max_size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+        updated.max_size.height = resolve_dimension(len, cb_height);
         changed = true;
       }
     }
@@ -10620,9 +10651,14 @@ impl FormattingContext for GridFormattingContext {
         if let Ok(existing) = taffy.style(root_id) {
           if existing.size.width.is_auto() {
             let mut updated = existing.clone();
-            // Taffy treats the `size` property as the border-box width, so use the available
-            // border-box width directly (CSS 2.1 §10.3.3).
-            updated.size.width = Dimension::length(outer_width.max(0.0));
+            let base_width = constraints.inline_percentage_base.unwrap_or(outer_width);
+            let border_box_width = outer_width.max(0.0);
+            updated.size.width = Dimension::length(ctx.border_box_to_taffy_style_size(
+              border_box_width,
+              style,
+              Axis::Horizontal,
+              base_width,
+            ));
             taffy
               .set_style(root_id, updated)
               .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -10637,18 +10673,24 @@ impl FormattingContext for GridFormattingContext {
       if let Ok(existing) = taffy.style(root_id) {
         let mut updated = existing.clone();
         let mut changed = false;
+        let base_width = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .unwrap_or(ctx.viewport_size.width);
         if let Some(w) = constraints
           .used_border_box_width
           .filter(|w| w.is_finite() && *w >= 0.0)
         {
-          updated.size.width = Dimension::length(w);
+          updated.size.width =
+            Dimension::length(ctx.border_box_to_taffy_style_size(w, style, Axis::Horizontal, base_width));
           changed = true;
         }
         if let Some(h) = constraints
           .used_border_box_height
           .filter(|h| h.is_finite() && *h >= 0.0)
         {
-          updated.size.height = Dimension::length(h);
+          updated.size.height =
+            Dimension::length(ctx.border_box_to_taffy_style_size(h, style, Axis::Vertical, base_width));
           changed = true;
         }
         if changed {
@@ -10706,6 +10748,10 @@ impl FormattingContext for GridFormattingContext {
       if let Ok(existing) = taffy.style(root_id) {
         let mut updated = existing.clone();
         let mut changed = false;
+        let base_width = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .unwrap_or(ctx.viewport_size.width);
 
         if constraints.used_border_box_width.is_none() {
           if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.width_keyword {
@@ -10717,7 +10763,12 @@ impl FormattingContext for GridFormattingContext {
               limit,
             ) {
               Ok(Some(width)) if width.is_finite() && width >= 0.0 => {
-                updated.size.width = Dimension::length(width);
+                updated.size.width = Dimension::length(ctx.border_box_to_taffy_style_size(
+                  width,
+                  style,
+                  Axis::Horizontal,
+                  base_width,
+                ));
                 changed = true;
               }
               Ok(_) => {}
@@ -10737,7 +10788,12 @@ impl FormattingContext for GridFormattingContext {
               limit,
             ) {
               Ok(Some(height)) if height.is_finite() && height >= 0.0 => {
-                updated.size.height = Dimension::length(height);
+                updated.size.height = Dimension::length(ctx.border_box_to_taffy_style_size(
+                  height,
+                  style,
+                  Axis::Vertical,
+                  base_width,
+                ));
                 changed = true;
               }
               Ok(_) => {}
@@ -10766,6 +10822,10 @@ impl FormattingContext for GridFormattingContext {
       if let Ok(existing) = taffy.style(root_id) {
         let mut updated = existing.clone();
         let mut changed = false;
+        let base_width = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .unwrap_or(ctx.viewport_size.width);
 
         let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
           IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
@@ -10828,7 +10888,12 @@ impl FormattingContext for GridFormattingContext {
                   intrinsic_physical_width(node, mode)
                 }) {
                   Ok(border_box) if border_box.is_finite() => {
-                    updated.min_size.width = Dimension::length(border_box.max(0.0));
+                    updated.min_size.width = Dimension::length(ctx.border_box_to_taffy_style_size(
+                      border_box.max(0.0),
+                      style,
+                      Axis::Horizontal,
+                      base_width,
+                    ));
                     changed = true;
                   }
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -10843,7 +10908,12 @@ impl FormattingContext for GridFormattingContext {
                   intrinsic_physical_width(node, mode)
                 }) {
                   Ok(border_box) if border_box.is_finite() => {
-                    updated.max_size.width = Dimension::length(border_box.max(0.0));
+                    updated.max_size.width = Dimension::length(ctx.border_box_to_taffy_style_size(
+                      border_box.max(0.0),
+                      style,
+                      Axis::Horizontal,
+                      base_width,
+                    ));
                     changed = true;
                   }
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -10874,7 +10944,12 @@ impl FormattingContext for GridFormattingContext {
                   intrinsic_physical_height(node, mode)
                 }) {
                   Ok(border_box) if border_box.is_finite() => {
-                    updated.min_size.height = Dimension::length(border_box.max(0.0));
+                    updated.min_size.height = Dimension::length(ctx.border_box_to_taffy_style_size(
+                      border_box.max(0.0),
+                      style,
+                      Axis::Vertical,
+                      base_width,
+                    ));
                     changed = true;
                   }
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -10889,7 +10964,12 @@ impl FormattingContext for GridFormattingContext {
                   intrinsic_physical_height(node, mode)
                 }) {
                   Ok(border_box) if border_box.is_finite() => {
-                    updated.max_size.height = Dimension::length(border_box.max(0.0));
+                    updated.max_size.height = Dimension::length(ctx.border_box_to_taffy_style_size(
+                      border_box.max(0.0),
+                      style,
+                      Axis::Vertical,
+                      base_width,
+                    ));
                     changed = true;
                   }
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),

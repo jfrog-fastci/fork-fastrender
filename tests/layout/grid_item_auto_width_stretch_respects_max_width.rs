@@ -111,6 +111,56 @@ fn grid_item_auto_width_stretch_respects_max_width_with_padding_border_box() {
 }
 
 #[test]
+fn grid_item_auto_width_stretch_respects_max_width_percent() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.max_width = Some(Length::percent(40.0));
+  style.max_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  // max-width: 40% constrains the content width (40% of the 300px grid area).
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 120.0);
+}
+
+#[test]
+fn grid_item_auto_width_stretch_respects_max_width_percent_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.max_width = Some(Length::percent(40.0));
+  style.max_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 40% constrains the *content* width (40% of 300px) under content-box sizing.
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 140.0);
+}
+
+#[test]
+fn grid_item_auto_width_stretch_respects_max_width_percent_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.max_width = Some(Length::percent(40.0));
+  style.max_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 40% constrains the border box under border-box sizing.
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 120.0);
+}
+
+#[test]
 fn grid_item_auto_width_stretch_respects_min_width() {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;
@@ -157,4 +207,54 @@ fn grid_item_auto_width_stretch_respects_min_width_with_padding_border_box() {
   style.padding_right = Length::px(10.0);
   // min-width: 400px constrains the border box under border-box sizing.
   assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 400.0);
+}
+
+#[test]
+fn grid_item_auto_width_stretch_respects_min_width_percent() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.min_width = Some(Length::percent(150.0));
+  style.min_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  // min-width: 150% constrains the content width (150% of the 300px grid area).
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 450.0);
+}
+
+#[test]
+fn grid_item_auto_width_stretch_respects_min_width_percent_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.min_width = Some(Length::percent(150.0));
+  style.min_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 150% constrains the *content* width (150% of 300px) under content-box sizing.
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 470.0);
+}
+
+#[test]
+fn grid_item_auto_width_stretch_respects_min_width_percent_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.width = None;
+  style.width_keyword = None;
+  style.min_width = Some(Length::percent(150.0));
+  style.min_width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.justify_self = Some(AlignItems::Stretch);
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // min-width: 150% constrains the border box under border-box sizing.
+  assert_grid_item_stretch_width_case(style, /* expected_border_box_width */ 450.0);
 }
