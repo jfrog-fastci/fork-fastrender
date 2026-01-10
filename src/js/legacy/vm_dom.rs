@@ -2962,7 +2962,16 @@ fn install_interface_constructor(
 
   // proto.constructor = ctor
   let constructor_key = PropertyKey::from_string(scope.alloc_string("constructor")?);
-  scope.define_property(proto, constructor_key, method_desc(Value::Object(ctor)))?;
+  scope.define_property(
+    proto,
+    constructor_key,
+    data_desc(
+      Value::Object(ctor),
+      /* writable */ false,
+      /* enumerable */ false,
+      /* configurable */ false,
+    ),
+  )?;
 
   // global[name] = ctor
   let global_key = PropertyKey::from_string(scope.alloc_string(name)?);

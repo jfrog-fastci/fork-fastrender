@@ -11,6 +11,7 @@ pub mod window {
   use super::{BindingValue, WebHostBindings};
 
   use crate::js::webidl::conversions;
+  use crate::js::webidl::DataPropertyAttributes;
 
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
@@ -34,7 +35,7 @@ pub mod window {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
         }
         Ok(obj)
       }
@@ -42,7 +43,7 @@ pub mod window {
         let obj = rt.create_object()?;
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
         }
         Ok(obj)
       }
@@ -1174,7 +1175,12 @@ pub mod window {
     let func = rt.create_function("entries", 0, u_r_l_search_params_entries::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "entries", func)?;
     let iterator_key = rt.symbol_iterator()?;
-    rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
+    rt.define_data_property(
+      proto_u_r_l_search_params,
+      iterator_key,
+      func,
+      DataPropertyAttributes::METHOD,
+    )?;
     let func = rt.create_function("forEach", 1, u_r_l_search_params_for_each::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "forEach", func)?;
     let func = rt.create_function("get", 1, u_r_l_search_params_get::<Host, R>)?;
@@ -1226,6 +1232,7 @@ pub mod worker {
   use std::collections::BTreeMap;
 
   use super::{BindingValue, WebHostBindings};
+  use crate::js::webidl::DataPropertyAttributes;
 
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
@@ -1249,7 +1256,7 @@ pub mod worker {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
         }
         Ok(obj)
       }
@@ -1257,7 +1264,7 @@ pub mod worker {
         let obj = rt.create_object()?;
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;
         }
         Ok(obj)
       }
@@ -2168,7 +2175,12 @@ pub mod worker {
     let func = rt.create_function("entries", 0, u_r_l_search_params_entries::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "entries", func)?;
     let iterator_key = rt.symbol_iterator()?;
-    rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
+    rt.define_data_property(
+      proto_u_r_l_search_params,
+      iterator_key,
+      func,
+      DataPropertyAttributes::METHOD,
+    )?;
     let func = rt.create_function("forEach", 1, u_r_l_search_params_for_each::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "forEach", func)?;
     let func = rt.create_function("get", 1, u_r_l_search_params_get::<Host, R>)?;

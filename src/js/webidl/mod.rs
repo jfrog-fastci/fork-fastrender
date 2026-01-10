@@ -12,6 +12,9 @@ pub use webidl::*;
 /// Canonical `vm-js` adapter for the `webidl` conversion/runtime traits.
 pub use webidl_vm_js::VmJsWebIdlCx;
 
+/// Standard data-property attribute presets used by WebIDL bindings installation code.
+pub use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
+
 pub mod conversions;
 
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.

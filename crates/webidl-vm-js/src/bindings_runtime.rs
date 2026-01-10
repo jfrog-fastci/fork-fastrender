@@ -84,6 +84,33 @@ impl DataPropertyAttributes {
 
   /// Typical attributes for WebIDL `const` values: non-writable, enumerable, non-configurable.
   pub const CONST: Self = Self::new(false, true, false);
+
+  /// Typical attributes for interface constructors installed on the global object.
+  ///
+  /// Most Web IDL interface objects are exposed as:
+  /// - writable
+  /// - non-enumerable
+  /// - configurable
+  /// data properties on the realm global.
+  pub const CONSTRUCTOR: Self = Self::new(true, false, true);
+
+  /// Typical attributes for `Interface.prototype` (constructor → prototype link).
+  ///
+  /// Browsers commonly define `prototype` as:
+  /// - non-writable
+  /// - non-enumerable
+  /// - non-configurable
+  /// even for interface objects (unlike ordinary user-defined JS functions).
+  pub const CONSTRUCTOR_PROTOTYPE: Self = Self::new(false, false, false);
+
+  /// Typical attributes for `Interface.prototype.constructor` (prototype → constructor link).
+  ///
+  /// Browsers commonly define `constructor` as:
+  /// - non-writable
+  /// - non-enumerable
+  /// - non-configurable
+  /// for Web IDL prototype objects.
+  pub const PROTOTYPE_CONSTRUCTOR: Self = Self::new(false, false, false);
 }
 
 /// Attributes for an accessor property definition.

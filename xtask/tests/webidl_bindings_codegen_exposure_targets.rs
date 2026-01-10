@@ -72,11 +72,11 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Window target should include BothExposed interface"
   );
   assert!(
-    window.contains("rt.define_method(proto_both_exposed, \"windowMember\""),
+    window.contains("both_exposed_window_member"),
     "Window target should include window-only members"
   );
   assert!(
-    !window.contains("rt.define_method(proto_both_exposed, \"workerMember\""),
+    !window.contains("both_exposed_worker_member"),
     "Window target should not include worker-only members"
   );
 
@@ -105,11 +105,11 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Worker target should include BothExposed interface"
   );
   assert!(
-    worker.contains("rt.define_method(proto_both_exposed, \"workerMember\""),
+    worker.contains("both_exposed_worker_member"),
     "Worker target should include worker-only members"
   );
   assert!(
-    !worker.contains("rt.define_method(proto_both_exposed, \"windowMember\""),
+    !worker.contains("both_exposed_window_member"),
     "Worker target should not include window-only members"
   );
 }

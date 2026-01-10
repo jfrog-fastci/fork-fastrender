@@ -1435,6 +1435,7 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("use std::collections::BTreeMap;\n\n");
   out.push_str("use super::{BindingValue, WebHostBindings};\n\n");
   out.push_str("use crate::js::webidl::conversions;\n\n");
+  out.push_str("use crate::js::webidl::DataPropertyAttributes;\n\n");
 
   out.push_str("fn binding_value_to_js<Host, R>(\n");
   out.push_str("  rt: &mut R,\n");
@@ -1458,7 +1459,7 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
   out.push_str("        let key = idx.to_string();\n");
   out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, true)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
   out.push_str("      }\n");
   out.push_str("      Ok(obj)\n");
   out.push_str("    }\n");
@@ -1466,7 +1467,7 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      let obj = rt.create_object()?;\n");
   out.push_str("      for (key, item) in map {\n");
   out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, true)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
   out.push_str("      }\n");
   out.push_str("      Ok(obj)\n");
   out.push_str("    }\n");
@@ -1637,7 +1638,7 @@ fn generate_bindings_module_for_target_unformatted(
       ));
       if iterable_iterator_alias.is_some_and(|target| target == op_name.as_str()) {
         out.push_str(&format!(
-          "  let iterator_key = rt.symbol_iterator()?;\n  rt.define_data_property({proto}, iterator_key, func, false)?;\n",
+          "  let iterator_key = rt.symbol_iterator()?;\n  rt.define_data_property({proto}, iterator_key, func, DataPropertyAttributes::METHOD)?;\n",
           proto = proto_var.as_str()
         ));
       }

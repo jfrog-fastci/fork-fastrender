@@ -6,6 +6,7 @@ use vm_js::{
 };
 
 use webidl::WebIdlHooks;
+use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
 
 /// Iterator state used by WebIDL `sequence<T>` / `FrozenArray<T>` conversions.
@@ -223,9 +224,16 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     obj: Self::JsValue,
     key: Self::PropertyKey,
     value: Self::JsValue,
-    enumerable: bool,
+    attrs: DataPropertyAttributes,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_with_attrs(obj, key, value, true, enumerable, true)
+    self.define_data_property_with_attrs(
+      obj,
+      key,
+      value,
+      attrs.writable,
+      attrs.enumerable,
+      attrs.configurable,
+    )
   }
 
   fn define_data_property_str(
@@ -233,10 +241,12 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     obj: Self::JsValue,
     name: &str,
     value: Self::JsValue,
-    enumerable: bool,
+    attrs: DataPropertyAttributes,
   ) -> Result<(), Self::Error> {
-    let key = self.property_key(name)?;
-    self.define_data_property(obj, key, value, enumerable)
+    self.with_stack_roots(&[obj, value], |rt| {
+      let key = rt.property_key(name)?;
+      rt.define_data_property(obj, key, value, attrs)
+    })
   }
 
   fn define_data_property_str_with_attrs(
@@ -248,8 +258,12 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     enumerable: bool,
     configurable: bool,
   ) -> Result<(), Self::Error> {
-    let key = self.property_key(name)?;
-    self.define_data_property_with_attrs(obj, key, value, writable, enumerable, configurable)
+    self.define_data_property_str(
+      obj,
+      name,
+      value,
+      DataPropertyAttributes::new(writable, enumerable, configurable),
+    )
   }
 
   fn define_accessor_property_str_with_attrs(
@@ -261,8 +275,10 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     enumerable: bool,
     configurable: bool,
   ) -> Result<(), Self::Error> {
-    let key = self.property_key(name)?;
-    self.define_accessor_property_with_attrs(obj, key, get, set, enumerable, configurable)
+    self.with_stack_roots(&[obj, get, set], |rt| {
+      let key = rt.property_key(name)?;
+      rt.define_accessor_property_with_attrs(obj, key, get, set, enumerable, configurable)
+    })
   }
 
   /// Defines a WebIDL operation method property.
@@ -270,14 +286,14 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   /// This follows the Web IDL JavaScript binding:
   /// - writable: true
   /// - configurable: true
-  /// - enumerable: true
+  /// - enumerable: false
   fn define_method(
     &mut self,
     obj: Self::JsValue,
     name: &str,
     func: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(obj, name, func, true, true, true)
+    self.define_data_property_str(obj, name, func, DataPropertyAttributes::METHOD)
   }
 
   /// Defines a WebIDL attribute accessor property.
@@ -305,7 +321,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     name: &str,
     value: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(obj, name, value, false, true, false)
+    self.define_data_property_str(obj, name, value, DataPropertyAttributes::CONST)
   }
 
   /// Defines an interface constructor, wiring `.prototype` and `prototype.constructor`.
@@ -314,7 +330,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   /// prototype objects:
   /// - `global[name]`: writable + configurable, non-enumerable
   /// - `ctor.prototype`: non-writable, non-enumerable, non-configurable
-  /// - `proto.constructor`: writable + configurable, non-enumerable
+  /// - `proto.constructor`: non-writable, non-enumerable, non-configurable
   fn define_constructor(
     &mut self,
     global: Self::JsValue,
@@ -322,9 +338,9 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     ctor: Self::JsValue,
     proto: Self::JsValue,
   ) -> Result<(), Self::Error> {
-    self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
-    self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
-    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    self.define_data_property_str(global, name, ctor, DataPropertyAttributes::CONSTRUCTOR)?;
+    self.define_data_property_str(ctor, "prototype", proto, DataPropertyAttributes::CONSTRUCTOR_PROTOTYPE)?;
+    self.define_data_property_str(proto, "constructor", ctor, DataPropertyAttributes::PROTOTYPE_CONSTRUCTOR)?;
     Ok(())
   }
 }
@@ -474,13 +490,13 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
   }
 }
 
-fn make_data_descriptor(value: Value, enumerable: bool) -> PropertyDescriptor {
+fn make_data_descriptor(value: Value, attrs: DataPropertyAttributes) -> PropertyDescriptor {
   PropertyDescriptor {
-    enumerable,
-    configurable: true,
+    enumerable: attrs.enumerable,
+    configurable: attrs.configurable,
     kind: PropertyKind::Data {
       value,
-      writable: true,
+      writable: attrs.writable,
     },
   }
 }
@@ -1190,7 +1206,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     obj: Self::JsValue,
     key: Self::PropertyKey,
     value: Self::JsValue,
-    enumerable: bool,
+    attrs: DataPropertyAttributes,
   ) -> Result<(), Self::Error> {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("define_data_property: expected object receiver"));
@@ -1205,7 +1221,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     };
     scope.push_root(value)?;
 
-    scope.define_property(obj, key, make_data_descriptor(value, enumerable))
+    scope.define_property(obj, key, make_data_descriptor(value, attrs))
   }
 
   fn define_data_property_str(
@@ -1213,7 +1229,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     obj: Self::JsValue,
     name: &str,
     value: Self::JsValue,
-    enumerable: bool,
+    attrs: DataPropertyAttributes,
   ) -> Result<(), Self::Error> {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("define_data_property_str: expected object receiver"));
@@ -1229,7 +1245,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
-    scope.define_property(obj, key, make_data_descriptor(value, enumerable))
+    scope.define_property(obj, key, make_data_descriptor(value, attrs))
   }
 }
 
@@ -1612,40 +1628,14 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
       self, obj, proto,
     )
   }
-
-  fn define_data_property(
-    &mut self,
-    obj: Self::JsValue,
-    key: Self::PropertyKey,
-    value: Self::JsValue,
-    enumerable: bool,
-  ) -> Result<(), Self::Error> {
-    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::define_data_property(
-      self, obj, key, value, enumerable,
-    )
-  }
-
-  fn define_data_property_str(
-    &mut self,
-    obj: Self::JsValue,
-    name: &str,
-    value: Self::JsValue,
-    enumerable: bool,
-  ) -> Result<(), Self::Error> {
-    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::define_data_property_str(
-      self,
-      obj,
-      name,
-      value,
-      enumerable,
-    )
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::bindings::DomExceptionClassVmJs;
+  use crate::js::bindings::{
+    install_window_bindings, BindingValue, DomExceptionClassVmJs, WebHostBindings,
+  };
   use vm_js::{Heap, HeapLimits, JsRuntime as VmJsRuntime, VmOptions};
   use webidl::{InterfaceId, JsRuntime as _, WebIdlHooks, WebIdlLimits};
 
@@ -1695,7 +1685,12 @@ mod tests {
 
       let func = cx.create_function("add", 2, add)?;
       let global = cx.global_object()?;
-      cx.define_data_property_str(global, "add", func, true)?;
+      cx.define_data_property_str(
+        global,
+        "add",
+        func,
+        DataPropertyAttributes::new(true, true, true),
+      )?;
     }
 
     let mut host = TestHost::default();
@@ -1828,6 +1823,185 @@ mod tests {
 
     let proto = cx.scope.heap().object_prototype(arr)?;
     assert_eq!(proto, Some(realm.intrinsics().array_prototype()));
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct NoopBindingsHost;
+
+  impl<R> WebHostBindings<R> for NoopBindingsHost
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Self>,
+  {
+    fn call_operation(
+      &mut self,
+      _rt: &mut R,
+      _receiver: Option<R::JsValue>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: Vec<BindingValue<R::JsValue>>,
+    ) -> Result<BindingValue<R::JsValue>, R::Error> {
+      Ok(BindingValue::Undefined)
+    }
+  }
+
+  #[test]
+  fn vmjs_realm_window_bindings_have_spec_shaped_descriptors() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<NoopBindingsHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    // Install generated Window bindings onto the real vm-js realm.
+    {
+      let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+      let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+      let mut host = NoopBindingsHost::default();
+      install_window_bindings(&mut cx, &mut host)?;
+    }
+
+    // Inspect property descriptors directly via `Scope::ordinary_get_own_property`.
+    let (_vm, heap, realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+    let global = realm.global_object();
+    let intr = realm.intrinsics();
+
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global))?;
+
+    // globalThis.URLSearchParams
+    let ctor_key_s = scope.alloc_string("URLSearchParams")?;
+    scope.push_root(Value::String(ctor_key_s))?;
+    let ctor_key = PropertyKey::from_string(ctor_key_s);
+    let ctor_desc = scope
+      .ordinary_get_own_property(global, ctor_key)?
+      .ok_or(VmError::InvariantViolation(
+        "URLSearchParams constructor missing from global object",
+      ))?;
+    let PropertyKind::Data {
+      value: Value::Object(ctor_obj),
+      ..
+    } = ctor_desc.kind
+    else {
+      return Err(VmError::TypeError("URLSearchParams is not a data property"));
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+
+    // URLSearchParams.prototype descriptor attributes.
+    let prototype_key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(prototype_key_s))?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let proto_desc = scope
+      .ordinary_get_own_property(ctor_obj, prototype_key)?
+      .ok_or(VmError::TypeError("URLSearchParams is missing own .prototype"))?;
+    assert!(!proto_desc.enumerable);
+    assert!(!proto_desc.configurable);
+    let (proto_obj, proto_writable) = match proto_desc.kind {
+      PropertyKind::Data {
+        value: Value::Object(o),
+        writable,
+      } => (o, writable),
+      _ => return Err(VmError::TypeError("URLSearchParams.prototype is not a data property")),
+    };
+    assert!(!proto_writable, "URLSearchParams.prototype should be non-writable");
+    scope.push_root(Value::Object(proto_obj))?;
+    assert_eq!(
+      scope.object_get_prototype(proto_obj)?,
+      Some(intr.object_prototype())
+    );
+
+    // URLSearchParams.prototype.constructor descriptor attributes.
+    let constructor_key_s = scope.alloc_string("constructor")?;
+    scope.push_root(Value::String(constructor_key_s))?;
+    let constructor_key = PropertyKey::from_string(constructor_key_s);
+    let ctor_link_desc = scope
+      .ordinary_get_own_property(proto_obj, constructor_key)?
+      .ok_or(VmError::TypeError(
+        "URLSearchParams.prototype is missing own .constructor",
+      ))?;
+    assert!(!ctor_link_desc.enumerable);
+    assert!(!ctor_link_desc.configurable);
+    let (ctor_link_obj, ctor_link_writable) = match ctor_link_desc.kind {
+      PropertyKind::Data {
+        value: Value::Object(o),
+        writable,
+      } => (o, writable),
+      _ => return Err(VmError::TypeError("prototype.constructor is not a data property")),
+    };
+    assert!(
+      !ctor_link_writable,
+      "URLSearchParams.prototype.constructor should be non-writable"
+    );
+    assert_eq!(ctor_link_obj, ctor_obj);
+
+    // URLSearchParams.prototype.append descriptor attributes.
+    let append_key_s = scope.alloc_string("append")?;
+    scope.push_root(Value::String(append_key_s))?;
+    let append_key = PropertyKey::from_string(append_key_s);
+    let append_desc = scope
+      .ordinary_get_own_property(proto_obj, append_key)?
+      .ok_or(VmError::TypeError(
+        "URLSearchParams.prototype is missing own .append",
+      ))?;
+    assert!(!append_desc.enumerable);
+    assert!(append_desc.configurable);
+    let (append_fn, append_writable) = match append_desc.kind {
+      PropertyKind::Data {
+        value: Value::Object(o),
+        writable,
+      } => (o, writable),
+      _ => {
+        return Err(VmError::TypeError(
+          "URLSearchParams.prototype.append is not a data property",
+        ))
+      }
+    };
+    assert!(append_writable);
+    scope.push_root(Value::Object(append_fn))?;
+    assert_eq!(
+      scope.object_get_prototype(append_fn)?,
+      Some(intr.function_prototype())
+    );
+
+    // append.name === "append" (non-enumerable)
+    let name_key_s = scope.alloc_string("name")?;
+    scope.push_root(Value::String(name_key_s))?;
+    let name_key = PropertyKey::from_string(name_key_s);
+    let name_desc = scope
+      .ordinary_get_own_property(append_fn, name_key)?
+      .ok_or(VmError::TypeError("append is missing own .name"))?;
+    assert!(!name_desc.enumerable);
+    let PropertyKind::Data {
+      value: Value::String(name_s),
+      ..
+    } = name_desc.kind
+    else {
+      return Err(VmError::TypeError("append.name is not a string data property"));
+    };
+    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "append");
+
+    // append.length === 2 (non-enumerable)
+    let length_key_s = scope.alloc_string("length")?;
+    scope.push_root(Value::String(length_key_s))?;
+    let length_key = PropertyKey::from_string(length_key_s);
+    let length_desc = scope
+      .ordinary_get_own_property(append_fn, length_key)?
+      .ok_or(VmError::TypeError("append is missing own .length"))?;
+    assert!(!length_desc.enumerable);
+    let PropertyKind::Data {
+      value: Value::Number(len),
+      ..
+    } = length_desc.kind
+    else {
+      return Err(VmError::TypeError("append.length is not a number data property"));
+    };
+    assert_eq!(len, 2.0);
+
     Ok(())
   }
 }
