@@ -10978,9 +10978,11 @@ mod tests {
         if (!(s.async === false && s.getAttribute('async') === null)) return false;\n\
         s.async = true;\n\
         if (!(s.async === true && s.getAttribute('async') === '')) return false;\n\
-        s.setAttribute('async', '');\n\
-        s.removeAttribute('async');\n\
-        return s.async === false && s.getAttribute('async') === null;\n\
+        const t = document.createElement('script');\n\
+        if (!(t.async === true && t.getAttribute('async') === null)) return false;\n\
+        t.setAttribute('async', '');\n\
+        t.removeAttribute('async');\n\
+        return t.async === false && t.getAttribute('async') === null;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
