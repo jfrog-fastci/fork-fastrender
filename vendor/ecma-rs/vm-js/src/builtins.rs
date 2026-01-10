@@ -77,7 +77,7 @@ fn slice_range_from_args(scope: &mut Scope<'_>, len: usize, args: &[Value]) -> R
   Ok((start, finish))
 }
 
-fn get_array_like_args(scope: &mut Scope<'_>, obj: GcObject) -> Result<Vec<Value>, VmError> {
+fn get_array_like_args(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<Vec<Value>, VmError> {
   // Treat `obj` as array-like:
   // - read `length` as a Number
   // - read indices 0..length-1 as data properties
@@ -110,6 +110,9 @@ fn get_array_like_args(scope: &mut Scope<'_>, obj: GcObject) -> Result<Vec<Value
     .map_err(|_| VmError::OutOfMemory)?;
 
   for idx in 0..length {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
     let idx_s = scope.alloc_string(&idx.to_string())?;
     let key = PropertyKey::from_string(idx_s);
     let desc = scope.heap().get_property(obj, &key)?;
@@ -395,7 +398,10 @@ pub fn object_keys(
     .try_reserve_exact(own_keys.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
-  for key in own_keys {
+  for (i, key) in own_keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     let PropertyKey::String(key_str) = key else {
       continue;
     };
@@ -411,6 +417,9 @@ pub fn object_keys(
   let array = create_array_object(vm, scope, len)?;
 
   for (i, name) in names.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     let mut idx_scope = scope.reborrow();
     idx_scope.push_root(Value::Object(array))?;
     idx_scope.push_root(Value::String(name))?;
@@ -437,7 +446,10 @@ pub fn object_assign(
   let target = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
   scope.push_root(Value::Object(target))?;
 
-  for source_val in args.iter().copied().skip(1) {
+  for (i, source_val) in args.iter().copied().skip(1).enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     let source = match source_val {
       Value::Undefined | Value::Null => continue,
       Value::Object(o) => o,
@@ -445,7 +457,10 @@ pub fn object_assign(
     };
 
     let keys = scope.heap().ordinary_own_property_keys(source)?;
-    for key in keys {
+    for (j, key) in keys.into_iter().enumerate() {
+      if j % 1024 == 0 {
+        vm.tick()?;
+      }
       let Some(desc) = scope.heap().object_get_own_property(source, &key)? else {
         continue;
       };
@@ -552,6 +567,9 @@ fn array_constructor_impl(
       let array = create_array_object(vm, scope, len)?;
 
       for (i, el) in args.iter().copied().enumerate() {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
         // Root `array` and `el` during string allocation.
         let mut idx_scope = scope.reborrow();
         idx_scope.push_root(Value::Object(array))?;
@@ -1465,19 +1483,24 @@ fn enqueue_promise_reaction_job(
 }
 
 fn trigger_promise_reactions(
+  vm: &mut Vm,
   host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   reactions: Box<[PromiseReaction]>,
   argument: Value,
   current_realm: Option<RealmId>,
 ) -> Result<(), VmError> {
-  for reaction in reactions.into_vec() {
+  for (i, reaction) in reactions.into_vec().into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     enqueue_promise_reaction_job(host, scope, reaction, argument, current_realm)?;
   }
   Ok(())
 }
 
 pub(crate) fn fulfill_promise(
+  vm: &mut Vm,
   host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   promise: GcObject,
@@ -1488,10 +1511,11 @@ pub(crate) fn fulfill_promise(
     scope
       .heap_mut()
       .promise_settle_and_take_reactions(promise, PromiseState::Fulfilled, value)?;
-  trigger_promise_reactions(host, scope, fulfill_reactions, value, current_realm)
+  trigger_promise_reactions(vm, host, scope, fulfill_reactions, value, current_realm)
 }
 
 pub(crate) fn reject_promise(
+  vm: &mut Vm,
   host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   promise: GcObject,
@@ -1514,7 +1538,7 @@ pub(crate) fn reject_promise(
     host.host_promise_rejection_tracker(PromiseHandle(promise), PromiseRejectionOperation::Reject);
   }
 
-  trigger_promise_reactions(host, scope, reject_reactions, reason, current_realm)
+  trigger_promise_reactions(vm, host, scope, reject_reactions, reason, current_realm)
 }
 
 fn resolve_promise(
@@ -1532,13 +1556,13 @@ fn resolve_promise(
   if let Value::Object(obj) = resolution {
     if obj == promise {
       let err = create_type_error(vm, scope, hooks, "Promise cannot resolve itself")?;
-      return reject_promise(hooks, scope, promise, err, current_realm);
+      return reject_promise(vm, hooks, scope, promise, err, current_realm);
     }
   }
 
   // Non-objects cannot be thenables.
   let Value::Object(thenable_obj) = resolution else {
-    return fulfill_promise(hooks, scope, promise, resolution, current_realm);
+    return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   };
 
   // Get `thenable.then`.
@@ -1588,14 +1612,14 @@ fn resolve_promise(
   let then = match then_result {
     Ok(v) => v,
     Err(VmError::Throw(e) | VmError::ThrowWithStack { value: e, .. }) => {
-      reject_promise(hooks, scope, promise, e, current_realm)?;
+      reject_promise(vm, hooks, scope, promise, e, current_realm)?;
       return Ok(());
     }
     Err(e) => return Err(e),
   };
 
   if !scope.heap().is_callable(then)? {
-    return fulfill_promise(hooks, scope, promise, resolution, current_realm);
+    return fulfill_promise(vm, hooks, scope, promise, resolution, current_realm);
   }
 
   let Value::Object(then_obj) = then else {
@@ -1826,7 +1850,7 @@ pub fn promise_resolving_function_call(
     .env_set_mutable_binding(env, "alreadyResolved", Value::Bool(true), false)?;
 
   if is_reject {
-    reject_promise(hooks, scope, promise, resolution, vm.current_realm())?;
+    reject_promise(vm, hooks, scope, promise, resolution, vm.current_realm())?;
   } else {
     resolve_promise(vm, scope, host, hooks, promise, resolution)?;
   }
@@ -3498,7 +3522,7 @@ pub fn function_prototype_apply(
       // Root `obj` while building the argument list, since we may allocate strings for property
       // keys and trigger a GC.
       scope.push_root(Value::Object(obj))?;
-      let list = get_array_like_args(scope, obj)?;
+      let list = get_array_like_args(vm, scope, obj)?;
       vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &list)
     }
     _ => Err(VmError::Unimplemented(
