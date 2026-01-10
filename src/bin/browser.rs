@@ -2776,7 +2776,11 @@ error: {err}",
           VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
           VirtualKeyCode::NumpadEnter => Some(fastrender::interaction::KeyAction::Enter),
-          VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
+          VirtualKeyCode::Space => Some(if self.modifiers.shift() {
+            fastrender::interaction::KeyAction::ShiftSpace
+          } else {
+            fastrender::interaction::KeyAction::Space
+          }),
           VirtualKeyCode::Tab => Some(if self.modifiers.shift() {
             fastrender::interaction::KeyAction::ShiftTab
           } else {

@@ -2317,6 +2317,15 @@ impl BrowserRuntime {
                   pointer_css: None,
                 })
               }
+              crate::interaction::KeyAction::ShiftSpace => {
+                let h = tab.viewport_css.1.max(1) as f32;
+                let dy = -((h * 0.9).max(1.0));
+                Some(UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (0.0, dy),
+                  pointer_css: None,
+                })
+              }
               _ => None,
             };
           }

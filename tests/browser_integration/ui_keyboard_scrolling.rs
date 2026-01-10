@@ -215,6 +215,21 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
     (frame_y - step_y).abs() < 1.0,
     "expected Space to scroll by ~{step_y}, got {frame_y}"
   );
+  y = frame_y;
+
+  // `Shift+Space` should scroll back up by ~0.9 * viewport height.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftSpace,
+  ))
+  .unwrap();
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next < y - 1.0 || next <= 1.0
+  });
+  assert!(
+    frame_y <= 1.0,
+    "expected Shift+Space to scroll back to the top, got {frame_y}"
+  );
 
   drop(tx);
   join.join().unwrap();

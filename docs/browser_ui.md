@@ -129,6 +129,10 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
+| Space (page focus, no element focused) | Scroll down |
+| Shift+Space (page focus, no element focused) | Scroll up |
+| Home (page focus, no element focused) | Scroll to top |
+| End (page focus, no element focused) | Scroll to bottom |
 | Ctrl/Cmd+A (page focus) | Select all text in the focused page `<input>`/`<textarea>` |
 | Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
 | Ctrl/Cmd+X (page focus) | Cut selection from the focused page `<input>`/`<textarea>` to the OS clipboard |

@@ -53,6 +53,7 @@ pub enum KeyAction {
   Tab,
   ShiftTab,
   Space,
+  ShiftSpace,
   ArrowLeft,
   ArrowRight,
   ShiftArrowLeft,
@@ -3516,7 +3517,7 @@ impl InteractionEngine {
             }
           }
         }
-        KeyAction::Space => {
+        KeyAction::Space | KeyAction::ShiftSpace => {
           // Handled by `key_activate` (may trigger navigation).
         }
         KeyAction::Tab | KeyAction::ShiftTab => debug_assert!(false, "handled above"),
@@ -3729,7 +3730,7 @@ impl InteractionEngine {
           );
         }
       }
-      KeyAction::Space => {}
+      KeyAction::Space | KeyAction::ShiftSpace => {}
       KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
         return (
           self.key_action_with_box_tree(dom, box_tree, key),
@@ -3827,7 +3828,7 @@ impl InteractionEngine {
           }
         }
       }
-      KeyAction::Space => {
+      KeyAction::Space | KeyAction::ShiftSpace => {
         if node_or_ancestor_is_inert(&index, focused) {
           // Inert subtrees are not interactive.
         } else if index.node(focused).is_some_and(is_checkbox_input) {
