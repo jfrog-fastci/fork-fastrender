@@ -402,6 +402,7 @@ impl Intrinsics {
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
+    let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
@@ -653,6 +654,20 @@ impl Intrinsics {
         array_prototype,
         slice_key,
         data_desc(Value::Object(slice_fn), true, false, true),
+      )?;
+
+        let push_s = scope.alloc_string("push")?;
+        scope.push_root(Value::String(push_s))?;
+        let push_key = PropertyKey::from_string(push_s);
+        let push_fn = scope.alloc_native_function(array_prototype_push, None, push_s, 1)?;
+        scope.push_root(Value::Object(push_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(push_fn, Some(function_prototype))?;
+      scope.define_property(
+        array_prototype,
+        push_key,
+        data_desc(Value::Object(push_fn), true, false, true),
       )?;
     }
 

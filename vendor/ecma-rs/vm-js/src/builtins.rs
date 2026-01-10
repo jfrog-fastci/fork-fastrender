@@ -3908,6 +3908,66 @@ pub fn array_prototype_slice(
   Ok(Value::Object(out))
 }
 
+/// `Array.prototype.push` (minimal).
+pub fn array_prototype_push(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let mut len = to_length(len_value);
+
+  for (i, value) in args.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let idx_s = iter_scope.alloc_string(&len.to_string())?;
+    let key = PropertyKey::from_string(idx_s);
+    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      key,
+      value,
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.push failed"));
+    }
+    len = len.saturating_add(1);
+  }
+
+  // Per spec, set the final length even though array index writes already extend length.
+  let ok = scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    length_key,
+    Value::Number(len as f64),
+    Value::Object(obj),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.push failed"));
+  }
+
+  Ok(Value::Number(len as f64))
+}
+
 /// `String` constructor called as a function.
 pub fn string_constructor_call(
   vm: &mut Vm,

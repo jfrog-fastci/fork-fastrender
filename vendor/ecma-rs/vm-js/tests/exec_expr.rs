@@ -99,6 +99,15 @@ fn array_prototype_slice_converts_start_end_via_to_number() {
 }
 
 #[test]
+fn array_prototype_push_appends_and_returns_length() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var a=[]; var l=a.push(1,2); l===2 && a.length===2 && a[0]===1 && a[1]===2"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn arithmetic_precedence() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"1 + 2 * 3 === 7"#).unwrap();
