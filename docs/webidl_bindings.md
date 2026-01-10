@@ -32,8 +32,8 @@ how to update it.
   - This provides a heap-only `vm-js` value/object model (`VmJsRuntime`) used by early scaffolding
     code. It cannot execute author scripts and should not be used for new bindings work.
   - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
-  - Note: FastRender’s real DOM bindings are `vm-js` realm-based (`src/js/vm_dom.rs`) and do not use
-    this legacy heap-only runtime.
+- Note: FastRender’s real DOM bindings are `vm-js` realm-based (`src/js/legacy/vm_dom.rs`) and do not use
+  this legacy heap-only runtime.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.
