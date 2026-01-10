@@ -16,6 +16,31 @@
   },
   "notes": "",
   "auto_notes": "missing cache",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 778636,
+    "diff_percent": 60.3781,
+    "perceptual": 1.0,
+    "first_mismatch": {
+      "x": 102,
+      "y": 9,
+      "baseline_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "rendered_rgba": [
+        253,
+        253,
+        253,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "548c1eb379530e7c2251e976d5bf0c5d93e1ab1b"
+  },
   "hotspot": "fetch",
   "failure_stage": null,
   "timeout_stage": null,

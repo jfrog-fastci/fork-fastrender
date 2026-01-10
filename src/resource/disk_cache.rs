@@ -3615,6 +3615,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_stylesheet_mime_sane(&res, url))
             }
+            FetchContextKind::Script | FetchContextKind::ScriptCors => ensure_http_success(&res, url),
             FetchContextKind::Font => {
               ensure_http_success(&res, url).and_then(|_| ensure_font_mime_sane(&res, url))
             }
