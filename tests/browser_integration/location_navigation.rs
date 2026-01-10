@@ -14,6 +14,10 @@ const PAGE2_HTML: &str = r#"<!doctype html>
     </head>
     <body>
       <div id="box"></div>
+      <script>
+        // Ensure `document.URL` reflects the committed navigation URL.
+        document.getElementById("box").setAttribute("data-document-url", document.URL);
+      </script>
     </body>
   </html>"#;
 
@@ -40,7 +44,7 @@ fn assert_navigation_from_inline_script(script: &str) -> Result<()> {
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();
-  let _page2_url = site.write("page2.html", PAGE2_HTML);
+  let page2_url = site.write("page2.html", PAGE2_HTML);
   let page1_html = page1_html_with_inline_navigation(script);
   let page1_url = site.write("page1.html", &page1_html);
 
@@ -52,6 +56,12 @@ fn assert_navigation_from_inline_script(script: &str) -> Result<()> {
   let pixmap = tab.render_frame()?;
 
   assert_eq!(rgba_at(&pixmap, 32, 32), [0, 0, 255, 255]);
+  let box_el = tab.dom().get_element_by_id("box").expect("#box element");
+  let url_attr = tab
+    .dom()
+    .get_attribute(box_el, "data-document-url")
+    .expect("get_attribute");
+  assert_eq!(url_attr, Some(page2_url.as_str()));
   Ok(())
 }
 
@@ -76,7 +86,7 @@ fn location_href_navigates_from_deferred_script_task() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
 
   let site = TempSite::new();
-  let _page2_url = site.write("page2.html", PAGE2_HTML);
+  let page2_url = site.write("page2.html", PAGE2_HTML);
   let _nav_script_url = site.write("nav.js", r#"location.href = "page2.html";"#);
   let page1_url = site.write(
     "page1.html",
@@ -104,6 +114,12 @@ fn location_href_navigates_from_deferred_script_task() -> Result<()> {
   let pixmap = tab.render_frame()?;
 
   assert_eq!(rgba_at(&pixmap, 32, 32), [0, 0, 255, 255]);
+  let box_el = tab.dom().get_element_by_id("box").expect("#box element");
+  let url_attr = tab
+    .dom()
+    .get_attribute(box_el, "data-document-url")
+    .expect("get_attribute");
+  assert_eq!(url_attr, Some(page2_url.as_str()));
   Ok(())
 }
 
@@ -125,6 +141,11 @@ fn location_href_navigates_to_registered_html_source() -> Result<()> {
   tab.navigate_to_url(page1_url, options.clone())?;
   let pixmap = tab.render_frame()?;
   assert_eq!(rgba_at(&pixmap, 32, 32), [0, 0, 255, 255]);
+  let box_el = tab.dom().get_element_by_id("box").expect("#box element");
+  let url_attr = tab
+    .dom()
+    .get_attribute(box_el, "data-document-url")
+    .expect("get_attribute");
+  assert_eq!(url_attr, Some(page2_url));
   Ok(())
 }
-
