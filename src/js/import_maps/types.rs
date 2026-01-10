@@ -65,6 +65,17 @@ pub enum ImportMapError {
   TypeError(String),
 }
 
+/// HTML "import map parse result" (script-element `result` slot value for `type="importmap"`).
+#[derive(Debug, Default)]
+pub struct ImportMapParseResult {
+  /// The successfully parsed import map, or `None` if parsing failed.
+  pub import_map: Option<ImportMap>,
+  /// The error that prevented using this import map, if any.
+  pub error_to_rethrow: Option<ImportMapError>,
+  /// Non-fatal warnings encountered while parsing/normalizing.
+  pub warnings: Vec<ImportMapWarning>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportMapWarning {
   pub kind: ImportMapWarningKind,
@@ -105,4 +116,3 @@ pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {
     }
   }
 }
-

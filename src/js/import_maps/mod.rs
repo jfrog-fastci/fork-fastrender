@@ -12,12 +12,12 @@
 mod parse;
 mod types;
 
+pub use parse::create_import_map_parse_result;
 pub use parse::parse_import_map_string;
 pub use types::{
-  ImportMap, ImportMapError, ImportMapWarning, ImportMapWarningKind, ModuleIntegrityMap, ModuleSpecifierMap,
-  ScopesMap,
+  ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning, ImportMapWarningKind, ModuleIntegrityMap,
+  ModuleSpecifierMap, ScopesMap,
 };
 
 #[cfg(test)]
 mod parse_tests;
-

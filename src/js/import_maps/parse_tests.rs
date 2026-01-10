@@ -1,10 +1,41 @@
-use super::parse_import_map_string;
+use super::{create_import_map_parse_result, parse_import_map_string};
 use super::{ImportMapError, ImportMapWarningKind};
 
 use url::Url;
 
 fn base_url() -> Url {
   Url::parse("https://example.com/base/page.html").unwrap()
+}
+
+#[test]
+fn create_parse_result_captures_json_parse_errors() {
+  let result = create_import_map_parse_result("{", &base_url());
+  assert!(result.import_map.is_none());
+  assert!(matches!(
+    result.error_to_rethrow,
+    Some(ImportMapError::Json(_))
+  ));
+}
+
+#[test]
+fn create_parse_result_captures_type_errors() {
+  let result = create_import_map_parse_result("[]", &base_url());
+  assert!(result.import_map.is_none());
+  assert!(matches!(
+    result.error_to_rethrow,
+    Some(ImportMapError::TypeError(_))
+  ));
+}
+
+#[test]
+fn create_parse_result_includes_warnings_on_success() {
+  let result = create_import_map_parse_result(r#"{ "imports": {}, "bad": {} }"#, &base_url());
+  assert!(result.error_to_rethrow.is_none());
+  assert!(result.import_map.is_some());
+  assert!(result
+    .warnings
+    .iter()
+    .any(|w| matches!(&w.kind, ImportMapWarningKind::UnknownTopLevelKey { key } if key == "bad")));
 }
 
 #[test]

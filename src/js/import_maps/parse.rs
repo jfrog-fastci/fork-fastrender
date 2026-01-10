@@ -6,8 +6,8 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use super::types::{
-  code_unit_cmp, ImportMap, ImportMapError, ImportMapWarning, ImportMapWarningKind, ModuleIntegrityMap,
-  ModuleSpecifierMap, ScopesMap,
+  code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning, ImportMapWarningKind,
+  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
 };
 
 /// Parse and normalize an import map string per the WHATWG HTML Standard.
@@ -63,6 +63,22 @@ pub fn parse_import_map_string(
   }
 
   Ok((ImportMap { imports, scopes, integrity }, warnings))
+}
+
+/// WHATWG HTML: "create an import map parse result".
+pub fn create_import_map_parse_result(input: &str, base_url: &Url) -> ImportMapParseResult {
+  match parse_import_map_string(input, base_url) {
+    Ok((import_map, warnings)) => ImportMapParseResult {
+      import_map: Some(import_map),
+      error_to_rethrow: None,
+      warnings,
+    },
+    Err(err) => ImportMapParseResult {
+      import_map: None,
+      error_to_rethrow: Some(err),
+      warnings: Vec::new(),
+    },
+  }
 }
 
 fn get_last_property<'a>(
@@ -317,4 +333,3 @@ impl<'de> Visitor<'de> for OrderedJsonVisitor {
     Ok(OrderedJsonValue::Object(entries))
   }
 }
-

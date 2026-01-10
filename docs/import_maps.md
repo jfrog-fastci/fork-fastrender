@@ -27,9 +27,9 @@ What exists today:
 
 * **Implemented:** parsing + normalization pipeline (`parse_import_map_string`) and the normalized
   data structures (`ImportMap`, `ModuleSpecifierMap`, `ScopesMap`, `ModuleIntegrityMap`).
-* **Not implemented yet:** import map parse results (`create an import map parse result`),
-  registration (`register an import map`), merging (`merge existing and new import maps`), and module
-  specifier resolution (`resolve a module specifier`).
+* **Implemented:** import map parse results (`create_import_map_parse_result`).
+* **Not implemented yet:** registration (`register an import map`), merging (`merge existing and new
+  import maps`), and module specifier resolution (`resolve a module specifier`).
 
 Those “not implemented yet” items are still documented below, because they are the intended
 integration surface for `<script type="importmap">` and module loading.
@@ -141,6 +141,17 @@ Rust type: `ImportMapError`:
 * `ImportMapError::TypeError(String)` — input violates fatal type constraints from the spec (e.g.
   `"imports"` exists but is not a JSON object).
 
+### `ImportMapParseResult` (implemented)
+
+Rust type: `ImportMapParseResult`:
+
+* `import_map: Option<ImportMap>`
+* `error_to_rethrow: Option<ImportMapError>`
+* `warnings: Vec<ImportMapWarning>`
+
+This is the spec-mapped "import map parse result" struct that HTML stores in the script element’s
+`result` slot during `<script type="importmap">` preparation.
+
 ### `ImportMapState` + resolved module set (spec concept; not implemented yet)
 
 For merging and resolution, HTML defines mutable per-global state:
@@ -185,14 +196,14 @@ Behavior summary:
 HTML stores an **import map parse result** in the `<script>` element’s `result` slot during
 preparation, then registers it during execution:
 
-* “create an import map parse result”
+* “create an import map parse result” (**implemented as** `create_import_map_parse_result`)
 * “register an import map”
 
-FastRender does not yet model this as a Rust type; when it is added, the expected flow is:
+FastRender does not yet implement registration/merge, but the expected flow is:
 
 1. At `</script>` boundary for `<script type="importmap">`:
-   * run parsing (likely by calling `parse_import_map_string(...)`), capturing any thrown error into
-     an `error_to_rethrow` field instead of failing immediately.
+   * run parsing (by calling `create_import_map_parse_result(...)`) which captures any thrown error
+     into `error_to_rethrow` instead of failing immediately.
 2. When the script element executes (HTML “execute the script element”):
    * if `error_to_rethrow` exists, report it and do not mutate import map state
    * otherwise, merge the parsed import map into the global import map state
