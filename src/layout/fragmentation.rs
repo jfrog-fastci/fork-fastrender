@@ -5136,6 +5136,115 @@ mod tests {
   }
 
   #[test]
+  fn parallel_grid_items_clip_first_fragment_to_remaining_fragmentainer_space_in_block_negative_writing_mode(
+  ) {
+    let fragmentainer_size = 100.0;
+    let leading_block_size = 50.0;
+
+    let root_style = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style.writing_mode = WritingMode::VerticalRl;
+      style
+    });
+
+    // In `writing-mode: vertical-rl`, the block axis is horizontal and progresses right-to-left.
+    // The first page (flow range 0..100) corresponds to the rightmost 100px of the root.
+    //
+    // Place a leading block occupying the first 50px of flow, then place the grid container so it
+    // begins 50px into the first fragmentainer.
+    let leading = FragmentNode::new_block(Rect::from_xywh(200.0, 0.0, 50.0, 20.0), vec![]);
+
+    let item_child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 20.0), vec![]);
+    // Make the item span 200px in the block axis while aligning its end edge to the grid container
+    // track (so the physical x-start is negative inside the 50px-wide grid container).
+    let mut item =
+      FragmentNode::new_block(Rect::from_xywh(-150.0, 0.0, 200.0, 20.0), vec![item_child]);
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let grid_style = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.display = Display::Grid;
+      style.writing_mode = WritingMode::VerticalRl;
+      style
+    });
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(150.0, 0.0, 50.0, 20.0),
+      vec![item],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: Vec::new(),
+      columns: vec![(0.0, 50.0)],
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 250.0, 20.0),
+      vec![leading, grid],
+      root_style,
+    );
+
+    let fragments = fragment_tree(&root, &FragmentationOptions::new(fragmentainer_size)).unwrap();
+    assert!(
+      fragments.len() >= 2,
+      "expected pagination to create multiple pages, got {fragments:?}"
+    );
+
+    let first = &fragments[0];
+    let grid_first = first
+      .children
+      .iter()
+      .find(|node| node.style.as_ref().is_some_and(|s| matches!(s.display, Display::Grid)))
+      .expect("expected grid container to appear on the first page");
+    let item_first = grid_first
+      .children
+      .first()
+      .expect("expected grid item fragment on the first page");
+
+    // The first item fragment should only contain the remaining 50px of the fragmentainer after the
+    // leading block. Without offset-aware clipping, the item fragment would be treated as a full
+    // 100px slice and overflow into the leading content region.
+    assert!(
+      item_first.bounds.width() <= (fragmentainer_size - leading_block_size) + BREAK_EPSILON,
+      "expected the grid item fragment to be clipped to the remaining fragmentainer width (<= {}), got {:?}",
+      fragmentainer_size - leading_block_size,
+      item_first.bounds
+    );
+    let item_abs_min_x = grid_first.bounds.x() + item_first.bounds.x();
+    assert!(
+      item_abs_min_x >= -BREAK_EPSILON,
+      "expected the grid item fragment to stay within the page clip window (min_x>=0), got min_x={item_abs_min_x} (grid={:?}, item={:?})",
+      grid_first.bounds,
+      item_first.bounds
+    );
+
+    let second = &fragments[1];
+    let grid_second = second
+      .children
+      .iter()
+      .find(|node| node.style.as_ref().is_some_and(|s| matches!(s.display, Display::Grid)))
+      .expect("expected grid container to appear on the second page");
+    let item_second = grid_second
+      .children
+      .first()
+      .expect("expected grid item continuation on the second page");
+    assert!(
+      item_second.slice_info.slice_offset > BREAK_EPSILON,
+      "expected grid item continuation to have non-zero slice offset, got {:?}",
+      item_second.slice_info
+    );
+  }
+
+  #[test]
   fn grid_parallel_flow_forced_break_shifts_respect_item_offset() {
     let axes = default_axes();
     let axis = axis_from_fragment_axes(axes);
