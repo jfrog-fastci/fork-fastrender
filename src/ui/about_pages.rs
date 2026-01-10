@@ -14,6 +14,9 @@ use std::sync::OnceLock;
 struct GpuInfo {
   adapter_name: String,
   backend: String,
+  power_preference: String,
+  force_fallback_adapter: String,
+  instance_backends: String,
 }
 
 static GPU_INFO: OnceLock<GpuInfo> = OnceLock::new();
@@ -22,10 +25,19 @@ static GPU_INFO: OnceLock<GpuInfo> = OnceLock::new();
 ///
 /// This is intentionally a best-effort global hint: the headless worker (tests, server use-cases)
 /// does not have a wgpu adapter, so the `about:gpu` page falls back to `"unknown"`.
-pub fn set_gpu_info(adapter_name: impl Into<String>, backend: impl Into<String>) {
+pub fn set_gpu_info(
+  adapter_name: impl Into<String>,
+  backend: impl Into<String>,
+  power_preference: impl Into<String>,
+  force_fallback_adapter: bool,
+  instance_backends: impl Into<String>,
+) {
   let _ = GPU_INFO.set(GpuInfo {
     adapter_name: adapter_name.into(),
     backend: backend.into(),
+    power_preference: power_preference.into(),
+    force_fallback_adapter: force_fallback_adapter.to_string(),
+    instance_backends: instance_backends.into(),
   });
 }
 
@@ -209,12 +221,22 @@ fn version_html() -> String {
 }
 
 fn gpu_html() -> String {
-  let (adapter_name, backend) = match GPU_INFO.get() {
-    Some(info) => (info.adapter_name.as_str(), info.backend.as_str()),
-    None => ("unknown", "unknown"),
+  let (adapter_name, backend, power_preference, force_fallback_adapter, instance_backends) =
+    match GPU_INFO.get() {
+      Some(info) => (
+        info.adapter_name.as_str(),
+        info.backend.as_str(),
+        info.power_preference.as_str(),
+        info.force_fallback_adapter.as_str(),
+        info.instance_backends.as_str(),
+      ),
+      None => ("unknown", "unknown", "unknown", "unknown", "unknown"),
   };
   let safe_name = escape_html(adapter_name);
   let safe_backend = escape_html(backend);
+  let safe_power_preference = escape_html(power_preference);
+  let safe_force_fallback = escape_html(force_fallback_adapter);
+  let safe_instance_backends = escape_html(instance_backends);
 
   format!(
     "<!doctype html>
@@ -239,6 +261,9 @@ fn gpu_html() -> String {
     <table>
       <tr><td>adapter</td><td><code>{safe_name}</code></td></tr>
       <tr><td>backend</td><td><code>{safe_backend}</code></td></tr>
+      <tr><td>power preference</td><td><code>{safe_power_preference}</code></td></tr>
+      <tr><td>force fallback adapter</td><td><code>{safe_force_fallback}</code></td></tr>
+      <tr><td>instance backends</td><td><code>{safe_instance_backends}</code></td></tr>
     </table>
     <div class=\"nav\">
       <a href=\"about:newtab\">Back to new tab</a>

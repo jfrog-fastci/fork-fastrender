@@ -58,6 +58,31 @@ struct BrowserCliArgs {
   #[arg(long = "mem-limit-mb", value_name = "MB", value_parser = parse_u64_mb)]
   mem_limit_mb: Option<u64>,
 
+  /// wgpu adapter power preference when selecting a GPU
+  ///
+  /// - `high`: prefer a discrete/high-performance GPU (default)
+  /// - `low`: prefer an integrated/low-power GPU
+  /// - `none`: no preference (wgpu default behaviour)
+  #[arg(
+    long = "power-preference",
+    value_enum,
+    default_value_t = CliPowerPreference::High,
+    value_name = "PREF"
+  )]
+  power_preference: CliPowerPreference,
+
+  /// Force a fallback adapter (e.g. software rasterizer) during wgpu adapter selection
+  #[arg(long = "force-fallback-adapter", action = clap::ArgAction::SetTrue)]
+  force_fallback_adapter: bool,
+
+  /// Restrict the wgpu backend set used for instance/adapter creation (comma-separated)
+  ///
+  /// Examples:
+  ///   --wgpu-backends vulkan
+  ///   --wgpu-backends vulkan,gl
+  #[arg(long = "wgpu-backends", value_delimiter = ',', value_enum, value_name = "BACKEND")]
+  wgpu_backends: Option<Vec<CliWgpuBackend>>,
+
   /// Run a minimal headless startup smoke test (no window / wgpu init)
   #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
   headless_smoke: bool,
@@ -65,6 +90,52 @@ struct BrowserCliArgs {
   /// Exit after parsing CLI + applying mem limits, without creating a window
   #[arg(long = "exit-immediately", action = clap::ArgAction::SetTrue)]
   exit_immediately: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum CliPowerPreference {
+  High,
+  Low,
+  None,
+}
+
+#[cfg(feature = "browser_ui")]
+impl CliPowerPreference {
+  fn to_wgpu(self) -> wgpu::PowerPreference {
+    match self {
+      Self::High => wgpu::PowerPreference::HighPerformance,
+      Self::Low => wgpu::PowerPreference::LowPower,
+      Self::None => wgpu::PowerPreference::None,
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum CliWgpuBackend {
+  Vulkan,
+  Metal,
+  Dx12,
+  Dx11,
+  #[value(alias = "opengl")]
+  Gl,
+  #[value(name = "browser-webgpu", alias = "webgpu")]
+  BrowserWebGpu,
+}
+
+#[cfg(feature = "browser_ui")]
+impl CliWgpuBackend {
+  fn to_wgpu(self) -> wgpu::Backends {
+    match self {
+      Self::Vulkan => wgpu::Backends::VULKAN,
+      Self::Metal => wgpu::Backends::METAL,
+      Self::Dx12 => wgpu::Backends::DX12,
+      Self::Dx11 => wgpu::Backends::DX11,
+      Self::Gl => wgpu::Backends::GL,
+      Self::BrowserWebGpu => wgpu::Backends::BROWSER_WEBGPU,
+    }
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -216,7 +287,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
-  let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx, worker_join))?;
+  let mut wgpu_backends = match cli.wgpu_backends.as_deref() {
+    Some(backends) => {
+      let mut out = wgpu::Backends::empty();
+      for backend in backends {
+        out |= backend.to_wgpu();
+      }
+      out
+    }
+    None => wgpu::Backends::all(),
+  };
+  if wgpu_backends.is_empty() {
+    // This should be unreachable (clap rejects empty lists), but keep a defensive fallback so we
+    // never try to create a wgpu instance with no backends.
+    wgpu_backends = wgpu::Backends::all();
+  }
+  let wgpu_init = WgpuInitOptions {
+    backends: wgpu_backends,
+    power_preference: cli.power_preference.to_wgpu(),
+    force_fallback_adapter: cli.force_fallback_adapter,
+  };
+
+  let mut app = pollster::block_on(App::new(
+    window,
+    &event_loop,
+    ui_to_worker_tx,
+    worker_join,
+    wgpu_init,
+  ))?;
   app.startup(startup_session);
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
@@ -625,6 +723,14 @@ struct ScrollbarDragState {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+struct WgpuInitOptions {
+  backends: wgpu::Backends,
+  power_preference: wgpu::PowerPreference,
+  force_fallback_adapter: bool,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -725,6 +831,7 @@ impl App {
     event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
+    wgpu_init: WgpuInitOptions,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
@@ -736,20 +843,52 @@ impl App {
     egui_ctx.set_pixels_per_point(pixels_per_point);
     let egui_state = egui_winit::State::new(event_loop);
 
-    let instance = wgpu::Instance::default();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+      backends: wgpu_init.backends,
+      ..Default::default()
+    });
     let surface = unsafe { instance.create_surface(&window) }?;
+    let adapter_options = wgpu::RequestAdapterOptions {
+      power_preference: wgpu_init.power_preference,
+      compatible_surface: Some(&surface),
+      force_fallback_adapter: wgpu_init.force_fallback_adapter,
+    };
     let adapter = instance
-      .request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-      })
+      .request_adapter(&adapter_options)
       .await
-      .ok_or("no suitable GPU adapters found on the system")?;
+      .ok_or_else(|| {
+        let mut available = Vec::new();
+        for adapter in instance.enumerate_adapters(wgpu_init.backends) {
+          let info = adapter.get_info();
+          available.push(format!("{} ({:?})", info.name, info.backend));
+        }
+        let available = if available.is_empty() {
+          "none".to_string()
+        } else {
+          available.join(", ")
+        };
+
+        let msg = format!(
+          "wgpu adapter selection failed.\n\
+requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
+available adapters (instance.enumerate_adapters): {available}\n\
+hint: if you're running in a headless environment, try `browser --headless-smoke` (skips window + wgpu)",
+          wgpu_init.backends,
+          wgpu_init.power_preference,
+          wgpu_init.force_fallback_adapter,
+        );
+        std::io::Error::new(std::io::ErrorKind::Other, msg)
+      })?;
 
     // Populate `about:gpu` with the adapter selected by the windowed front-end.
     let info = adapter.get_info();
-    fastrender::ui::about_pages::set_gpu_info(info.name, format!("{:?}", info.backend));
+    fastrender::ui::about_pages::set_gpu_info(
+      info.name,
+      format!("{:?}", info.backend),
+      format!("{:?}", wgpu_init.power_preference),
+      wgpu_init.force_fallback_adapter,
+      format!("{:?}", wgpu_init.backends),
+    );
 
     let (device, queue) = adapter
       .request_device(

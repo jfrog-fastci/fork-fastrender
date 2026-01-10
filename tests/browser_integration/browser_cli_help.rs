@@ -40,6 +40,9 @@ fn browser_help_exits_successfully_without_startup_logs() {
     "--restore",
     "--no-restore",
     "--mem-limit-mb",
+    "--power-preference",
+    "--force-fallback-adapter",
+    "--wgpu-backends",
     "--headless-smoke",
     "--exit-immediately",
   ] {

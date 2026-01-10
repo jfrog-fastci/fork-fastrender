@@ -75,6 +75,29 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
+### GPU / wgpu adapter selection
+
+The windowed `browser` UI uses `wgpu` for presentation. Adapter selection can vary across drivers
+and environments (VMs, headless CI, Remote Desktop, etc). The `browser` CLI exposes a few flags to
+help with debugging and forcing a specific selection strategy:
+
+- `--power-preference {high,low,none}` — maps to `wgpu::PowerPreference`.
+  - `high` prefers a high-performance/discrete GPU (default).
+  - `low` prefers an integrated/low-power GPU.
+  - `none` leaves the decision up to wgpu/the platform.
+- `--force-fallback-adapter` — maps to `RequestAdapterOptions.force_fallback_adapter` (useful for
+  software adapters).
+- `--wgpu-backends <list>` — restrict the backend set used to create the wgpu instance (comma
+  separated), e.g. `--wgpu-backends vulkan,gl`.
+
+Troubleshooting tips:
+
+- If windowed startup fails with a wgpu adapter selection error, try a different backend (for
+  example `--wgpu-backends gl`) or `--force-fallback-adapter`.
+- If you're in a headless environment without a working display/GPU, use `--headless-smoke` (or
+  `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`) to run a minimal startup smoke test without winit/wgpu.
+- Navigate to `about:gpu` to see the selected adapter/backend and the selection options used.
+
 CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` binary with
 `--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
 
