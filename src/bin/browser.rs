@@ -568,6 +568,10 @@ impl App {
       .await
       .ok_or("no suitable GPU adapters found on the system")?;
 
+    // Populate `about:gpu` with the adapter selected by the windowed front-end.
+    let info = adapter.get_info();
+    fastrender::ui::about_pages::set_gpu_info(info.name, format!("{:?}", info.backend));
+
     let (device, queue) = adapter
       .request_device(
         &wgpu::DeviceDescriptor {

@@ -108,6 +108,7 @@ mod ui_worker_tab_resource_isolation;
 mod ui_worker_renderer_reuse;
 mod ui_worker_tabs;
 mod ui_worker_title;
+mod ui_worker_about_pages;
 mod ui_worker_viewport_changed;
 mod worker_harness;
 mod browser_thread_worker;

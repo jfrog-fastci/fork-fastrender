@@ -1,9 +1,33 @@
 pub const ABOUT_BLANK: &str = "about:blank";
 pub const ABOUT_NEWTAB: &str = "about:newtab";
+pub const ABOUT_HELP: &str = "about:help";
+pub const ABOUT_VERSION: &str = "about:version";
+pub const ABOUT_GPU: &str = "about:gpu";
 pub const ABOUT_ERROR: &str = "about:error";
 pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
+
+use std::sync::OnceLock;
+
+#[derive(Debug, Clone)]
+struct GpuInfo {
+  adapter_name: String,
+  backend: String,
+}
+
+static GPU_INFO: OnceLock<GpuInfo> = OnceLock::new();
+
+/// Provide information about the GPU/adapter selected by the windowed `browser` front-end.
+///
+/// This is intentionally a best-effort global hint: the headless worker (tests, server use-cases)
+/// does not have a wgpu adapter, so the `about:gpu` page falls back to `"unknown"`.
+pub fn set_gpu_info(adapter_name: impl Into<String>, backend: impl Into<String>) {
+  let _ = GPU_INFO.set(GpuInfo {
+    adapter_name: adapter_name.into(),
+    backend: backend.into(),
+  });
+}
 
 /// Base URL hint used for all `about:` pages.
 ///
@@ -27,6 +51,9 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
   match lower.as_str() {
     ABOUT_BLANK => Some(blank_html().to_string()),
     ABOUT_NEWTAB => Some(newtab_html().to_string()),
+    ABOUT_HELP => Some(help_html().to_string()),
+    ABOUT_VERSION => Some(version_html()),
+    ABOUT_GPU => Some(gpu_html()),
     ABOUT_ERROR => Some(error_html("Navigation error", None)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
@@ -66,6 +93,9 @@ fn newtab_html() -> &'static str {
       <ul>
         <li><a href=\"https://example.com/\">https://example.com/</a></li>
         <li><a href=\"about:blank\">about:blank</a></li>
+        <li><a href=\"about:help\">about:help</a></li>
+        <li><a href=\"about:version\">about:version</a></li>
+        <li><a href=\"about:gpu\">about:gpu</a></li>
         <li><a href=\"about:error\">about:error</a> (template)</li>
       </ul>
       <p>You can also type filesystem paths into the address bar:</p>
@@ -76,6 +106,146 @@ fn newtab_html() -> &'static str {
     </div>
   </body>
 </html>"
+}
+
+fn help_html() -> &'static str {
+  "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <title>Help</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      h2 { font-size: 16px; margin: 18px 0 8px; }
+      code, kbd { padding: 0.1em 0.3em; border-radius: 4px; background: rgba(127,127,127,0.2); }
+      .box { max-width: 760px; }
+      ul { padding-left: 18px; }
+      .nav { margin-top: 16px; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <div class=\"box\">
+      <h1>FastRender Help</h1>
+      <p>This is an offline <code>about:help</code> page.</p>
+
+      <h2>Usage</h2>
+      <ul>
+        <li>Type a URL into the address bar (http/https/file/about).</li>
+        <li>Typing <code>example.com</code> defaults to <code>https://example.com/</code>.</li>
+        <li>Typing a filesystem path like <code>/tmp/a.html</code> navigates to a <code>file://</code> URL.</li>
+      </ul>
+
+      <h2>Keyboard shortcuts</h2>
+      <ul>
+        <li><kbd>Ctrl</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd> — Focus address bar</li>
+        <li><kbd>Ctrl</kbd>+<kbd>T</kbd> — New tab</li>
+        <li><kbd>Ctrl</kbd>+<kbd>W</kbd> — Close tab</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
+        <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> — Back/forward</li>
+        <li><kbd>Ctrl</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
+        <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
+      </ul>
+
+      <h2>Built-in pages</h2>
+      <ul>
+        <li><a href=\"about:newtab\">about:newtab</a></li>
+        <li><a href=\"about:version\">about:version</a></li>
+        <li><a href=\"about:gpu\">about:gpu</a></li>
+      </ul>
+
+      <div class=\"nav\">
+        <a href=\"about:newtab\">Back to new tab</a>
+      </div>
+    </div>
+  </body>
+</html>"
+}
+
+fn version_html() -> String {
+  let version = env!("CARGO_PKG_VERSION");
+  let profile = option_env!("PROFILE").unwrap_or("unknown");
+  let git_hash = option_env!("FASTR_GIT_HASH")
+    .or(option_env!("GIT_HASH"))
+    .or(option_env!("VERGEN_GIT_SHA"))
+    .or(option_env!("VERGEN_GIT_SHA_SHORT"));
+
+  let safe_version = escape_html(version);
+  let safe_profile = escape_html(profile);
+  let safe_git = escape_html(git_hash.unwrap_or("unknown"));
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <title>Version</title>
+    <style>
+      :root {{ color-scheme: light dark; }}
+      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
+      h1 {{ margin: 0 0 12px; font-size: 20px; }}
+      code {{ padding: 0.1em 0.3em; border-radius: 4px; background: rgba(127,127,127,0.2); }}
+      table {{ border-collapse: collapse; }}
+      td {{ padding: 4px 10px 4px 0; vertical-align: top; }}
+      .nav {{ margin-top: 16px; }}
+      a {{ color: inherit; }}
+    </style>
+  </head>
+  <body>
+    <h1>Version</h1>
+    <table>
+      <tr><td>crate version</td><td><code>{safe_version}</code></td></tr>
+      <tr><td>git hash</td><td><code>{safe_git}</code></td></tr>
+      <tr><td>build profile</td><td><code>{safe_profile}</code></td></tr>
+    </table>
+    <div class=\"nav\">
+      <a href=\"about:newtab\">Back to new tab</a>
+    </div>
+  </body>
+</html>"
+  )
+}
+
+fn gpu_html() -> String {
+  let (adapter_name, backend) = match GPU_INFO.get() {
+    Some(info) => (info.adapter_name.as_str(), info.backend.as_str()),
+    None => ("unknown", "unknown"),
+  };
+  let safe_name = escape_html(adapter_name);
+  let safe_backend = escape_html(backend);
+
+  format!(
+    "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <title>GPU</title>
+    <style>
+      :root {{ color-scheme: light dark; }}
+      body {{ font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; }}
+      h1 {{ margin: 0 0 12px; font-size: 20px; }}
+      code {{ padding: 0.1em 0.3em; border-radius: 4px; background: rgba(127,127,127,0.2); }}
+      table {{ border-collapse: collapse; }}
+      td {{ padding: 4px 10px 4px 0; vertical-align: top; }}
+      .nav {{ margin-top: 16px; }}
+      a {{ color: inherit; }}
+    </style>
+  </head>
+  <body>
+    <h1>GPU</h1>
+    <p>This page is best-effort: headless runs do not initialize wgpu.</p>
+    <table>
+      <tr><td>adapter</td><td><code>{safe_name}</code></td></tr>
+      <tr><td>backend</td><td><code>{safe_backend}</code></td></tr>
+    </table>
+    <div class=\"nav\">
+      <a href=\"about:newtab\">Back to new tab</a>
+    </div>
+  </body>
+</html>"
+  )
 }
 
 fn error_html(title: &str, message: Option<&str>) -> String {
@@ -188,4 +358,59 @@ fn escape_html(text: &str) -> String {
     }
   }
   out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn extract_title(html: &str) -> Option<&str> {
+    let start = html.find("<title>")? + "<title>".len();
+    let end = html[start..].find("</title>")? + start;
+    Some(&html[start..end])
+  }
+
+  #[test]
+  fn html_for_about_url_maps_known_pages_and_ignores_query_and_fragment() {
+    let cases = [
+      (ABOUT_BLANK, None),
+      (ABOUT_NEWTAB, Some("New Tab")),
+      (ABOUT_HELP, Some("Help")),
+      (ABOUT_VERSION, Some("Version")),
+      (ABOUT_GPU, Some("GPU")),
+      (ABOUT_ERROR, Some("Navigation error")),
+      (ABOUT_TEST_SCROLL, Some("Scroll Test")),
+      (ABOUT_TEST_HEAVY, Some("Heavy Test")),
+      (ABOUT_TEST_FORM, Some("Form Test")),
+    ];
+
+    for (url, expected_title) in cases {
+      let html = html_for_about_url(&format!("{url}?q=1#frag")).unwrap();
+      if let Some(expected_title) = expected_title {
+        assert_eq!(
+          extract_title(&html),
+          Some(expected_title),
+          "unexpected title for {url}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn about_gpu_falls_back_to_unknown_when_headless() {
+    let html = html_for_about_url(ABOUT_GPU).unwrap();
+    assert!(html.contains("<title>GPU</title>"));
+    assert!(html.contains(">unknown<"));
+  }
+
+  #[test]
+  fn newtab_links_to_new_about_pages() {
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    for url in [ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
+      assert!(
+        html.contains(url),
+        "expected about:newtab HTML to link to {url}"
+      );
+    }
+  }
 }
