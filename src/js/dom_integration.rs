@@ -447,6 +447,37 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_script_javascript_src_trims_ascii_whitespace_before_scheme_check() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    dom
+      .set_attribute(script, "src", " \tjavascript:alert(1)\n")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("INLINE");
+    dom.append_child(script, text).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no loader fetch for javascript: src (even with ASCII whitespace)"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no inline execution when src attribute is present"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_script_src_trims_ascii_whitespace() -> Result<()> {
     // `prepare_dynamic_script_on_insertion` is for scripts created/inserted via DOM APIs. Build a
     // DOM-created `<script>` element so `Node::script_parser_document` is false.
