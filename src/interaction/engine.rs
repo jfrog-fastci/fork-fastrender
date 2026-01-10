@@ -1860,6 +1860,30 @@ impl InteractionEngine {
     }
   }
 
+  #[cfg(test)]
+  fn set_text_selection_caret(&mut self, node_id: usize, caret: usize) {
+    self.text_edit = Some(TextEditState {
+      node_id,
+      caret,
+      selection_anchor: None,
+      preferred_column: None,
+    });
+  }
+
+  #[cfg(test)]
+  fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
+    if start == end {
+      self.set_text_selection_caret(node_id, end);
+      return;
+    }
+    self.text_edit = Some(TextEditState {
+      node_id,
+      caret: end,
+      selection_anchor: Some(start),
+      preferred_column: None,
+    });
+  }
+
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,
