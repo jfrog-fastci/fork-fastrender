@@ -4,8 +4,8 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::js::{
-  ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptExecutor, ScriptLoader,
-  VirtualClock,
+  ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementEvent, ScriptElementSpec,
+  ScriptEventDispatcher, ScriptExecutor, ScriptLoader, VirtualClock,
 };
 use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions, ResourcePolicy};
@@ -213,6 +213,14 @@ impl ScriptExecutor for FixtureHost {
       .js_ctx
       .with(|ctx| ctx.eval::<(), _>(script_text))
       .map_err(|err| Error::Other(err.to_string()))?;
+    Ok(())
+  }
+}
+
+impl ScriptEventDispatcher for FixtureHost {
+  fn dispatch_script_event(&mut self, _event: ScriptElementEvent, _spec: &ScriptElementSpec) -> Result<()> {
+    // The browser integration harness doesn't currently assert `<script>` load/error events; it
+    // only cares about script execution ordering and DOM side effects.
     Ok(())
   }
 }

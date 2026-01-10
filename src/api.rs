@@ -18351,8 +18351,8 @@ fn build_container_query_context(
       }
     }
 
-    let viewport = fragments.viewport_size();
-    let viewport_for_units = viewport;
+    let viewport_for_units = fragments.viewport_size();
+    let viewport = viewport_for_units;
     collect_scroll_bounds(
       &fragments.root,
       Point::new(fragments.root.bounds.x(), fragments.root.bounds.y()),
@@ -18364,7 +18364,6 @@ fn build_container_query_context(
     );
     for extra in &fragments.additional_fragments {
       let viewport = Size::new(extra.bounds.width(), extra.bounds.height());
-      let viewport_for_units = viewport;
       collect_scroll_bounds(
         extra,
         Point::new(extra.bounds.x(), extra.bounds.y()),
