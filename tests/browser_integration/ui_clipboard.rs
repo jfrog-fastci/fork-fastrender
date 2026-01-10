@@ -128,11 +128,12 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let frame0 = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame0.pixmap, 20, 60),
+  let _frame0 = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected probe to reflect initial input value"
+    "initial paint",
   );
 
   // Click the input to focus it.
@@ -247,11 +248,12 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
     .expect("active tab");
 
   // Initial value is non-empty, so the probe should be green.
-  let frame0 = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame0.pixmap, 20, 80),
+  let _frame0 = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 80),
     [0, 255, 0, 255],
-    "expected probe to reflect initial textarea value"
+    "initial paint",
   );
 
   // Click the textarea to focus it.
@@ -376,11 +378,12 @@ fn ui_clipboard_respects_readonly_input() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let frame0 = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame0.pixmap, 20, 60),
+  let _frame0 = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected probe to reflect initial readonly input value"
+    "initial paint (readonly)",
   );
 
   // Click the input to focus it.
@@ -523,11 +526,12 @@ fn ui_clipboard_copy_cut_respects_selection() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let frame0 = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame0.pixmap, 20, 60),
+  let _frame0 = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected probe to reflect initial input value"
+    "initial paint",
   );
 
   // Click the input to focus it.
@@ -647,11 +651,12 @@ fn ui_clipboard_paste_replaces_selection() {
     .expect("active tab");
 
   // Wait for the initial paint and assert the probe is green (value="hello").
-  let frame0 = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame0.pixmap, 20, 60),
+  let _frame0 = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected probe to reflect initial input value"
+    "initial paint",
   );
 
   // Click the input to focus it.
