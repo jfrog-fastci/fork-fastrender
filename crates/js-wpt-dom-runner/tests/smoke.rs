@@ -2,26 +2,52 @@ use js_wpt_dom_runner::{
   discover_tests, BackendKind, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs,
 };
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 fn corpus_root() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("../../tests/wpt_dom")
-    .canonicalize()
-    .expect("canonicalize corpus root")
+  static ROOT: OnceLock<PathBuf> = OnceLock::new();
+  ROOT
+    .get_or_init(|| {
+      PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/wpt_dom")
+        .canonicalize()
+        .expect("canonicalize corpus root")
+    })
+    .clone()
 }
 
 fn tests_root() -> PathBuf {
-  corpus_root().join("tests")
+  static ROOT: OnceLock<PathBuf> = OnceLock::new();
+  ROOT.get_or_init(|| corpus_root().join("tests")).clone()
+}
+
+fn wpt_fs() -> WptFs {
+  static FS: OnceLock<WptFs> = OnceLock::new();
+  FS.get_or_init(|| WptFs::new(corpus_root()).expect("wpt fs"))
+    .clone()
+}
+
+fn discovered_tests() -> &'static Vec<js_wpt_dom_runner::TestCase> {
+  static TESTS: OnceLock<Vec<js_wpt_dom_runner::TestCase>> = OnceLock::new();
+  TESTS.get_or_init(|| discover_tests(&tests_root()).expect("discover tests"))
+}
+
+fn smoke_config() -> RunnerConfig {
+  // Keep tests fast + deterministic: the WPT corpus here is tiny and should not need the runner's
+  // generous 5s/30s defaults.
+  RunnerConfig {
+    default_timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    ..RunnerConfig::default()
+  }
 }
 
 fn run_test_id_all_backends(
   id: &str,
   config: RunnerConfig,
 ) -> Vec<(BackendKind, js_wpt_dom_runner::RunResult)> {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
+  let tests = discovered_tests();
   let test = tests
     .iter()
     .find(|t| t.id == id)
@@ -35,8 +61,7 @@ fn run_test_id_all_backends(
       BackendKind::VmJs => BackendSelection::VmJs,
     };
 
-    let fs = WptFs::new(&corpus_root).expect("wpt fs");
-    let runner = Runner::new(fs, config);
+    let runner = Runner::new(wpt_fs(), config);
     let result = runner.run_test(test).expect("run test");
     out.push((backend, result));
   }
@@ -48,9 +73,7 @@ fn run_test_id_backend(
   backend: BackendSelection,
   config: RunnerConfig,
 ) -> js_wpt_dom_runner::RunResult {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
+  let tests = discovered_tests();
   let test = tests
     .iter()
     .find(|t| t.id == id)
@@ -59,13 +82,12 @@ fn run_test_id_backend(
   let mut config = config.clone();
   config.backend = backend;
 
-  let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(fs, config);
+  let runner = Runner::new(wpt_fs(), config);
   runner.run_test(test).expect("run test")
 }
 
 fn assert_wpt_pass(id: &str) {
-  for (backend, result) in run_test_id_all_backends(id, RunnerConfig::default()) {
+  for (backend, result) in run_test_id_all_backends(id, smoke_config()) {
     assert_eq!(
       result.outcome,
       RunOutcome::Pass,
@@ -100,7 +122,7 @@ fn assert_wpt_pass(id: &str) {
 
 #[test]
 fn reports_subtest_failures() {
-  for (backend, result) in run_test_id_all_backends("smoke/sync-fail.html", RunnerConfig::default())
+  for (backend, result) in run_test_id_all_backends("smoke/sync-fail.html", smoke_config())
   {
     match &result.outcome {
       RunOutcome::Fail(_msg) => {}
@@ -229,7 +251,7 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
 
 #[test]
 fn discovers_worker_tests_but_skips_them() {
-  for (backend, result) in run_test_id_all_backends("smoke/unsupported.worker.js", RunnerConfig::default())
+  for (backend, result) in run_test_id_all_backends("smoke/unsupported.worker.js", smoke_config())
   {
     match result.outcome {
       RunOutcome::Skip(reason) => {
@@ -247,7 +269,7 @@ fn discovers_worker_tests_but_skips_them() {
 fn discovers_serviceworker_tests_but_skips_them() {
   for (backend, result) in run_test_id_all_backends(
     "smoke/unsupported.serviceworker.js",
-    RunnerConfig::default(),
+    smoke_config(),
   ) {
     match result.outcome {
       RunOutcome::Skip(reason) => {
@@ -265,7 +287,7 @@ fn discovers_serviceworker_tests_but_skips_them() {
 fn discovers_sharedworker_tests_but_skips_them() {
   for (backend, result) in run_test_id_all_backends(
     "smoke/unsupported.sharedworker.js",
-    RunnerConfig::default(),
+    smoke_config(),
   ) {
     match result.outcome {
       RunOutcome::Skip(reason) => {
@@ -348,7 +370,7 @@ fn runs_urlsearchparams_live_test_vmjs() {
   let result = run_test_id_backend(
     "url/urlsearchparams-live.window.js",
     BackendSelection::VmJs,
-    RunnerConfig::default(),
+    smoke_config(),
   );
   assert_eq!(
     result.outcome,
@@ -379,7 +401,13 @@ fn classifies_vmjs_termination_as_timeout() {
   let result = run_test_id_backend(
     "smoke/infinite_loop_timeout.window.js",
     BackendSelection::VmJs,
-    RunnerConfig::default(),
+    RunnerConfig {
+      // Shorten the default timeout; this test intentionally loops forever and should terminate
+      // quickly once the deadline is reached.
+      default_timeout: Duration::from_millis(250),
+      long_timeout: Duration::from_secs(1),
+      ..RunnerConfig::default()
+    },
   );
   assert_eq!(
     result.outcome,
