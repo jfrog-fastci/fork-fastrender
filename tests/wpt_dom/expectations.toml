@@ -26,7 +26,7 @@ reason = "Intentional harness-level error used to validate uncaught exception cl
 [[expectations]]
 id = "smoke/infinite_loop_timeout.window.js"
 status = "xfail"
-reason = "Intentional infinite loop used to validate timeout classification."
+reason = "Intentional infinite loop used to validate runner termination/timeout classification."
 
 [[expectations]]
 glob = "url/**"
