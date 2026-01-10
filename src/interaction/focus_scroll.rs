@@ -89,9 +89,6 @@ fn scroll_to_reveal_rect(
   // Focus-driven auto-scroll currently only adjusts the vertical (block) axis. This matches typical
   // browser UX for Tab traversal (scroll down to follow focus) and avoids surprising horizontal page
   // jumps for common patterns like visually-hidden form controls (e.g. `left:-9999px`).
-  //
-  // TODO: Implement horizontal focus scrolling once we have more coverage for horizontal scrollers
-  // (and a clear policy for off-screen positioning hacks).
   let next_x = current_scroll.x;
   let next_y = adjust_scroll_axis_nearest(
     current_scroll.y,
