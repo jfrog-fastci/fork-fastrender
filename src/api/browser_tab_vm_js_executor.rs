@@ -3,7 +3,6 @@ use crate::js::window_realm::{register_dom_source, unregister_dom_source, Window
 use crate::js::time::update_time_bindings_clock;
 use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
-use vm_js::HeapLimits;
 use std::ptr::NonNull;
 
 use super::BrowserDocumentDom2;
@@ -80,17 +79,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let dom_source_id = self.ensure_dom_source_id(document);
 
     let url = document_url.unwrap_or("about:blank");
-    let mut config = WindowRealmConfig::new(url)
+    let config = WindowRealmConfig::new(url)
       .with_dom_source_id(dom_source_id)
       .with_current_script_state(current_script.clone());
-
-    if let Some(max_bytes) = js_execution_options.max_vm_heap_bytes {
-      // Keep the historical "GC at half max heap" behavior.
-      let gc_threshold = (max_bytes / 2).min(max_bytes);
-      config = config.with_heap_limits(HeapLimits::new(max_bytes, gc_threshold));
-    }
-
-    let mut realm = WindowRealm::new(config).map_err(|err| Error::Other(err.to_string()))?;
+    let mut realm =
+      WindowRealm::new_with_js_execution_options(config, js_execution_options)
+        .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_cookie_fetcher(document.fetcher());
     self.realm = Some(realm);
     Ok(())

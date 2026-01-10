@@ -1,5 +1,6 @@
 use fastrender::dom2;
 use fastrender::js::{JsExecutionOptions, WindowHost};
+use fastrender::js::window_realm::{WindowRealm, WindowRealmConfig};
 use selectors::context::QuirksMode;
 use std::time::Duration;
 
@@ -38,3 +39,41 @@ fn exec_script_deadline_budget_can_terminate_immediately() -> fastrender::Result
   Ok(())
 }
 
+#[test]
+fn window_realm_exec_script_infinite_loop_is_terminated_by_instruction_budget() {
+  let mut opts = JsExecutionOptions::default();
+  opts.max_instruction_count = Some(50);
+  opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.invalid/"),
+    opts,
+  )
+  .expect("create WindowRealm");
+
+  let err = realm.exec_script("for(;;){}").expect_err("expected script to terminate");
+  let msg = err.to_string().to_ascii_lowercase();
+  assert!(
+    msg.contains("out of fuel"),
+    "expected OutOfFuel termination, got: {msg}"
+  );
+}
+
+#[test]
+fn window_realm_exec_script_deadline_budget_can_terminate_immediately() {
+  let mut opts = JsExecutionOptions::default();
+  opts.event_loop_run_limits.max_wall_time = Some(Duration::from_millis(0));
+
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.invalid/"),
+    opts,
+  )
+  .expect("create WindowRealm");
+
+  let err = realm.exec_script("for(;;){}").expect_err("expected deadline termination");
+  let msg = err.to_string().to_ascii_lowercase();
+  assert!(
+    msg.contains("deadline exceeded"),
+    "expected DeadlineExceeded termination, got: {msg}"
+  );
+}

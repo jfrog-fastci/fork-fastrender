@@ -8,6 +8,7 @@ use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
 use crate::js::JsExecutionOptions;
+use crate::js::vm_budgets::vm_budget_for_js_run;
 use crate::js::CurrentScriptStateHandle;
 use crate::render_control;
 use crate::resource::ResourceFetcher;
@@ -129,6 +130,7 @@ pub struct WindowRealm {
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
   interrupt_flag: Arc<AtomicBool>,
+  js_execution_options: JsExecutionOptions,
 }
 
 pub(crate) struct WindowRealmUserData {
@@ -175,6 +177,7 @@ impl WindowRealm {
     // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
     // `Vm::tick()`.
     vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
+    let max_stack_depth = vm_options.max_stack_depth;
     let vm = Vm::new(vm_options);
     let heap = Heap::new(config.heap_limits);
 
@@ -213,6 +216,11 @@ impl WindowRealm {
         return Err(err);
       }
     };
+    let mut js_execution_options = JsExecutionOptions::default();
+    // Keep the stored JS options consistent with the realm's actual limits. `WindowRealm::new`
+    // configures heap limits via `WindowRealmConfig`, not via `JsExecutionOptions`.
+    js_execution_options.max_vm_heap_bytes = Some(config.heap_limits.max_bytes);
+    js_execution_options.max_stack_depth = Some(max_stack_depth);
     Ok(Self {
       runtime,
       realm_id,
@@ -221,6 +229,7 @@ impl WindowRealm {
       match_media_env_id,
       time_bindings: Some(time_bindings),
       interrupt_flag,
+      js_execution_options,
     })
   }
 
@@ -262,6 +271,7 @@ impl WindowRealm {
     // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
     // `Vm::tick()`.
     vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
+    let max_stack_depth = vm_options.max_stack_depth;
     let vm = Vm::new(vm_options);
     let heap = Heap::new(config.heap_limits);
 
@@ -282,6 +292,10 @@ impl WindowRealm {
       Arc::clone(&config.clock),
       config.web_time,
     )?;
+    let mut js_execution_options = js_execution_options;
+    // Keep stored options consistent with the realm's enforced limits after capping.
+    js_execution_options.max_vm_heap_bytes = Some(config.heap_limits.max_bytes);
+    js_execution_options.max_stack_depth = Some(max_stack_depth);
     Ok(Self {
       runtime,
       realm_id,
@@ -290,7 +304,14 @@ impl WindowRealm {
       match_media_env_id,
       time_bindings: Some(time_bindings),
       interrupt_flag,
+      js_execution_options,
     })
+  }
+
+  fn prepare_for_script_run(&mut self) -> Result<(), VmError> {
+    let budget = vm_budget_for_js_run(self.js_execution_options);
+    self.runtime.vm.set_budget(budget);
+    self.runtime.vm.tick()
   }
 
   pub fn reset_interrupt(&self) {
@@ -375,6 +396,7 @@ impl WindowRealm {
 
   /// Execute a classic script in this window realm.
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
+    self.prepare_for_script_run()?;
     self.runtime.exec_script(source)
   }
 
@@ -415,6 +437,7 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
+    self.prepare_for_script_run()?;
     self
       .runtime
       .exec_script_source_with_host_and_hooks(host, hooks, source)
@@ -435,6 +458,7 @@ impl WindowRealm {
     source_name: impl Into<Arc<str>>,
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
+    self.prepare_for_script_run()?;
     self
       .runtime
       .exec_script_source(Arc::new(SourceText::new(source_name, source_text)))

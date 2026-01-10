@@ -3,7 +3,6 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
-use crate::js::vm_budgets::vm_budget_for_js_run;
 use crate::js::window_realm::{
   register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
@@ -200,15 +199,7 @@ impl WindowHost {
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
-      let js_opts = host.js_execution_options;
       let WindowHostState { document, window, .. } = host;
-      {
-        let (vm, heap) = window.vm_and_heap_mut();
-        vm.set_budget(vm_budget_for_js_run(js_opts));
-        if let Err(err) = vm.tick() {
-          return Err(vm_error_format::vm_error_to_error(heap, err));
-        }
-      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
       if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -409,15 +400,7 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     with_event_loop(event_loop, || {
-      let js_opts = self.js_execution_options;
       let WindowHostState { document, window, .. } = self;
-      {
-        let (vm, heap) = window.vm_and_heap_mut();
-        vm.set_budget(vm_budget_for_js_run(js_opts));
-        if let Err(err) = vm.tick() {
-          return Err(vm_error_format::vm_error_to_error(heap, err));
-        }
-      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
 
@@ -444,15 +427,7 @@ impl WindowHostState {
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
     with_event_loop(event_loop, || {
-      let js_opts = self.js_execution_options;
       let WindowHostState { document, window, .. } = self;
-      {
-        let (vm, heap) = window.vm_and_heap_mut();
-        vm.set_budget(vm_budget_for_js_run(js_opts));
-        if let Err(err) = vm.tick() {
-          return Err(vm_error_format::vm_error_to_error(heap, err));
-        }
-      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result =
         window.exec_script_source_with_host_and_hooks(document.as_mut(), &mut hooks, source);
