@@ -154,6 +154,41 @@ fn let_declarator_list_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn destructuring_var_decl_binding_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  // Create the RHS object with an unlimited budget so this test isolates the cost of the
+  // destructuring pattern traversal/binding in the second script.
+  rt.vm.set_budget(Budget::unlimited(1));
+  rt.exec_script("var o = {};").unwrap();
+
+  // A large destructuring pattern can do significant work even when:
+  // - the initializer expression is trivial, and
+  // - there are no computed keys / default values.
+  //
+  // The fuel budget is chosen so that instantiation succeeds, but runtime binding must also be
+  // budgeted (i.e. it cannot be "free" work).
+  let mut src = String::from("var {");
+  for i in 0..2000 {
+    if i != 0 {
+      src.push(',');
+    }
+    write!(src, "p{i}").unwrap();
+  }
+  src.push_str("} = o;");
+
+  rt.vm.set_budget(Budget {
+    fuel: Some(7000),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn empty_script_ticks_at_entry() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);

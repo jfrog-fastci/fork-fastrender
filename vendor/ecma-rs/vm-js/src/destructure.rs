@@ -219,7 +219,6 @@ fn bind_object_pattern(
   strict: bool,
   this: Value,
 ) -> Result<(), VmError> {
-  const TICK_EVERY: usize = 256;
   let Value::Object(obj) = value else {
     return Err(throw_type_error(vm, scope, "object destructuring requires object")?);
   };
@@ -230,8 +229,10 @@ fn bind_object_pattern(
     .try_reserve_exact(pat.properties.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
-  let mut prop_count: usize = 0;
   for prop in &pat.properties {
+    // Budget object destructuring by pattern size: large patterns can do significant work even
+    // without evaluating nested expressions (direct keys, no defaults).
+    vm.tick()?;
     let key = resolve_obj_pat_key(
       vm,
       host,
@@ -265,11 +266,6 @@ fn bind_object_pattern(
       strict,
       this,
     )?;
-
-    prop_count = prop_count.wrapping_add(1);
-    if (prop_count & (TICK_EVERY - 1)) == 0 {
-      vm.tick()?;
-    }
   }
 
   let Some(rest_pat) = &pat.rest else {
@@ -280,13 +276,9 @@ fn bind_object_pattern(
   scope.push_root(Value::Object(rest_obj))?;
 
   let keys = scope.ordinary_own_property_keys(obj)?;
-  let mut key_count: usize = 0;
   for key in keys {
-    key_count = key_count.wrapping_add(1);
-    if (key_count & (TICK_EVERY - 1)) == 0 {
-      vm.tick()?;
-    }
-
+    // Budget rest-property copying: `...rest` can iterate many keys even for a small pattern.
+    vm.tick()?;
     if excluded
       .iter()
       .any(|excluded_key| scope.heap().property_key_eq(excluded_key, &key))
@@ -332,7 +324,6 @@ fn bind_array_pattern(
   strict: bool,
   this: Value,
 ) -> Result<(), VmError> {
-  const TICK_EVERY: usize = 256;
   let Value::Object(obj) = value else {
     return Err(throw_type_error(vm, scope, "array destructuring requires object")?);
   };
@@ -341,14 +332,12 @@ fn bind_array_pattern(
   let len = array_like_length(vm, host, hooks, scope, obj)?;
   let mut idx: u32 = 0;
 
-  let mut elem_count: usize = 0;
   for elem in &pat.elements {
+    // Budget array destructuring by pattern size: holes and identifiers don't evaluate nested
+    // expressions, but still advance the iterator/index.
+    vm.tick()?;
     let Some(elem) = elem else {
       idx = idx.saturating_add(1);
-      elem_count = elem_count.wrapping_add(1);
-      if (elem_count & (TICK_EVERY - 1)) == 0 {
-        vm.tick()?;
-      }
       continue;
     };
 
@@ -377,11 +366,6 @@ fn bind_array_pattern(
       this,
     )?;
     idx = idx.saturating_add(1);
-
-    elem_count = elem_count.wrapping_add(1);
-    if (elem_count & (TICK_EVERY - 1)) == 0 {
-      vm.tick()?;
-    }
   }
 
   let Some(rest_pat) = &pat.rest else {
@@ -393,6 +377,8 @@ fn bind_array_pattern(
 
   let mut rest_idx: u32 = 0;
   while idx < len {
+    // Budget rest-element copying: `...rest` can iterate many remaining indices.
+    vm.tick()?;
     let v = array_like_get(vm, host, hooks, scope, obj, idx)?;
     {
       // Root the element value while allocating the property key and defining the property:
@@ -407,9 +393,6 @@ fn bind_array_pattern(
     }
     idx += 1;
     rest_idx += 1;
-    if (rest_idx & ((TICK_EVERY as u32) - 1)) == 0 {
-      vm.tick()?;
-    }
   }
 
   // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
