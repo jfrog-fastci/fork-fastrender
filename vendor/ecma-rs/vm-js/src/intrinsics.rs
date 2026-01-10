@@ -404,6 +404,7 @@ impl Intrinsics {
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
+    let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
@@ -655,7 +656,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / forEach / indexOf / join / slice / push / splice
+      // Array.prototype.map / forEach / indexOf / reverse / join / slice / push / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -694,11 +695,25 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(index_of_fn, Some(function_prototype))?;
-      scope.define_property(
-        array_prototype,
-        index_of_key,
-        data_desc(Value::Object(index_of_fn), true, false, true),
-      )?;
+        scope.define_property(
+          array_prototype,
+          index_of_key,
+          data_desc(Value::Object(index_of_fn), true, false, true),
+        )?;
+
+        let reverse_s = scope.alloc_string("reverse")?;
+        scope.push_root(Value::String(reverse_s))?;
+        let reverse_key = PropertyKey::from_string(reverse_s);
+        let reverse_fn = scope.alloc_native_function(array_prototype_reverse, None, reverse_s, 0)?;
+        scope.push_root(Value::Object(reverse_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(reverse_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          reverse_key,
+          data_desc(Value::Object(reverse_fn), true, false, true),
+        )?;
 
         let join_s = scope.alloc_string("join")?;
         scope.push_root(Value::String(join_s))?;

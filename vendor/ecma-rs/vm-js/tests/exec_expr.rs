@@ -219,6 +219,28 @@ fn array_prototype_splice_converts_start_and_delete_count_via_to_number() {
 }
 
 #[test]
+fn array_prototype_reverse_reverses_in_place_and_returns_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var r=a.reverse(); (r===a) && a.length===3 && a[0]===3 && a[1]===2 && a[2]===1"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_reverse_preserves_holes() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3,4]; delete a[0]; a.reverse(); a.length===4 && a[0]===4 && a[1]===3 && a[2]===2 && a[3]===undefined && !a.hasOwnProperty("3")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn arithmetic_precedence() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"1 + 2 * 3 === 7"#).unwrap();

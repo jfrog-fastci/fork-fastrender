@@ -3939,6 +3939,144 @@ pub fn array_prototype_index_of(
   Ok(Value::Number(-1.0))
 }
 
+/// `Array.prototype.reverse` (ECMA-262) (minimal).
+pub fn array_prototype_reverse(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  let middle = len / 2;
+  for lower in 0..middle {
+    if lower % 1024 == 0 {
+      vm.tick()?;
+    }
+    let upper = len
+      .checked_sub(lower)
+      .and_then(|v| v.checked_sub(1))
+      .ok_or(VmError::OutOfMemory)?;
+
+    let mut iter_scope = scope.reborrow();
+
+    let lower_s = iter_scope.alloc_string(&lower.to_string())?;
+    iter_scope.push_root(Value::String(lower_s))?;
+    let upper_s = iter_scope.alloc_string(&upper.to_string())?;
+    iter_scope.push_root(Value::String(upper_s))?;
+
+    let lower_key = PropertyKey::from_string(lower_s);
+    let upper_key = PropertyKey::from_string(upper_s);
+
+    let lower_exists = iter_scope.ordinary_has_property(obj, lower_key)?;
+    let upper_exists = iter_scope.ordinary_has_property(obj, upper_key)?;
+
+    let lower_value = if lower_exists {
+      Some(iter_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        lower_key,
+        Value::Object(obj),
+      )?)
+    } else {
+      None
+    };
+    let upper_value = if upper_exists {
+      Some(iter_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        upper_key,
+        Value::Object(obj),
+      )?)
+    } else {
+      None
+    };
+
+    match (lower_exists, upper_exists) {
+      (true, true) => {
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          lower_key,
+          upper_value.unwrap(),
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          upper_key,
+          lower_value.unwrap(),
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+      }
+      (false, true) => {
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          lower_key,
+          upper_value.unwrap(),
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, upper_key)?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+      }
+      (true, false) => {
+        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, lower_key)?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          upper_key,
+          lower_value.unwrap(),
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.reverse failed"));
+        }
+      }
+      (false, false) => {}
+    }
+  }
+
+  Ok(Value::Object(obj))
+}
+
 /// `Array.prototype.join` (minimal).
 pub fn array_prototype_join(
   vm: &mut Vm,
