@@ -312,13 +312,12 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
       render_fixtures_exe.display()
     );
   }
-
   let render_fixtures = if args.no_fastrender {
     None
   } else {
     Some(build_render_fixtures_command(
-      &render_fixtures_exe,
       &repo_root,
+      &render_fixtures_exe,
       &fixtures_root,
       &args,
       &layout,
@@ -341,7 +340,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
       diff_renders_exe.display()
     );
   }
-  let diff_renders = build_diff_renders_command(&diff_renders_exe, &layout, &args)?;
+  let diff_renders = build_diff_renders_command(&repo_root, &diff_renders_exe, &layout, &args)?;
 
   let inspect_frag_exe = inspect_frag_executable(&repo_root, args.debug);
   if args.overlay && args.no_build && !inspect_frag_exe.is_file() {
@@ -437,43 +436,32 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   remove_file_if_exists(&layout.report_html).context("clear existing report.html")?;
   remove_file_if_exists(&layout.report_json).context("clear existing report.json")?;
 
-  if let Some(cmd) = render_fixtures {
-    if args.no_build {
-      println!("Skipping render_fixtures build (--no-build set)...");
-    } else {
-      let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
-      build_cmd
-        .arg("build");
-      if !args.debug {
-        build_cmd.arg("--release");
-      }
-      build_cmd
-        .args(["--bin", "render_fixtures"])
-        .current_dir(&repo_root);
-      println!("Building render_fixtures...");
-      crate::run_command(build_cmd).context("build render_fixtures failed")?;
+  if args.no_build {
+    println!("Skipping renderer binary builds (--no-build set)...");
+  } else {
+    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
+    build_cmd.arg("build");
+    if !args.debug {
+      build_cmd.arg("--release");
     }
+    if !args.no_fastrender {
+      build_cmd.args(["--bin", "render_fixtures"]);
+    }
+    if args.overlay {
+      build_cmd.args(["--bin", "inspect_frag"]);
+    }
+    build_cmd.args(["--bin", "diff_renders"]);
+    build_cmd.current_dir(&repo_root);
+    println!("Building renderer binaries...");
+    crate::run_command(build_cmd).context("build renderer binaries failed")?;
+  }
+
+  if let Some(cmd) = render_fixtures {
     println!("Rendering fixtures with FastRender...");
     crate::run_command(cmd).context("render_fixtures failed")?;
   }
 
   if args.overlay {
-    if args.no_build {
-      println!("Skipping inspect_frag build (--no-build set)...");
-    } else {
-      let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
-      build_cmd
-        .arg("build");
-      if !args.debug {
-        build_cmd.arg("--release");
-      }
-      build_cmd
-        .args(["--bin", "inspect_frag"])
-        .current_dir(&repo_root);
-      println!("Building inspect_frag...");
-      crate::run_command(build_cmd).context("build inspect_frag failed")?;
-    }
-
     let stems = selected_fixture_stems
       .as_deref()
       .context("internal error: missing selected fixture list for overlay")?;
@@ -495,25 +483,6 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   if let Some(cmd) = chrome_baseline {
     println!("Rendering fixtures with Chrome baseline...");
     crate::run_command(cmd).context("chrome-baseline-fixtures failed")?;
-  }
-
-  if args.no_build {
-    println!("Skipping diff_renders build (--no-build set)...");
-  } else {
-    // Avoid running `diff_renders` through Cargo's `run` subcommand here since it intentionally
-    // exits 1 when differences are found, and Cargo would wrap that with a scary
-    // `error: process didn't exit successfully` line.
-    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
-    build_cmd
-      .arg("build");
-    if !args.debug {
-      build_cmd.arg("--release");
-    }
-    build_cmd
-      .args(["--bin", "diff_renders"])
-      .current_dir(&repo_root);
-    println!("Building diff_renders...");
-    crate::run_command(build_cmd).context("build diff_renders failed")?;
   }
 
   println!("Diffing renders...");
@@ -1633,13 +1602,15 @@ fn validate_fastrender_output_metadata(
 }
 
 fn build_render_fixtures_command(
-  render_fixtures_exe: &Path,
   repo_root: &Path,
+  render_fixtures_exe: &Path,
   fixtures_root: &Path,
   args: &FixtureChromeDiffArgs,
   layout: &Layout,
 ) -> Result<Command> {
   let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  // Keep renders deterministic across machines.
+  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg(render_fixtures_exe);
   cmd.arg("--fixtures-dir").arg(fixtures_root);
   cmd.arg("--out-dir").arg(&layout.fastrender);
@@ -1758,11 +1729,13 @@ fn build_inspect_frag_overlay_command(
 }
 
 fn build_diff_renders_command(
+  repo_root: &Path,
   diff_renders_exe: &Path,
   layout: &Layout,
   args: &FixtureChromeDiffArgs,
 ) -> Result<Command> {
-  let mut cmd = Command::new(diff_renders_exe);
+  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  cmd.arg(diff_renders_exe);
   cmd.arg("--before").arg(&layout.chrome);
   cmd.arg("--after").arg(&layout.fastrender);
   cmd.arg("--html").arg(&layout.report_html);
@@ -1778,6 +1751,7 @@ fn build_diff_renders_command(
   if args.ignore_alpha {
     cmd.arg("--ignore-alpha");
   }
+  cmd.current_dir(repo_root);
   Ok(cmd)
 }
 
@@ -1916,8 +1890,8 @@ mod tests {
 
     let render_fixtures_exe = render_fixtures_executable(&repo_root, args.debug);
     let cmd = build_render_fixtures_command(
-      &render_fixtures_exe,
       &repo_root,
+      &render_fixtures_exe,
       &fixtures_root,
       &args,
       &layout,

@@ -51,6 +51,17 @@ fn write_stub_diff_renders(target_dir: &Path) -> PathBuf {
   bin
 }
 
+fn write_stub_render_fixtures(target_dir: &Path) -> PathBuf {
+  let bin = target_dir
+    .join("release")
+    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(bin.parent().expect("release dir"))
+    .expect("create render_fixtures release dir");
+  fs::write(&bin, "#!/usr/bin/env sh\nexit 0\n").expect("write stub render_fixtures");
+  make_executable(&bin);
+  bin
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
   let digest = Sha256::digest(bytes);
   digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -1245,12 +1256,8 @@ fn dry_run_respects_no_fastrender() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
-  let render_fixtures_bin = repo_root()
-    .join("target")
-    .join("release")
-    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
   assert!(
-    !stdout.contains(&render_fixtures_bin.display().to_string()),
+    !stdout.contains("render_fixtures"),
     "plan should skip render_fixtures when --no-fastrender is set; got:\n{stdout}"
   );
   assert!(
@@ -1289,12 +1296,8 @@ fn dry_run_respects_diff_only_alias() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
-  let render_fixtures_bin = repo_root()
-    .join("target")
-    .join("release")
-    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
   assert!(
-    !stdout.contains(&render_fixtures_bin.display().to_string()),
+    !stdout.contains("render_fixtures"),
     "plan should skip render_fixtures when --diff-only is set; got:\n{stdout}"
   );
   assert!(
@@ -1563,11 +1566,8 @@ fn no_build_with_overlay_requires_inspect_frag_executable() {
   // Provide stub render binaries so we don't fail existing --no-build validation before we reach
   // the inspect_frag check.
   write_stub_diff_renders(&target_dir);
-  let render_fixtures = target_dir
-    .join("release")
-    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
-  fs::write(&render_fixtures, "#!/usr/bin/env sh\nexit 0\n").expect("write stub render_fixtures");
-  make_executable(&render_fixtures);
+  // Provide a stub render_fixtures so we can reach the inspect_frag-specific --no-build check.
+  write_stub_render_fixtures(&target_dir);
 
   // Intentionally do *not* create a stub inspect_frag binary.
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
@@ -1624,12 +1624,15 @@ set -eu
 
 subcommand="${1:-}"
 
-bin=""
+bins=""
 prev=""
 for arg in "$@"; do
   if [ "$prev" = "--bin" ]; then
-    bin="$arg"
-    break
+    if [ -z "$bins" ]; then
+      bins="$arg"
+    else
+      bins="$bins $arg"
+    fi
   fi
   prev="$arg"
 done
@@ -1637,15 +1640,19 @@ done
 # The real `fixture-chrome-diff` builds the `diff_renders` + `inspect_frag` binaries and then
 # executes them (and `render_fixtures`) directly. Emulate that by writing stub executables into the
 # target dir when we see corresponding `cargo build` invocations.
-if [ "$subcommand" = "build" ] && [ "$bin" = "diff_renders" ]; then
+if [ "$subcommand" = "build" ]; then
   out="${CARGO_TARGET_DIR:-target}"
   case "$out" in
     /*) ;;
     *) out="$(pwd)/$out" ;;
   esac
-  out="$out/release/diff_renders"
-  mkdir -p "$(dirname "$out")"
-  cat > "$out" <<'SH'
+
+  for bin in $bins; do
+    case "$bin" in
+      diff_renders)
+        out_bin="$out/release/diff_renders"
+        mkdir -p "$(dirname "$out_bin")"
+        cat > "$out_bin" <<'SH'
 #!/usr/bin/env sh
 set -eu
 
@@ -1670,52 +1677,12 @@ echo "PNG" > "$(dirname "$html")/${stem}_files/diffs/stub.png"
 echo "1 differences over threshold" >&2
 exit 1
 SH
-  chmod +x "$out"
-  exit 0
-fi
-
-if [ "$subcommand" = "build" ] && [ "$bin" = "render_fixtures" ]; then
-  out="${CARGO_TARGET_DIR:-target}"
-  case "$out" in
-    /*) ;;
-    *) out="$(pwd)/$out" ;;
-  esac
-  out="$out/release/render_fixtures"
-  mkdir -p "$(dirname "$out")"
-  cat > "$out" <<'SH'
-#!/usr/bin/env sh
-set -eu
-
-out_dir=""
-fixtures=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --out-dir) out_dir="$2"; shift 2;;
-    --fixtures) fixtures="$2"; shift 2;;
-    *) shift;;
-  esac
-done
-
-mkdir -p "$out_dir"
-IFS=','; for name in $fixtures; do
-  [ -n "$name" ] || continue
-  echo "PNG" > "$out_dir/$name.png"
-done
-exit 0
-SH
-  chmod +x "$out"
-  exit 0
-fi
-
-if [ "$subcommand" = "build" ] && [ "$bin" = "inspect_frag" ]; then
-  out="${CARGO_TARGET_DIR:-target}"
-  case "$out" in
-    /*) ;;
-    *) out="$(pwd)/$out" ;;
-  esac
-  out="$out/release/inspect_frag"
-  mkdir -p "$(dirname "$out")"
-  cat > "$out" <<'SH'
+        chmod +x "$out_bin"
+        ;;
+      inspect_frag)
+        out_bin="$out/release/inspect_frag"
+        mkdir -p "$(dirname "$out_bin")"
+        cat > "$out_bin" <<'SH'
 #!/usr/bin/env sh
 set -eu
 
@@ -1764,41 +1731,46 @@ mkdir -p "$(dirname "$overlay")"
 echo "PNG" > "$overlay"
 exit 0
 SH
-  chmod +x "$out"
+        chmod +x "$out_bin"
+        ;;
+      render_fixtures)
+        out_bin="$out/release/render_fixtures"
+        mkdir -p "$(dirname "$out_bin")"
+        cat > "$out_bin" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+out=""
+fixtures=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out="$2"; shift 2;;
+    --fixtures) fixtures="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+mkdir -p "$out"
+IFS=','; for name in $fixtures; do
+  [ -n "$name" ] || continue
+  echo "PNG" > "$out/$name.png"
+done
+exit 0
+SH
+        chmod +x "$out_bin"
+        ;;
+      *)
+        echo "stub cargo: unsupported --bin $bin" >&2
+        exit 2
+        ;;
+    esac
+  done
+
   exit 0
 fi
 
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--" ]; then
-    shift
-    break
-  fi
-  shift
-done
-
-case "$bin" in
-  render_fixtures)
-    out=""
-    fixtures=""
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --out-dir) out="$2"; shift 2;;
-        --fixtures) fixtures="$2"; shift 2;;
-        *) shift;;
-      esac
-    done
-    mkdir -p "$out"
-    IFS=','; for name in $fixtures; do
-      [ -n "$name" ] || continue
-      echo "PNG" > "$out/$name.png"
-    done
-    exit 0
-    ;;
-  *)
-    echo "stub cargo: unsupported --bin $bin" >&2
-    exit 2
-    ;;
-esac
+echo "stub cargo: unsupported subcommand $subcommand" >&2
+exit 2
 "#,
   )
   .expect("write stub cargo");
