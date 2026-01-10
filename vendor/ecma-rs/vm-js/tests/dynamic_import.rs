@@ -127,6 +127,66 @@ impl VmHostHooks for TestHostHooks {
   }
 }
 
+/// Host hook implementation that completes `HostLoadImportedModule` synchronously by immediately
+/// calling `FinishLoadingImportedModule`.
+struct SyncHostHooks {
+  microtasks: MicrotaskQueue,
+  /// Specifier → module id mapping used by `host_load_imported_module`.
+  modules: HashMap<String, ModuleId>,
+}
+
+impl SyncHostHooks {
+  fn new() -> Self {
+    Self {
+      microtasks: MicrotaskQueue::new(),
+      modules: HashMap::new(),
+    }
+  }
+
+  fn register_module(&mut self, specifier: &str, module: ModuleId) {
+    self.modules.insert(specifier.to_string(), module);
+  }
+
+  fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
+    self.microtasks.teardown(rt);
+  }
+}
+
+impl VmHostHooks for SyncHostHooks {
+  fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
+    self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    &[]
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut vm_js::Scope<'_>,
+    modules: &mut vm_js::ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    let module = *self
+      .modules
+      .get(module_request.specifier.as_str())
+      .unwrap_or_else(|| panic!("no module registered for specifier {:?}", module_request.specifier));
+    vm.finish_loading_imported_module(
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(module),
+    )
+  }
+}
+
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = vm_js::Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -247,6 +307,59 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
     y_key,
     Value::Object(ns_obj),
   )?;
+  assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Build a tiny module graph with a dependency.
+  let dep = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("export const y = 1;")?);
+  let m = rt.modules_mut().add_module(SourceTextModuleRecord::parse(
+    "export { y } from './dep.js'; export const x = 1;",
+  )?);
+
+  let mut host = SyncHostHooks::new();
+  host.register_module("./m.js", m);
+  host.register_module("./dep.js", dep);
+
+  // Synchronous host completion should fulfill the dynamic import promise before `import()`
+  // returns.
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js')")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    panic!("dynamic import promise should fulfill to an object");
+  };
+
+  // Reading the exported bindings should reflect evaluated module state.
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let x_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+  let y_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
   drop(scope);

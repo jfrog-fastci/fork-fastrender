@@ -1060,6 +1060,37 @@ fn clone_heap_string_to_string(heap: &crate::Heap, s: GcString) -> Result<String
   Ok(out)
 }
 
+fn clone_heap_string_to_string_unbounded(heap: &crate::Heap, s: GcString) -> Result<String, VmError> {
+  let js = heap.get_string(s)?;
+
+  // `String::from_utf16_lossy` is infallible and aborts the process on allocator OOM.
+  // Convert into a pre-reserved buffer so we can surface OOM as `VmError::OutOfMemory` instead.
+  let mut out = String::new();
+
+  let units = js.as_code_units();
+  let max_utf8_len = units
+    .len()
+    // Maximum UTF-8 bytes per UTF-16 code unit is 3:
+    // - non-BMP characters are 4 bytes but take *two* code units,
+    // - invalid surrogate halves become U+FFFD (3 bytes).
+    .checked_mul(3)
+    .ok_or(VmError::LimitExceeded(
+      "string is too large to convert to UTF-8",
+    ))?;
+  out
+    .try_reserve_exact(max_utf8_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for r in std::char::decode_utf16(units.iter().copied()) {
+    match r {
+      Ok(ch) => out.push(ch),
+      Err(_) => out.push('\u{FFFD}'),
+    }
+  }
+
+  Ok(out)
+}
+
 fn make_key_string(scope: &mut Scope<'_>, s: &str) -> Result<GcString, VmError> {
   // Root the key string for the duration of the algorithm so it can't be collected if a later
   // allocation triggers GC.
@@ -1109,8 +1140,14 @@ pub fn import_attributes_from_options(
     return Err(ImportCallError::TypeError(ImportCallTypeError::OptionsNotObject));
   };
 
+  // Root the options object across allocations/GC while inspecting it.
+  let mut scope = scope.reborrow();
+  scope
+    .push_root(Value::Object(options_obj))
+    .map_err(ImportCallError::Vm)?;
+
   let with_key =
-    PropertyKey::from_string(make_key_string(scope, "with").map_err(ImportCallError::Vm)?);
+    PropertyKey::from_string(make_key_string(&mut scope, "with").map_err(ImportCallError::Vm)?);
   let attributes_obj = scope
     .ordinary_get(vm, options_obj, with_key, Value::Object(options_obj))
     .map_err(ImportCallError::Vm)?;
@@ -1124,6 +1161,11 @@ pub fn import_attributes_from_options(
       ImportCallTypeError::AttributesNotObject,
     ));
   };
+
+  // Root the attributes object so property enumeration/getters cannot collect it.
+  scope
+    .push_root(Value::Object(attributes_obj))
+    .map_err(ImportCallError::Vm)?;
 
   let own_keys = scope
     .ordinary_own_property_keys_with_tick(attributes_obj, || vm.tick())
@@ -1228,6 +1270,8 @@ pub fn start_dynamic_import(
   specifier: Value,
   options: Value,
 ) -> Result<Value, VmError> {
+  vm.tick()?;
+
   // Root the arguments while evaluating options and calling host hooks: the algorithm may allocate
   // and trigger GC.
   let mut import_scope = scope.reborrow();
@@ -1246,8 +1290,25 @@ pub fn start_dynamic_import(
   }?;
 
   // 2. Let specifierString be ? ToString(specifier).
-  let specifier_string = match import_scope.heap_mut().to_string(specifier) {
-    Ok(s) => clone_heap_string_to_string(import_scope.heap(), s)?,
+  let specifier_string = match {
+    let mut dummy_host = ();
+    import_scope.to_string(vm, &mut dummy_host, host, specifier)
+  } {
+    Ok(s) => {
+      // Root the resulting string while converting it into a Rust `String`, since this can allocate
+      // and trigger GC later (e.g. during import attribute validation).
+      if let Err(err) = import_scope.push_root(Value::String(s)) {
+        state.teardown_roots(import_scope.heap_mut());
+        return Err(err);
+      }
+      match clone_heap_string_to_string_unbounded(import_scope.heap(), s) {
+        Ok(s) => s,
+        Err(err) => {
+          state.teardown_roots(import_scope.heap_mut());
+          return Err(err);
+        }
+      }
+    }
     Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
       state.reject(vm, &mut import_scope, host, value)?;
       return Ok(promise);
