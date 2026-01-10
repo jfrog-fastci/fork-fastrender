@@ -13,7 +13,6 @@
 //!
 //! Notes / intentionally omitted (v1):
 //! - Path matching in host sources.
-//! - Ports and IPv6 literal parsing for schemeless host sources.
 //! - Nonce/hash/`'unsafe-inline'` semantics (they still effectively restrict external loads because
 //!   they don't match any URL, so a directive that only contains those tokens becomes "deny all"
 //!   for our external resource destinations).
@@ -67,6 +66,13 @@ enum CspSource {
 struct CspHostSource {
   scheme: Option<String>,
   host: CspHostPattern,
+  port: Option<CspPort>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CspPort {
+  Any,
+  Exact(u16),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +193,25 @@ fn set_allows_url(
         if let Some(scheme) = host_source.scheme.as_deref() {
           if !url.scheme().eq_ignore_ascii_case(scheme) {
             continue;
+          }
+        }
+        if let Some(expected_port) = host_source.port {
+          let port = if matches!(url.scheme(), "http" | "https") {
+            url.port_or_known_default()
+          } else {
+            url.port()
+          };
+          match expected_port {
+            CspPort::Any => {
+              if port.is_none() {
+                continue;
+              }
+            }
+            CspPort::Exact(expected) => {
+              if port != Some(expected) {
+                continue;
+              }
+            }
           }
         }
         let Some(host) = url.host_str() else {
@@ -310,6 +335,7 @@ fn parse_host_source(token: &str) -> Option<CspHostSource> {
         return Some(CspHostSource {
           scheme: Some(parsed.scheme().to_ascii_lowercase()),
           host: CspHostPattern::Exact(host),
+          port: parsed.port().map(CspPort::Exact),
         });
       }
     }
@@ -334,18 +360,39 @@ fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
   if host_port.is_empty() {
     return None;
   }
-  // Strip port if present (best-effort; does not handle IPv6 literals).
-  let host = host_port
-    .rsplit_once(':')
-    .map(|(host, port)| {
-      // Only strip when the port looks like digits.
-      if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
-        host
-      } else {
-        host_port
+
+  let (host, port) = if host_port.starts_with('[') {
+    let end = host_port.find(']')?;
+    let host = &host_port[1..end];
+    let after = &host_port[end + 1..];
+    let port = if after.is_empty() {
+      None
+    } else if let Some(port) = after.strip_prefix(':') {
+      if port.is_empty() {
+        return None;
       }
-    })
-    .unwrap_or(host_port);
+      if port == "*" {
+        Some(CspPort::Any)
+      } else if port.chars().all(|c| c.is_ascii_digit()) {
+        Some(CspPort::Exact(port.parse::<u16>().ok()?))
+      } else {
+        return None;
+      }
+    } else {
+      return None;
+    };
+    (host, port)
+  } else if let Some((host, port)) = host_port.rsplit_once(':') {
+    if port == "*" {
+      (host, Some(CspPort::Any))
+    } else if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+      (host, Some(CspPort::Exact(port.parse::<u16>().ok()?)))
+    } else {
+      return None;
+    }
+  } else {
+    (host_port, None)
+  };
 
   let host = host.trim_end_matches('.').to_ascii_lowercase();
   if host.is_empty() {
@@ -361,7 +408,11 @@ fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
     CspHostPattern::Exact(host)
   };
 
-  Some(CspHostSource { scheme, host: pattern })
+  Some(CspHostSource {
+    scheme,
+    host: pattern,
+    port,
+  })
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -772,5 +823,55 @@ mod tests {
       "https://example.com/a.png"
     ));
   }
-}
 
+  #[test]
+  fn host_source_explicit_port_with_scheme_requires_port_match() {
+    let policy = CspPolicy::from_values(["img-src https://example.com:8443"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com:8443/a.png"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/a.png"
+    ));
+  }
+
+  #[test]
+  fn host_source_explicit_port_without_scheme_requires_port_match() {
+    let policy = CspPolicy::from_values(["img-src example.com:8443"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com:8443/a.png"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/a.png"
+    ));
+  }
+
+  #[test]
+  fn host_source_ipv6_literal_with_port() {
+    let policy = CspPolicy::from_values(["img-src http://[::1]:8080"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "http://[::1]/",
+      "http://[::1]:8080/a.png"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "http://[::1]/",
+      "http://[::1]/a.png"
+    ));
+  }
+}
