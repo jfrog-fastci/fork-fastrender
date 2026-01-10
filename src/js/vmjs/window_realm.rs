@@ -7663,7 +7663,18 @@ fn element_reflected_bool_set_native(
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_mut() };
   if attr == "async" && is_html_script_element(dom, node_id) {
-    dom.node_mut(node_id).script_force_async = false;
+    // HTMLScriptElement.async setter:
+    // - If value is true: ensure the `async` content attribute is present.
+    // - If value is false: set the element's "force async" flag to false and remove the `async`
+    //   content attribute.
+    //
+    // Note: adding the `async` content attribute clears the "force async" flag via dom2's attribute
+    // mutation hooks, so we only need to explicitly clear it for the `false` path here.
+    if !present {
+      if let Err(err) = dom.set_script_force_async(node_id, false) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+    }
     if let Err(err) = dom.set_bool_attribute(node_id, "async", present) {
       return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
     }
