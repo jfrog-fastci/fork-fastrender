@@ -51,9 +51,22 @@ pub(crate) fn with_active_streaming_parser<R>(
   parser: &StreamingHtmlParser,
   f: impl FnOnce() -> R,
 ) -> R {
-  let ptr = parser as *const StreamingHtmlParser;
-  STREAMING_PARSER_STACK.with(|stack| stack.borrow_mut().push(ptr));
-  let _guard = StreamingParserStackGuard { expected_ptr: ptr };
+  with_active_streaming_parser_ptr(parser as *const StreamingHtmlParser, f)
+}
+
+/// Runs `f` with the provided streaming parser pointer installed as the current JS-visible parser.
+///
+/// This is equivalent to [`with_active_streaming_parser`] but accepts a raw pointer so callers can
+/// install a parser from behind interior mutability (e.g. `Rc<RefCell<...>>`) without holding a
+/// borrow guard across JS execution.
+pub(crate) fn with_active_streaming_parser_ptr<R>(
+  parser: *const StreamingHtmlParser,
+  f: impl FnOnce() -> R,
+) -> R {
+  STREAMING_PARSER_STACK.with(|stack| stack.borrow_mut().push(parser));
+  let _guard = StreamingParserStackGuard {
+    expected_ptr: parser,
+  };
   f()
 }
 
@@ -65,4 +78,3 @@ pub(crate) fn current_streaming_parser() -> Option<&'static StreamingHtmlParser>
   // call into JS. The pointer is only used during that dynamic extent.
   Some(unsafe { &*ptr })
 }
-

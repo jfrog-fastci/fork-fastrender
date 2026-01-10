@@ -1969,7 +1969,6 @@ impl InteractionEngine {
   pub fn take_last_click_target(&mut self) -> Option<usize> {
     self.last_click_target.take()
   }
-
   /// Returns the most recent form submitter (pre-order DOM node id) that produced a submission
   /// navigation request during user activation.
   ///

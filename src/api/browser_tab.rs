@@ -5761,6 +5761,75 @@ mod tests {
   }
 
   #[test]
+  fn async_external_script_can_execute_before_parsing_finishes() -> Result<()> {
+    #[derive(Clone)]
+    struct AssertNotYetParsedExecutor {
+      executed: Rc<Cell<bool>>,
+    }
+
+    impl BrowserTabJsExecutor for AssertNotYetParsedExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        assert_eq!(script_text, "A");
+        assert!(
+          document.dom().get_element_by_id("late").is_none(),
+          "expected async script to run before parser reached the late marker"
+        );
+        self.executed.set(true);
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+    }
+
+    let executed = Rc::new(Cell::new(false));
+    let mut tab = BrowserTab::from_html(
+      "",
+      RenderOptions::default(),
+      AssertNotYetParsedExecutor {
+        executed: Rc::clone(&executed),
+      },
+    )?;
+    // Reset scripting state so parsing new HTML will schedule/execute scripts.
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    // Force parsing to yield across multiple DOMManipulation tasks so async script tasks can
+    // interleave mid-parse.
+    tab.host.js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
+
+    tab.register_script_source("https://example.com/a.js", "A");
+
+    let filler = "x".repeat(10_000);
+    let html = format!(
+      "<!doctype html><html><body><script async src=\"https://example.com/a.js\"></script><!--{filler}--><div id=late></div></body></html>"
+    );
+    let _ = tab.parse_html_streaming_and_schedule_scripts(&html, None, &RenderOptions::default())?;
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(executed.get(), "expected async external script to execute");
+    assert!(
+      tab.host.dom().get_element_by_id("late").is_some(),
+      "expected parsing to eventually reach the late marker"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn streaming_parser_sets_force_async_false_for_parser_inserted_scripts() -> Result<()> {
     #[derive(Clone)]
     struct RecordingExecutor {
