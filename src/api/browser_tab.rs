@@ -11,9 +11,9 @@ use crate::resource::ResourceFetcher;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
-  RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec, ScriptId,
-  LocationNavigationRequest, ScriptBlockingStyleSheetSet, ScriptOrchestrator, ScriptScheduler,
-  ScriptSchedulerAction, ScriptType, TaskSource,
+  JsDomEvents, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec,
+  ScriptId, LocationNavigationRequest, ScriptBlockingStyleSheetSet, ScriptOrchestrator,
+  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::js::runtime::with_event_loop;
 use crate::js::script_encoding::decode_classic_script_bytes;
@@ -164,6 +164,7 @@ pub struct BrowserTabHost {
   document: Box<BrowserDocumentDom2>,
   executor: Box<dyn BrowserTabJsExecutor>,
   event_invoker: Box<dyn crate::web::events::EventListenerInvoker>,
+  js_events: JsDomEvents,
   current_script: CurrentScriptStateHandle,
   orchestrator: ScriptOrchestrator,
   scheduler: ScriptScheduler<NodeId>,
@@ -205,12 +206,13 @@ impl BrowserTabHost {
     executor: Box<dyn BrowserTabJsExecutor>,
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
-  ) -> Self {
-    Self {
+  ) -> Result<Self> {
+    Ok(Self {
       trace,
       document: Box::new(document),
       executor,
       event_invoker: Box::new(NoopEventInvoker),
+      js_events: JsDomEvents::new()?,
       current_script: CurrentScriptStateHandle::default(),
       orchestrator: ScriptOrchestrator::new(),
       scheduler: ScriptScheduler::with_options(js_execution_options),
@@ -236,7 +238,7 @@ impl BrowserTabHost {
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
       last_dynamic_script_discovery_generation: 0,
-    }
+    })
   }
 
   fn register_html_source(&mut self, url: String, html: String) {
@@ -328,6 +330,7 @@ impl BrowserTabHost {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.csp.clone());
+    self.js_events = JsDomEvents::new()?;
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
     self.last_dynamic_script_discovery_generation = 0;
@@ -1661,7 +1664,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
   fn dispatch_lifecycle_event(
     &mut self,
     target: crate::web::events::EventTargetId,
-    event: crate::web::events::Event,
+    mut event: crate::web::events::Event,
   ) -> Result<()> {
     let target = target.normalize();
     let result = match target {
@@ -1671,16 +1674,30 @@ impl DocumentLifecycleHost for BrowserTabHost {
       }
       // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
       // `load`/`error` events queued by the script scheduler).
-      EventTargetId::Node(_) | EventTargetId::Opaque(_) => self.dispatch_dom_event(target, event),
+      EventTargetId::Node(_) | EventTargetId::Opaque(_) => return self.dispatch_dom_event(target, event),
     };
     if let Some(req) = self.executor.take_navigation_request() {
       self.pending_navigation = Some(req);
     }
     match result {
-      Ok(()) => Ok(()),
-      Err(err) if self.pending_navigation.is_some() => Ok(()),
-      Err(err) => Err(err),
+      Ok(()) => {
+        if self.pending_navigation.is_some() {
+          return Ok(());
+        }
+      }
+      Err(err) => {
+        if self.pending_navigation.is_some() {
+          return Ok(());
+        }
+        return Err(err);
+      }
     }
+
+    let dom: &crate::dom2::Document = self.document.dom();
+    self
+      .js_events
+      .dispatch_dom_event(dom, target, &mut event)
+      .map(|_default_not_prevented| ())
   }
 
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
@@ -2047,7 +2064,7 @@ impl BrowserTab {
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
-    );
+    )?;
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
@@ -2109,7 +2126,7 @@ impl BrowserTab {
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
-    );
+    )?;
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
 
@@ -2811,7 +2828,7 @@ mod tests {
   use std::rc::Rc;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
-  use vm_js::Value;
+  use vm_js::{Value, VmError};
 
   use tempfile::tempdir;
   use url::Url;
@@ -2868,7 +2885,7 @@ mod tests {
       Box::new(TestExecutor { log }),
       TraceHandle::default(),
       js_execution_options,
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
   }
@@ -2955,7 +2972,7 @@ mod tests {
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(
       Some("https://example.com/doc.html".to_string()),
       ReferrerPolicy::default(),
@@ -3040,7 +3057,7 @@ mod tests {
       Box::new(TestExecutor { log }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
   }
@@ -3119,7 +3136,7 @@ mod tests {
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     host.register_external_script_source("a.js".to_string(), "/* ok */".to_string());
 
@@ -3193,7 +3210,7 @@ mod tests {
       }),
       TraceHandle::default(),
       js_options,
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     // Trigger a deterministic fetch failure via the max_script_bytes check.
     host.register_external_script_source("a.js".to_string(), "XX".to_string());
@@ -3203,11 +3220,11 @@ mod tests {
       log: Rc::clone(&event_log),
     }));
 
-     let discovered = host.discover_scripts_best_effort(None);
-     assert_eq!(discovered.len(), 2);
-     // Discovery is in document order; schedule scripts in that order.
-     let (first_node_id, first_spec) = discovered[0].clone();
-     let (second_node_id, second_spec) = discovered[1].clone();
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    // Discovery is in document order; schedule scripts in that order.
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
 
     let error_listener = ListenerId::new(1);
     host.dom().events().add_event_listener(
@@ -3267,7 +3284,7 @@ mod tests {
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
     let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -3275,10 +3292,10 @@ mod tests {
       log: Rc::clone(&event_log),
     }));
 
-     let discovered = host.discover_scripts_best_effort(None);
-     assert_eq!(discovered.len(), 2);
-     let (first_node_id, first_spec) = discovered[0].clone();
-     let (second_node_id, second_spec) = discovered[1].clone();
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
 
     let error_listener = ListenerId::new(1);
     host.dom().events().add_event_listener(
@@ -3349,7 +3366,7 @@ mod tests {
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
     let mut discovered = host.discover_scripts_best_effort(None);
@@ -3592,7 +3609,7 @@ mod tests {
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
 
     let dom_source_id = register_dom_source(NonNull::from(host.dom_mut()));
@@ -3982,7 +3999,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
@@ -4180,7 +4197,7 @@ html, body { margin: 0; padding: 0; }
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
     let mut tab = BrowserTab {
@@ -4433,7 +4450,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
@@ -4547,7 +4564,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
@@ -4604,7 +4621,7 @@ html, body { margin: 0; padding: 0; }
       }),
       TraceHandle::default(),
       JsExecutionOptions::default(),
-    );
+    )?;
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
@@ -4710,6 +4727,103 @@ html, body { margin: 0; padding: 0; }
     assert_eq!(
       &*log.borrow(),
       &["script:RUN".to_string(), "microtask:RUN".to_string()]
+    );
+    Ok(())
+  }
+
+  fn add_js_event_listener_log(
+    host: &mut BrowserTabHost,
+    target: EventTargetId,
+    type_: &str,
+    label: &'static str,
+    log: Rc<RefCell<Vec<String>>>,
+  ) -> Result<()> {
+    let callback = host
+      .js_events
+      .runtime_mut()
+      .alloc_function_value(move |_rt, _this, _args| {
+        log.borrow_mut().push(label.to_string());
+        Ok(Value::Undefined)
+      })
+      .map_err(|err: VmError| Error::Other(err.to_string()))?;
+    host
+      .js_events
+      .add_js_event_listener(target, type_, callback, AddEventListenerOptions::default())?;
+    Ok(())
+  }
+
+  #[test]
+  fn lifecycle_events_are_observable_via_js_listeners_and_ordered_with_deferred_scripts() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script defer src=\"d.js\"></script>", Rc::clone(&log))?;
+    host.register_external_script_source("d.js".to_string(), "D".to_string());
+
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Document,
+      "readystatechange",
+      "rs",
+      Rc::clone(&log),
+    )?;
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Document,
+      "DOMContentLoaded",
+      "dom",
+      Rc::clone(&log),
+    )?;
+    add_js_event_listener_log(&mut host, EventTargetId::Window, "load", "load", Rc::clone(&log))?;
+
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Loading);
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    let actions = host.scheduler.parsing_completed()?;
+    host.apply_scheduler_actions(actions, &mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    // `readystatechange` fires synchronously when the `loading` → `interactive` transition occurs.
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Interactive);
+    assert_eq!(&*log.borrow(), &["rs".to_string()]);
+
+    let run_limits = RunLimits::unbounded();
+    let outcome = event_loop.run_until_idle_with_hook(&mut host, run_limits, {
+      let log = Rc::clone(&log);
+      move |_host, _event_loop| {
+        log.borrow_mut().push("checkpoint".to_string());
+        Ok(())
+      }
+    })?;
+    assert!(matches!(outcome, RunUntilIdleOutcome::Idle));
+
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Complete);
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        // Parsing completion: `loading` → `interactive`.
+        "rs".to_string(),
+        // Networking fetch task turn.
+        "checkpoint".to_string(),
+        // Deferred script task turn (with post-task microtask checkpoint).
+        "script:D".to_string(),
+        "microtask:D".to_string(),
+        "checkpoint".to_string(),
+        // Barrier task inserted before DOMContentLoaded.
+        "checkpoint".to_string(),
+        // DOMContentLoaded task turn.
+        "dom".to_string(),
+        "checkpoint".to_string(),
+        // Load task turn (`interactive` → `complete` fires another readystatechange immediately
+        // before `load`).
+        "rs".to_string(),
+        "load".to_string(),
+        "checkpoint".to_string(),
+      ]
     );
     Ok(())
   }
