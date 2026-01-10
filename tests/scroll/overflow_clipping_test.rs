@@ -240,3 +240,44 @@ fn scroll_overflow_respects_scrollbar_reservation_when_clipping() {
     chain[0].bounds
   );
 }
+
+#[test]
+fn element_scroll_bounds_use_padding_box_when_border_is_present() {
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.overflow_x = Overflow::Scroll;
+  scroller_style.overflow_y = Overflow::Scroll;
+  scroller_style.border_left_style = BorderStyle::Solid;
+  scroller_style.border_right_style = BorderStyle::Solid;
+  scroller_style.border_top_style = BorderStyle::Solid;
+  scroller_style.border_bottom_style = BorderStyle::Solid;
+  scroller_style.border_left_width = Length::px(10.0);
+  scroller_style.border_right_width = Length::px(10.0);
+  scroller_style.border_top_width = Length::px(10.0);
+  scroller_style.border_bottom_width = Length::px(10.0);
+  let scroller_style = Arc::new(scroller_style);
+
+  // Child content starts at the padding edge (inside the 10px border) and overflows 20px beyond
+  // the padding box. The scrollport width is 80px (100 - 10 - 10), so the horizontal scroll range
+  // should be 20px, not 10px.
+  let child = FragmentNode::new_block(Rect::from_xywh(10.0, 10.0, 100.0, 50.0), vec![]);
+  let scroller = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![child],
+    scroller_style,
+  );
+
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![scroller]);
+  let mut tree = FragmentTree::with_viewport(root, Size::new(200.0, 200.0));
+  tree.ensure_scroll_metadata();
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
+  assert!(
+    chain.len() >= 1,
+    "expected scroll chain to include the element scroller"
+  );
+  assert!(
+    (chain[0].bounds.max_x - 20.0).abs() < 1e-3,
+    "element scroll bounds should use the padding box as the scrollport; got {:#?}",
+    chain[0].bounds
+  );
+}

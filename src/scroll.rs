@@ -1422,16 +1422,50 @@ pub(crate) fn scroll_bounds_for_fragment(
   has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
   // Scroll bounds are defined over the scrollport (the viewport through which descendants are
-  // scrolled). `FragmentNode::bounds` describes the element's border box, which may include space
-  // reserved for classic scrollbars (`scrollbar_reservation`). That reserved gutter should not be
-  // treated as part of the scrollport; otherwise we would clamp scroll offsets too aggressively
-  // (e.g. nested scroll containers with `overflow: scroll` would report a larger viewport and a
-  // smaller max scroll range).
-  let scrollbar_reservation = container.scrollbar_reservation;
-  let viewport = Size::new(
-    (viewport.width - scrollbar_reservation.left - scrollbar_reservation.right).max(0.0),
-    (viewport.height - scrollbar_reservation.top - scrollbar_reservation.bottom).max(0.0),
-  );
+  // scrolled). `FragmentNode::bounds` describes the element's border box, so we must account for:
+  // - border widths (scrollport is the padding box, not the border box), and
+  // - any reserved scrollbar gutters (`scrollbar_reservation`), which behave like additional
+  //   padding and shrink the available scrollport.
+  //
+  // For element scrollers we compute the actual scrollport rectangle and shift the coordinate
+  // space so the scrollport origin is treated as (0, 0). This keeps scroll offsets expressed in
+  // the same local coordinate system used by painting/layout (i.e. `scroll=0` means content is
+  // aligned with the scrollport start edge) even when borders/gutters offset the scrollport within
+  // the fragment's border box.
+  let (scrollport_origin, viewport) = if treat_as_root {
+    // The root scroll container uses the passed `viewport` size (the layout scrollport viewport),
+    // so only reserved scrollbar gutters apply here.
+    let reservation = container.scrollbar_reservation;
+    let reserve_left = sanitize_nonneg(reservation.left);
+    let reserve_right = sanitize_nonneg(reservation.right);
+    let reserve_top = sanitize_nonneg(reservation.top);
+    let reserve_bottom = sanitize_nonneg(reservation.bottom);
+    (
+      Point::ZERO,
+      Size::new(
+        (viewport.width - reserve_left - reserve_right).max(0.0),
+        (viewport.height - reserve_top - reserve_bottom).max(0.0),
+      ),
+    )
+  } else if let Some(style) = container.style.as_deref() {
+    let rect = scrollport_rect(container, style);
+    (rect.origin, rect.size)
+  } else {
+    // Fallback for synthetic fragment trees without styles: assume no borders, but still honor any
+    // scrollbar reservation attached to the fragment.
+    let reservation = container.scrollbar_reservation;
+    let reserve_left = sanitize_nonneg(reservation.left);
+    let reserve_right = sanitize_nonneg(reservation.right);
+    let reserve_top = sanitize_nonneg(reservation.top);
+    let reserve_bottom = sanitize_nonneg(reservation.bottom);
+    (
+      Point::new(reserve_left, reserve_top),
+      Size::new(
+        (viewport.width - reserve_left - reserve_right).max(0.0),
+        (viewport.height - reserve_top - reserve_bottom).max(0.0),
+      ),
+    )
+  };
 
   let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
 
@@ -1440,7 +1474,9 @@ pub(crate) fn scroll_bounds_for_fragment(
   // bounds to encode document content size). For non-root element scrollers we intentionally do
   // not union the border box because it can include reserved scrollbar gutters, which would
   // incorrectly allow scrolling even when the scrollable contents do not overflow.
-  if treat_as_root && scrollbar_reservation == crate::tree::fragment_tree::ScrollbarReservation::default() {
+  if treat_as_root
+    && container.scrollbar_reservation == crate::tree::fragment_tree::ScrollbarReservation::default()
+  {
     bounds.update(Rect::from_xywh(
       0.0,
       0.0,
@@ -1455,7 +1491,10 @@ pub(crate) fn scroll_bounds_for_fragment(
     .is_some_and(|style| style.establishes_fixed_containing_block());
   let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
   for child in container.children.iter() {
-    let child_origin = Point::new(child.bounds.x(), child.bounds.y());
+    let child_origin = Point::new(
+      child.bounds.x() - scrollport_origin.x,
+      child.bounds.y() - scrollport_origin.y,
+    );
     collect_bounds(
       child,
       child_origin,
