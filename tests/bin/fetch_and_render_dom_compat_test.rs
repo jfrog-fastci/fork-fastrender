@@ -58,3 +58,64 @@ html.js-enabled body { background: rgb(0, 255, 0); }
     "dom compat run should flip to the green background from html.js-enabled"
   );
 }
+
+#[test]
+fn dom_compat_flag_flips_lazyload_classes_after_src_lift() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; padding: 0; }
+img { display: block; width: 1px; height: 1px; }
+.lazyload { border: 20px solid rgb(255, 0, 0); }
+.lazyloaded { border: 20px solid rgb(0, 255, 0); }
+</style></head><body>
+<img class="lazyload" width="1" height="1" data-src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=">
+</body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = format!("file://{}", html_path.display());
+  let standard_png = tmp.path().join("standard.png");
+  let compat_png = tmp.path().join("compat.png");
+
+  let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
+    .args([&url, standard_png.to_str().unwrap()])
+    .args(["--viewport", "64x64"])
+    .status()
+    .expect("run fetch_and_render (standard)");
+  assert!(
+    status.success(),
+    "standard render should exit successfully without compat flag"
+  );
+
+  let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
+    .args(["--dom-compat", "compat", &url, compat_png.to_str().unwrap()])
+    .args(["--viewport", "64x64"])
+    .status()
+    .expect("run fetch_and_render (compat)");
+  assert!(
+    status.success(),
+    "compat render should exit successfully with dom-compat flag"
+  );
+
+  let standard_image = image::open(&standard_png)
+    .expect("open standard render")
+    .into_rgba8();
+  let compat_image = image::open(&compat_png)
+    .expect("open compat render")
+    .into_rgba8();
+
+  let standard_pixel = standard_image.get_pixel(0, 0);
+  let compat_pixel = compat_image.get_pixel(0, 0);
+
+  assert!(
+    standard_pixel.0[0] > 200 && standard_pixel.0[1] < 80,
+    "standard run should keep the red border from .lazyload"
+  );
+  assert!(
+    compat_pixel.0[1] > 200 && compat_pixel.0[0] < 80,
+    "dom compat run should flip to the green border from .lazyloaded"
+  );
+}

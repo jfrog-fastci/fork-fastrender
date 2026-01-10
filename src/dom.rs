@@ -3624,18 +3624,6 @@ pub(crate) fn apply_dom_compatibility_mutations(
         }
       }
 
-      if changed {
-        let class_value = classes.join(" ");
-        if let Some((_, value)) = attributes
-          .iter_mut()
-          .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        {
-          *value = class_value;
-        } else {
-          attributes.push(("class".to_string(), class_value));
-        }
-      }
-
       if tag_name.eq_ignore_ascii_case("img") {
         // Some pages stash image URLs in `data-*` attributes (common for JS-driven lazy loading)
         // and rely on their bootstrap JS to populate `src`/`srcset`/`sizes`. When we don't execute
@@ -3873,6 +3861,56 @@ pub(crate) fn apply_dom_compatibility_mutations(
               }
             }
           }
+        }
+      }
+
+      if tag_name.eq_ignore_ascii_case("img")
+        || tag_name.eq_ignore_ascii_case("iframe")
+        || tag_name.eq_ignore_ascii_case("video")
+        || tag_name.eq_ignore_ascii_case("audio")
+      {
+        let has_lazy = classes
+          .iter()
+          .any(|c| c == "lazyload" || c == "lazyloading");
+        if has_lazy {
+          let has_real_source = if tag_name.eq_ignore_ascii_case("img") {
+            let src = attributes
+              .iter()
+              .find(|(k, _)| k.eq_ignore_ascii_case("src"))
+              .map(|(_, v)| v.as_str());
+            let srcset = attributes
+              .iter()
+              .find(|(k, _)| k.eq_ignore_ascii_case("srcset"))
+              .map(|(_, v)| v.as_str());
+            src.is_some_and(|value| !img_src_is_placeholder(value))
+              || srcset.is_some_and(|value| !trim_ascii_whitespace(value).is_empty())
+          } else {
+            let src = attributes
+              .iter()
+              .find(|(k, _)| k.eq_ignore_ascii_case("src"))
+              .map(|(_, v)| v.as_str());
+            src.is_some_and(|value| !img_src_is_placeholder(value))
+          };
+
+          if has_real_source {
+            classes.retain(|c| c != "lazyload" && c != "lazyloading");
+            if !classes.iter().any(|c| c == "lazyloaded") {
+              classes.push("lazyloaded".to_string());
+            }
+            changed = true;
+          }
+        }
+      }
+
+      if changed {
+        let class_value = classes.join(" ");
+        if let Some((_, value)) = attributes
+          .iter_mut()
+          .find(|(k, _)| k.eq_ignore_ascii_case("class"))
+        {
+          *value = class_value;
+        } else {
+          attributes.push(("class".to_string(), class_value));
         }
       }
 
@@ -14733,6 +14771,32 @@ mod tests {
     .expect("parse");
     let img = find_element_by_id(&dom, "img").expect("img element");
     assert_eq!(img.get_attribute_ref("src"), Some("a.jpg"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_flips_lazyload_class_after_img_src_lift() {
+    let dom = parse_html_with_options(
+      "<img id='img' class='lazyload' data-src='real.jpg'>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let img = find_element_by_id(&dom, "img").expect("img element");
+    assert!(img.has_class("lazyloaded"));
+    assert!(!img.has_class("lazyload"));
+    assert!(!img.has_class("lazyloading"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_flips_lazyloading_class_after_iframe_src_lift() {
+    let dom = parse_html_with_options(
+      "<iframe id='frame' class='lazyloading' data-src='real.html'></iframe>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let frame = find_element_by_id(&dom, "frame").expect("iframe element");
+    assert!(frame.has_class("lazyloaded"));
+    assert!(!frame.has_class("lazyload"));
+    assert!(!frame.has_class("lazyloading"));
   }
 
   #[test]

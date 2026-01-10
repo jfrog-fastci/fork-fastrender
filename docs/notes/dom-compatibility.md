@@ -38,8 +38,11 @@ Implementation source of truth: `src/dom.rs::apply_dom_compatibility_mutations`.
   - Note: the flip is applied to whichever element contained `no-js`; it does not propagate to the
     other root element.
 - `<html>` and `<body>`: ensure the class token `jsl10n-visible` is present.
+- `<img>`, `<iframe>`, `<video>`, and `<audio>`: if the class list contains `lazyload` or
+  `lazyloading` and the element has a non-placeholder effective source after URL lifting, remove
+  `lazyload`/`lazyloading` and add `lazyloaded`.
 
-No other class normalization is performed (for example, `lazyload`/`lazyloaded` are untouched).
+No other class normalization is performed.
 
 ### 2) Lazy-load URL lifting (`data-*` → real attributes)
 
