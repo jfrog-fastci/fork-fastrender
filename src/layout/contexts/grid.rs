@@ -3496,6 +3496,12 @@ impl GridFormattingContext {
         .any(Self::grid_track_has_calc_percentage)
   }
 
+  fn style_has_calc_percentage_gaps(style: &ComputedStyle) -> bool {
+    use crate::style::values::LengthUnit;
+    (style.grid_column_gap.unit == LengthUnit::Calc && style.grid_column_gap.has_percentage())
+      || (style.grid_row_gap.unit == LengthUnit::Calc && style.grid_row_gap.has_percentage())
+  }
+
   /// Patch root grid track definitions so `calc()` values mixing percentages and lengths are
   /// resolved against a definite grid container size when available.
   ///
@@ -3515,7 +3521,9 @@ impl GridFormattingContext {
     style: &ComputedStyle,
     constraints: &LayoutConstraints,
   ) -> Result<(), LayoutError> {
-    if !Self::style_has_calc_percentage_tracks(style) {
+    let has_tracks = Self::style_has_calc_percentage_tracks(style);
+    let has_gaps = Self::style_has_calc_percentage_gaps(style);
+    if !has_tracks && !has_gaps {
       return Ok(());
     }
 
@@ -3593,6 +3601,13 @@ impl GridFormattingContext {
     });
 
     let swap_grid_axes = existing.axes_swapped;
+    let inline_is_horizontal = !swap_grid_axes;
+    let inline_gap_base = if inline_is_horizontal {
+      content_width_base
+    } else {
+      content_height_base
+    }
+    .filter(|b| b.is_finite() && *b >= 0.0);
     let template_columns = if swap_grid_axes {
       &style.grid_template_rows
     } else {
@@ -3605,12 +3620,58 @@ impl GridFormattingContext {
     };
 
     let mut updated = existing.clone();
-    updated.grid_template_columns =
-      self.convert_grid_template_with_percentage_base(template_columns, style, content_width_base);
-    updated.grid_template_rows =
-      self.convert_grid_template_with_percentage_base(template_rows, style, content_height_base);
+    let mut changed = false;
 
-    if !style.grid_auto_columns.is_empty() || !style.grid_auto_rows.is_empty() {
+    if has_gaps {
+      use crate::style::values::LengthUnit;
+      let resolve_gap_calc = |len: Length| -> Option<f32> {
+        if len.unit != LengthUnit::Calc || !len.has_percentage() {
+          return None;
+        }
+        self.resolve_length_px_with_base(len, inline_gap_base, style)
+      };
+      let clamp_gap = |px: f32| -> LengthPercentage {
+        if px.is_finite() {
+          LengthPercentage::length(px.max(0.0))
+        } else {
+          LengthPercentage::length(0.0)
+        }
+      };
+
+      let gap_width_len = if inline_is_horizontal {
+        style.grid_column_gap
+      } else {
+        style.grid_row_gap
+      };
+      let gap_height_len = if inline_is_horizontal {
+        style.grid_row_gap
+      } else {
+        style.grid_column_gap
+      };
+
+      if gap_width_len.unit == LengthUnit::Calc && gap_width_len.has_percentage() {
+        let px = resolve_gap_calc(gap_width_len).unwrap_or(0.0);
+        updated.gap.width = clamp_gap(px);
+        updated.subgrid_gap.width = updated.gap.width;
+        changed = true;
+      }
+      if gap_height_len.unit == LengthUnit::Calc && gap_height_len.has_percentage() {
+        let px = resolve_gap_calc(gap_height_len).unwrap_or(0.0);
+        updated.gap.height = clamp_gap(px);
+        updated.subgrid_gap.height = updated.gap.height;
+        changed = true;
+      }
+    }
+
+    if has_tracks {
+      updated.grid_template_columns =
+        self.convert_grid_template_with_percentage_base(template_columns, style, content_width_base);
+      updated.grid_template_rows =
+        self.convert_grid_template_with_percentage_base(template_rows, style, content_height_base);
+      changed = true;
+    }
+
+    if has_tracks && (!style.grid_auto_columns.is_empty() || !style.grid_auto_rows.is_empty()) {
       if swap_grid_axes {
         if !style.grid_auto_rows.is_empty() {
           updated.grid_auto_columns = style
@@ -3642,11 +3703,14 @@ impl GridFormattingContext {
             .collect();
         }
       }
+      changed = true;
     }
 
-    taffy
-      .set_style(root_id, updated)
-      .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    if changed {
+      taffy
+        .set_style(root_id, updated)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
 
     Ok(())
   }

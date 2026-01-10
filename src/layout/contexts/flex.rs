@@ -904,6 +904,8 @@ impl FormattingContext for FlexFormattingContext {
         root_percentage_base,
         &mut override_style,
       );
+      let container_inner_size = self.flex_container_inner_size(style_override, &constraints);
+      self.apply_calc_percentage_gaps(style_override, container_inner_size, &mut override_style);
       taffy_tree
         .set_style(root_node, override_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -6101,6 +6103,7 @@ impl FlexFormattingContext {
       root_percentage_base,
       &mut root_taffy_style,
     );
+    self.apply_calc_percentage_gaps(root_style, container_inner_size, &mut root_taffy_style);
     let taffy_node = if taffy_children.is_empty() {
       taffy_tree
         .new_leaf(root_taffy_style)
@@ -7493,6 +7496,70 @@ impl FlexFormattingContext {
           taffy_style.margin.bottom = LengthPercentageAuto::length(px);
         }
       }
+    }
+  }
+
+  fn apply_calc_percentage_gaps(
+    &self,
+    style: &ComputedStyle,
+    container_inner_size: taffy::geometry::Size<Option<f32>>,
+    taffy_style: &mut taffy::style::Style,
+  ) {
+    // Taffy supports percentage gap values, but not arbitrary `calc()` expressions mixing
+    // percentages with absolute lengths. Resolve those `calc(%)` expressions to an absolute length
+    // once we know the flex container's definite inline-size. This must happen after retrieving
+    // cached Taffy templates so the cache remains reusable across responsive widths.
+    let inline_is_horizontal = matches!(style.writing_mode, WritingMode::HorizontalTb);
+    let inline_base = if inline_is_horizontal {
+      container_inner_size.width
+    } else {
+      container_inner_size.height
+    }
+    .filter(|b| b.is_finite());
+
+    let resolve_gap = |len: Length| -> Option<f32> {
+      if len.unit != LengthUnit::Calc || !len.has_percentage() {
+        return None;
+      }
+      resolve_length_with_percentage_metrics(
+        len,
+        inline_base,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
+      )
+    };
+
+    let clamp_gap = |px: f32| -> LengthPercentage {
+      if px.is_finite() {
+        LengthPercentage::length(px.max(0.0))
+      } else {
+        LengthPercentage::length(0.0)
+      }
+    };
+
+    // `column-gap` follows the inline axis; `row-gap` follows the block axis. Map the CSS logical
+    // properties into Taffy's physical gap fields in the same way as `computed_style_to_taffy_base`.
+    let gap_width_len = if inline_is_horizontal {
+      style.grid_column_gap
+    } else {
+      style.grid_row_gap
+    };
+    let gap_height_len = if inline_is_horizontal {
+      style.grid_row_gap
+    } else {
+      style.grid_column_gap
+    };
+
+    if gap_width_len.unit == LengthUnit::Calc && gap_width_len.has_percentage() {
+      let px = resolve_gap(gap_width_len).unwrap_or(0.0);
+      taffy_style.gap.width = clamp_gap(px);
+    }
+    if gap_height_len.unit == LengthUnit::Calc && gap_height_len.has_percentage() {
+      let px = resolve_gap(gap_height_len).unwrap_or(0.0);
+      taffy_style.gap.height = clamp_gap(px);
     }
   }
 
