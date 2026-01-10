@@ -2115,6 +2115,97 @@ impl BrowserTab {
     Ok(tab)
   }
 
+  pub fn from_html_with_document_url_and_fetcher<E>(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    Self::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      html,
+      document_url,
+      options,
+      executor,
+      fetcher,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  pub fn from_html_with_document_url_and_fetcher_and_js_execution_options<E>(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+
+    // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
+    // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
+    let renderer = super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      trace_handle.clone(),
+      js_execution_options,
+    );
+    let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+
+    let mut tab = Self {
+      trace: trace_handle,
+      trace_output,
+      diagnostics,
+      host,
+      event_loop,
+      pending_frame: None,
+    };
+
+    // Configure the renderer's document URL hint up-front so any non-script fetches (stylesheets,
+    // images, etc) see consistent referrer/origin context during parsing.
+    tab.host.document.renderer_mut().set_document_url(document_url);
+
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.to_string()), document_referrer_policy)?;
+    let base_url =
+      tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &options)?;
+    if let Some(req) = tab.host.pending_navigation.take() {
+      tab.navigate_to_url(&req.url, options.clone())?;
+    } else {
+      let renderer = tab.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
+    }
+    Ok(tab)
+  }
+
   pub fn from_html_with_event_loop_and_js_execution_options<E>(
     html: &str,
     options: RenderOptions,
@@ -2188,6 +2279,13 @@ impl BrowserTab {
     self
       .host
       .register_html_source(url.into(), html.into());
+  }
+
+  pub fn set_event_listener_invoker(
+    &mut self,
+    invoker: Box<dyn crate::web::events::EventListenerInvoker>,
+  ) {
+    self.host.set_event_invoker(invoker);
   }
 
   pub fn write_trace(&self) -> Result<()> {

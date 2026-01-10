@@ -97,18 +97,8 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = doc.has_attribute(script, "nomodule").unwrap_or(false);
-  let crossorigin = doc
-    .get_attribute(script, "crossorigin")
-    .ok()
-    .flatten()
-    .map(|value| {
-      let value = super::trim_ascii_whitespace(value);
-      if value.eq_ignore_ascii_case("use-credentials") {
-        crate::resource::CorsMode::UseCredentials
-      } else {
-        crate::resource::CorsMode::Anonymous
-      }
-    });
+  let crossorigin =
+    super::parse_crossorigin_attr(doc.get_attribute(script, "crossorigin").ok().flatten());
   let integrity = doc
     .get_attribute(script, "integrity")
     .ok()
@@ -136,11 +126,11 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     src,
     src_attr_present,
     inline_text,
+    crossorigin,
     async_attr,
     force_async: false,
     defer_attr,
     nomodule_attr,
-    crossorigin,
     integrity,
     referrer_policy,
     parser_inserted: true,

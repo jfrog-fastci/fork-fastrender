@@ -71,16 +71,7 @@ pub fn extract_script_elements(
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
         let nomodule_attr = node.get_attribute_ref("nomodule").is_some();
-        let crossorigin = node
-          .get_attribute_ref("crossorigin")
-          .map(|value| {
-            let value = super::trim_ascii_whitespace(value);
-            if value.eq_ignore_ascii_case("use-credentials") {
-              crate::resource::CorsMode::UseCredentials
-            } else {
-              crate::resource::CorsMode::Anonymous
-            }
-          });
+        let crossorigin = super::parse_crossorigin_attr(node.get_attribute_ref("crossorigin"));
         let integrity = node
           .get_attribute_ref("integrity")
           .map(|value| value.to_string());

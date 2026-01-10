@@ -346,18 +346,8 @@ impl ClassicScriptPipelineState {
     let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
     let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
     let nomodule_attr = dom.has_attribute(script_node_id, "nomodule").unwrap_or(false);
-    let crossorigin = dom
-      .get_attribute(script_node_id, "crossorigin")
-      .ok()
-      .flatten()
-      .map(|value| {
-        let value = super::trim_ascii_whitespace(value);
-        if value.eq_ignore_ascii_case("use-credentials") {
-          crate::resource::CorsMode::UseCredentials
-        } else {
-          crate::resource::CorsMode::Anonymous
-        }
-      });
+    let crossorigin =
+      super::parse_crossorigin_attr(dom.get_attribute(script_node_id, "crossorigin").ok().flatten());
     let integrity = dom
       .get_attribute(script_node_id, "integrity")
       .ok()
@@ -396,11 +386,11 @@ impl ClassicScriptPipelineState {
       src,
       src_attr_present,
       inline_text,
+      crossorigin,
       async_attr,
       force_async: false,
       defer_attr,
       nomodule_attr,
-      crossorigin,
       integrity,
       referrer_policy,
       parser_inserted: true,

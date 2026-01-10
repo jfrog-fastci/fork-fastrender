@@ -220,6 +220,26 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+/// Parse an HTML "CORS settings attribute" value.
+///
+/// This is used for `<script crossorigin>`, `<img crossorigin>`, etc.
+///
+/// Returns `None` when the attribute is missing (no CORS).
+///
+/// Per HTML, the attribute's default/empty/invalid keywords map to the `"anonymous"` state.
+pub(crate) fn parse_crossorigin_attr(value: Option<&str>) -> Option<crate::resource::CorsMode> {
+  let Some(value) = value else {
+    return None;
+  };
+  let value = trim_ascii_whitespace(value);
+  if value.eq_ignore_ascii_case("use-credentials") {
+    Some(crate::resource::CorsMode::UseCredentials)
+  } else {
+    // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+    Some(crate::resource::CorsMode::Anonymous)
+  }
+}
+
 /// A parsed `<script>` element, normalized into a scheduler-friendly record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptElementSpec {

@@ -1677,6 +1677,26 @@ fn placeholder_resource(
       res.access_control_allow_credentials = true;
       res
     }
+    FetchDestination::Script => FetchedResource::with_final_url(
+      // Placeholder scripts must be no-ops: inserting an error page or other content could mutate
+      // the DOM unexpectedly under JS execution.
+      Vec::new(),
+      Some("text/javascript".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::ScriptCors => {
+      let mut res = FetchedResource::with_final_url(
+        // Placeholder scripts must be no-ops: inserting an error page or other content could mutate
+        // the DOM unexpectedly under JS execution.
+        Vec::new(),
+        Some("text/javascript".to_string()),
+        Some(url.to_string()),
+      );
+      // `<script crossorigin>` expects CORS headers when enforcement is enabled.
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      res.access_control_allow_credentials = true;
+      res
+    }
     FetchDestination::Style | FetchDestination::StyleCors => FetchedResource::with_final_url(
       b"/* missing */".to_vec(),
       Some("text/css".to_string()),
@@ -2290,7 +2310,10 @@ fn crawl_document(
           }
         })
       }
-      FetchDestination::Other | FetchDestination::Fetch => Ok(()),
+      FetchDestination::Other
+      | FetchDestination::Fetch
+      | FetchDestination::Script
+      | FetchDestination::ScriptCors => Ok(()),
     };
     if let Err(err) = validation {
       handle_crawl_failure(

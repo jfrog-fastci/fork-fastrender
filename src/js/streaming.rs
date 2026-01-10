@@ -26,16 +26,7 @@ pub fn build_parser_inserted_script_element_spec(
   let async_attr = script.get_attribute_ref("async").is_some();
   let defer_attr = script.get_attribute_ref("defer").is_some();
   let nomodule_attr = script.get_attribute_ref("nomodule").is_some();
-  let crossorigin = script
-    .get_attribute_ref("crossorigin")
-    .map(|value| {
-      let value = super::trim_ascii_whitespace(value);
-      if value.eq_ignore_ascii_case("use-credentials") {
-        crate::resource::CorsMode::UseCredentials
-      } else {
-        crate::resource::CorsMode::Anonymous
-      }
-    });
+  let crossorigin = super::parse_crossorigin_attr(script.get_attribute_ref("crossorigin"));
   let integrity = script
     .get_attribute_ref("integrity")
     .map(|value| value.to_string());

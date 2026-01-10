@@ -982,7 +982,10 @@ pub enum FetchDestination {
   StyleCors,
   /// Classic script fetched in `no-cors` mode (e.g. `<script src=...>` without `crossorigin`).
   Script,
-  /// Script fetched in `cors` mode (e.g. `<script crossorigin src=...>`).
+  /// Script fetched in CORS mode (e.g. `<script crossorigin>`).
+  ///
+  /// `Sec-Fetch-Dest` remains `script`, but `Sec-Fetch-Mode` becomes `cors` and a browser-like
+  /// `Origin` header is sent when request headers are enabled.
   ScriptCors,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
@@ -1041,7 +1044,8 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
-      Self::Font | Self::Script | Self::ScriptCors | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
+      Self::Script | Self::ScriptCors => BROWSER_ACCEPT_ALL,
+      Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
     }
   }
 
@@ -1079,7 +1083,7 @@ impl FetchDestination {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
       Self::Font | Self::ImageCors | Self::StyleCors | Self::ScriptCors | Self::Fetch => "cors",
-      Self::Style | Self::Image | Self::Script | Self::Other => "no-cors",
+      Self::Style | Self::Script | Self::Image | Self::Other => "no-cors",
     }
   }
 
@@ -3534,19 +3538,19 @@ pub trait ResourceFetcher: Send + Sync {
   /// mode) should prefer this API.
   ///
   /// The default implementation preserves legacy behavior for non-CORS-mode requests by delegating
-  /// to [`ResourceFetcher::fetch_partial_with_context`]. When the request is in CORS mode and a
-  /// referrer is available, it falls back to a full [`ResourceFetcher::fetch_with_request`] and
-  /// truncates the returned body so the fetcher can still incorporate the referrer into request
-  /// headers.
+  /// to [`ResourceFetcher::fetch_partial_with_context`] when no referrer/origin context is
+  /// provided.
+  ///
+  /// When a referrer URL or client origin is available, it falls back to a full
+  /// [`ResourceFetcher::fetch_with_request`] and truncates the returned body so the fetcher can
+  /// incorporate the request context into browser-like headers.
   fn fetch_partial_with_request(
     &self,
     req: FetchRequest<'_>,
     max_bytes: usize,
   ) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    if req.destination.sec_fetch_mode() == "cors"
-      && (req.referrer_url.is_some() || req.client_origin.is_some())
-    {
+    if req.referrer_url.is_some() || req.client_origin.is_some() {
       if max_bytes == 0 {
         let mut res = self.fetch_with_request(req)?;
         res.bytes.clear();
