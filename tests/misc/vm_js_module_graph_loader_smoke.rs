@@ -1,7 +1,7 @@
 use vm_js::{
-  finish_loading_imported_module, load_requested_modules, HostDefined, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleLoaderHost, ModuleRequest, ModuleStatus, PromiseState, Realm,
-  SourceTextModuleRecord, Value, Vm, VmError, VmOptions,
+  load_requested_modules, HostDefined, Job, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
+  ModuleRequest, ModuleStatus, PromiseState, Realm, SourceTextModuleRecord, Value, Vm, VmError,
+  VmHostHooks, VmOptions,
 };
 
 // Lightweight integration-smoke test for vm-js' module graph loader + `finish_loading_imported_module`
@@ -33,22 +33,30 @@ impl Drop for TestRealm {
 
 struct TestHost {
   last_loaded: Option<ModuleId>,
+  jobs: std::collections::VecDeque<Job>,
 }
 
 impl TestHost {
   fn new() -> Self {
-    Self { last_loaded: None }
+    Self {
+      last_loaded: None,
+      jobs: std::collections::VecDeque::new(),
+    }
   }
 }
 
-impl ModuleLoaderHost for TestHost {
+impl VmHostHooks for TestHost {
+  fn host_enqueue_promise_job(&mut self, job: Job, _realm: Option<vm_js::RealmId>) {
+    self.jobs.push_back(job);
+  }
+
   fn host_load_imported_module(
     &mut self,
     vm: &mut Vm,
     scope: &mut vm_js::Scope<'_>,
     modules: &mut ModuleGraph,
-    referrer: ModuleId,
-    request: ModuleRequest,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
@@ -57,7 +65,7 @@ impl ModuleLoaderHost for TestHost {
     // allowance for synchronous completion.
     let loaded = modules.add_module(SourceTextModuleRecord::default());
     self.last_loaded = Some(loaded);
-    finish_loading_imported_module(vm, scope, modules, self, referrer, request, payload, Ok(loaded))
+    vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Ok(loaded))
   }
 }
 
@@ -101,7 +109,7 @@ fn module_graph_loader_caches_loaded_modules_and_resolves_promise() -> Result<()
 
 #[derive(Clone)]
 struct PendingLoad {
-  referrer: ModuleId,
+  referrer: ModuleReferrer,
   request: ModuleRequest,
   payload: ModuleLoadPayload,
 }
@@ -109,22 +117,27 @@ struct PendingLoad {
 #[derive(Default)]
 struct PendingHost {
   pending: Vec<PendingLoad>,
+  jobs: std::collections::VecDeque<Job>,
 }
 
-impl ModuleLoaderHost for PendingHost {
+impl VmHostHooks for PendingHost {
+  fn host_enqueue_promise_job(&mut self, job: Job, _realm: Option<vm_js::RealmId>) {
+    self.jobs.push_back(job);
+  }
+
   fn host_load_imported_module(
     &mut self,
     _vm: &mut Vm,
     _scope: &mut vm_js::Scope<'_>,
     _modules: &mut ModuleGraph,
-    referrer: ModuleId,
-    request: ModuleRequest,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
     self.pending.push(PendingLoad {
       referrer,
-      request,
+      request: module_request,
       payload,
     });
     Ok(())
@@ -144,12 +157,12 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
   // Intentionally create duplicate entries in `[[RequestedModules]]` so the loader invokes the host
   // hook twice and exercises `finish_loading_imported_module`'s caching/mismatch logic.
   referrer_record.requested_modules = vec![request_dup.clone(), request_dup.clone()];
-  let referrer = modules.add_module(referrer_record);
+  let referrer_module = modules.add_module(referrer_record);
 
   let mut host = PendingHost::default();
 
   let promise =
-    load_requested_modules(&mut rt.vm, &mut scope, &mut modules, &mut host, referrer, HostDefined::default())?;
+    load_requested_modules(&mut rt.vm, &mut scope, &mut modules, &mut host, referrer_module, HostDefined::default())?;
   scope.push_root(promise)?;
   let Value::Object(promise) = promise else {
     panic!("expected module graph loader to return a Promise object");
@@ -160,26 +173,25 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
   assert_eq!(host.pending.len(), 2);
 
   let PendingLoad {
-    referrer,
+    referrer: load_referrer,
     request,
     payload,
   } = host.pending[0].clone();
   assert!(request.spec_equal(&request_dup));
 
   let PendingLoad {
-    referrer: referrer2,
+    referrer: load_referrer2,
     request: request2,
     payload: payload2,
   } = host.pending[1].clone();
   assert!(request2.spec_equal(&request_dup));
 
   // Complete the first load.
-  finish_loading_imported_module(
-    &mut rt.vm,
+  rt.vm.finish_loading_imported_module(
     &mut scope,
     &mut modules,
     &mut host,
-    referrer,
+    load_referrer,
     request.clone(),
     payload.clone(),
     Ok(module1),
@@ -188,12 +200,11 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
 
   // A second completion for the same request with a different module id should be treated as an
   // invariant violation and reject the module-graph-loading promise.
-  finish_loading_imported_module(
-    &mut rt.vm,
+  rt.vm.finish_loading_imported_module(
     &mut scope,
     &mut modules,
     &mut host,
-    referrer2,
+    load_referrer2,
     request2,
     payload2,
     Ok(module2),
@@ -201,7 +212,9 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
 
   assert_eq!(scope.heap().promise_state(promise)?, PromiseState::Rejected);
 
-  let record = modules.get_module(referrer).expect("referrer module should exist");
+  let record = modules
+    .get_module(referrer_module)
+    .expect("referrer module should exist");
   assert_eq!(record.loaded_modules.len(), 1);
   assert_eq!(record.loaded_modules[0].module, module1);
 

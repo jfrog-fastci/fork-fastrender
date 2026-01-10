@@ -26,8 +26,8 @@
 //! queue is **host-owned**; this crate only provides the job representation.
 
 use crate::heap::{Trace, Tracer};
-use crate::{GcObject, RootId, Value, VmError};
-use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest, VmModuleLoadingContext};
+use crate::{GcObject, ModuleGraph, RootId, Scope, Value, Vm, VmError};
+use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest};
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -640,19 +640,17 @@ pub trait VmHostHooks {
 
       fn host_load_imported_module(
         &mut self,
-        ctx: &mut dyn VmModuleLoadingContext,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        modules: &mut ModuleGraph,
         referrer: ModuleReferrer,
         module_request: ModuleRequest,
         host_defined: HostDefined,
         payload: ModuleLoadPayload,
-      ) {
-        self.0.host_load_imported_module(
-          ctx,
-          referrer,
-          module_request,
-          host_defined,
-          payload,
-        );
+      ) -> Result<(), VmError> {
+        self
+          .0
+          .host_load_imported_module(vm, scope, modules, referrer, module_request, host_defined, payload)
       }
     }
 
@@ -702,8 +700,7 @@ pub trait VmHostHooks {
   ///
   /// The host environment must perform
   /// `FinishLoadingImportedModule(referrer, moduleRequest, payload, result)` by calling
-  /// [`VmModuleLoadingContext::finish_loading_imported_module`], either synchronously or
-  /// asynchronously.
+  /// [`Vm::finish_loading_imported_module`], either synchronously (re-entrantly) or asynchronously.
   ///
   /// ## Re-entrancy
   ///
@@ -721,18 +718,86 @@ pub trait VmHostHooks {
   /// The `payload` argument is an opaque token owned by the engine; the host must not inspect it.
   fn host_load_imported_module(
     &mut self,
-    ctx: &mut dyn VmModuleLoadingContext,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
     referrer: ModuleReferrer,
     module_request: ModuleRequest,
     host_defined: HostDefined,
     payload: ModuleLoadPayload,
-  ) {
+  ) -> Result<(), VmError> {
     let _ = host_defined;
-    ctx.finish_loading_imported_module(
+
+    // `finish_loading_imported_module` expects a `&mut dyn VmHostHooks`. In a trait default method,
+    // `Self` may be `dyn VmHostHooks` (unsized), so we can't directly pass `self` as a trait object
+    // without a `Self: Sized` bound (which would break object safety).
+    //
+    // Wrap `self` in a sized proxy that forwards all host hooks.
+    struct HostProxy<'a, H: VmHostHooks + ?Sized>(&'a mut H);
+    impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
+      fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+        self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        self.0.as_any_mut()
+      }
+
+      fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
+        self.0.host_make_job_callback(callback)
+      }
+
+      fn host_call_job_callback(
+        &mut self,
+        ctx: &mut dyn VmJobContext,
+        callback: &JobCallback,
+        this_argument: Value,
+        arguments: &[Value],
+      ) -> Result<Value, VmError> {
+        self
+          .0
+          .host_call_job_callback(ctx, callback, this_argument, arguments)
+      }
+
+      fn host_promise_rejection_tracker(
+        &mut self,
+        promise: PromiseHandle,
+        operation: PromiseRejectionOperation,
+      ) {
+        self.0.host_promise_rejection_tracker(promise, operation);
+      }
+
+      fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+        self.0.host_get_supported_import_attributes()
+      }
+
+      fn host_load_imported_module(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        modules: &mut ModuleGraph,
+        referrer: ModuleReferrer,
+        module_request: ModuleRequest,
+        host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        self
+          .0
+          .host_load_imported_module(vm, scope, modules, referrer, module_request, host_defined, payload)
+      }
+    }
+
+    let mut proxy = HostProxy(self);
+    crate::module_loading::finish_loading_imported_module(
+      vm,
+      scope,
+      modules,
+      &mut proxy,
       referrer,
       module_request,
       payload,
       Err(VmError::Unimplemented("HostLoadImportedModule")),
-    );
+    )?;
+    Ok(())
   }
 }

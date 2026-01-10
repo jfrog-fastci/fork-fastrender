@@ -16,7 +16,7 @@
 //!
 //! See also:
 //! - [`crate::VmHostHooks::host_load_imported_module`]
-//! - [`VmModuleLoadingContext::finish_loading_imported_module`]
+//! - [`Vm::finish_loading_imported_module`]
 
 use crate::module_graph::ModuleGraph;
 use crate::module_record::ModuleStatus;
@@ -24,7 +24,7 @@ use crate::property::PropertyKey;
 use crate::promise::PromiseCapability;
 use crate::{
   GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, RealmId, RootId, Scope,
-  ScriptId, Value, Vm, VmError, MicrotaskQueue,
+  ScriptId, Value, Vm, VmError,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -144,21 +144,10 @@ impl GraphLoadingState {
   fn new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    host: &mut dyn crate::VmHostHooks,
     host_defined: HostDefined,
   ) -> Result<(Self, Value), VmError> {
-    let intrinsics = vm.intrinsics().ok_or(VmError::Unimplemented(
-      "module loading requires Vm::intrinsics to be set (create a Realm first)",
-    ))?;
-    // `new_promise_capability` needs a host hook implementation for TypeError construction in
-    // error paths. For module graph loading we only create capabilities for `%Promise%`, so a
-    // minimal microtask queue is sufficient here.
-    let mut host = MicrotaskQueue::new();
-    let cap = crate::builtins::new_promise_capability(
-      vm,
-      scope,
-      &mut host,
-      Value::Object(intrinsics.promise()),
-    )?;
+    let cap = crate::promise_ops::new_promise_capability(vm, scope, host)?;
 
     // Root the capability values while creating persistent roots: `Heap::add_root` can trigger GC.
     let values = [cap.promise, cap.resolve, cap.reject];
@@ -240,7 +229,12 @@ impl GraphLoadingState {
     state.pending_modules_count
   }
 
-  fn resolve_promise(&self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<(), VmError> {
+  fn resolve_promise(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn crate::VmHostHooks,
+  ) -> Result<(), VmError> {
     let (cap, roots) = {
       let mut state = self.0.borrow_mut();
       (state.promise_capability, state.promise_roots.take())
@@ -252,15 +246,7 @@ impl GraphLoadingState {
     };
 
     scope.push_root(cap.resolve)?;
-    // Use `Vm::call` (dummy host) so any active `Vm::with_host_hooks_override` is respected.
-    let mut dummy_host = ();
-    let _ = vm.call(
-      &mut dummy_host,
-      scope,
-      cap.resolve,
-      Value::Undefined,
-      &[Value::Undefined],
-    )?;
+    let _ = vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[Value::Undefined])?;
 
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
@@ -268,7 +254,13 @@ impl GraphLoadingState {
     Ok(())
   }
 
-  fn reject_promise(&self, vm: &mut Vm, scope: &mut Scope<'_>, err: VmError) -> Result<(), VmError> {
+  fn reject_promise(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn crate::VmHostHooks,
+    err: VmError,
+  ) -> Result<(), VmError> {
     let (cap, roots) = {
       let mut state = self.0.borrow_mut();
       (state.promise_capability, state.promise_roots.take())
@@ -282,9 +274,7 @@ impl GraphLoadingState {
 
     scope.push_root(cap.reject)?;
     scope.push_root(reason)?;
-    // Use `Vm::call` (dummy host) so any active `Vm::with_host_hooks_override` is respected.
-    let mut dummy_host = ();
-    let _ = vm.call(&mut dummy_host, scope, cap.reject, Value::Undefined, &[reason])?;
+    let _ = vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[reason])?;
 
     scope.heap_mut().remove_root(roots.promise);
     scope.heap_mut().remove_root(roots.resolve);
@@ -354,33 +344,6 @@ impl ModuleLoadPayload {
 /// represented by [`VmError`].
 pub type ModuleCompletion = Result<ModuleId, VmError>;
 
-/// Host hook used by the static module graph loading state machine to asynchronously resolve/load
-/// module requests.
-///
-/// This corresponds to ECMA-262's `HostLoadImportedModule` host hook.
-pub trait ModuleLoaderHost {
-  fn host_load_imported_module(
-    &mut self,
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    modules: &mut ModuleGraph,
-    referrer: ModuleId,
-    request: ModuleRequest,
-    host_defined: HostDefined,
-    payload: ModuleLoadPayload,
-  ) -> Result<(), VmError>;
-
-  /// Returns the list of import attribute keys supported by this host.
-  ///
-  /// This corresponds to ECMA-262's `HostGetSupportedImportAttributes()`:
-  /// <https://tc39.es/ecma262/#sec-hostgetsupportedimportattributes>.
-  ///
-  /// The default implementation returns an empty list (no attributes supported).
-  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
-    &[]
-  }
-}
-
 /// Implements ECMA-262 `LoadRequestedModules(hostDefined?)` for cyclic modules.
 ///
 /// This starts the module graph loading state machine and returns a Promise that is fulfilled once
@@ -389,11 +352,11 @@ pub fn load_requested_modules(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn ModuleLoaderHost,
+  host: &mut dyn crate::VmHostHooks,
   module: ModuleId,
   host_defined: HostDefined,
 ) -> Result<Value, VmError> {
-  let (state, promise) = GraphLoadingState::new(vm, scope, host_defined)?;
+  let (state, promise) = GraphLoadingState::new(vm, scope, host, host_defined)?;
   inner_module_loading(vm, scope, modules, host, &state, module)?;
   Ok(promise)
 }
@@ -403,13 +366,13 @@ pub fn inner_module_loading(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn ModuleLoaderHost,
+  host: &mut dyn crate::VmHostHooks,
   state: &GraphLoadingState,
   module: ModuleId,
 ) -> Result<(), VmError> {
   let Some(record) = modules.get_module(module) else {
     state.set_is_loading(false);
-    state.reject_promise(vm, scope, VmError::InvalidHandle)?;
+    state.reject_promise(vm, scope, host, VmError::InvalidHandle)?;
     return Ok(());
   };
 
@@ -475,7 +438,7 @@ pub fn inner_module_loading(
           vm,
           scope,
           modules,
-          module,
+          ModuleReferrer::Module(module),
           request,
           state.host_defined(),
           ModuleLoadPayload::graph_loading_state(state.clone()),
@@ -504,58 +467,108 @@ pub fn inner_module_loading(
       }
     }
   }
-  state.resolve_promise(vm, scope)?;
+  state.resolve_promise(vm, scope, host)?;
   Ok(())
 }
 
-/// Helper implementing ECMA-262 `FinishLoadingImportedModule(...)` for module graph loading.
+/// Implements ECMA-262 `FinishLoadingImportedModule(...)`.
 ///
-/// Hosts must call this exactly once for each [`ModuleLoaderHost::host_load_imported_module`]
+/// Hosts must call this exactly once for each [`crate::VmHostHooks::host_load_imported_module`]
 /// invocation, either synchronously (re-entrantly) or asynchronously later.
 pub fn finish_loading_imported_module(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn ModuleLoaderHost,
-  referrer: ModuleId,
+  host: &mut dyn crate::VmHostHooks,
+  referrer: ModuleReferrer,
   module_request: ModuleRequest,
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
-  if let Ok(loaded) = result {
-    if let Some(referrer_module) = modules.get_module_mut(referrer) {
-      if let Some(existing) = referrer_module
-        .loaded_modules
-        .iter()
-        .find(|record| record.request.spec_equal(&module_request))
-      {
-        if existing.module != loaded {
-          continue_module_loading(
-            vm,
-            scope,
-            modules,
-            host,
-            payload,
-            Err(VmError::InvariantViolation(
-              "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
-            )),
-          )?;
-          return Ok(());
+  // 1. `FinishLoadingImportedModule` caching invariant:
+  //    If a `(referrer, moduleRequest)` pair resolves normally more than once, it must resolve to
+  //    the same Module Record each time.
+  let result = match result {
+    Ok(loaded) => {
+      if let ModuleReferrer::Module(referrer) = referrer {
+        if let Some(referrer_module) = modules.get_module_mut(referrer) {
+          if let Some(existing) = referrer_module
+            .loaded_modules
+            .iter()
+            .find(|record| record.request.spec_equal(&module_request))
+          {
+            if existing.module != loaded {
+              Err(VmError::InvariantViolation(
+                "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
+              ))
+            } else {
+              Ok(loaded)
+            }
+          } else {
+            referrer_module
+              .loaded_modules
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            referrer_module
+              .loaded_modules
+              .push(LoadedModuleRequest::new(module_request, loaded));
+            Ok(loaded)
+          }
+        } else {
+          Ok(loaded)
         }
       } else {
-        referrer_module
-          .loaded_modules
-          .try_reserve(1)
-          .map_err(|_| VmError::OutOfMemory)?;
-        referrer_module
-          .loaded_modules
-          .push(LoadedModuleRequest::new(module_request, loaded));
+        Ok(loaded)
       }
     }
+    Err(e) => Err(e),
+  };
 
-    continue_module_loading(vm, scope, modules, host, payload, Ok(loaded))
-  } else {
-    continue_module_loading(vm, scope, modules, host, payload, result)
+  match payload.0 {
+    ModuleLoadPayloadInner::GraphLoadingState(state) => continue_module_loading(
+      vm,
+      scope,
+      modules,
+      host,
+      ModuleLoadPayload::graph_loading_state(state),
+      result,
+    ),
+    ModuleLoadPayloadInner::PromiseCapability(capability) => {
+      // Placeholder until dynamic import is implemented.
+      continue_dynamic_import(capability, result)
+    }
+  }
+}
+
+impl Vm {
+  /// Completes a pending `HostLoadImportedModule` operation.
+  ///
+  /// This is the entry point host environments should call once they have finished fetching and
+  /// parsing a module (or have failed to do so). It performs `FinishLoadingImportedModule` and then
+  /// dispatches to the appropriate continuation based on `payload`:
+  /// - `ContinueModuleLoading` for static module graph loading, or
+  /// - `ContinueDynamicImport` for `import()` (currently unimplemented).
+  #[inline]
+  pub fn finish_loading_imported_module(
+    &mut self,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    host: &mut dyn crate::VmHostHooks,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    payload: ModuleLoadPayload,
+    result: ModuleCompletion,
+  ) -> Result<(), VmError> {
+    finish_loading_imported_module(
+      self,
+      scope,
+      modules,
+      host,
+      referrer,
+      module_request,
+      payload,
+      result,
+    )
   }
 }
 
@@ -564,7 +577,7 @@ pub fn continue_module_loading(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn ModuleLoaderHost,
+  host: &mut dyn crate::VmHostHooks,
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
@@ -582,7 +595,7 @@ pub fn continue_module_loading(
     Ok(module) => inner_module_loading(vm, scope, modules, host, &state, module),
     Err(err) => {
       state.set_is_loading(false);
-      state.reject_promise(vm, scope, err)
+      state.reject_promise(vm, scope, host, err)
     }
   }
 }
@@ -751,7 +764,6 @@ pub fn start_dynamic_import(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn crate::VmHostHooks,
-  ctx: &mut dyn VmModuleLoadingContext,
   specifier: Value,
   options: Value,
 ) -> Result<Value, VmError> {
@@ -764,29 +776,6 @@ pub fn continue_dynamic_import(
   _module_completion: ModuleCompletion,
 ) -> Result<(), VmError> {
   Err(VmError::Unimplemented("ContinueDynamicImport"))
-}
-
-/// Minimal engine callback surface needed to implement `FinishLoadingImportedModule`.
-///
-/// The host calls this once it has finished loading (or failed to load) an imported module.
-///
-/// Spec: <https://tc39.es/ecma262/#sec-finishloadingimportedmodule>
-pub trait VmModuleLoadingContext {
-  /// Perform `FinishLoadingImportedModule(referrer, moduleRequest, payload, result)`.
-  ///
-  /// - On success, `result` is `Ok(module)` where `module` is the loaded Module Record.
-  /// - On failure, `result` is `Err(_)` and should typically represent a throw completion
-  ///   (`VmError::Throw`), although other engine errors (OOM, termination) may be surfaced too.
-  ///
-  /// The host may call this synchronously from within
-  /// [`crate::VmHostHooks::host_load_imported_module`], which *re-enters* module graph loading.
-  fn finish_loading_imported_module(
-    &mut self,
-    referrer: ModuleReferrer,
-    module_request: ModuleRequest,
-    payload: ModuleLoadPayload,
-    result: Result<ModuleId, VmError>,
-  );
 }
 
 #[cfg(test)]

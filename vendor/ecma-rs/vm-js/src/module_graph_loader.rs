@@ -13,10 +13,9 @@
 pub use crate::module_graph::ModuleGraph;
 pub use crate::module_loading::{
   continue_module_loading, finish_loading_imported_module, inner_module_loading, load_requested_modules,
-  HostDefined, ModuleCompletion, ModuleLoadPayload, ModuleLoaderHost,
+  HostDefined, ModuleCompletion, ModuleLoadPayload,
 };
 pub use crate::module_record::ModuleStatus;
 pub use crate::module_record::SourceTextModuleRecord as CyclicModuleRecord;
 pub use crate::ModuleRequest;
 pub use crate::LoadedModuleRequest;
-
