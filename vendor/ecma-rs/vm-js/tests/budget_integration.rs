@@ -191,6 +191,101 @@ fn native_call_consumes_tick() {
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
 
+fn install_global_object_with_enumerable_props(
+  rt: &mut JsRuntime,
+  global_name: &str,
+  prop_count: u32,
+) -> GcObject {
+  let global = rt.realm().global_object();
+  let mut scope = rt.heap_mut().scope();
+
+  let obj = scope.alloc_object().unwrap();
+  scope.push_root(Value::Object(obj)).unwrap();
+
+  for i in 0..prop_count {
+    let mut prop_scope = scope.reborrow();
+    let key_s = prop_scope.alloc_string(&format!("k{i}")).unwrap();
+    prop_scope.push_root(Value::String(key_s)).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    assert!(prop_scope
+      .create_data_property(obj, key, Value::Number(i as f64))
+      .unwrap());
+  }
+
+  let mut global_scope = scope.reborrow();
+  let global_key_s = global_scope.alloc_string(global_name).unwrap();
+  global_scope.push_root(Value::String(global_key_s)).unwrap();
+  let global_key = PropertyKey::from_string(global_key_s);
+  assert!(global_scope
+    .create_data_property(global, global_key, Value::Object(obj))
+    .unwrap());
+
+  obj
+}
+
+#[test]
+fn for_in_key_collection_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  install_global_object_with_enumerable_props(&mut rt, "obj", 4096);
+
+  // The `for..in` evaluator snapshots enumerable keys *before* iteration begins. Previously this key
+  // collection phase had no internal ticks, so a large object could bypass fuel budgets even when
+  // the loop body exits immediately.
+  rt.vm.set_budget(Budget {
+    fuel: Some(20),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt.exec_script("for (var k in obj) { break; }").unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn array_destructuring_rest_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  let global = rt.realm().global_object();
+  {
+    let mut scope = rt.heap_mut().scope();
+    let src = scope.alloc_object().unwrap();
+    scope.push_root(Value::Object(src)).unwrap();
+
+    {
+      let mut len_scope = scope.reborrow();
+      let len_key_s = len_scope.alloc_string("length").unwrap();
+      len_scope.push_root(Value::String(len_key_s)).unwrap();
+      let len_key = PropertyKey::from_string(len_key_s);
+      assert!(len_scope
+        .create_data_property(src, len_key, Value::Number(4096.0))
+        .unwrap());
+    }
+
+    {
+      let mut global_scope = scope.reborrow();
+      let src_key_s = global_scope.alloc_string("src").unwrap();
+      global_scope.push_root(Value::String(src_key_s)).unwrap();
+      let src_key = PropertyKey::from_string(src_key_s);
+      assert!(global_scope
+        .create_data_property(global, src_key, Value::Object(src))
+        .unwrap());
+    }
+  }
+
+  // `bind_array_pattern`'s rest loop can perform large amounts of work within a single expression.
+  // Ensure that it is budgeted.
+  rt.vm.set_budget(Budget {
+    fuel: Some(12),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt.exec_script("var [...r] = src;").unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
 #[test]
 fn builtins_function_apply_consumes_fuel_in_native_loop() {
   fn data_desc(value: Value) -> PropertyDescriptor {

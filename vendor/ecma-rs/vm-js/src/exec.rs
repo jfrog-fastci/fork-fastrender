@@ -2518,13 +2518,23 @@ impl<'a> Evaluator<'a> {
     // Snapshot enumerable string keys across the prototype chain, skipping duplicates.
     //
     // Note: this is intentionally minimal and does not track mutations during iteration.
+    const KEY_COLLECTION_TICK_EVERY: usize = 256;
     let mut keys: Vec<GcString> = Vec::new();
     let mut visited: Vec<PropertyKey> = Vec::new();
 
+    let mut key_count: usize = 0;
     let mut current: Option<GcObject> = Some(object);
     while let Some(obj) = current {
+      // Budget/interrupt check while walking the prototype chain and collecting enumerable keys.
+      self.tick()?;
+
       let own_keys = iter_scope.ordinary_own_property_keys(obj)?;
       for key in own_keys {
+        key_count = key_count.wrapping_add(1);
+        if (key_count & (KEY_COLLECTION_TICK_EVERY - 1)) == 0 {
+          self.tick()?;
+        }
+
         let PropertyKey::String(s) = key else {
           continue;
         };
