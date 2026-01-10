@@ -135,6 +135,11 @@ pub mod vm_dom;
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 
+// Legacy `dom2` DOM mutation → script execution helpers (dynamic `<script>` insertion).
+// Kept for tests/experiments; the canonical execution path is the streaming parser pipeline.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
+
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
