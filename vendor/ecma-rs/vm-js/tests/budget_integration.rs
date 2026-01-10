@@ -116,6 +116,31 @@ fn instantiation_consumes_fuel() {
 }
 
 #[test]
+fn function_parameter_list_instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Function object creation computes `length` by scanning parameters until the first default/rest.
+  // Large parameter lists should be budgeted so a single function declaration can't bypass fuel.
+  let mut src = String::from("function f(");
+  for i in 0..5000 {
+    if i != 0 {
+      src.push(',');
+    }
+    write!(src, "a{i}").unwrap();
+  }
+  src.push_str("){}");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn var_declarator_list_instantiation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);

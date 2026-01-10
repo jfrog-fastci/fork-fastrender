@@ -960,6 +960,26 @@ impl<'a> Evaluator<'a> {
     )
   }
 
+  fn function_length(&mut self, func: &parse_js::ast::func::Func) -> Result<u32, VmError> {
+    // ECMA-262 `length` is the number of parameters before the first one with a default/rest.
+    //
+    // This scan can be `O(N)` in the number of parameters, and function expressions/declarations
+    // can have very large parameter lists (bounded by source size). Budget it explicitly so a
+    // single function literal can't do unbounded work within a single statement/expression tick.
+    const TICK_EVERY: usize = 32;
+    let mut len: u32 = 0;
+    for (i, param) in func.parameters.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        self.tick()?;
+      }
+      if param.stx.rest || param.stx.default_value.is_some() {
+        break;
+      }
+      len = len.saturating_add(1);
+    }
+    Ok(len)
+  }
+
   fn instantiate_script(&mut self, scope: &mut Scope<'_>, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
     self.instantiate_stmt_list(scope, stmts)
   }
@@ -1434,7 +1454,7 @@ impl<'a> Evaluator<'a> {
     };
 
     let name_s = scope.alloc_string(name)?;
-    let length = function_length(func);
+    let length = self.function_length(func)?;
 
     let rel_start = decl.loc.start_u32().saturating_sub(self.env.prefix_len());
     let rel_end = decl.loc.end_u32().saturating_sub(self.env.prefix_len());
@@ -3214,7 +3234,7 @@ impl<'a> Evaluator<'a> {
       Some(name) => scope.alloc_string(name)?,
       None => scope.alloc_string("")?,
     };
-    let length = function_length(func);
+    let length = self.function_length(func)?;
 
     let rel_start = loc_start.saturating_sub(self.env.prefix_len());
     let rel_end = loc_end.saturating_sub(self.env.prefix_len());
@@ -3276,7 +3296,7 @@ impl<'a> Evaluator<'a> {
         None => return Err(VmError::Unimplemented("function without body")),
       };
 
-    let length = function_length(func);
+    let length = self.function_length(func)?;
 
     let rel_start = loc_start.saturating_sub(self.env.prefix_len());
     let rel_end = loc_end.saturating_sub(self.env.prefix_len());
@@ -3719,7 +3739,7 @@ impl<'a> Evaluator<'a> {
             }
             ClassOrObjVal::Method(method) => {
               let func_node = &method.stx.func;
-              let length = function_length(&func_node.stx);
+              let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
               let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
@@ -3805,7 +3825,7 @@ impl<'a> Evaluator<'a> {
             }
             ClassOrObjVal::Getter(getter) => {
               let func_node = &getter.stx.func;
-              let length = function_length(&func_node.stx);
+              let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
               let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
@@ -3887,7 +3907,7 @@ impl<'a> Evaluator<'a> {
             }
             ClassOrObjVal::Setter(setter) => {
               let func_node = &setter.stx.func;
-              let length = function_length(&func_node.stx);
+              let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
               let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
@@ -5088,19 +5108,6 @@ fn alloc_string_from_lit_str(
   } else {
     scope.alloc_string_from_utf8(&node.stx.value)
   }
-}
-
-fn function_length(func: &parse_js::ast::func::Func) -> u32 {
-  // ECMA-262 `length` is the number of parameters before the first one with a
-  // default/rest.
-  let mut len: u32 = 0;
-  for param in func.parameters.iter() {
-    if param.stx.rest || param.stx.default_value.is_some() {
-      break;
-    }
-    len = len.saturating_add(1);
-  }
-  len
 }
 
 pub(crate) fn run_ecma_function(
