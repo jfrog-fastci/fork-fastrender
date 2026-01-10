@@ -3814,6 +3814,7 @@ html, body { margin: 0; padding: 0; }
       trace_output: None,
       host,
       event_loop: EventLoop::new(),
+      pending_frame: None,
     };
 
     let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
