@@ -819,6 +819,7 @@ impl BrowserTabHost {
                   &base_url_tracker,
                 );
               spec.parser_inserted = false;
+              spec.force_async = node.script_force_async;
               discovered.push((id, spec));
             }
 
@@ -2771,6 +2772,34 @@ mod tests {
     );
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
+  }
+
+  #[test]
+  fn dynamic_script_discovery_propagates_force_async_internal_slot() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host("<!doctype html><html><body></body></html>", log)?;
+    let script = host.mutate_dom(|dom| {
+      let script = dom.create_element("script", "");
+      dom
+        .set_attribute(script, "src", "https://example.com/dyn.js")
+        .expect("set_attribute");
+      let body = dom.body().expect("expected a <body> element");
+      dom.append_child(body, script).expect("append_child");
+      (script, true)
+    });
+
+    assert!(host.dom().node(script).script_force_async);
+
+    host.discover_dynamic_scripts(&mut event_loop)?;
+
+    let entry = host
+      .scripts
+      .values()
+      .find(|entry| entry.node_id == script)
+      .expect("expected script to be registered");
+    assert!(!entry.spec.parser_inserted);
+    assert!(entry.spec.force_async);
+    Ok(())
   }
 
   #[test]
