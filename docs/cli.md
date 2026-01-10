@@ -113,6 +113,8 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - When you want “the next highest-signal page”, you can select a single fixture from committed progress JSON:
     - Worst-accuracy ok page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --overlay --write-snapshot --chrome`
     - First failing page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --only-failures --overlay --write-snapshot --chrome`
+    - Slowest page: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-slowest 1 --overlay --write-snapshot --chrome`
+    - Filter by hotspot: `bash scripts/cargo_agent.sh xtask page-loop --from-progress progress/pages --top-worst-accuracy 1 --hotspot layout --overlay --write-snapshot --chrome`
 - Diff renders: `bash scripts/cargo_agent.sh xtask diff-renders --before fetches/renders/baseline --after fetches/renders/new [--output target/render-diffs]`
   - Supports directory diffs (recursive) and PNG file-to-file diffs.
   - Writes `diff_report.html` / `diff_report.json` into `--output` (diff images under `diff_report_files/diffs/`).
