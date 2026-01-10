@@ -303,6 +303,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
 
   let decoded = decode_refresh_entities(source);
   let bytes = decoded.as_bytes();
+  let mut needs_url_var_fallback = false;
 
   fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
@@ -474,10 +475,30 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
       }
 
       {
+        // Some redirects store the target in a local `url` variable:
+        // `var url = "/next"; location.replace(url)`.
+        //
+        // Only fall back to scanning for `var url = ...` when we see `location.*(url)`; this avoids
+        // false positives in scripts that use `url` for unrelated purposes (e.g. AJAX endpoints).
+        let start = i;
+        if start < bytes.len()
+          && (bytes[start].is_ascii_alphabetic() || bytes[start] == b'_' || bytes[start] == b'$')
+        {
+          let mut end = start + 1;
+          while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'$')
+          {
+            end += 1;
+          }
+          if decoded.get(start..end) == Some("url") {
+            needs_url_var_fallback = true;
+          }
+        }
+
         let start = i;
         while i < bytes.len() {
           let b = bytes[i];
-          if b.is_ascii_whitespace() || b == b';' {
+          if b.is_ascii_whitespace() || matches!(b, b';' | b')' | b',' ) {
             break;
           }
           i += 1;
@@ -498,54 +519,57 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
     }
   }
 
-  // Fallback: look for a variable assignment that captures a URL literal
-  let url_decls = ["var url", "let url", "const url"];
-  for decl in url_decls.iter() {
-    let mut search_start = 0usize;
-    let needle = decl.as_bytes();
-    while let Some(idx) = find_case_insensitive(bytes, needle, search_start) {
-      search_start = idx + needle.len();
+  if needs_url_var_fallback {
+    // Fallback: look for a variable assignment that captures a URL literal.
+    // (Only enabled when we saw an explicit `location.*(url)` navigation.)
+    let url_decls = ["var url", "let url", "const url"];
+    for decl in url_decls.iter() {
+      let mut search_start = 0usize;
+      let needle = decl.as_bytes();
+      while let Some(idx) = find_case_insensitive(bytes, needle, search_start) {
+        search_start = idx + needle.len();
 
-      if idx > 0 {
-        let prev = bytes[idx - 1];
-        if prev.is_ascii_alphanumeric() || prev == b'_' {
+        if idx > 0 {
+          let prev = bytes[idx - 1];
+          if prev.is_ascii_alphanumeric() || prev == b'_' {
+            continue;
+          }
+        }
+
+        let after = idx + needle.len();
+        if after < bytes.len() {
+          let next = bytes[after];
+          if next.is_ascii_alphanumeric() || next == b'_' {
+            continue;
+          }
+        }
+
+        let mut i = after;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+          i += 1;
+        }
+        if bytes.get(i) != Some(&b'=') {
           continue;
         }
-      }
-
-      let after = idx + needle.len();
-      if after < bytes.len() {
-        let next = bytes[after];
-        if next.is_ascii_alphanumeric() || next == b'_' {
-          continue;
-        }
-      }
-
-      let mut i = after;
-      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      if bytes.get(i) != Some(&b'=') {
-        continue;
-      }
-      i += 1;
-      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      while i < bytes.len() && bytes[i] == b'(' {
         i += 1;
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
           i += 1;
         }
-      }
-
-      if let Some(mut url) = extract_js_string_literal(&decoded, i, MAX_REDIRECT_LEN)
-        .or_else(|| extract_wrapped_js_string_literal(&decoded, i, MAX_REDIRECT_LEN))
-      {
-        if url.starts_with("//") {
-          url = format!("https:{}", url);
+        while i < bytes.len() && bytes[i] == b'(' {
+          i += 1;
+          while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+          }
         }
-        return Some(url);
+
+        if let Some(mut url) = extract_js_string_literal(&decoded, i, MAX_REDIRECT_LEN)
+          .or_else(|| extract_wrapped_js_string_literal(&decoded, i, MAX_REDIRECT_LEN))
+        {
+          if url.starts_with("//") {
+            url = format!("https:{}", url);
+          }
+          return Some(url);
+        }
       }
     }
   }
@@ -1432,6 +1456,19 @@ mod tests {
   fn ignores_data_location_attributes() {
     // data-location attribute should not be mistaken for a JS redirect target.
     let html = r#"<head data-location="{\"minlon\":1}"></head>"#;
+    assert_eq!(extract_js_location_redirect(html), None);
+  }
+
+  #[test]
+  fn ignores_unrelated_url_var_assignments() {
+    // Regression: `extract_js_location_redirect` used to treat any `var url = "...";` as a redirect,
+    // even when the variable was only used for XHR/AJAX calls.
+    let html = r#"<script>
+      if (window.location.pathname == '/') {
+        var url = '/ajax.pl?op=nel';
+        $.ajax({ url: url, type: 'POST' });
+      }
+    </script>"#;
     assert_eq!(extract_js_location_redirect(html), None);
   }
 
