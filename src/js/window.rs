@@ -332,7 +332,10 @@ mod tests {
 
   use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
+  use std::io::{Read, Write};
+  use std::net::TcpListener;
   use std::sync::Mutex;
+  use std::time::{Duration, Instant};
   use vm_js::{PropertyKey, Value};
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
@@ -436,6 +439,45 @@ mod tests {
         lock.push((name.to_string(), value.to_string()));
       }
     }
+  }
+
+  fn accept_with_deadline(listener: &TcpListener, deadline: Instant) -> std::io::Result<std::net::TcpStream> {
+    use std::io::ErrorKind;
+
+    loop {
+      match listener.accept() {
+        Ok((stream, _)) => return Ok(stream),
+        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+          if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+              std::io::ErrorKind::TimedOut,
+              "accept timed out",
+            ));
+          }
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(err) => return Err(err),
+      }
+    }
+  }
+
+  fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1024];
+    loop {
+      let n = stream.read(&mut tmp)?;
+      if n == 0 {
+        break;
+      }
+      buf.extend_from_slice(&tmp[..n]);
+      if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        break;
+      }
+      if buf.len() > 64 * 1024 {
+        break;
+      }
+    }
+    Ok(buf)
   }
 
   #[test]
@@ -546,6 +588,102 @@ mod tests {
     let mut host_sub = WindowHost::new_with_fetcher(dom, "https://example.invalid/sub", fetcher)?;
     let cookie = host_sub.exec_script("document.cookie")?;
     assert_eq!(value_to_string(&host_sub, cookie), "a=b");
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_includes_cookies_from_set_cookie_and_document_cookie() -> Result<()> {
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+      // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+      return Ok(());
+    };
+    listener
+      .set_nonblocking(true)
+      .expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+    let url = format!("http://{addr}/");
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+ 
+      // First request: respond with Set-Cookie so subsequent requests should include it.
+      let mut stream = accept_with_deadline(&listener, deadline).expect("accept first request");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("set_read_timeout");
+      let _req1 = read_http_request(&mut stream).expect("read first request");
+      let body = b"first";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=b; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).expect("write headers");
+      stream.write_all(body).expect("write body");
+      drop(stream);
+ 
+      // Second request must include both the Set-Cookie cookie and the document.cookie cookie.
+      let mut stream = accept_with_deadline(&listener, deadline).expect("accept second request");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("set_read_timeout");
+      let req2 = read_http_request(&mut stream).expect("read second request");
+      let req2_s = String::from_utf8_lossy(&req2).to_ascii_lowercase();
+      assert!(
+        req2_s.contains("cookie:") && req2_s.contains("a=b") && req2_s.contains("c=d"),
+        "expected second fetch request to include cookies a=b and c=d, got:\\n{req2_s}"
+      );
+ 
+      let body = b"second";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).expect("write headers");
+      stream.write_all(body).expect("write body");
+    });
+ 
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let mut host = WindowHost::new_with_fetcher(dom, url, fetcher)?;
+ 
+    host.exec_script(
+      r#"
+      var g = this;
+      fetch("/set")
+        .then(function (r) { return r.text(); })
+        .then(function (_t) {
+          document.cookie = "c=d; Path=/";
+          return fetch("/check").then(function (r) { return r.text(); });
+        })
+        .then(function (t) {
+          g.__fetch_text = t;
+          g.__cookie = document.cookie;
+        })
+        .catch(function (e) {
+          g.__err = String(e && e.stack || e);
+        });
+      "#,
+    )?;
+ 
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+ 
+    if let Some(err) = get_global_prop_utf8(&mut host, "__err") {
+      panic!("fetch script errored: {err}");
+    }
+ 
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__fetch_text").as_deref(),
+      Some("second")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__cookie").as_deref(),
+      Some("a=b; c=d")
+    );
+ 
+    server.join().expect("server thread panicked");
     Ok(())
   }
 
