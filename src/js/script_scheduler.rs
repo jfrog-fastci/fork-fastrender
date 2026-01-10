@@ -1465,6 +1465,38 @@ mod tests {
   }
 
   #[test]
+  fn nomodule_inline_script_executes_when_module_scripts_unsupported() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    let mut spec = inline_script("RUN");
+    spec.nomodule_attr = true;
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(host.log, vec!["RUN".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_external_script_executes_when_module_scripts_unsupported() -> Result<()> {
+    let mut host = TestHost::new(false);
+    host
+      .loader
+      .blocking_sources
+      .insert("ext.js".to_string(), "EXT".to_string());
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    let mut spec = external_script("ext.js", false, false);
+    spec.nomodule_attr = true;
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(host.log, vec!["EXT".to_string()]);
+    Ok(())
+  }
+
+  #[test]
   fn external_defer_scripts_execute_after_parsing_complete_in_order() -> Result<()> {
     let mut host = TestHost::new(false);
     let mut event_loop = EventLoop::<TestHost>::new();

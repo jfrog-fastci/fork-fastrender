@@ -8440,7 +8440,7 @@ fn queue_dynamic_script_task_external(
   url: String,
   destination: FetchDestination,
   nomodule_attr: bool,
-  crossorigin: Option<CorsMode>,
+  crossorigin: Option<crate::resource::CorsMode>,
   integrity_attr_present: bool,
   integrity: Option<String>,
 ) -> Result<(), VmError> {
