@@ -6936,6 +6936,9 @@ html, body { margin: 0; padding: 0; }
       eof_set: false,
       deadline: None,
       parse_task_scheduled: false,
+      resume_task_scheduled: false,
+      host_snapshot_committed: false,
+      last_synced_host_dom_generation: 0,
     });
 
     // Simulate a pending script-blocking stylesheet. Async scripts must not be delayed by this.
