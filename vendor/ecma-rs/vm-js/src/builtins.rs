@@ -428,7 +428,7 @@ pub fn object_keys(
   // remain reachable during GC.
   scope.push_root(Value::Object(obj))?;
 
-  let own_keys = scope.heap().ordinary_own_property_keys(obj)?;
+  let own_keys = scope.ordinary_own_property_keys(obj)?;
   let mut names: Vec<crate::GcString> = Vec::new();
   names
     .try_reserve_exact(own_keys.len())
@@ -441,7 +441,7 @@ pub fn object_keys(
     let PropertyKey::String(key_str) = key else {
       continue;
     };
-    let Some(desc) = scope.heap().object_get_own_property(obj, &key)? else {
+    let Some(desc) = scope.ordinary_get_own_property(obj, key)? else {
       continue;
     };
     if desc.enumerable {
@@ -491,13 +491,14 @@ pub fn object_assign(
       Value::Undefined | Value::Null => continue,
       other => scope.to_object(vm, host, hooks, other)?,
     };
+    scope.push_root(Value::Object(source))?;
 
-    let keys = scope.heap().ordinary_own_property_keys(source)?;
+    let keys = scope.ordinary_own_property_keys(source)?;
     for (j, key) in keys.into_iter().enumerate() {
       if j % 1024 == 0 {
         vm.tick()?;
       }
-      let Some(desc) = scope.heap().object_get_own_property(source, &key)? else {
+      let Some(desc) = scope.ordinary_get_own_property(source, key)? else {
         continue;
       };
       if !desc.enumerable {
@@ -3847,6 +3848,14 @@ pub fn string_constructor_construct(
     obj,
     marker_key,
     data_desc(Value::String(prim), true, false, false),
+  )?;
+
+  let len = scope.heap().get_string(prim)?.len_code_units();
+  let length_key = string_key(scope, "length")?;
+  scope.define_property(
+    obj,
+    length_key,
+    data_desc(Value::Number(len as f64), false, false, false),
   )?;
 
   // Best-effort: if `new_target.prototype` is an object, use it.

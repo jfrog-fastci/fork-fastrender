@@ -264,6 +264,45 @@ fn object_keys_boxes_primitive_target() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_keys_on_string_returns_index_keys() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+
+  let mut scope = rt.heap.scope();
+
+  let keys = get_own_data_property(&mut scope, object, "keys")?.expect("Object.keys exists");
+  let Value::Object(keys) = keys else {
+    panic!("Object.keys should be a function object");
+  };
+
+  let s = scope.alloc_string("ab")?;
+  let args = [Value::String(s)];
+  let result = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(keys), Value::Object(object), &args)?;
+  let Value::Object(arr) = result else {
+    panic!("Object.keys should return an object");
+  };
+
+  let length = get_own_data_property(&mut scope, arr, "length")?.expect("length exists");
+  assert_eq!(length, Value::Number(2.0));
+
+  let v0 = get_own_data_property(&mut scope, arr, "0")?.expect("key 0 exists");
+  let Value::String(v0s) = v0 else {
+    panic!("expected Object.keys result[0] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v0s)?.to_utf8_lossy(), "0");
+
+  let v1 = get_own_data_property(&mut scope, arr, "1")?.expect("key 1 exists");
+  let Value::String(v1s) = v1 else {
+    panic!("expected Object.keys result[1] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v1s)?.to_utf8_lossy(), "1");
+
+  Ok(())
+}
+
+#[test]
 fn object_get_prototype_of_boxes_primitives() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
@@ -397,6 +436,43 @@ fn object_assign_boxes_primitive_target() -> Result<(), VmError> {
     get_own_data_property(&mut scope, out_obj, "a")?,
     Some(Value::Number(2.0))
   );
+
+  Ok(())
+}
+
+#[test]
+fn object_assign_copies_string_index_properties() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+
+  let mut scope = rt.heap.scope();
+
+  let assign = get_own_data_property(&mut scope, object, "assign")?.expect("Object.assign exists");
+  let Value::Object(assign) = assign else {
+    panic!("Object.assign should be a function object");
+  };
+
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+
+  let source = scope.alloc_string("ab")?;
+  let args = [Value::Object(target), Value::String(source)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(assign), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Object(target));
+
+  let v0 = get_own_data_property(&mut scope, target, "0")?.expect("target[0] exists");
+  let Value::String(v0s) = v0 else {
+    panic!("expected target[0] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v0s)?.to_utf8_lossy(), "a");
+
+  let v1 = get_own_data_property(&mut scope, target, "1")?.expect("target[1] exists");
+  let Value::String(v1s) = v1 else {
+    panic!("expected target[1] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v1s)?.to_utf8_lossy(), "b");
 
   Ok(())
 }

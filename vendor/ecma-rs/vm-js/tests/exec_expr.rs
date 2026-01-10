@@ -201,3 +201,12 @@ fn assignment_addition_works_for_strings_and_numbers() {
   let value = rt.exec_script(r#"var n = 1; n += 2; n"#).unwrap();
   assert_eq!(value, Value::Number(3.0));
 }
+
+#[test]
+fn string_primitive_has_length_and_index_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""abc".length === 3 && "abc"[1] === "b" && ("abc"[9] === undefined)"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

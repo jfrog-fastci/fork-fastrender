@@ -2040,6 +2040,23 @@ impl Heap {
     Ok(sym)
   }
 
+  pub(crate) fn internal_string_data_symbol(&self) -> Option<GcSymbol> {
+    const STRING_DATA_KEY: [u16; 25] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 116, 114, 105,
+      110, 103, 68, 97, 116, 97,
+    ];
+
+    for entry in &self.symbol_registry {
+      let Ok(js) = self.get_string(entry.key) else {
+        continue;
+      };
+      if js.as_code_units() == STRING_DATA_KEY {
+        return Some(entry.sym);
+      }
+    }
+    None
+  }
+
   /// Gets an object's own property descriptor.
   ///
   /// This does not currently walk the prototype chain.

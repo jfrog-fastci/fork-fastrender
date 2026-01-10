@@ -1139,8 +1139,7 @@ pub fn import_attributes_from_options(
     };
 
     let Some(desc) = scope
-      .heap()
-      .object_get_own_property(attributes_obj, &key)
+      .ordinary_get_own_property(attributes_obj, key)
       .map_err(ImportCallError::Vm)?
     else {
       continue;

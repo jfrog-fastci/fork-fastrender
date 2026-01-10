@@ -1,5 +1,5 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
-use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 impl<'a> Scope<'a> {
   pub fn object_get_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
@@ -28,7 +28,22 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: PropertyKey,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
-    self.heap().object_get_own_property(obj, &key)
+    if let Some(desc) = self.heap().object_get_own_property(obj, &key)? {
+      return Ok(Some(desc));
+    }
+
+    let Some((_string_data, _index)) = self.string_object_in_range_index(obj, &key)? else {
+      return Ok(None);
+    };
+
+    Ok(Some(PropertyDescriptor {
+      enumerable: true,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Undefined,
+        writable: false,
+      },
+    }))
   }
 
   /// ECMAScript `[[DefineOwnProperty]]` for ordinary objects.
@@ -84,6 +99,8 @@ impl<'a> Scope<'a> {
   ) -> Result<bool, VmError> {
     if self.heap().object_is_array(obj)? {
       self.array_define_own_property(obj, key, desc)
+    } else if self.string_object_in_range_index(obj, &key)?.is_some() {
+      self.string_define_own_property_index(obj, key, desc)
     } else {
       self.ordinary_define_own_property(obj, key, desc)
     }
@@ -138,7 +155,10 @@ impl<'a> Scope<'a> {
 
   /// ECMAScript `[[HasProperty]]` for ordinary objects.
   pub fn ordinary_has_property(&self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
-    self.heap().has_property(obj, &key)
+    if self.heap().has_property(obj, &key)? {
+      return Ok(true);
+    }
+    Ok(self.string_object_in_range_index(obj, &key)?.is_some())
   }
 
   /// ECMAScript `[[Get]]` for ordinary objects.
@@ -149,6 +169,12 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
+    if self.heap().object_get_own_property(obj, &key)?.is_none() {
+      if let Some(value) = self.string_object_get_index_value(obj, &key)? {
+        return Ok(value);
+      }
+    }
+
     let Some(desc) = self.heap().get_property(obj, &key)? else {
       return Ok(Value::Undefined);
     };
@@ -213,6 +239,10 @@ impl<'a> Scope<'a> {
           }
         }
       };
+    }
+
+    if let Some(value) = scope.string_object_get_index_value(obj, &key)? {
+      return Ok(value);
     }
 
     // Host hook for "exotic" property getters (e.g. DOM named properties) runs before walking the
@@ -470,6 +500,10 @@ impl<'a> Scope<'a> {
       },
     ];
     self.push_roots(&roots)?;
+
+    if self.string_object_in_range_index(obj, &key)?.is_some() {
+      return Ok(false);
+    }
     self.heap_mut().ordinary_delete(obj, key)
   }
 
@@ -498,12 +532,50 @@ impl<'a> Scope<'a> {
       return Ok(result);
     }
 
+    if self.string_object_in_range_index(obj, &key)?.is_some() {
+      return Ok(false);
+    }
+
     self.heap_mut().ordinary_delete(obj, key)
   }
 
   /// ECMAScript `[[OwnPropertyKeys]]` for ordinary objects.
-  pub fn ordinary_own_property_keys(&self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
-    self.heap().ordinary_own_property_keys(obj)
+  pub fn ordinary_own_property_keys(&mut self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
+    let Some(string_data) = self.string_object_data(obj)? else {
+      return self.heap().ordinary_own_property_keys(obj);
+    };
+
+    self.push_root(Value::Object(obj))?;
+    self.push_root(Value::String(string_data))?;
+
+    let len = self.heap().get_string(string_data)?.len_code_units();
+    let own_keys = self.heap().ordinary_own_property_keys(obj)?;
+
+    let out_len = len
+      .checked_add(own_keys.len())
+      .ok_or(VmError::OutOfMemory)?;
+    let mut out: Vec<PropertyKey> = Vec::new();
+    out
+      .try_reserve_exact(out_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    for i in 0..len {
+      let key_s = self.alloc_string(&i.to_string())?;
+      self.push_root(Value::String(key_s))?;
+      out.push(PropertyKey::from_string(key_s));
+    }
+
+    for key in own_keys {
+      if let Some(idx) = self.heap().array_index(&key) {
+        if idx as usize >= len {
+          out.push(key);
+        }
+      } else {
+        out.push(key);
+      }
+    }
+
+    Ok(out)
   }
 
   pub fn create_data_property(
@@ -735,6 +807,114 @@ impl<'a> Scope<'a> {
 
     if !new_writable {
       self.heap_mut().array_set_length_writable(obj, false)?;
+    }
+
+    Ok(true)
+  }
+
+  fn string_object_data(&self, obj: GcObject) -> Result<Option<GcString>, VmError> {
+    let Some(marker_sym) = self.heap().internal_string_data_symbol() else {
+      return Ok(None);
+    };
+    let marker_key = PropertyKey::from_symbol(marker_sym);
+    match self
+      .heap()
+      .object_get_own_data_property_value(obj, &marker_key)?
+    {
+      Some(Value::String(s)) => Ok(Some(s)),
+      _ => Ok(None),
+    }
+  }
+
+  fn string_object_in_range_index(
+    &self,
+    obj: GcObject,
+    key: &PropertyKey,
+  ) -> Result<Option<(GcString, u32)>, VmError> {
+    let Some(string_data) = self.string_object_data(obj)? else {
+      return Ok(None);
+    };
+    let Some(index) = self.heap().array_index(key) else {
+      return Ok(None);
+    };
+    let len = self.heap().get_string(string_data)?.len_code_units();
+    if index as usize >= len {
+      return Ok(None);
+    }
+    Ok(Some((string_data, index)))
+  }
+
+  fn string_object_get_index_value(
+    &mut self,
+    obj: GcObject,
+    key: &PropertyKey,
+  ) -> Result<Option<Value>, VmError> {
+    let Some((string_data, index)) = self.string_object_in_range_index(obj, key)? else {
+      return Ok(None);
+    };
+    let idx = index as usize;
+    let unit = *self
+      .heap()
+      .get_string(string_data)?
+      .as_code_units()
+      .get(idx)
+      .ok_or(VmError::InvariantViolation(
+        "string_object_get_index_value: index out of bounds",
+      ))?;
+
+    let mut alloc_scope = self.reborrow();
+    alloc_scope.push_roots(&[Value::Object(obj), Value::String(string_data)])?;
+    let s = alloc_scope.alloc_string_from_u16_vec(vec![unit])?;
+    Ok(Some(Value::String(s)))
+  }
+
+  fn string_define_own_property_index(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<bool, VmError> {
+    desc.validate()?;
+
+    if self.heap().object_get_own_property(obj, &key)?.is_some() {
+      return self.ordinary_define_own_property(obj, key, desc);
+    }
+
+    let Some((string_data, index)) = self.string_object_in_range_index(obj, &key)? else {
+      return self.ordinary_define_own_property(obj, key, desc);
+    };
+    let idx = index as usize;
+    let unit = *self
+      .heap()
+      .get_string(string_data)?
+      .as_code_units()
+      .get(idx)
+      .ok_or(VmError::InvariantViolation(
+        "string_define_own_property_index: index out of bounds",
+      ))?;
+
+    if desc.is_accessor_descriptor() {
+      return Ok(false);
+    }
+    if matches!(desc.configurable, Some(true)) {
+      return Ok(false);
+    }
+    if let Some(enumerable) = desc.enumerable {
+      if !enumerable {
+        return Ok(false);
+      }
+    }
+    if matches!(desc.writable, Some(true)) {
+      return Ok(false);
+    }
+    if let Some(value) = desc.value {
+      let Value::String(s) = value else {
+        return Ok(false);
+      };
+      let v_units = self.heap().get_string(s)?.as_code_units();
+      if v_units.len() != 1 || v_units[0] != unit {
+        return Ok(false);
+      }
     }
 
     Ok(true)
