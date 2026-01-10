@@ -1708,11 +1708,10 @@ impl BrowserTab {
     Ok(true)
   }
 
-  fn run_event_loop_until_idle_with_render_hook(
+  fn run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
     &mut self,
     limits: RunLimits,
     mut on_error: impl FnMut(Error),
-    mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
     self.event_loop.run_until_idle_handling_errors_with_hook(
       &mut self.host,
@@ -1725,20 +1724,14 @@ impl BrowserTab {
           event_loop.clear_all_pending_work();
           return Ok(());
         }
-        if host.document.is_dirty() {
-          if host.document.render_if_needed()?.is_some() {
-            on_render();
-          }
-        }
         Ok(())
       },
     )
- 
   }
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let trace = self.trace.clone();
-    let outcome = self.run_event_loop_until_idle_with_render_hook(
+    let outcome = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
       limits,
       move |err| {
         // Match browser behavior: report uncaught task errors but keep the event loop running.
@@ -1747,7 +1740,6 @@ impl BrowserTab {
           span.arg_str("message", &err.to_string());
         }
       },
-      || {},
     )?;
     if matches!(outcome, RunUntilIdleOutcome::Idle) {
       let _ = self.commit_pending_navigation()?;
@@ -1801,9 +1793,12 @@ impl BrowserTab {
       }
       frames_executed += 1;
 
-      match self.run_event_loop_until_idle_with_render_hook(limits, &mut report_error, || {
-        frames_rendered = frames_rendered.saturating_add(1);
-      })? {
+      // Drive event-loop work (tasks/microtasks/timers) first. Rendering is handled outside the event
+      // loop spin so the run limits' wall-time budget only applies to script execution.
+      match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
+        limits,
+        &mut report_error,
+      )? {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
           return Ok(RunUntilStableOutcome::Stopped {
@@ -1834,19 +1829,9 @@ impl BrowserTab {
           max_microtasks: limits.max_microtasks,
           max_wall_time: limits.max_wall_time,
         };
-        let mut render_hook = |host: &mut BrowserTabHost,
-                               _event_loop: &mut EventLoop<BrowserTabHost>|
-         -> Result<()> {
-          if host.document.render_if_needed()?.is_some() {
-            frames_rendered += 1;
-          }
-          Ok(())
-        };
-        match self.event_loop.run_until_idle_handling_errors_with_hook(
-          &mut self.host,
+        match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
           microtask_limits,
           &mut report_error,
-          &mut render_hook,
         )? {
           RunUntilIdleOutcome::Idle => {}
           RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
