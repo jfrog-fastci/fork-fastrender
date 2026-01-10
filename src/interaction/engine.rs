@@ -17,7 +17,6 @@ use crate::tree::fragment_tree::FragmentTree;
 use crate::ui::messages::{PointerButton, PointerModifiers};
 use std::collections::HashMap;
 use std::sync::Arc;
-use url::Url;
 
 use super::dom_mutation;
 use super::fragment_geometry::content_rect_for_border_rect;
