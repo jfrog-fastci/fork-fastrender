@@ -63,13 +63,12 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
       false,
     ),
   };
-
   let id = doc.push_node(kind, Some(parent), inert_subtree);
   if is_html_script {
     // `dom2` initializes `Node.script_force_async=true` for HTML script elements, but renderer DOM
     // trees come from HTML parsing. Mirror the HTML parser behavior and force it to `false` for
     // imported parser-created scripts.
-    doc.node_mut(id).script_force_async = false;
+    doc.nodes[id.index()].script_force_async = false;
   }
   id
 }
@@ -185,7 +184,7 @@ impl Document {
         if !tag_name.eq_ignore_ascii_case("script") {
           continue;
         }
-        if !(namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE) {
+        if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
           continue;
         }
         node.script_force_async = false;

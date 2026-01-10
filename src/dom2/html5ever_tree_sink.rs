@@ -574,8 +574,7 @@ impl TreeSink for Dom2TreeSink {
 
     let mut doc = self.document.borrow_mut();
     let id = doc.push_node(kind, None, inert_subtree);
-    {
-      let node = doc.node_mut(id);
+    if let Some(node) = doc.nodes.get_mut(id.index()) {
       node.mathml_annotation_xml_integration_point = flags.mathml_annotation_xml_integration_point;
       if is_html_script {
         node.script_force_async = false;
