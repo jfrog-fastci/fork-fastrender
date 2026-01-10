@@ -440,6 +440,30 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     }
   }
 
+  pub fn from_native_call(
+    vm: &'a mut Vm,
+    scope: &'a mut Scope<'_>,
+    host: &'a mut dyn VmHost,
+    hooks: &'a mut dyn VmHostHooks,
+    state: &'a VmJsWebIdlBindingsState<Host>,
+  ) -> Self {
+    let cx = webidl_vm_js::VmJsWebIdlCx::from_native_call(
+      vm,
+      scope,
+      host,
+      hooks,
+      state.limits,
+      state.hooks.as_ref(),
+    );
+    Self {
+      state,
+      cx,
+      cached_next_key: None,
+      cached_done_key: None,
+      cached_value_key: None,
+    }
+  }
+
   fn intrinsics(&self) -> Result<Intrinsics, VmError> {
     self.cx.vm.intrinsics().ok_or(VmError::InvariantViolation(
       "vm-js intrinsics not installed; expected an initialized Realm",
@@ -523,7 +547,7 @@ fn dispatch_native_call<Host: 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
   args: &[Value],
@@ -549,9 +573,29 @@ fn dispatch_native_call<Host: 'static>(
     ));
   }
 
-  let host = host_from_vm_host::<Host>(host)?;
+  // `VmJsWebIdlCx::from_native_call` needs access to the active embedder `VmHost` and `VmHostHooks`
+  // so WebIDL conversions can call back into JS without falling back to dummy-host execution.
+  //
+  // We also need to pass the host context to the host function body as `&mut Host`.
+  //
+  // `vm-js` native handlers give us `&mut dyn VmHost`; we downcast it to `&mut Host`. Building a
+  // WebIDL conversion context also wants a `&mut dyn VmHost`, but Rust cannot express "reborrow this
+  // same host for nested JS calls" while also passing `&mut Host` into the host function body.
+  // Capture raw pointers first so we can rehydrate the trait objects for the conversion context.
+  let host_ptr: *mut dyn VmHost = host;
+  let hooks_ptr: *mut dyn VmHostHooks = hooks;
 
-  let mut rt = VmJsWebIdlBindingsCx::new_in_scope(vm, scope, state);
+  let host = host_from_vm_host::<Host>(host)?;
+  // SAFETY: `host_ptr`/`hooks_ptr` came from the `&mut` parameters passed to this native handler.
+  // The returned `VmJsWebIdlBindingsCx` may call back into JS while the host function body is
+  // executing, and those nested calls must observe the same embedder host + hooks.
+  let mut rt = VmJsWebIdlBindingsCx::from_native_call(
+    vm,
+    scope,
+    unsafe { &mut *host_ptr },
+    unsafe { &mut *hooks_ptr },
+    state,
+  );
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -564,7 +608,7 @@ fn dispatch_native_construct<Host: 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -600,8 +644,18 @@ fn dispatch_native_construct<Host: 'static>(
     ));
   }
 
+  // See `dispatch_native_call` for why we capture raw pointers here.
+  let host_ptr: *mut dyn VmHost = host;
+  let hooks_ptr: *mut dyn VmHostHooks = hooks;
+
   let host = host_from_vm_host::<Host>(host)?;
-  let mut rt = VmJsWebIdlBindingsCx::new_in_scope(vm, scope, state);
+  let mut rt = VmJsWebIdlBindingsCx::from_native_call(
+    vm,
+    scope,
+    unsafe { &mut *host_ptr },
+    unsafe { &mut *hooks_ptr },
+    state,
+  );
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -1652,7 +1706,9 @@ mod tests {
   }
 
   #[derive(Default)]
-  struct TestHost;
+  struct TestHost {
+    saw_record_host: Cell<bool>,
+  }
 
   fn add<'a>(
     rt: &mut VmJsWebIdlBindingsCx<'a, TestHost>,
@@ -1696,6 +1752,76 @@ mod tests {
     let mut host = TestHost::default();
     let out = runtime.exec_script_with_host(&mut host, "add(1, 2)")?;
     assert!(matches!(out, Value::Number(n) if (n - 3.0).abs() < f64::EPSILON));
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_bindings_runtime_webidl_conversions_preserve_vm_host() -> Result<(), VmError> {
+    fn record_host(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Some(host) = host.as_any_mut().downcast_mut::<TestHost>() else {
+        return Err(VmError::TypeError("expected WebIDL conversion to call JS with the real VmHost"));
+      };
+      host.saw_record_host.set(true);
+      Ok(Value::Undefined)
+    }
+
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<TestHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    {
+      let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+      let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+
+      let global = cx.global_object()?;
+
+      // Install recordHost() as a raw vm-js native function so it directly receives the `VmHost`
+      // passed through nested JS calls made by WebIDL conversions.
+      let record_host_id = cx.cx.vm.register_native_call(record_host)?;
+      let record_host_name = cx.cx.scope.alloc_string("recordHost")?;
+      cx.cx.scope.push_root(Value::String(record_host_name))?;
+      let record_host_fn =
+        cx.cx
+          .scope
+          .alloc_native_function(record_host_id, None, record_host_name, 0)?;
+
+      cx.define_data_property_str(
+        global,
+        "recordHost",
+        Value::Object(record_host_fn),
+        DataPropertyAttributes::new(true, true, true),
+      )?;
+
+      let add = cx.create_function("add", 2, add)?;
+      cx.define_data_property_str(
+        global,
+        "add",
+        add,
+        DataPropertyAttributes::new(true, true, true),
+      )?;
+    }
+
+    let mut host = TestHost::default();
+    let out = runtime.exec_script_with_host(
+      &mut host,
+      "add({ valueOf() { recordHost(); return 1; } }, 2)",
+    )?;
+    assert!(matches!(out, Value::Number(n) if (n - 3.0).abs() < f64::EPSILON));
+    assert!(host.saw_record_host.get());
     Ok(())
   }
 
