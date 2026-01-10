@@ -313,6 +313,7 @@ fn grid_item_parallel_flow_required_block_size(
   item: &FragmentNode,
   axes: FragmentAxes,
   fragmentainer_size: f32,
+  item_abs_start: f32,
 ) -> f32 {
   let axis = axis_from_fragment_axes(axes);
   let item_block_size = axis.block_size(&item.bounds).max(0.0);
@@ -358,7 +359,7 @@ fn grid_item_parallel_flow_required_block_size(
           continue;
         }
         let effective = pos + shift;
-        let remainder = effective.rem_euclid(fragmentainer_size);
+        let remainder = (item_abs_start + effective).rem_euclid(fragmentainer_size);
         // If the forced break already aligns to a fragmentainer boundary, no extra space is needed.
         let advance = (fragmentainer_size - remainder).rem_euclid(fragmentainer_size);
         shift += advance;
@@ -490,6 +491,8 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
           if child_block_size <= BREAK_EPSILON {
             continue;
           }
+          let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+          let child_abs_end = child_abs_start + child_block_size;
 
           // Discover forced breaks inside this grid item and model them as inserting blank space up
           // to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout).
@@ -504,7 +507,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
           let mut collection = BreakCollection::default();
           collect_break_opportunities(
             child,
-            0.0,
+            child_abs_start,
             &mut collection,
             0,
             0,
@@ -520,13 +523,13 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
             .filter(|o| matches!(o.strength, BreakStrength::Forced))
             .map(|o| o.pos)
             .collect();
-          positions.retain(|p| *p > BREAK_EPSILON && *p < child_block_size - BREAK_EPSILON);
+          positions.retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
           let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
           else {
             continue;
           };
 
-          apply_parallel_flow_shifts_to_descendants(child, 0.0, 0.0, axis, &shifts);
+          apply_parallel_flow_shifts_to_descendants(child, child_abs_start, 0.0, axis, &shifts);
         }
       }
     }
@@ -779,6 +782,7 @@ pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
 
 fn grid_container_parallel_flow_required_block_size(
   node: &FragmentNode,
+  abs_start: f32,
   axis: &FragmentAxis,
   axes: FragmentAxes,
   fragmentainer_size: f32,
@@ -821,8 +825,9 @@ fn grid_container_parallel_flow_required_block_size(
       child_block_size,
       node_block_size,
     );
+    let child_abs_start = abs_start + child_start;
     let child_required =
-      grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size);
+      grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start);
     required = required.max(child_start + child_required);
   }
 
@@ -920,6 +925,7 @@ pub(crate) fn parallel_flow_content_extent(
     let node_block_size = axis.block_size(&node.bounds);
     if let Some(required) = grid_container_parallel_flow_required_block_size(
       node,
+      abs_start,
       axis,
       axes,
       fragmentainer_size,
@@ -2242,9 +2248,14 @@ pub(crate) fn clip_node(
   let mut node_block_size = original_node_block_size;
   let (node_flow_start, mut node_flow_end) =
     axis.flow_range(parent_abs_flow_start, parent_block_size, &node.bounds);
-  if let Some(required) =
-    grid_container_parallel_flow_required_block_size(node, axis, axes, fragmentainer_size, context)
-  {
+  if let Some(required) = grid_container_parallel_flow_required_block_size(
+    node,
+    node_flow_start,
+    axis,
+    axes,
+    fragmentainer_size,
+    context,
+  ) {
     node_block_size = node_block_size.max(required);
     node_flow_end = node_flow_start + node_block_size;
   }
@@ -2441,7 +2452,7 @@ pub(crate) fn clip_node(
         .flow_range(node_flow_start, original_node_block_size, &child.bounds)
         .0;
       let child_required =
-        grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size);
+        grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start);
       let child_abs_end = child_abs_start + child_required;
       if child_abs_end <= fragment_start + BREAK_EPSILON
         || child_abs_start >= fragment_end - BREAK_EPSILON
@@ -5138,6 +5149,83 @@ mod tests {
       item_second.slice_info.slice_offset > BREAK_EPSILON,
       "expected grid item continuation to have non-zero slice offset, got {:?}",
       item_second.slice_info
+    );
+  }
+
+  #[test]
+  fn grid_parallel_flow_forced_break_shifts_respect_item_offset() {
+    let axes = default_axes();
+    let axis = axis_from_fragment_axes(axes);
+    let fragmentainer_size = 100.0;
+
+    let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 80.0), vec![]);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_after = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    let mut first = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 10.0), vec![]);
+    first.style = Some(break_style);
+    let second = FragmentNode::new_block(Rect::from_xywh(0.0, 10.0, 100.0, 10.0), vec![]);
+    let item =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 20.0), vec![first, second]);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 80.0, 100.0, 20.0),
+      vec![item],
+      Arc::new(grid_style),
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let mut root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![leading, grid],
+    );
+
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut root,
+      axes,
+      fragmentainer_size,
+      FragmentationContext::Page,
+    );
+
+    let grid = &root.children[1];
+    let item = &grid.children[0];
+    let shifted_second = &item.children[1];
+
+    assert!(
+      (shifted_second.bounds.y() - 20.0).abs() < BREAK_EPSILON,
+      "expected second block to shift down by 10px (local y≈20), got y={}",
+      shifted_second.bounds.y()
+    );
+
+    let root_block_size = axis.block_size(&root.bounds);
+    let grid_abs_start = axis.flow_range(0.0, root_block_size, &grid.bounds).0;
+    let item_abs_start =
+      axis.flow_range(grid_abs_start, axis.block_size(&grid.bounds), &item.bounds).0;
+    let second_abs_start =
+      axis.flow_range(item_abs_start, axis.block_size(&item.bounds), &shifted_second.bounds).0;
+    assert!(
+      (second_abs_start - 100.0).abs() < BREAK_EPSILON,
+      "expected second block to start at global flow pos 100, got {second_abs_start}"
+    );
+
+    let required =
+      grid_item_parallel_flow_required_block_size(item, axes, fragmentainer_size, item_abs_start);
+    assert!(
+      (required - 30.0).abs() < BREAK_EPSILON,
+      "expected required block size to be 30px (20 + 10 blank), got {required}"
     );
   }
 
