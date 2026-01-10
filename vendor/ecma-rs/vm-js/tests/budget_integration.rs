@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -276,5 +277,46 @@ fn builtins_object_keys_consumes_fuel_in_native_loop() {
     )
     .unwrap_err();
 
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn holey_array_literal_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Large holey array literals previously performed `O(N)` work with only the enclosing expression
+  // tick, allowing budget checks to be bypassed.
+  let src = format!("[{}];", ",".repeat(100_000));
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn object_literal_methods_or_shorthand_consume_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Object literal methods don't evaluate nested expressions, so a large number of members could
+  // previously do `O(N)` work while consuming only the enclosing expression tick.
+  let mut src = String::from("({");
+  for i in 0..20_000 {
+    write!(src, "m{i}(){{}},").unwrap();
+  }
+  src.push_str("});");
+
+  let err = rt.exec_script(&src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }

@@ -1162,7 +1162,8 @@ impl Vm {
   /// The current AST evaluator (`exec.rs`) charges **one tick** at the start of every statement and
   /// expression evaluation. Additional ticks are charged in a few internal loops that may
   /// otherwise run without evaluating any statements/expressions (e.g. `for(;;){}` with an empty
-  /// body), and when entering [`Vm::call`] / [`Vm::construct`].
+  /// body), in some literal-construction loops (arrays/objects/tagged templates), and when
+  /// entering [`Vm::call`] / [`Vm::construct`].
   pub fn tick(&mut self) -> Result<(), VmError> {
     if let Some(fuel) = &mut self.budget.budget.fuel {
       if *fuel == 0 {

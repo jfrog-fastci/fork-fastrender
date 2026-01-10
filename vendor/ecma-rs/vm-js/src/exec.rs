@@ -918,6 +918,11 @@ impl<'a> Evaluator<'a> {
   /// Some constructs (e.g. `for(;;){}` with an empty body and no condition/update expressions) may
   /// otherwise loop without evaluating any statements/expressions per iteration; those paths tick
   /// explicitly as well.
+  ///
+  /// Additional ticks are also charged inside some literal-construction loops (for example: holey
+  /// array literals, object literals with shorthand/method members, tagged template objects) to
+  /// ensure that large `O(N)` literal processing cannot run for an unbounded amount of time within
+  /// a single expression tick.
   #[inline]
   fn tick(&mut self) -> Result<(), VmError> {
     self.vm.tick()
@@ -3465,6 +3470,11 @@ impl<'a> Evaluator<'a> {
         continue;
       };
 
+      // Per-segment tick: tagged templates can contain large numbers of segments, and creating the
+      // template object involves allocation + property definition even when no nested expressions
+      // are evaluated.
+      self.tick()?;
+
       let mut elem_scope = scope.reborrow();
       let cooked_s = elem_scope.alloc_string(s)?;
       elem_scope.push_root(Value::String(cooked_s))?;
@@ -3518,6 +3528,9 @@ impl<'a> Evaluator<'a> {
     for elem in &expr.elements {
       match elem {
         LitArrElem::Empty => {
+          // Per-hole tick: `[,,,,]` can have arbitrarily many elements without any nested
+          // expression evaluations.
+          self.tick()?;
           next_index = next_index.saturating_add(1);
         }
         LitArrElem::Rest(rest_expr) => {
@@ -3534,9 +3547,17 @@ impl<'a> Evaluator<'a> {
           )?;
           spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
 
-          while let Some(value) =
-            iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut spread_scope, &mut iter)?
-          {
+          while let Some(value) = iterator::iterator_step_value(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut spread_scope,
+            &mut iter,
+          )? {
+            // Per-spread-element tick: spreading large iterators should be budgeted even when the
+            // iterator's `next()` is native/cheap.
+            self.tick()?;
+
             let idx = next_index;
             next_index = next_index.saturating_add(1);
 
@@ -3596,6 +3617,11 @@ impl<'a> Evaluator<'a> {
       .object_set_prototype(obj, Some(intr.object_prototype()))?;
 
     for member in &expr.members {
+      // Per-member tick: object literals can do significant work per member even when no nested
+      // expressions are evaluated (e.g. shorthand props and methods/getters/setters with direct
+      // keys).
+      self.tick()?;
+
       let mut member_scope = obj_scope.reborrow();
       let member = &member.stx.typ;
 
@@ -3928,6 +3954,10 @@ impl<'a> Evaluator<'a> {
 
           let keys = member_scope.ordinary_own_property_keys(src_obj)?;
           for key in keys {
+            // Per-copied-property tick: spreading a large object can be `O(N)` without evaluating
+            // nested expressions.
+            self.tick()?;
+
             let mut key_scope = member_scope.reborrow();
             key_scope.push_root(Value::Object(src_obj))?;
             match key {
