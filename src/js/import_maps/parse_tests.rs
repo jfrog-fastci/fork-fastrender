@@ -1,4 +1,4 @@
-use super::{create_import_map_parse_result, parse_import_map_string};
+use super::{create_import_map_parse_result, parse_import_map_string, resolve_imports_match};
 use super::{ImportMapError, ImportMapWarningKind};
 
 use url::Url;
@@ -151,6 +151,37 @@ fn trailing_slash_mismatch_sets_address_to_null() {
     w.kind,
     ImportMapWarningKind::TrailingSlashMismatch { .. }
   )));
+}
+
+#[test]
+fn url_serialization_must_not_create_prefix_keys_with_non_slash_addresses() {
+  // Edge case: URL serialization can add an implicit trailing slash. "https://example.com"
+  // normalizes to "https://example.com/" (path '/'), which makes it a prefix key.
+  //
+  // Ensure the parser enforces the trailing-slash rule based on the *normalized* key string so we
+  // never end up with a prefix key mapping to a non-slash URL (which would violate the resolver's
+  // invariants).
+  let base = Url::parse("https://example.com/app.html").unwrap();
+  let (map, warnings) = parse_import_map_string(
+    r#"{ "imports": { "https://example.com": "https://cdn.example.com/file.js" } }"#,
+    &base,
+  )
+  .unwrap();
+
+  assert_eq!(
+    map.imports.entries,
+    vec![("https://example.com/".to_string(), None)]
+  );
+  assert!(warnings.iter().any(|w| matches!(
+    w.kind,
+    ImportMapWarningKind::TrailingSlashMismatch { .. }
+  )));
+
+  // Most importantly: resolution must not hit the prefix invariant debug-assert.
+  let specifier = "https://example.com/foo.js";
+  let as_url = Url::parse(specifier).unwrap();
+  let result = resolve_imports_match(specifier, Some(&as_url), &map.imports);
+  assert_eq!(result, Some(None));
 }
 
 #[test]

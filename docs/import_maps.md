@@ -20,16 +20,18 @@ Code lives in:
 * `src/js/import_maps/`
   * `mod.rs`: module entry point + re-exports
   * `parse.rs`: parsing + normalization implementation
+  * `resolve.rs`: `resolve an imports match` helper (prefix/exact matching)
   * `types.rs`: `ImportMap` data model, warnings/errors
   * `parse_tests.rs`: focused unit tests
 
 What exists today:
 
-* **Implemented:** parsing + normalization pipeline (`parse_import_map_string`) and the normalized
-  data structures (`ImportMap`, `ModuleSpecifierMap`, `ScopesMap`, `ModuleIntegrityMap`).
+* **Implemented:** parsing + normalization (`parse_import_map_string`) and the normalized data
+  structures (`ImportMap`, `ModuleSpecifierMap`, `ScopesMap`, `ModuleIntegrityMap`).
 * **Implemented:** import map parse results (`create_import_map_parse_result`).
+* **Implemented:** the core matching helper (`resolve_imports_match`).
 * **Not implemented yet:** registration (`register an import map`), merging (`merge existing and new
-  import maps`), and module specifier resolution (`resolve a module specifier`).
+  import maps`), and full module specifier resolution (`resolve a module specifier`).
 
 Those “not implemented yet” items are still documented below, because they are the intended
 integration surface for `<script type="importmap">` and module loading.
@@ -269,6 +271,21 @@ treat as “blocked”).
 * Address values in `"imports"` and `"scopes"` are currently resolved using `base_url.join(address)`
   (i.e. URL parsing with a base URL). This matches the HTML spec’s normalization example (relative
   URLs like `"node_modules/helper/index.mjs"` become absolute under the document base URL).
+
+### Trailing slash normalization edge case (implicit `/` from URL serialization)
+
+Import maps treat any **normalized** specifier key ending in `/` as a prefix match. Prefix matches
+require that the mapped address URL’s serialization also ends in `/`.
+
+Be careful: URL serialization can add an implicit trailing slash. For example, the URL string
+`"https://example.com"` serializes as `"https://example.com/"`. FastRender enforces the trailing-slash
+rule based on the **normalized key string** (post-serialization), so a mapping like:
+
+```json
+{ "imports": { "https://example.com": "https://cdn.example.com/file.js" } }
+```
+
+becomes a `null` entry (with a warning) instead of creating a prefix key with an invalid address.
 
 ---
 

@@ -154,7 +154,12 @@ fn sort_and_normalize_module_specifier_map(
       continue;
     };
 
-    if specifier_key.ends_with('/') && !address_url.as_str().ends_with('/') {
+    // NOTE: enforce the trailing-slash invariant using the *normalized* key.
+    //
+    // URL serialization can add an implicit trailing slash (e.g. "https://example.com" →
+    // "https://example.com/"). Without checking `normalized_specifier_key`, a non-trailing-slash
+    // input key could normalize into a prefix key and violate resolver invariants.
+    if normalized_specifier_key.ends_with('/') && !address_url.as_str().ends_with('/') {
       warnings.push(ImportMapWarning::new(
         ImportMapWarningKind::TrailingSlashMismatch {
           specifier_key: specifier_key.clone(),
