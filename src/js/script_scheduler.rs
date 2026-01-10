@@ -80,11 +80,17 @@ struct DeferredScript {
   source: Option<String>,
 }
 
+struct InOrderAsapScript {
+  spec: Option<ScriptElementSpec>,
+  source: Option<String>,
+}
+
 /// A classic `<script>` scheduler implementing the HTML Standard ordering model:
-/// parser-blocking vs async vs defer.
+/// parser-blocking vs async vs "in-order-asap" vs defer.
 ///
 /// - **parser-blocking**: inline scripts, and external scripts without `async`/`defer`
-/// - **async**: external scripts with `async` (also used for non-parser-inserted external scripts)
+/// - **async**: external scripts with `async`, or with the HTML "force async" flag set
+/// - **in-order-asap**: external scripts that are not parser-inserted and are not async-like
 /// - **defer**: external parser-inserted scripts with `defer` and not `async`
 ///
 /// Async and deferred scripts are executed as event loop tasks (`TaskSource::Script`), so the event
@@ -102,6 +108,10 @@ where
 
   async_pending: HashMap<<Host as ScriptLoader>::Handle, ScriptElementSpec>,
 
+  in_order_asap_scripts: Vec<InOrderAsapScript>,
+  in_order_asap_by_handle: HashMap<<Host as ScriptLoader>::Handle, usize>,
+  next_in_order_asap_to_queue: usize,
+
   defer_scripts: Vec<DeferredScript>,
   defer_by_handle: HashMap<<Host as ScriptLoader>::Handle, usize>,
   next_defer_to_queue: usize,
@@ -117,6 +127,9 @@ where
       js_execution_depth: Rc::new(Cell::new(0)),
       parsing_finished: false,
       async_pending: HashMap::new(),
+      in_order_asap_scripts: Vec::new(),
+      in_order_asap_by_handle: HashMap::new(),
+      next_in_order_asap_to_queue: 0,
       defer_scripts: Vec::new(),
       defer_by_handle: HashMap::new(),
       next_defer_to_queue: 0,
@@ -198,11 +211,16 @@ where
       FetchDestination::Script
     };
 
-    // Async takes priority over defer. Also: non-parser-inserted external scripts are (roughly)
-    // async by default; defer is only meaningful for parser-inserted scripts.
-    if spec.async_attr || !spec.parser_inserted {
+    // Async takes priority over defer. For classic scripts, HTML treats `async` as true when either
+    // the `async` attribute is present or the per-element "force async" flag is set.
+    let async_like = spec.async_attr || spec.force_async;
+
+    if async_like {
       let handle = host.start_load(src_url, destination)?;
-      if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
+      if self.async_pending.contains_key(&handle)
+        || self.defer_by_handle.contains_key(&handle)
+        || self.in_order_asap_by_handle.contains_key(&handle)
+      {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
         )));
@@ -211,9 +229,31 @@ where
       return Ok(());
     }
 
+    if !spec.parser_inserted {
+      let handle = host.start_load(src_url, destination)?;
+      if self.async_pending.contains_key(&handle)
+        || self.defer_by_handle.contains_key(&handle)
+        || self.in_order_asap_by_handle.contains_key(&handle)
+      {
+        return Err(Error::Other(format!(
+          "Script loader returned a duplicate handle: {handle:?}"
+        )));
+      }
+      let idx = self.in_order_asap_scripts.len();
+      self.in_order_asap_scripts.push(InOrderAsapScript {
+        spec: Some(spec),
+        source: None,
+      });
+      self.in_order_asap_by_handle.insert(handle, idx);
+      return Ok(());
+    }
+
     if spec.defer_attr {
       let handle = host.start_load(src_url, destination)?;
-      if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
+      if self.async_pending.contains_key(&handle)
+        || self.defer_by_handle.contains_key(&handle)
+        || self.in_order_asap_by_handle.contains_key(&handle)
+      {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
         )));
@@ -259,6 +299,15 @@ where
         self.queue_script_task(event_loop, spec, source)?;
         continue;
       }
+      if let Some(idx) = self.in_order_asap_by_handle.remove(&handle) {
+        let entry = self.in_order_asap_scripts.get_mut(idx).ok_or_else(|| {
+          Error::Other(format!(
+            "internal error: in_order_asap_by_handle index out of bounds (idx={idx})"
+          ))
+        })?;
+        entry.source = Some(source);
+        continue;
+      }
       if let Some(idx) = self.defer_by_handle.remove(&handle) {
         let entry = self.defer_scripts.get_mut(idx).ok_or_else(|| {
           Error::Other(format!(
@@ -273,6 +322,7 @@ where
       )));
     }
 
+    self.queue_ready_in_order_asap(event_loop)?;
     self.queue_ready_deferred(event_loop)?;
     Ok(())
   }
@@ -310,6 +360,29 @@ where
     Ok(())
   }
 
+  fn queue_ready_in_order_asap(&mut self, event_loop: &mut EventLoop<Host>) -> Result<()> {
+    while self.next_in_order_asap_to_queue < self.in_order_asap_scripts.len() {
+      let entry = &mut self.in_order_asap_scripts[self.next_in_order_asap_to_queue];
+      let Some(source) = entry.source.take() else {
+        break;
+      };
+      self.options.check_script_source(
+        &source,
+        &format!(
+          "source=external in_order_asap_idx={}",
+          self.next_in_order_asap_to_queue
+        ),
+      )?;
+      let spec = entry
+        .spec
+        .take()
+        .ok_or_else(|| Error::Other("internal error: in-order-asap script missing spec".to_string()))?;
+      self.next_in_order_asap_to_queue += 1;
+      self.queue_script_task(event_loop, spec, source)?;
+    }
+    Ok(())
+  }
+
   fn queue_script_task(
     &mut self,
     event_loop: &mut EventLoop<Host>,
@@ -325,17 +398,18 @@ where
   }
 }
 
-/// A deterministic, event-driven scheduler for classic, parser-inserted `<script>` elements.
+/// A deterministic, event-driven scheduler for classic `<script>` elements.
 ///
 /// This models a subset of the HTML Standard script processing model:
 /// - Inline classic scripts execute immediately and block parsing.
 /// - External classic scripts:
 ///   - parser-inserted, no `async`/`defer`: parsing-blocking (execute immediately on fetch
 ///     completion).
-///   - parser-inserted + `defer` (and not `async`): execute after parsing completes, in document
+///   - parser-inserted + `defer` (and not async-like): execute after parsing completes, in document
 ///     order.
-///   - `async` (and non-parser-inserted scripts by default): execute ASAP on fetch completion, not
-///     ordered.
+///   - non-parser-inserted, not async-like: execute in insertion order as soon as possible (HTML
+///     "in-order-asap" list).
+///   - async-like: execute ASAP on fetch completion, not ordered.
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
@@ -437,6 +511,7 @@ enum ExternalMode {
   Blocking,
   Defer,
   Async,
+  InOrderAsap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,6 +536,8 @@ pub struct ScriptScheduler<NodeId> {
   scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>,
   defer_queue: Vec<ScriptId>,
   next_defer_to_queue: usize,
+  in_order_queue: Vec<ScriptId>,
+  next_in_order_to_queue: usize,
   parsing_completed: bool,
 }
 
@@ -471,6 +548,8 @@ impl<NodeId> Default for ScriptScheduler<NodeId> {
       scripts: HashMap::new(),
       defer_queue: Vec::new(),
       next_defer_to_queue: 0,
+      in_order_queue: Vec::new(),
+      next_in_order_to_queue: 0,
       parsing_completed: false,
     }
   }
@@ -508,6 +587,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     // already set this, but doing it here keeps the API robust.
     let mut element = element;
     element.parser_inserted = true;
+    element.force_async = false;
     self.discovered_script(element, node_id, base_url_at_discovery)
   }
 
@@ -517,8 +597,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   /// that respects [`ScriptElementSpec::parser_inserted`]:
   ///
   /// - **Parser-inserted** external scripts may block parsing or be deferred.
-  /// - **Non-parser-inserted** external scripts are treated as async-by-default (matching the HTML
-  ///   script processing model for dynamically inserted scripts).
+  /// - **Non-parser-inserted** external scripts are async-like when `force_async` is true (the HTML
+  ///   default for dynamically created scripts); otherwise they execute in insertion order as soon
+  ///   as possible.
   pub fn discovered_script(
     &mut self,
     element: ScriptElementSpec,
@@ -543,11 +624,11 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             });
             return Ok(DiscoveredScript { id, actions });
           };
-          let mode = if !element.parser_inserted {
-            // HTML: dynamically inserted classic external scripts are async by default.
+          let async_like = element.async_attr || element.force_async;
+          let mode = if async_like {
             ExternalMode::Async
-          } else if element.async_attr {
-            ExternalMode::Async
+          } else if !element.parser_inserted {
+            ExternalMode::InOrderAsap
           } else if element.defer_attr {
             ExternalMode::Defer
           } else {
@@ -556,6 +637,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
           if mode == ExternalMode::Defer {
             self.defer_queue.push(id);
+          }
+          if mode == ExternalMode::InOrderAsap {
+            self.in_order_queue.push(id);
           }
 
           self.scripts.insert(
@@ -624,9 +708,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
           // TODO: Module graph fetching/execution is not yet modeled by this scheduler.
           return Ok(DiscoveredScript { id, actions });
-        }
-
-        // Inline module scripts are currently out-of-scope.
+       }
+ 
+       // Inline module scripts are currently out-of-scope.
         return Ok(DiscoveredScript { id, actions });
       }
       ScriptType::ImportMap => {
@@ -645,7 +729,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         return Ok(DiscoveredScript { id, actions });
       }
     }
-
+ 
     Ok(DiscoveredScript { id, actions })
   }
 
@@ -703,6 +787,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         }])
       }
       ExternalMode::Defer => self.queue_defer_scripts_if_ready(),
+      ExternalMode::InOrderAsap => self.queue_in_order_scripts_if_ready(),
     }
   }
 
@@ -740,6 +825,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
     match mode {
       ExternalMode::Defer => self.queue_defer_scripts_if_ready(),
+      ExternalMode::InOrderAsap => self.queue_in_order_scripts_if_ready(),
       ExternalMode::Blocking | ExternalMode::Async => Ok(Vec::new()),
     }
   }
@@ -787,6 +873,44 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         source_text,
       });
       self.next_defer_to_queue += 1;
+    }
+
+    Ok(actions)
+  }
+
+  fn queue_in_order_scripts_if_ready(&mut self) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
+    let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
+    while self.next_in_order_to_queue < self.in_order_queue.len() {
+      let script_id = self.in_order_queue[self.next_in_order_to_queue];
+      let Some(entry) = self.scripts.get_mut(&script_id) else {
+        return Err(Error::Other(format!(
+          "internal error: in_order_queue references missing script_id={}",
+          script_id.as_u64()
+        )));
+      };
+
+      if entry.queued_for_execution {
+        self.next_in_order_to_queue += 1;
+        continue;
+      }
+
+      if entry.source_text.is_none() {
+        break;
+      }
+
+      entry.queued_for_execution = true;
+      let node_id = entry.node_id.clone();
+      let source_text = entry.source_text.take().ok_or_else(|| {
+        Error::Other(
+          "internal error: missing source text when queueing in-order-asap scripts".to_string(),
+        )
+      })?;
+      actions.push(ScriptSchedulerAction::QueueTask {
+        script_id,
+        node_id,
+        source_text,
+      });
+      self.next_in_order_to_queue += 1;
     }
 
     Ok(actions)
@@ -934,15 +1058,39 @@ mod tests {
     }
   }
 
+  fn external_script_dynamic(
+    url: &str,
+    async_attr: bool,
+    defer_attr: bool,
+    force_async: bool,
+  ) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: Some(url.to_string()),
+      src_attr_present: true,
+      inline_text: String::new(),
+      async_attr,
+      defer_attr,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      force_async,
+      node_id: None,
+      script_type: ScriptType::Classic,
+    }
+  }
+
   #[test]
   fn non_parser_inserted_external_scripts_execute_without_waiting_for_parsing_complete() -> Result<()> {
     let mut host = TestHost::new(false);
     let mut event_loop = EventLoop::<TestHost>::new();
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
 
-    // Dynamically inserted external scripts behave like `async` scripts, regardless of the `defer`
-    // attribute. They should execute as soon as their load completes, even if parsing has not
-    // finished.
+    // Dynamically inserted external scripts whose force-async flag is set behave like `async`
+    // scripts, regardless of the `defer` attribute. They should execute as soon as their load
+    // completes, even if parsing has not finished.
     scheduler.handle_script(
       &mut host,
       &mut event_loop,
@@ -969,6 +1117,91 @@ mod tests {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.log, vec!["dyn".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_in_order_asap_external_scripts_execute_in_insertion_order() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+    )?;
+
+    // Complete out-of-order: B finishes before A.
+    host.loader.complete_url("B", "B");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(host.log, Vec::<String>::new());
+
+    host.loader.complete_url("A", "A");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["A".to_string(), "B".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_async_scripts_can_execute_before_in_order_asap_scripts() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ false),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("B", /* async_attr */ true, /* defer_attr */ false, /* force_async */ false),
+    )?;
+
+    // B is async-like and can run before A if it completes first.
+    host.loader.complete_url("B", "B");
+    host.loader.complete_url("A", "A");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["B".to_string(), "A".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_force_async_true_behaves_like_async() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("A", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script_dynamic("B", /* async_attr */ false, /* defer_attr */ false, /* force_async */ true),
+    )?;
+
+    // Async scripts execute in completion order.
+    host.loader.complete_url("B", "B");
+    host.loader.complete_url("A", "A");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["B".to_string(), "A".to_string()]);
     Ok(())
   }
 
@@ -1298,7 +1531,12 @@ mod state_machine_tests {
     }
   }
 
-  fn classic_external_dynamic(src: &str, async_attr: bool, defer_attr: bool) -> ScriptElementSpec {
+  fn classic_external_dynamic(
+    src: &str,
+    async_attr: bool,
+    defer_attr: bool,
+    force_async: bool,
+  ) -> ScriptElementSpec {
     ScriptElementSpec {
       base_url: None,
       src: Some(src.to_string()),
@@ -1311,7 +1549,7 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: false,
-      force_async: true,
+      force_async,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -1474,7 +1712,8 @@ mod state_machine_tests {
   fn non_parser_external_scripts_are_async_by_default_and_do_not_block_parsing() -> Result<()> {
     let mut h = Harness::new();
 
-    let script_id = h.discover_dynamic(classic_external_dynamic("dyn.js", false, false))?;
+    let script_id =
+      h.discover_dynamic(classic_external_dynamic("dyn.js", false, false, /* force_async */ true))?;
     assert_eq!(h.started_fetches.len(), 1);
     assert!(h.blocked_parser_on.is_none(), "dynamic scripts must not block parsing");
 
@@ -1493,10 +1732,96 @@ mod state_machine_tests {
   }
 
   #[test]
+  fn in_order_asap_dynamic_external_scripts_execute_in_insertion_order_without_parsing_completed(
+  ) -> Result<()> {
+    let mut h = Harness::new();
+
+    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ false))?;
+    let b = h.discover_dynamic(classic_external_dynamic("b.js", false, false, /* force_async */ false))?;
+
+    assert!(h.blocked_parser_on.is_none(), "dynamic scripts must not block parsing");
+    assert_eq!(
+      h.started_fetches
+        .iter()
+        .map(|(_id, _node_id, url, _destination)| url.as_str())
+        .collect::<Vec<_>>(),
+      vec!["a.js", "b.js"]
+    );
+
+    // Complete out-of-order: B finishes before A.
+    h.fetch_complete(b, "B")?;
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, Vec::<String>::new());
+
+    h.fetch_complete(a, "A")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "script:B".to_string(),
+        "microtask:B".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn async_dynamic_external_scripts_can_execute_before_in_order_asap_scripts() -> Result<()> {
+    let mut h = Harness::new();
+
+    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ false))?;
+    let b = h.discover_dynamic(classic_external_dynamic("b.js", true, false, /* force_async */ false))?;
+
+    // B is async-like and can run before A if it completes first.
+    h.fetch_complete(b, "B")?;
+    h.fetch_complete(a, "A")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:B".to_string(),
+        "microtask:B".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn force_async_true_dynamic_external_scripts_behave_like_async() -> Result<()> {
+    let mut h = Harness::new();
+
+    let a = h.discover_dynamic(classic_external_dynamic("a.js", false, false, /* force_async */ true))?;
+    let b = h.discover_dynamic(classic_external_dynamic("b.js", false, false, /* force_async */ true))?;
+
+    // Async scripts execute in completion order.
+    h.fetch_complete(b, "B")?;
+    h.fetch_complete(a, "A")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:B".to_string(),
+        "microtask:B".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn non_parser_defer_attribute_is_ignored_and_still_runs_async() -> Result<()> {
     let mut h = Harness::new();
 
-    let script_id = h.discover_dynamic(classic_external_dynamic("dyn.js", false, true))?;
+    let script_id =
+      h.discover_dynamic(classic_external_dynamic("dyn.js", false, true, /* force_async */ true))?;
     assert_eq!(h.started_fetches.len(), 1);
     assert!(
       h.blocked_parser_on.is_none(),
@@ -1519,10 +1844,11 @@ mod state_machine_tests {
     let mut h = Harness::new();
 
     h.discover_dynamic(classic_inline_dynamic("x"))?;
-    assert_eq!(
-      h.host.log,
-      vec!["script:x".to_string(), "microtask:x".to_string()]
-    );
+    // Dynamically inserted inline scripts are queued as tasks (MVP: keep DOM mutation calls
+    // non-reentrant). They should execute once the event loop runs.
+    assert!(h.host.log.is_empty());
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, vec!["script:x".to_string(), "microtask:x".to_string()]);
     Ok(())
   }
 
