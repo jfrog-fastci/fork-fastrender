@@ -6,6 +6,7 @@
 //! reflected here to avoid clipping.
 
 use crate::geometry::Rect;
+use crate::paint::rasterize::box_shadow_blur_radius_to_sigma;
 use crate::style::types::{
   BorderImageOutset, BorderImageOutsetValue, BorderImageSource, BorderImageWidth,
   BorderImageWidthValue,
@@ -281,7 +282,7 @@ fn box_shadow_bounds(
       viewport,
     )
     .max(-1e6);
-    let blur_pad = blur * 3.0;
+    let blur_pad = box_shadow_blur_radius_to_sigma(blur) * 3.0;
     let left = blur_pad + spread - offset_x.min(0.0);
     let right = blur_pad + spread + offset_x.max(0.0);
     let top = blur_pad + spread - offset_y.min(0.0);

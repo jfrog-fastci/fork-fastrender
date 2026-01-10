@@ -86,8 +86,8 @@ use crate::paint::painter::{
 use crate::paint::pixmap::{new_pixmap, reserve_buffer};
 use crate::paint::projective_warp::{warp_pixmap_cached, WarpCache, WarpedPixmap};
 use crate::paint::rasterize::{
-  estimate_box_shadow_work_pixels, render_box_shadow_cached_with_clamp, BoxShadow,
-  BoxShadowSurfaceClamp,
+  box_shadow_blur_radius_to_sigma, estimate_box_shadow_work_pixels, render_box_shadow_cached_with_clamp,
+  BoxShadow, BoxShadowSurfaceClamp,
 };
 use crate::paint::text_decoration::{dash_offset_for_segment, wavy_phase_for_segment};
 use crate::paint::text_rasterize::{
@@ -9023,7 +9023,7 @@ impl DisplayListRenderer {
       // Inset shadow rendering allocates a padded temporary surface internally. To avoid clipping
       // any pixels (and to match the previous full-canvas behavior), compute the same padded
       // region that `rasterize::render_box_shadow` draws into.
-      let sigma = shadow.blur_radius.max(0.0);
+      let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
       let blur_pad = (sigma * 3.0).ceil();
       let spread = shadow.spread_radius;
       let pad_x = (blur_pad + shadow.offset_x.abs() + spread.abs()).ceil();
@@ -9039,7 +9039,7 @@ impl DisplayListRenderer {
       )
     } else {
       // Match the internal `rasterize::render_box_shadow` math (spread + 3σ blur padding).
-      let sigma = shadow.blur_radius.max(0.0);
+      let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
       let spread = shadow.spread_radius;
       let shadow_rect = Rect::from_xywh(
         rect.x() + shadow.offset_x - spread,
@@ -10339,7 +10339,7 @@ impl DisplayListRenderer {
           if shadow.color.a <= f32::EPSILON {
             continue;
           }
-          let blur = shadow.blur_radius.abs() * 3.0;
+          let blur = box_shadow_blur_radius_to_sigma(shadow.blur_radius) * 3.0;
           let spread = shadow.spread_radius.abs();
           let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
           max_pad = max_pad.max(blur + spread + offset);

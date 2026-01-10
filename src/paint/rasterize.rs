@@ -153,7 +153,7 @@ pub struct BoxShadow {
   pub offset_x: f32,
   /// Vertical offset (positive = down)
   pub offset_y: f32,
-  /// Blur radius (gaussian blur standard deviation)
+  /// Blur radius (CSS blur radius)
   pub blur_radius: f32,
   /// Spread radius (expands/contracts shadow)
   pub spread_radius: f32,
@@ -161,6 +161,20 @@ pub struct BoxShadow {
   pub color: Rgba,
   /// Whether this is an inset shadow
   pub inset: bool,
+}
+
+/// Convert a CSS `box-shadow` blur radius into the gaussian sigma used by the blur implementation.
+///
+/// Browsers (including Chrome/Skia) interpret the CSS blur radius as *roughly twice* the gaussian
+/// sigma. Using sigma directly makes shadows far too diffuse, producing large visual diffs on pages
+/// that depend on soft drop shadows (e.g. nginx.org's header).
+#[inline]
+pub(crate) fn box_shadow_blur_radius_to_sigma(blur_radius: f32) -> f32 {
+  if blur_radius.is_finite() && blur_radius > 0.0 {
+    blur_radius * 0.5
+  } else {
+    0.0
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,7 +241,7 @@ pub(crate) fn estimate_box_shadow_work_pixels(width: f32, height: f32, shadow: &
     return 0;
   }
 
-  let sigma = shadow.blur_radius.max(0.0);
+  let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
   let blur_pad = (sigma * 3.0).ceil().max(0.0);
   let spread = shadow.spread_radius;
 
@@ -1461,7 +1475,7 @@ fn render_outset_shadow(
   mask: Option<&Mask>,
 ) -> Result<bool, RenderError> {
   crate::render_control::check_active(RenderStage::Paint)?;
-  let sigma = shadow.blur_radius.max(0.0);
+  let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
   let spread = shadow.spread_radius;
   let box_radii = *radii;
 
@@ -1629,7 +1643,7 @@ fn render_inset_shadow(
   mask: Option<&Mask>,
 ) -> Result<bool, RenderError> {
   crate::render_control::check_active(RenderStage::Paint)?;
-  let sigma = shadow.blur_radius.max(0.0);
+  let sigma = box_shadow_blur_radius_to_sigma(shadow.blur_radius);
   let blur_pad = (sigma * 3.0).ceil();
   let spread = shadow.spread_radius;
 
@@ -2216,6 +2230,13 @@ mod tests {
   }
 
   #[test]
+  fn box_shadow_blur_radius_converts_to_sigma() {
+    assert_eq!(box_shadow_blur_radius_to_sigma(0.0), 0.0);
+    assert_eq!(box_shadow_blur_radius_to_sigma(-1.0), 0.0);
+    assert!((box_shadow_blur_radius_to_sigma(10.0) - 5.0).abs() < 1e-6);
+  }
+
+  #[test]
   fn test_render_box_shadow_cached_uses_blur_cache() {
     enable_paint_diagnostics();
     let mut cache = BlurCache::default();
@@ -2269,7 +2290,7 @@ mod tests {
     // `render_box_shadow` should not allocate an additional `3σ` border internally.
     let radii = BorderRadii::zero();
     let shadow = BoxShadow::new(0.0, 0.0, 10.0, 0.0, Rgba::from_rgba8(0, 0, 0, 200));
-    let blur_pad = (shadow.blur_radius.max(0.0) * 3.0).ceil() as usize;
+    let blur_pad = (box_shadow_blur_radius_to_sigma(shadow.blur_radius) * 3.0).ceil() as usize;
 
     let dest_w = blur_pad * 2 + 40;
     let dest_h = blur_pad * 2 + 40;
