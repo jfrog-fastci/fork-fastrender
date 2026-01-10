@@ -8720,20 +8720,26 @@ impl FlexFormattingContext {
       }
     }
     // If the flex container has `width:auto` and Taffy returns a wider size (usually due to an
-    // intrinsic sizing probe), clamp back to the definite available inline size. This keeps the
-    // re-laid out children consistent with the final container size. Do *not* clamp explicitly
-    // sized flex containers: they are allowed to overflow their containing block.
+    // intrinsic sizing probe), clamp back to the size that the outer formatting context will use
+    // for the container. This keeps the re-laid out children consistent with the final container
+    // size.
+    //
+    // Only apply this clamp when the used size is known (via `used_border_box_width`) or when the
+    // element is a block-level `display:flex` container. Inline-level `display:inline-flex` uses
+    // shrink-to-fit sizing and may legitimately overflow the available width (e.g. due to
+    // `min-width` or unbreakable content), so avoid clamping it here.
     if physical_width_is_auto(&box_node.style) {
       if let Some(def_w) = resolved_definite_width() {
-        let clamp_target = if constraints.used_border_box_width.is_none()
-          && matches!(box_node.style.display, Display::Flex)
-        {
-          self.clamp_border_box_width_to_min_max(box_node, &box_node.style, constraints, def_w)?
-        } else {
-          def_w
-        };
-        if border_box.width > clamp_target + rect_eps {
-          border_box.width = clamp_target;
+        if constraints.used_border_box_width.is_some() {
+          if border_box.width > def_w + rect_eps {
+            border_box.width = def_w;
+          }
+        } else if matches!(box_node.style.display, Display::Flex) {
+          let clamp_target =
+            self.clamp_border_box_width_to_min_max(box_node, &box_node.style, constraints, def_w)?;
+          if border_box.width > clamp_target + rect_eps {
+            border_box.width = clamp_target;
+          }
         }
       }
     }
@@ -10853,126 +10859,49 @@ impl FlexFormattingContext {
       }
     }
 
-    // Taffy occasionally returns row layouts where every child starts well past the
-    // container's end (e.g., due to upstream constraint collapse). Flex rows, even
-    // with nowrap, should still start at the line's start edge; the overflow should
-    // come from the total span, not an initial offset. If all children are entirely
-    // to the right of the container, translate them back so the first child starts
-    // at the container origin.
+    // If a wrapping row still overflows the container (e.g., items sized to 100% that Taffy
+    // keeps on the same line), reflow the children into sequential rows within the container
+    // width. This mirrors flex-wrap behaviour when items exceed the line length.
     if main_axis_is_horizontal
-      && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-      && !children.is_empty()
+      && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
+      && rect.width().is_finite()
+      && rect.width() > 0.0
     {
+      let max_child_x = children
+        .iter()
+        .map(|c| c.bounds.max_x())
+        .fold(f32::NEG_INFINITY, f32::max);
       let min_child_x = children
         .iter()
         .map(|c| c.bounds.x())
         .fold(f32::INFINITY, f32::min);
-      if min_child_x.is_finite() && min_child_x > rect.width() {
+      if max_child_x > rect.width() + 0.5 || min_child_x < -0.5 {
+        let avail = rect.width();
+        let start_y = children
+          .iter()
+          .map(|c| c.bounds.y())
+          .fold(f32::INFINITY, f32::min);
+        let start_y = if start_y.is_finite() { start_y } else { 0.0 };
+        let mut cursor_x = 0.0;
+        let mut cursor_y = start_y;
+        let mut row_height: f32 = 0.0;
         for child in &mut children {
-          child.bounds = Rect::new(
-            Point::new(child.bounds.x() - min_child_x, child.bounds.y()),
-            child.bounds.size,
-          );
+          let mut w = child.bounds.width().min(avail);
+          let h = child.bounds.height();
+          if cursor_x + w > avail + 0.01 {
+            cursor_y += row_height;
+            cursor_x = 0.0;
+            row_height = 0.0;
+          }
+          if w <= 0.0 {
+            w = 0.0;
+          }
+          child.bounds = Rect::new(Point::new(cursor_x, cursor_y), Size::new(w, h));
+          cursor_x += w;
+          row_height = row_height.max(h);
         }
-      }
-    }
-
-    // Guard against pathological horizontal drift: if every child in a row sits far beyond
-    // the container (multiple widths away), translate them back so the leftmost child starts
-    // at the origin while preserving relative spacing.
-    if main_axis_is_horizontal && !children.is_empty() {
-      let min_x = children
-        .iter()
-        .map(|c| c.bounds.x())
-        .fold(f32::INFINITY, f32::min);
-      let max_x = children
-        .iter()
-        .map(|c| c.bounds.max_x())
-        .fold(f32::NEG_INFINITY, f32::max);
-      let drift_limit = rect.width().max(1.0) * 4.0;
-      if min_x.is_finite() && min_x > drift_limit && max_x.is_finite() {
-        let dx = min_x;
-        let log_drift = toggles.truthy("FASTR_LOG_FLEX_DRIFT");
-        if log_drift {
-          let selector = box_node
-            .debug_info
-            .as_ref()
-            .map(|d| d.to_selector())
-            .unwrap_or_else(|| "<anon>".to_string());
-          eprintln!(
-                        "[flex-drift-clamp] id={} selector={} min_x={:.1} max_x={:.1} rect_w={:.1} dx={:.1} children={}",
-                        box_node.id,
-                        selector,
-                        min_x,
-                        max_x,
-                        rect.width(),
-                        dx,
-                        children.len()
-                    );
-        }
-        for child in &mut children {
-          child.bounds = Rect::new(
-            Point::new(child.bounds.x() - dx, child.bounds.y()),
-            child.bounds.size,
-          );
-        }
-      }
-    }
-
-    // Final clamp: avoid shifting children out of view when Taffy returns coordinates that do not
-    // overlap the container at all. Do not clamp sizes—overflow is handled at paint-time.
-    if rect.width() > 0.0 && rect.height() > 0.0 && !children.is_empty() {
-      let eps = 0.5;
-      let mut min_x = f32::INFINITY;
-      let mut max_x = f32::NEG_INFINITY;
-      let mut min_y = f32::INFINITY;
-      let mut max_y = f32::NEG_INFINITY;
-      for child in &children {
-        let x = child.bounds.x();
-        let y = child.bounds.y();
-        let mx = child.bounds.max_x();
-        let my = child.bounds.max_y();
-        if x.is_finite() {
-          min_x = min_x.min(x);
-        }
-        if y.is_finite() {
-          min_y = min_y.min(y);
-        }
-        if mx.is_finite() {
-          max_x = max_x.max(mx);
-        }
-        if my.is_finite() {
-          max_y = max_y.max(my);
-        }
-      }
-
-      let container_min_x = rect.origin.x;
-      let container_max_x = rect.origin.x + rect.width();
-      let container_min_y = rect.origin.y;
-      let container_max_y = rect.origin.y + rect.height();
-      let mut dx = 0.0f32;
-      let mut dy = 0.0f32;
-
-      if min_x.is_finite() && max_x.is_finite() {
-        let outside_x = min_x > container_max_x + eps || max_x < container_min_x - eps;
-        if outside_x {
-          dx = container_min_x - min_x;
-        }
-      }
-      if min_y.is_finite() && max_y.is_finite() {
-        let outside_y = min_y > container_max_y + eps || max_y < container_min_y - eps;
-        if outside_y {
-          dy = container_min_y - min_y;
-        }
-      }
-
-      if (dx != 0.0 || dy != 0.0) && dx.is_finite() && dy.is_finite() {
-        for child in &mut children {
-          child.bounds = Rect::new(
-            Point::new(child.bounds.x() + dx, child.bounds.y() + dy),
-            child.bounds.size,
-          );
-        }
+        let new_height = (cursor_y + row_height - rect.origin.y).max(rect.height());
+        rect = Rect::new(rect.origin, Size::new(rect.width(), new_height));
       }
     }
 
