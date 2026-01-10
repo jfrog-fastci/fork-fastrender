@@ -11,43 +11,9 @@ use crate::js::{
   install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
   WindowFetchBindings, WindowFetchEnv,
 };
-use crate::render_control;
 use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::time::Instant;
-use vm_js::Budget;
-
-fn callback_budget_from_render_deadline() -> Budget {
-  // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
-  let deadline = render_control::root_deadline().and_then(|d| d.remaining_timeout());
-  let deadline = deadline.and_then(|remaining| Instant::now().checked_add(remaining));
-  Budget {
-    fuel: Some(1_000_000),
-    deadline,
-    check_time_every: 100,
-  }
-}
-
-fn drain_vm_js_microtask_queue(host: &mut WindowHostState, event_loop: &mut EventLoop<WindowHostState>) -> Result<()> {
-  let window_realm = host.window_mut();
-  window_realm.reset_interrupt();
-
-  with_event_loop(event_loop, || {
-    let (vm, heap) = window_realm.vm_and_heap_mut();
-    vm.set_budget(callback_budget_from_render_deadline());
-    let result = vm.perform_microtask_checkpoint(heap);
-    vm.set_budget(Budget::unlimited(100));
-    result.map_err(|err| {
-      let msg = if err.thrown_value().is_some() {
-        "uncaught exception".to_string()
-      } else {
-        err.to_string()
-      };
-      Error::Other(msg)
-    })
-  })
-}
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
@@ -74,9 +40,7 @@ impl WindowHost {
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
     let host = WindowHostState::new_with_fetcher(dom, document_url, fetcher)?;
-    let mut event_loop = EventLoop::new();
-    // Drain the embedded `vm-js` Promise job queue during HTML microtask checkpoints.
-    event_loop.set_microtask_checkpoint_hook(Some(drain_vm_js_microtask_queue));
+    let event_loop = EventLoop::new();
     Ok(Self { host, event_loop })
   }
 
@@ -131,16 +95,20 @@ impl WindowHost {
   /// Note: this does **not** automatically run a microtask checkpoint. Call
   /// [`WindowHost::perform_microtask_checkpoint`] or drive the event loop as needed.
   pub fn exec_script(&mut self, source: &str) -> Result<vm_js::Value> {
+    use crate::js::window_timers::VmJsEventLoopHooks;
+
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
       let window = host.window_mut();
-      let mut hooks = crate::js::window_timers::VmJsEventLoopHooks::<WindowHostState>::new();
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window
         .exec_script_with_host(&mut hooks, source)
         .map_err(|e| Error::Other(e.to_string()));
+
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
+
       result
     })
   }
@@ -371,6 +339,27 @@ mod tests {
     host.perform_microtask_checkpoint()?;
 
     assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 2.0));
+    Ok(())
+  }
+
+  #[test]
+  fn exec_script_preserves_microtask_order_between_promise_and_queue_microtask() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Both Promise jobs and `queueMicrotask` are microtasks in HTML. They must share the same FIFO
+    // microtask queue so ordering matches enqueue order.
+    host.exec_script(
+      "var g = this; g.__x = 0; Promise.resolve().then(function () { g.__x = g.__x * 10 + 1; }); queueMicrotask(function () { g.__x = g.__x * 10 + 2; });",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
+
+    host.perform_microtask_checkpoint()?;
+
+    // If Promise jobs are incorrectly drained after `queueMicrotask` callbacks, the result would be
+    // `21` instead of `12`.
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 12.0));
     Ok(())
   }
 
