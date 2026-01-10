@@ -28,6 +28,7 @@ mod display_contents;
 mod empty_inline_boxes;
 mod fieldset_legend;
 mod inline_border_padding_line_height;
+mod inline_box_fragmentation_remaining_width;
 mod first_line_first_letter_integration_test;
 mod first_pseudo_layout;
 mod flex_abspos_static_position;

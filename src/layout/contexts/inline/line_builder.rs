@@ -3606,9 +3606,6 @@ impl<'a> LineBuilder<'a> {
             return Ok(());
           }
 
-          if !self.current_line.is_empty() {
-            self.finish_line()?;
-          }
           self.add_fragmented_inline_box(inline_box)?;
           return Ok(());
         }
