@@ -157,6 +157,9 @@ Key modules:
   - `ClassicScriptScheduler` helper that runs classic scripts against an `EventLoop` through a tiny host trait boundary
 - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`
   - parse-time helpers for building `ScriptElementSpec` (base URL timing + attrs + inline text)
+- `src/js/import_maps/`
+  - WHATWG HTML import map parsing/normalization (`parse_import_map_string`)
+  - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
 - `src/js/window_timers.rs`, `src/js/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
