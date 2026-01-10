@@ -1011,6 +1011,53 @@ globalThis.__ur = Promise.reject('boom');
 }
 
 #[test]
+fn rejectionhandled_event_tasks_can_mutate_dom_and_receive_real_vm_host() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
+
+  assert!(host.dom().get_element_by_id("rh").is_none());
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+window.addEventListener('rejectionhandled', () => {
+  __fastrender_assert_vm_host();
+  const d = document.createElement('div');
+  d.id = 'rh';
+  document.body.appendChild(d);
+});
+
+// Trigger `unhandledrejection`, then attach a handler later to force `rejectionhandled`.
+var p = Promise.reject('boom');
+setTimeout(() => { p.catch(() => {}); }, 0);
+"#,
+  )?;
+
+  // `unhandledrejection` is queued after a microtask checkpoint; drive one to enqueue the first
+  // notification before running tasks (which will attach the handler and queue `rejectionhandled`).
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after dispatching the rejectionhandled task"
+  );
+  assert!(
+    host.dom().get_element_by_id("rh").is_some(),
+    "expected rejectionhandled event listener to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn abort_signal_abort_event_handlers_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
