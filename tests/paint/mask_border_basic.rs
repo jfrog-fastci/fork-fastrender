@@ -74,6 +74,30 @@ fn html_for_mask_border(source_url: &str, mode: &str) -> String {
   )
 }
 
+fn html_for_webkit_mask_box_image(source_url: &str, mode: &str) -> String {
+  // WebKit/Safari expose `mask-border` as `-webkit-mask-box-image`. Real-world sites (notably
+  // WebKit-targeted stylesheets) often only ship the prefixed property, so ensure our alias mapping
+  // and shorthand parsing apply end-to-end, including painting.
+  format!(
+    r#"
+      <style>
+        body {{ margin: 0; background: white; }}
+        #target {{
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100px;
+          height: 100px;
+          background: rgb(255, 0, 0);
+
+          -webkit-mask-box-image: url("{source_url}") 2 fill / 20px stretch {mode};
+        }}
+      </style>
+      <div id="target"></div>
+    "#
+  )
+}
+
 #[test]
 fn mask_border_alpha_masks_center_from_svg_alpha() {
   // Transparent SVG background with an opaque 2px border ring; in `alpha` mode the transparent
@@ -111,6 +135,58 @@ fn mask_border_luminance_masks_center_from_rgb_luminance() {
   </svg>"#;
   let url = svg_data_url(svg);
   let html = html_for_mask_border(&url, "luminance");
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 20, 100),
+      &format!("{backend}: expected masked border ring to remain visible"),
+    );
+    assert_is_white(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected center to be masked out via luminance mode"),
+    );
+  }
+}
+
+#[test]
+fn webkit_mask_box_image_alpha_shorthand_masks_center_from_svg_alpha() {
+  // Same as `mask_border_alpha_masks_center_from_svg_alpha`, but exercised via the
+  // `-webkit-mask-box-image` shorthand alias.
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+    <rect x="0" y="0" width="10" height="2" fill="white"/>
+    <rect x="0" y="8" width="10" height="2" fill="white"/>
+    <rect x="0" y="2" width="2" height="6" fill="white"/>
+    <rect x="8" y="2" width="2" height="6" fill="white"/>
+  </svg>"#;
+  let url = svg_data_url(svg);
+  let html = html_for_webkit_mask_box_image(&url, "alpha");
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 20, 100),
+      &format!("{backend}: expected masked border ring to remain visible"),
+    );
+    assert_is_white(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected center to be masked out"),
+    );
+  }
+}
+
+#[test]
+fn webkit_mask_box_image_luminance_shorthand_masks_center_from_rgb_luminance() {
+  // Same as `mask_border_luminance_masks_center_from_rgb_luminance`, but exercised via the
+  // `-webkit-mask-box-image` shorthand alias.
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+    <rect x="0" y="0" width="10" height="10" fill="white"/>
+    <rect x="2" y="2" width="6" height="6" fill="black"/>
+  </svg>"#;
+  let url = svg_data_url(svg);
+  let html = html_for_webkit_mask_box_image(&url, "luminance");
 
   let dpr = 2.0;
   let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
