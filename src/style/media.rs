@@ -1002,19 +1002,21 @@ impl MediaFeature {
       }
 
       // Resolution
-      "-webkit-device-pixel-ratio" | "device-pixel-ratio" => {
+      "-webkit-device-pixel-ratio" | "device-pixel-ratio" | "-o-device-pixel-ratio" => {
         let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
         Ok(MediaFeature::Resolution(resolution))
       }
       "-webkit-min-device-pixel-ratio"
       | "min-device-pixel-ratio"
-      | "min--moz-device-pixel-ratio" => {
+      | "min--moz-device-pixel-ratio"
+      | "-o-min-device-pixel-ratio" => {
         let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
         Ok(MediaFeature::MinResolution(resolution))
       }
       "-webkit-max-device-pixel-ratio"
       | "max-device-pixel-ratio"
-      | "max--moz-device-pixel-ratio" => {
+      | "max--moz-device-pixel-ratio"
+      | "-o-max-device-pixel-ratio" => {
         let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
         Ok(MediaFeature::MaxResolution(resolution))
       }
@@ -1329,12 +1331,34 @@ impl MediaFeature {
     if let Ok(res) = Resolution::parse(value) {
       return Ok(res);
     }
-    let ratio = value
-      .parse::<f32>()
-      .map_err(|_| MediaParseError::InvalidValue {
-        feature: name.to_string(),
-        value: value.to_string(),
-      })?;
+    let ratio = match value.parse::<f32>() {
+      Ok(ratio) => ratio,
+      Err(_) => {
+        let (num, denom) = value.split_once('/').ok_or_else(|| MediaParseError::InvalidValue {
+          feature: name.to_string(),
+          value: value.to_string(),
+        })?;
+        let num = trim_ascii_whitespace(num)
+          .parse::<f32>()
+          .map_err(|_| MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          })?;
+        let denom = trim_ascii_whitespace(denom)
+          .parse::<f32>()
+          .map_err(|_| MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          })?;
+        if !denom.is_finite() || denom == 0.0 {
+          return Err(MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          });
+        }
+        num / denom
+      }
+    };
     if !ratio.is_finite() || ratio < 0.0 {
       return Err(MediaParseError::InvalidValue {
         feature: name.to_string(),
@@ -4562,6 +4586,19 @@ mod tests {
 
     let ctx_miss = MediaContext::screen(800.0, 600.0).with_dpr(1.0);
     assert!(!ctx_miss.evaluate_list(&queries));
+  }
+
+  #[test]
+  fn vendor_o_min_device_pixel_ratio_fraction_parses_and_matches() {
+    // Mirrors legacy Opera media feature syntax, used as a fallback on archlinux.org:
+    // `(-o-min-device-pixel-ratio: 2/1)`
+    let query = MediaQuery::parse("(-o-min-device-pixel-ratio: 2/1)").unwrap();
+
+    let match_ctx = MediaContext::screen(800.0, 600.0).with_dpr(2.0);
+    assert!(match_ctx.evaluate(&query));
+
+    let miss_ctx = MediaContext::screen(800.0, 600.0).with_dpr(1.5);
+    assert!(!miss_ctx.evaluate(&query));
   }
 
   #[test]
