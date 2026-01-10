@@ -312,3 +312,44 @@ fn from_progress_hotspot_filters_candidates() {
     "expected hotspot filter to exclude example.com and select amazon.com; got:\n{stdout}"
   );
 }
+
+#[test]
+fn from_progress_defaults_to_top_worst_accuracy_1() {
+  let temp = tempdir().expect("tempdir");
+  let progress_dir = temp.path().join("progress/pages");
+
+  write_progress_file(
+    &progress_dir,
+    "example.com",
+    r#"{"status":"ok","accuracy":{"diff_percent":1.0,"perceptual":0.0}}"#,
+  );
+  write_progress_file(
+    &progress_dir,
+    "amazon.com",
+    r#"{"status":"ok","accuracy":{"diff_percent":2.0,"perceptual":0.0}}"#,
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--from-progress",
+      progress_dir.to_string_lossy().as_ref(),
+      "--dry-run",
+    ])
+    .output()
+    .expect("run cargo xtask page-loop --from-progress --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop progress selection to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("fixture: amazon.com"),
+    "expected default selection to pick the worst-accuracy ok page (amazon.com); got:\n{stdout}"
+  );
+}

@@ -486,7 +486,12 @@ fn resolve_fixture_stem_from_progress(repo_root: &Path, args: &PageLoopArgs) -> 
     xtask::pageset_failure_fixtures::read_progress_pages(&progress_dir, &fixtures_root)?;
 
   if let Some(hotspot) = hotspot {
-    pages.retain(|p| p.hotspot.as_deref() == Some(hotspot));
+    // Match the pageset_progress convention: hotspot filters are case-insensitive.
+    pages.retain(|p| {
+      p.hotspot
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(hotspot))
+    });
     if pages.is_empty() {
       bail!(
         "no progress pages matched --hotspot {hotspot:?} under {}",
