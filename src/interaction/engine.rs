@@ -64,6 +64,7 @@ pub struct InteractionEngine {
   range_drag: Option<RangeDragState>,
   focused: Option<usize>,
   ime_composition: Option<ImeCompositionState>,
+  text_selection: Option<TextSelection>,
   modality: InputModality,
 }
 
@@ -82,6 +83,15 @@ struct ImeCompositionState {
 
 const IME_PREEDIT_ATTR: &str = "data-fastr-ime-preedit";
 
+/// Selection/caret state for text controls (`<input>`/`<textarea>`).
+///
+/// Indices are byte offsets into the current text value (must be UTF-8 boundaries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextSelection {
+  node_id: usize,
+  start: usize,
+  end: usize,
+}
 struct DomIndexMut {
   id_to_node: Vec<*mut DomNode>,
   parent: Vec<usize>,
@@ -1538,8 +1548,35 @@ impl InteractionEngine {
       range_drag: None,
       focused: None,
       ime_composition: None,
+      text_selection: None,
       modality: InputModality::Pointer,
     }
+  }
+
+  fn text_selection_range_for(&self, node_id: usize, text_len: usize) -> (usize, usize) {
+    let Some(sel) = self.text_selection.filter(|s| s.node_id == node_id) else {
+      return (text_len, text_len);
+    };
+    let start = sel.start.min(text_len);
+    let end = sel.end.min(text_len);
+    if start <= end { (start, end) } else { (end, start) }
+  }
+
+  fn set_text_selection_caret(&mut self, node_id: usize, caret: usize) {
+    self.text_selection = Some(TextSelection {
+      node_id,
+      start: caret,
+      end: caret,
+    });
+  }
+
+  fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    self.text_selection = Some(TextSelection { node_id, start, end });
+  }
+
+  fn clear_text_selection(&mut self) {
+    self.text_selection = None;
   }
 
   fn set_focus(
@@ -1556,6 +1593,11 @@ impl InteractionEngine {
           changed |= remove_node_attr(node_mut, IME_PREEDIT_ATTR);
         }
       }
+      // Text selection is tied to a particular focused control. When focus changes, discard any
+      // existing selection/caret so clipboard/text-edit actions don't accidentally apply to the
+      // newly focused element.
+      self.text_selection = None;
+
       if let Some(old) = self.focused {
         changed |= set_data_flag(index, old, "data-fastr-focus", false);
         changed |= set_data_flag(index, old, "data-fastr-focus-visible", false);
@@ -1802,6 +1844,19 @@ impl InteractionEngine {
       match new_node_id {
         Some(id) => state.node_id = id,
         None => self.ime_composition = None,
+      }
+    }
+
+    if let Some(sel) = &mut self.text_selection {
+      let new_node_id = old_index
+        .id_to_node
+        .get(sel.node_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
+      match new_node_id {
+        Some(new_id) => sel.node_id = new_id,
+        None => self.text_selection = None,
       }
     }
   }
@@ -2103,8 +2158,11 @@ impl InteractionEngine {
         .and_then(|node| node.get_attribute_ref("value"))
         .unwrap_or("")
         .to_string();
-      let mut next = current;
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
       next.push_str(text);
+      next.push_str(&current[end..]);
       let Some(node_mut) = index.node_mut(focused) else {
         return changed;
       };
@@ -2112,6 +2170,7 @@ impl InteractionEngine {
       changed |= changed_value;
       if changed_value {
         changed |= dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
       return changed;
     }
@@ -2127,8 +2186,11 @@ impl InteractionEngine {
         .node(focused)
         .map(collect_text_children_value)
         .unwrap_or_default();
-      let mut next = current;
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
       next.push_str(text);
+      next.push_str(&current[end..]);
 
       let old_index = index;
       let mut index = DomIndexMut::new(dom);
@@ -2139,6 +2201,7 @@ impl InteractionEngine {
       changed |= changed_value;
       if changed_value {
         changed |= dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
       if inserted {
         let new_ids = enumerate_dom_ids(dom);
@@ -2194,7 +2257,10 @@ impl InteractionEngine {
       return changed;
     }
 
-    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) || node_is_readonly(&index, focused) {
+    if node_or_ancestor_is_inert(&index, focused)
+      || node_is_disabled(&index, focused)
+      || node_is_readonly(&index, focused)
+    {
       changed |= self.ime_cancel_with_index(&mut index);
       return changed;
     }
@@ -2256,8 +2322,12 @@ impl InteractionEngine {
         .and_then(|node| node.get_attribute_ref("value"))
         .unwrap_or("")
         .to_string();
-      let mut next = current;
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
       next.push_str(text);
+      next.push_str(&current[end..]);
+
       let Some(node_mut) = index.node_mut(focused) else {
         return changed;
       };
@@ -2265,6 +2335,7 @@ impl InteractionEngine {
       changed |= changed_value;
       if changed_value {
         changed |= dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
       return changed;
     }
@@ -2281,8 +2352,11 @@ impl InteractionEngine {
         .node(focused)
         .map(collect_text_children_value)
         .unwrap_or_default();
-      let mut next = current;
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
       next.push_str(text);
+      next.push_str(&current[end..]);
 
       let old_index = index;
       let mut index = DomIndexMut::new(dom);
@@ -2293,6 +2367,7 @@ impl InteractionEngine {
       changed |= changed_value;
       if changed_value {
         changed |= dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
       if inserted {
         let new_ids = enumerate_dom_ids(dom);
@@ -2308,6 +2383,230 @@ impl InteractionEngine {
   pub fn ime_cancel(&mut self, dom: &mut DomNode) -> bool {
     let mut index = DomIndexMut::new(dom);
     self.ime_cancel_with_index(&mut index)
+  }
+
+  /// Select all text in the currently focused text control (`<input>`/`<textarea>`).
+  ///
+  /// This does not mutate the DOM; it only updates the internal selection range used by clipboard
+  /// and text-editing actions.
+  pub fn clipboard_select_all(&mut self, dom: &mut DomNode) -> bool {
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return false;
+    };
+
+    let index = DomIndexMut::new(dom);
+
+    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
+      return false;
+    }
+
+    let Some(node) = index.node(focused) else {
+      return false;
+    };
+
+    if is_text_input(node) {
+      let len = node.get_attribute_ref("value").unwrap_or("").len();
+      self.set_text_selection_range(focused, 0, len);
+      return false;
+    }
+
+    if is_textarea(node) {
+      let len = collect_text_children_value(node).len();
+      self.set_text_selection_range(focused, 0, len);
+      return false;
+    }
+
+    // Not a text control: clear any existing selection so clipboard actions become a no-op.
+    self.clear_text_selection();
+    false
+  }
+
+  /// Return the current selection text for a focused text control (`<input>`/`<textarea>`), if any.
+  ///
+  /// This does not mutate the DOM.
+  pub fn clipboard_copy(&mut self, dom: &mut DomNode) -> Option<String> {
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return None;
+    };
+
+    let index = DomIndexMut::new(dom);
+    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
+      return None;
+    }
+
+    let Some(node) = index.node(focused) else {
+      return None;
+    };
+
+    if is_text_input(node) {
+      let value = node.get_attribute_ref("value").unwrap_or("").to_string();
+      let (start, end) = self.text_selection_range_for(focused, value.len());
+      if start == end {
+        return None;
+      }
+      return Some(value[start..end].to_string());
+    }
+
+    if is_textarea(node) {
+      let value = collect_text_children_value(node);
+      let (start, end) = self.text_selection_range_for(focused, value.len());
+      if start == end {
+        return None;
+      }
+      return Some(value[start..end].to_string());
+    }
+
+    None
+  }
+
+  /// Cut the current selection into the clipboard, deleting it when the control is editable.
+  ///
+  /// Returns `(dom_changed, clipboard_text)`.
+  pub fn clipboard_cut(&mut self, dom: &mut DomNode) -> (bool, Option<String>) {
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return (false, None);
+    };
+
+    let mut index = DomIndexMut::new(dom);
+    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
+      return (false, None);
+    }
+
+    if index.node(focused).is_some_and(is_text_input) {
+      let current = index
+        .node(focused)
+        .and_then(|node| node.get_attribute_ref("value"))
+        .unwrap_or("")
+        .to_string();
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      if start == end {
+        return (false, None);
+      }
+
+      let selected = Some(current[start..end].to_string());
+      if node_is_readonly(&index, focused) {
+        return (false, selected);
+      }
+
+      let next = format!("{}{}", &current[..start], &current[end..]);
+      let Some(node_mut) = index.node_mut(focused) else {
+        return (false, selected);
+      };
+      let changed = set_node_attr(node_mut, "value", &next);
+      if changed {
+        let _ = dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start);
+      }
+      return (changed, selected);
+    }
+
+    if index.node(focused).is_some_and(is_textarea) {
+      let current = index
+        .node(focused)
+        .map(collect_text_children_value)
+        .unwrap_or_default();
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      if start == end {
+        return (false, None);
+      }
+
+      let selected = Some(current[start..end].to_string());
+      if node_is_readonly(&index, focused) {
+        return (false, selected);
+      }
+
+      let next = format!("{}{}", &current[..start], &current[end..]);
+
+      let old_index = index;
+      let mut index = DomIndexMut::new(dom);
+      let Some(node_mut) = index.node_mut(focused) else {
+        return (false, selected);
+      };
+      let (changed, inserted) = set_textarea_text_children_value(node_mut, &next);
+      if changed {
+        let _ = dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start);
+      }
+      if inserted {
+        let new_ids = enumerate_dom_ids(dom);
+        self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
+      }
+      return (changed, selected);
+    }
+
+    (false, None)
+  }
+
+  /// Paste text into the focused text control (`<input>`/`<textarea>`), replacing any selection.
+  pub fn clipboard_paste(&mut self, dom: &mut DomNode, text: &str) -> bool {
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return false;
+    };
+
+    let mut index = DomIndexMut::new(dom);
+    if node_or_ancestor_is_inert(&index, focused)
+      || node_is_disabled(&index, focused)
+      || node_is_readonly(&index, focused)
+    {
+      return false;
+    }
+
+    if index.node(focused).is_some_and(is_text_input) {
+      let current = index
+        .node(focused)
+        .and_then(|node| node.get_attribute_ref("value"))
+        .unwrap_or("")
+        .to_string();
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
+      next.push_str(text);
+      next.push_str(&current[end..]);
+
+      let Some(node_mut) = index.node_mut(focused) else {
+        return false;
+      };
+      let changed = set_node_attr(node_mut, "value", &next);
+      if changed {
+        let _ = dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
+      }
+      return changed;
+    }
+
+    if index.node(focused).is_some_and(is_textarea) {
+      let current = index
+        .node(focused)
+        .map(collect_text_children_value)
+        .unwrap_or_default();
+      let (start, end) = self.text_selection_range_for(focused, current.len());
+      let mut next = String::new();
+      next.push_str(&current[..start]);
+      next.push_str(text);
+      next.push_str(&current[end..]);
+
+      let old_index = index;
+      let mut index = DomIndexMut::new(dom);
+      let Some(node_mut) = index.node_mut(focused) else {
+        return false;
+      };
+      let (changed, inserted) = set_textarea_text_children_value(node_mut, &next);
+      if changed {
+        let _ = dom_mutation::mark_user_validity(node_mut);
+        self.set_text_selection_caret(focused, start.saturating_add(text.len()));
+      }
+      if inserted {
+        let new_ids = enumerate_dom_ids(dom);
+        self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
+      }
+      return changed;
+    }
+
+    false
   }
 
   /// Handle keyboard actions that mutate the DOM without performing navigation.
@@ -2368,8 +2667,30 @@ impl InteractionEngine {
             .and_then(|node| node.get_attribute_ref("value"))
             .unwrap_or("")
             .to_string();
-           let mut next = current;
-           if next.pop().is_some() {
+          let (start, end) = self.text_selection_range_for(focused, current.len());
+
+          let (next, caret) = if start != end {
+            // Delete selection.
+            (
+              format!("{}{}", &current[..start], &current[end..]),
+              start,
+            )
+          } else if start > 0 {
+            // Delete the previous character before the caret.
+            let prev = current[..start]
+              .char_indices()
+              .last()
+              .map(|(idx, _)| idx)
+              .unwrap_or(0);
+            (
+              format!("{}{}", &current[..prev], &current[start..]),
+              prev,
+            )
+          } else {
+            (current.clone(), start)
+          };
+
+          if next != current {
             let Some(node_mut) = index.node_mut(focused) else {
               return changed;
             };
@@ -2377,9 +2698,10 @@ impl InteractionEngine {
             changed |= changed_value;
             if changed_value {
               changed |= dom_mutation::mark_user_validity(node_mut);
+              self.set_text_selection_caret(focused, caret);
             }
-           }
-         } else if index.node(focused).is_some_and(is_textarea) {
+          }
+        } else if index.node(focused).is_some_and(is_textarea) {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
             || node_is_readonly(&index, focused)
@@ -2390,8 +2712,22 @@ impl InteractionEngine {
             .node(focused)
             .map(collect_text_children_value)
             .unwrap_or_default();
-          let mut next = current;
-          if next.pop().is_some() {
+          let (start, end) = self.text_selection_range_for(focused, current.len());
+
+          let (next, caret) = if start != end {
+            (format!("{}{}", &current[..start], &current[end..]), start)
+          } else if start > 0 {
+            let prev = current[..start]
+              .char_indices()
+              .last()
+              .map(|(idx, _)| idx)
+              .unwrap_or(0);
+            (format!("{}{}", &current[..prev], &current[start..]), prev)
+          } else {
+            (current.clone(), start)
+          };
+
+          if next != current {
             let old_index = index;
             let mut index = DomIndexMut::new(dom);
             if let Some(node_mut) = index.node_mut(focused) {
@@ -2399,6 +2735,7 @@ impl InteractionEngine {
               changed |= changed_value;
               if changed_value {
                 changed |= dom_mutation::mark_user_validity(node_mut);
+                self.set_text_selection_caret(focused, caret);
               }
               if inserted {
                 let new_ids = enumerate_dom_ids(dom);
@@ -2420,8 +2757,11 @@ impl InteractionEngine {
             .node(focused)
             .map(collect_text_children_value)
             .unwrap_or_default();
-          let mut next = current;
+          let (start, end) = self.text_selection_range_for(focused, current.len());
+          let mut next = String::new();
+          next.push_str(&current[..start]);
           next.push('\n');
+          next.push_str(&current[end..]);
           let old_index = index;
           let mut index = DomIndexMut::new(dom);
           if let Some(node_mut) = index.node_mut(focused) {
@@ -2429,6 +2769,7 @@ impl InteractionEngine {
             changed |= changed_value;
             if changed_value {
               changed |= dom_mutation::mark_user_validity(node_mut);
+              self.set_text_selection_caret(focused, start.saturating_add(1));
             }
             if inserted {
               let new_ids = enumerate_dom_ids(dom);

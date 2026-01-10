@@ -653,6 +653,9 @@ struct App {
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
   modifiers: winit::event::ModifiersState,
+  /// Clipboard text received from the worker that should be forwarded to the OS clipboard on the
+  /// next egui frame.
+  pending_clipboard_text: Option<String>,
 
   window_focused: bool,
   window_occluded: bool,
@@ -805,6 +808,7 @@ impl App {
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
       modifiers: winit::event::ModifiersState::default(),
+      pending_clipboard_text: None,
       window_focused: true,
       window_occluded: false,
       window_minimized: size.width == 0 || size.height == 0,
@@ -950,6 +954,10 @@ impl App {
       | UiToWorker::ImePreedit { tab_id, .. }
       | UiToWorker::ImeCommit { tab_id, .. }
       | UiToWorker::ImeCancel { tab_id }
+      | UiToWorker::Paste { tab_id, .. }
+      | UiToWorker::Copy { tab_id }
+      | UiToWorker::Cut { tab_id }
+      | UiToWorker::SelectAll { tab_id }
       | UiToWorker::KeyAction { tab_id, .. }
       | UiToWorker::RequestRepaint { tab_id, .. } => *tab_id,
     };
@@ -975,6 +983,8 @@ impl App {
         | UiToWorker::ImePreedit { .. }
         | UiToWorker::ImeCommit { .. }
         | UiToWorker::ImeCancel { .. }
+        | UiToWorker::Paste { .. }
+        | UiToWorker::Cut { .. }
         | UiToWorker::KeyAction { .. }
         | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
         // `Tick` and tab-management messages should not force cancellation.
@@ -983,7 +993,9 @@ impl App {
         | UiToWorker::CreateTab { .. }
         | UiToWorker::NewTab { .. }
         | UiToWorker::CloseTab { .. }
-        | UiToWorker::SetActiveTab { .. } => {}
+        | UiToWorker::SetActiveTab { .. }
+        | UiToWorker::Copy { .. }
+        | UiToWorker::SelectAll { .. } => {}
       }
     }
 
@@ -1264,6 +1276,13 @@ impl App {
       }
     }
 
+    if let fastrender::ui::WorkerToUi::SetClipboardText { text, .. } = &msg {
+      // Defer OS clipboard writes to the next egui frame so we can use egui-winit's platform output
+      // plumbing.
+      self.pending_clipboard_text = Some(text.clone());
+      request_redraw = true;
+    }
+
     let update = self.browser_state.apply_worker_msg(msg);
 
     if let Some(frame_ready) = update.frame_ready {
@@ -1333,7 +1352,7 @@ impl App {
               }
             }
           }
- 
+
           self.open_select_dropdown = Some(OpenSelectDropdown {
             tab_id: dropdown.tab_id,
             select_node_id: dropdown.select_node_id,
@@ -2120,6 +2139,27 @@ impl App {
           return;
         }
 
+        // Clipboard shortcuts for the rendered page (focused input/textarea).
+        if (self.modifiers.ctrl() || self.modifiers.logo()) && self.page_has_focus {
+          if let Some(tab_id) = self.browser_state.active_tab_id() {
+            match key {
+              VirtualKeyCode::C => {
+                self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
+                return;
+              }
+              VirtualKeyCode::X => {
+                self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
+                return;
+              }
+              VirtualKeyCode::A => {
+                self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
+                return;
+              }
+              _ => {}
+            }
+          }
+        }
+
         if !self.page_has_focus {
           return;
         }
@@ -2537,7 +2577,7 @@ impl App {
     // multiple `FrameReady` messages received between redraws result in a single GPU upload.
     self.flush_pending_frame_uploads();
 
-    let (raw_input, wheel_events) = {
+    let (raw_input, wheel_events, paste_events) = {
       let mut raw = self.egui_state.take_egui_input(&self.window);
       raw.pixels_per_point = Some(self.pixels_per_point);
       let wheel_events = raw
@@ -2548,7 +2588,15 @@ impl App {
           _ => None,
         })
         .collect::<Vec<_>>();
-      (raw, wheel_events)
+      let paste_events = raw
+        .events
+        .iter()
+        .filter_map(|event| match event {
+          egui::Event::Paste(text) => Some(text.clone()),
+          _ => None,
+        })
+        .collect::<Vec<_>>();
+      (raw, wheel_events, paste_events)
     };
 
     self.egui_ctx.begin_frame(raw_input);
@@ -2560,6 +2608,14 @@ impl App {
     });
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
+
+    if !paste_events.is_empty() && self.page_has_focus && !self.egui_ctx.wants_keyboard_input() {
+      if let Some(tab_id) = self.browser_state.active_tab_id() {
+        for text in paste_events {
+          self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+        }
+      }
+    }
 
     if !self.debug_log.is_empty() {
       egui::TopBottomPanel::bottom("debug_log")
@@ -2690,7 +2746,10 @@ impl App {
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();
 
-    let full_output = self.egui_ctx.end_frame();
+    let mut full_output = self.egui_ctx.end_frame();
+    if let Some(text) = self.pending_clipboard_text.take() {
+      full_output.platform_output.copied_text = text;
+    }
     self.egui_state.handle_platform_output(
       &self.window,
       &self.egui_ctx,

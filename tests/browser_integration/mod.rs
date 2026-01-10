@@ -72,6 +72,7 @@ mod select_listbox_wheel_scroll;
 mod js_rendering;
 mod support;
 mod tab;
+mod ui_clipboard;
 mod ui_input_routing;
 mod ui_navigation_messages;
 mod ui_render_thread;

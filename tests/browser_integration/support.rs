@@ -270,6 +270,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::SelectDropdownClosed { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::SetClipboardText { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::ContextMenu { tab_id, .. } = msg {
     return Some(*tab_id);
   }
@@ -442,6 +445,10 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?})",
         tab_id.0
       );
+      continue;
+    }
+    if let WorkerToUi::SetClipboardText { tab_id, text } = msg {
+      let _ = writeln!(&mut out, "SetClipboardText(tab={}, text={text:?})", tab_id.0);
       continue;
     }
 

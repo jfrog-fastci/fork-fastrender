@@ -73,6 +73,7 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
     | WorkerToUi::Warning { tab_id: msg_tab, .. }
     | WorkerToUi::ContextMenu { tab_id: msg_tab, .. }
     | WorkerToUi::RequestOpenInNewTab { tab_id: msg_tab, .. } => *msg_tab == tab_id,
+    | WorkerToUi::SetClipboardText { tab_id: msg_tab, .. } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
   }
 }

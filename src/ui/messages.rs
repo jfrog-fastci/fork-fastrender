@@ -318,6 +318,32 @@ pub enum UiToWorker {
   ImeCancel {
     tab_id: TabId,
   },
+  /// Paste text into the currently focused text control (input/textarea).
+  ///
+  /// The worker is responsible for applying the text at the caret, replacing any selection, and
+  /// respecting inert/disabled/readonly rules.
+  Paste {
+    tab_id: TabId,
+    text: String,
+  },
+  /// Copy the current selection in the focused text control (input/textarea) to the clipboard.
+  ///
+  /// This should not mutate the DOM; workers respond by sending
+  /// [`WorkerToUi::SetClipboardText`].
+  Copy {
+    tab_id: TabId,
+  },
+  /// Cut the current selection in the focused text control (input/textarea) to the clipboard.
+  ///
+  /// Workers respond by sending [`WorkerToUi::SetClipboardText`], and delete the selection when
+  /// the control is editable.
+  Cut {
+    tab_id: TabId,
+  },
+  /// Select all text in the currently focused text control (input/textarea).
+  SelectAll {
+    tab_id: TabId,
+  },
   KeyAction {
     tab_id: TabId,
     key: KeyAction,
@@ -438,6 +464,13 @@ pub enum WorkerToUi {
     pos_css: (f32, f32),
     /// Fully-resolved link URL under the cursor, if any.
     link_url: Option<String>,
+  },
+  /// Request that the UI set the OS clipboard text.
+  ///
+  /// This is typically emitted in response to [`UiToWorker::Copy`] or [`UiToWorker::Cut`].
+  SetClipboardText {
+    tab_id: TabId,
+    text: String,
   },
 }
 

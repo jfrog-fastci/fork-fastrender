@@ -1052,6 +1052,18 @@ impl BrowserRuntime {
       UiToWorker::ImeCancel { tab_id } => {
         self.handle_ime_cancel(tab_id);
       }
+      UiToWorker::Copy { tab_id } => {
+        self.handle_copy(tab_id);
+      }
+      UiToWorker::Cut { tab_id } => {
+        self.handle_cut(tab_id);
+      }
+      UiToWorker::Paste { tab_id, text } => {
+        self.handle_paste(tab_id, &text);
+      }
+      UiToWorker::SelectAll { tab_id } => {
+        self.handle_select_all(tab_id);
+      }
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
@@ -1666,6 +1678,77 @@ impl BrowserRuntime {
     }
   }
 
+  fn handle_select_all(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    // Selecting text is worker-local state and should not invalidate the document pipeline.
+    let _ = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
+  }
+
+  fn handle_copy(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let mut copied: Option<String> = None;
+    let _ = doc.mutate_dom(|dom| {
+      copied = tab.interaction.clipboard_copy(dom);
+      false
+    });
+
+    if let Some(text) = copied {
+      let _ = self.ui_tx.send(WorkerToUi::SetClipboardText { tab_id, text });
+    }
+  }
+
+  fn handle_cut(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let mut cut_text: Option<String> = None;
+    let changed = doc.mutate_dom(|dom| {
+      let (dom_changed, text) = tab.interaction.clipboard_cut(dom);
+      cut_text = text;
+      dom_changed
+    });
+
+    if let Some(text) = cut_text {
+      let _ = self.ui_tx.send(WorkerToUi::SetClipboardText { tab_id, text });
+    }
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_paste(&mut self, tab_id: TabId, text: &str) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
   fn handle_key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
     let mut navigate_to: Option<String> = None;
 
@@ -1878,7 +1961,7 @@ impl BrowserRuntime {
           tab.document.take(),
         )
       };
- 
+
     // Capture the original URL before any redirects/mutations for history bookkeeping.
     let original_url = request.url.clone();
 

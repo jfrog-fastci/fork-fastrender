@@ -132,6 +132,10 @@ impl BrowserTabController {
         self.handle_select_dropdown_choose(select_node_id, option_node_id)
       }
       UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => self.handle_text_input(&text),
+      UiToWorker::Copy { tab_id } if tab_id == self.tab_id => self.handle_copy(),
+      UiToWorker::Cut { tab_id } if tab_id == self.tab_id => self.handle_cut(),
+      UiToWorker::Paste { tab_id, text } if tab_id == self.tab_id => self.handle_paste(&text),
+      UiToWorker::SelectAll { tab_id } if tab_id == self.tab_id => self.handle_select_all(),
       UiToWorker::KeyAction { tab_id, key } if tab_id == self.tab_id => self.handle_key_action(key),
       UiToWorker::Navigate {
         tab_id,
@@ -427,6 +431,61 @@ impl BrowserTabController {
     let changed = self
       .document
       .mutate_dom(|dom| self.interaction.text_input(dom, text));
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  fn handle_select_all(&mut self) -> Result<Vec<WorkerToUi>> {
+    // Selection is worker-local state and does not invalidate the document pipeline.
+    let _ = self
+      .document
+      .mutate_dom(|dom| self.interaction.clipboard_select_all(dom));
+    Ok(Vec::new())
+  }
+
+  fn handle_copy(&mut self) -> Result<Vec<WorkerToUi>> {
+    let mut copied: Option<String> = None;
+    let _ = self.document.mutate_dom(|dom| {
+      copied = self.interaction.clipboard_copy(dom);
+      false
+    });
+    let Some(text) = copied else {
+      return Ok(Vec::new());
+    };
+    Ok(vec![WorkerToUi::SetClipboardText {
+      tab_id: self.tab_id,
+      text,
+    }])
+  }
+
+  fn handle_cut(&mut self) -> Result<Vec<WorkerToUi>> {
+    let mut cut_text: Option<String> = None;
+    let changed = self.document.mutate_dom(|dom| {
+      let (dom_changed, text) = self.interaction.clipboard_cut(dom);
+      cut_text = text;
+      dom_changed
+    });
+
+    let mut out = Vec::new();
+    if let Some(text) = cut_text {
+      out.push(WorkerToUi::SetClipboardText {
+        tab_id: self.tab_id,
+        text,
+      });
+    }
+    if changed {
+      out.extend(self.paint_if_needed()?);
+    }
+    Ok(out)
+  }
+
+  fn handle_paste(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
+    let changed = self
+      .document
+      .mutate_dom(|dom| self.interaction.clipboard_paste(dom, text));
     if changed {
       self.paint_if_needed()
     } else {

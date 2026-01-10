@@ -45,6 +45,7 @@ pub enum WorkerToUiEvent {
   ScrollStateUpdated { tab_id: TabId, scroll: ScrollState },
   LoadingState { tab_id: TabId, loading: bool },
   Warning { tab_id: TabId, text: String },
+  SetClipboardText { tab_id: TabId, text: String },
   DebugLog { tab_id: TabId, line: String },
   SelectDropdownClosed { tab_id: TabId },
   ContextMenu {
@@ -67,6 +68,7 @@ pub enum WorkerEventKind {
   ScrollStateUpdated,
   LoadingState(bool),
   Warning,
+  SetClipboardText,
   DebugLog,
   SelectDropdownClosed,
   ContextMenu,
@@ -86,6 +88,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::ScrollStateUpdated { .. } => WorkerEventKind::ScrollStateUpdated,
       WorkerToUiEvent::LoadingState { loading, .. } => WorkerEventKind::LoadingState(*loading),
       WorkerToUiEvent::Warning { .. } => WorkerEventKind::Warning,
+      WorkerToUiEvent::SetClipboardText { .. } => WorkerEventKind::SetClipboardText,
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
@@ -201,6 +204,9 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
+    WorkerToUi::SetClipboardText { tab_id, text } => {
+      (WorkerToUiEvent::SetClipboardText { tab_id, text }, None)
+    }
   }
 }
 

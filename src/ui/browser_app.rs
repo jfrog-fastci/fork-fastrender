@@ -720,6 +720,10 @@ impl BrowserAppState {
         // the shared tab model, but it should trigger a redraw so UIs can react immediately.
         update.request_redraw = true;
       }
+      WorkerToUi::SetClipboardText { .. } => {
+        // Clipboard is handled by the front-end (e.g. `src/bin/browser.rs`); the shared app state
+        // model does not store clipboard contents.
+      }
     }
 
     update
