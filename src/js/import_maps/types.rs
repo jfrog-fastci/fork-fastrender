@@ -112,11 +112,15 @@ impl ModuleSpecifierMap {
   }
 
   pub fn contains_key(&self, key: &str) -> bool {
-    self.entries.iter().any(|(k, _)| k == key)
+    self.get(key).is_some()
   }
 
   pub fn get(&self, key: &str) -> Option<&Option<Url>> {
-    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(key, k))
+      .ok()
+      .and_then(|idx| self.entries.get(idx).map(|(_, v)| v))
   }
 }
 
@@ -147,8 +151,12 @@ impl ScopesMap {
     self.iter()
   }
 
-  pub fn get(&self, key: &str) -> Option<&ModuleSpecifierMap> {
-    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+  pub fn get(&self, scope_prefix: &str) -> Option<&ModuleSpecifierMap> {
+    self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(scope_prefix, k))
+      .ok()
+      .and_then(|idx| self.entries.get(idx).map(|(_, v)| v))
   }
 }
 

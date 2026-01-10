@@ -1,6 +1,5 @@
 //! WHATWG HTML import maps.
 //!
-//!
 //! This module contains spec-mapped import map plumbing used by HTML `<script type="importmap">`
 //! and module specifier resolution:
 //!
@@ -43,6 +42,9 @@ pub use types::{
 mod merge_tests;
 #[cfg(test)]
 mod parse_tests;
+
+#[cfg(test)]
+mod resolve_tests;
 
 #[cfg(test)]
 mod tests;

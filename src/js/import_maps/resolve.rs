@@ -1,3 +1,4 @@
+use memchr::memrchr_iter;
 use url::Url;
 
 use super::parse::resolve_url_like_module_specifier;
@@ -19,45 +20,51 @@ fn resolve_imports_match_impl(
 ) -> Result<Option<Url>, ImportMapError> {
   let allow_prefix_matches = as_url.map(is_special_url).unwrap_or(true);
 
-  for (specifier_key, resolution_result) in &specifier_map.entries {
-    if specifier_key == normalized_specifier {
-      let Some(url) = resolution_result else {
-        return Err(ImportMapError::TypeError(format!(
-          "resolution of {specifier_key} was blocked by a null entry."
-        )));
-      };
-      return Ok(Some(url.clone()));
+  // Fast path: exact match (binary search).
+  if let Some(resolution_result) = specifier_map.get(normalized_specifier) {
+    let Some(url) = resolution_result else {
+      return Err(ImportMapError::TypeError(format!(
+        "resolution of {normalized_specifier} was blocked by a null entry."
+      )));
+    };
+    return Ok(Some(url.clone()));
+  }
+
+  if !allow_prefix_matches {
+    return Ok(None);
+  }
+
+  // Prefix matches: try candidate prefixes ending with "/" from most specific to least specific.
+  for idx in memrchr_iter(b'/', normalized_specifier.as_bytes()) {
+    let specifier_key = &normalized_specifier[..idx + 1];
+    let Some(resolution_result) = specifier_map.get(specifier_key) else {
+      continue;
+    };
+
+    let Some(base_url) = resolution_result else {
+      return Err(ImportMapError::TypeError(format!(
+        "resolution of {specifier_key} was blocked by a null entry."
+      )));
+    };
+    debug_assert!(
+      base_url.as_str().ends_with('/'),
+      "parser must enforce trailing-slash invariant"
+    );
+
+    let after_prefix = &normalized_specifier[specifier_key.len()..];
+    let url = base_url.join(after_prefix).map_err(|_| {
+      ImportMapError::TypeError(format!(
+        "resolution of {normalized_specifier} was blocked since the afterPrefix portion could not be URL-parsed relative to the resolutionResult mapped to by the {specifier_key} prefix."
+      ))
+    })?;
+
+    if !url.as_str().starts_with(base_url.as_str()) {
+      return Err(ImportMapError::TypeError(format!(
+        "resolution of {normalized_specifier} was blocked due to it backtracking above its prefix {specifier_key}."
+      )));
     }
 
-    if allow_prefix_matches
-      && specifier_key.ends_with('/')
-      && normalized_specifier.starts_with(specifier_key)
-    {
-      let Some(base_url) = resolution_result else {
-        return Err(ImportMapError::TypeError(format!(
-          "resolution of {specifier_key} was blocked by a null entry."
-        )));
-      };
-      debug_assert!(
-        base_url.as_str().ends_with('/'),
-        "parser must enforce trailing-slash invariant"
-      );
-
-      let after_prefix = &normalized_specifier[specifier_key.len()..];
-      let url = base_url.join(after_prefix).map_err(|_| {
-        ImportMapError::TypeError(format!(
-          "resolution of {normalized_specifier} was blocked since the afterPrefix portion could not be URL-parsed relative to the resolutionResult mapped to by the {specifier_key} prefix."
-        ))
-      })?;
-
-      if !url.as_str().starts_with(base_url.as_str()) {
-        return Err(ImportMapError::TypeError(format!(
-          "resolution of {normalized_specifier} was blocked due to it backtracking above its prefix {specifier_key}."
-        )));
-      }
-
-      return Ok(Some(url));
-    }
+    return Ok(Some(url));
   }
 
   Ok(None)
@@ -108,10 +115,26 @@ pub fn resolve_module_specifier(
 
   let mut result: Option<Url> = None;
 
-  for (scope_prefix, scope_imports) in state.import_map.scopes.iter() {
-    if scope_prefix == serialized_base_url
-      || (scope_prefix.ends_with('/') && serialized_base_url.starts_with(scope_prefix))
-    {
+  if let Some(scope_imports) = state.import_map.scopes.get(&serialized_base_url) {
+    let match_result =
+      resolve_imports_match_impl(normalized_specifier.as_str(), as_url.as_ref(), scope_imports)?;
+    if match_result.is_some() {
+      result = match_result;
+    }
+  }
+
+  if result.is_none() {
+    for idx in memrchr_iter(b'/', serialized_base_url.as_bytes()) {
+      let end = idx + 1;
+      if end == serialized_base_url.len() {
+        continue;
+      }
+
+      let scope_prefix = &serialized_base_url[..end];
+      let Some(scope_imports) = state.import_map.scopes.get(scope_prefix) else {
+        continue;
+      };
+
       let match_result = resolve_imports_match_impl(
         normalized_specifier.as_str(),
         as_url.as_ref(),
