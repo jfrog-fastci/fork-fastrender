@@ -9,7 +9,10 @@ use crate::api::{BrowserDocument, FastRenderConfig, FastRenderFactory, FastRende
 use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
-use crate::interaction::{dom_mutation, fragment_tree_with_scroll, InteractionAction, InteractionEngine};
+use crate::interaction::{
+  dom_mutation, fragment_tree_with_scroll, hit_test_dom, HitTestKind, InteractionAction,
+  InteractionEngine,
+};
 use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
@@ -19,7 +22,7 @@ use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use crate::ui::validate_user_navigation_url_scheme;
+use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -888,6 +891,9 @@ impl BrowserRuntime {
       } => {
         self.handle_pointer_up(tab_id, pos_css, button);
       }
+      UiToWorker::ContextMenuRequest { tab_id, pos_css } => {
+        self.handle_context_menu_request(tab_id, pos_css);
+      }
       UiToWorker::SelectDropdownChoose {
         tab_id,
         select_node_id,
@@ -1297,6 +1303,51 @@ impl BrowserRuntime {
         }
       }
     }
+  }
+
+  fn handle_context_menu_request(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    let base_url = base_url_for_links(tab).to_string();
+    let scroll = &tab.scroll_state;
+    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let page_point = viewport_point.translate(scroll.viewport);
+
+    let Some(doc) = tab.document.as_mut() else {
+      let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
+        tab_id,
+        pos_css,
+        link_url: None,
+      });
+      return;
+    };
+
+    let href = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+      let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+      let href = hit_test_dom(dom, box_tree, hit_tree, page_point).and_then(|hit| {
+        if hit.kind == HitTestKind::Link {
+          hit.href
+        } else {
+          None
+        }
+      });
+      (false, href)
+    }) {
+      Ok(href) => href,
+      Err(_) => None,
+    };
+
+    let link_url = href.and_then(|href| resolve_link_url(&base_url, &href));
+
+    let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css,
+      link_url,
+    });
   }
 
   fn handle_select_dropdown_choose(

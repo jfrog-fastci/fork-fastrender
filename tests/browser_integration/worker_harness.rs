@@ -40,6 +40,11 @@ pub enum WorkerToUiEvent {
   LoadingState { tab_id: TabId, loading: bool },
   DebugLog { tab_id: TabId, line: String },
   SelectDropdownClosed { tab_id: TabId },
+  ContextMenu {
+    tab_id: TabId,
+    pos_css: (f32, f32),
+    link_url: Option<String>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +59,7 @@ pub enum WorkerEventKind {
   LoadingState(bool),
   DebugLog,
   SelectDropdownClosed,
+  ContextMenu,
 }
 
 impl WorkerToUiEvent {
@@ -69,6 +75,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::LoadingState { loading, .. } => WorkerEventKind::LoadingState(*loading),
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
+      WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
     }
   }
 }
@@ -149,6 +156,18 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::SelectDropdownClosed { tab_id } => {
       (WorkerToUiEvent::SelectDropdownClosed { tab_id }, None)
     }
+    WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css,
+      link_url,
+    } => (
+      WorkerToUiEvent::ContextMenu {
+        tab_id,
+        pos_css,
+        link_url,
+      },
+      None,
+    ),
   }
 }
 

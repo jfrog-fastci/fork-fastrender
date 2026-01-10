@@ -261,6 +261,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::SelectDropdownClosed { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::ContextMenu { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   None
 }
 
@@ -396,6 +399,19 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     }
     if let WorkerToUi::SelectDropdownClosed { tab_id } = msg {
       let _ = writeln!(&mut out, "SelectDropdownClosed(tab={})", tab_id.0);
+      continue;
+    }
+    if let WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css,
+      link_url,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?})",
+        tab_id.0
+      );
       continue;
     }
 

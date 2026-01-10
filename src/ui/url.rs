@@ -56,6 +56,40 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
   }
 }
 
+/// Resolve a link `href` attribute value against a base URL.
+///
+/// This is intended for DOM-driven navigations like link clicks and context menu actions.
+///
+/// Returns `None` when `href` is empty, cannot be resolved, or resolves to a `javascript:` URL (the
+/// browser UI does not execute JavaScript).
+pub fn resolve_link_url(base_url: &str, href: &str) -> Option<String> {
+  let href = trim_ascii_whitespace(href);
+  if href.is_empty() {
+    return None;
+  }
+
+  // Fast path: avoid parsing if this is clearly a `javascript:` URL (common in legacy pages).
+  if href
+    .as_bytes()
+    .get(.."javascript:".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+  {
+    return None;
+  }
+
+  if let Ok(base) = Url::parse(base_url) {
+    if let Ok(joined) = base.join(href) {
+      if joined.scheme().eq_ignore_ascii_case("javascript") {
+        return None;
+      }
+      return Some(joined.to_string());
+    }
+  }
+
+  let absolute = Url::parse(href).ok()?;
+  (!absolute.scheme().eq_ignore_ascii_case("javascript")).then(|| absolute.to_string())
+}
+
 fn looks_like_file_path(input: &str) -> bool {
   input.starts_with('/')
     || input.starts_with("./")
@@ -172,7 +206,7 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-  use super::{normalize_user_url, validate_user_navigation_url_scheme};
+  use super::{normalize_user_url, resolve_link_url, validate_user_navigation_url_scheme};
 
   #[test]
   fn bare_domain_defaults_to_https() {
@@ -261,6 +295,30 @@ mod tests {
     assert_eq!(
       normalize_user_url("/tmp/a.html").unwrap(),
       "file:///tmp/a.html"
+    );
+  }
+
+  #[test]
+  fn resolve_link_url_resolves_relative_against_base() {
+    assert_eq!(
+      resolve_link_url("https://example.com/dir/page.html", "other.html").as_deref(),
+      Some("https://example.com/dir/other.html")
+    );
+  }
+
+  #[test]
+  fn resolve_link_url_preserves_fragment_only_links() {
+    assert_eq!(
+      resolve_link_url("https://example.com/dir/page.html", "#frag").as_deref(),
+      Some("https://example.com/dir/page.html#frag")
+    );
+  }
+
+  #[test]
+  fn resolve_link_url_rejects_javascript_scheme() {
+    assert_eq!(
+      resolve_link_url("https://example.com/dir/page.html", "javascript:alert(1)"),
+      None
     );
   }
 }

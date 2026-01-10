@@ -478,6 +478,23 @@ struct OpenSelectDropdown {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct PendingContextMenuRequest {
+  tab_id: fastrender::ui::TabId,
+  pos_css: (f32, f32),
+  anchor_points: egui::Pos2,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenContextMenu {
+  tab_id: fastrender::ui::TabId,
+  pos_css: (f32, f32),
+  anchor_points: egui::Pos2,
+  link_url: Option<String>,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -526,6 +543,10 @@ struct App {
   /// active tab might not receive a `PointerMove` until the user moves the mouse (hover state would
   /// appear "stuck" or missing).
   hover_sync_pending: bool,
+
+  pending_context_menu_request: Option<PendingContextMenuRequest>,
+  open_context_menu: Option<OpenContextMenu>,
+  open_context_menu_rect: Option<egui::Rect>,
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
@@ -651,6 +672,9 @@ impl App {
       cursor_in_page: false,
       pending_pointer_move: None,
       hover_sync_pending: false,
+      pending_context_menu_request: None,
+      open_context_menu: None,
+      open_context_menu_rect: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
@@ -759,6 +783,7 @@ impl App {
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
+      | UiToWorker::ContextMenuRequest { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
@@ -789,6 +814,7 @@ impl App {
         | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
         // `Tick` and tab-management messages should not force cancellation.
         UiToWorker::Tick { .. }
+        | UiToWorker::ContextMenuRequest { .. }
         | UiToWorker::CreateTab { .. }
         | UiToWorker::NewTab { .. }
         | UiToWorker::CloseTab { .. }
@@ -825,6 +851,12 @@ impl App {
     }
   }
 
+  fn close_context_menu(&mut self) {
+    self.pending_context_menu_request = None;
+    self.open_context_menu = None;
+    self.open_context_menu_rect = None;
+  }
+
   fn close_select_dropdown(&mut self) {
     self.open_select_dropdown = None;
     self.open_select_dropdown_rect = None;
@@ -843,9 +875,13 @@ impl App {
     let Some(msg) = self.pending_pointer_move.take() else {
       return;
     };
-    if let (Some(rect), Some(pos)) = (self.open_select_dropdown_rect, self.last_cursor_pos_points) {
-      if rect.contains(pos) {
-        // Avoid updating page hover state while the pointer is interacting with the dropdown popup.
+    if let Some(pos) = self.last_cursor_pos_points {
+      if self
+        .open_select_dropdown_rect
+        .is_some_and(|rect| rect.contains(pos))
+        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+      {
+        // Avoid updating page hover state while the pointer is interacting with a popup.
         return;
       }
     }
@@ -945,6 +981,13 @@ impl App {
         {
           self.close_select_dropdown();
         }
+        if self
+          .open_context_menu
+          .as_ref()
+          .is_some_and(|menu| menu.tab_id == *tab_id)
+        {
+          self.close_context_menu();
+        }
       }
       _ => {}
     }
@@ -961,6 +1004,34 @@ impl App {
         self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
         // Debug log is rendered via a bottom panel regardless of active tab.
         request_redraw = true;
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css,
+      link_url,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        if self
+          .pending_context_menu_request
+          .as_ref()
+          .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css)
+        {
+          let pending = self
+            .pending_context_menu_request
+            .take()
+            .expect("checked is_some above");
+          self.open_context_menu = Some(OpenContextMenu {
+            tab_id: *tab_id,
+            pos_css: *pos_css,
+            anchor_points: pending.anchor_points,
+            link_url: link_url.clone(),
+          });
+          self.open_context_menu_rect = None;
+          request_redraw = true;
+        }
       }
     }
 
@@ -1057,6 +1128,123 @@ impl App {
       dpr,
     });
   }
+
+  fn render_context_menu(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::ChromeAction;
+
+    let (tab_id, pos_css, anchor_points, link_url) = match self.open_context_menu.as_ref() {
+      Some(menu) => (
+        menu.tab_id,
+        menu.pos_css,
+        menu.anchor_points,
+        menu.link_url.clone(),
+      ),
+      None => {
+        self.open_context_menu_rect = None;
+        return;
+      }
+    };
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.close_context_menu();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.close_context_menu();
+      self.window.request_redraw();
+      return;
+    }
+
+    enum Action {
+      OpenInNewTab(String),
+      CopyLink(String),
+      Reload,
+    }
+
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_page_context_menu",
+      tab_id.0,
+      pos_css.0.to_bits(),
+      pos_css.1.to_bits(),
+    )))
+    .order(egui::Order::Foreground)
+    .fixed_pos(anchor_points)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        let mut action: Option<Action> = None;
+
+        if let Some(url) = link_url.as_deref() {
+          if ui.button("Open Link in New Tab").clicked() {
+            action = Some(Action::OpenInNewTab(url.to_string()));
+          }
+          if ui.button("Copy Link Address").clicked() {
+            action = Some(Action::CopyLink(url.to_string()));
+          }
+          ui.separator();
+        }
+
+        if ui.button("Reload").clicked() {
+          action = Some(Action::Reload);
+        }
+
+        action
+      });
+
+      (frame.response.rect, frame.inner)
+    });
+
+    let (popup_rect, action) = popup.inner;
+    self.open_context_menu_rect = Some(popup_rect);
+
+    let Some(action) = action else {
+      return;
+    };
+
+    match action {
+      Action::CopyLink(url) => {
+        ctx.output_mut(|o| o.copied_text = url);
+      }
+      Action::Reload => {
+        self.handle_chrome_actions(vec![ChromeAction::Reload]);
+      }
+      Action::OpenInNewTab(url) => {
+        use fastrender::ui::RepaintReason;
+        use fastrender::ui::UiToWorker;
+
+        let tab_id = fastrender::ui::TabId::new();
+        let tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
+        let cancel = tab_state.cancel.clone();
+        self.tab_cancel.insert(tab_id, cancel.clone());
+
+        self.browser_state.push_tab(tab_state, true);
+        self.browser_state.chrome.address_bar_text = url.clone();
+        self.page_has_focus = false;
+        self.viewport_cache_tab = None;
+        self.pointer_captured = false;
+        self.captured_button = fastrender::ui::PointerButton::None;
+        self.cursor_in_page = false;
+        self.hover_sync_pending = true;
+        self.pending_pointer_move = None;
+
+        self.send_worker_msg(UiToWorker::CreateTab {
+          tab_id,
+          initial_url: Some(url),
+          cancel,
+        });
+        self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+        self.send_worker_msg(UiToWorker::RequestRepaint {
+          tab_id,
+          reason: RepaintReason::Explicit,
+        });
+      }
+    }
+
+    self.close_context_menu();
+    self.window.request_redraw();
+  }
+
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::UiToWorker;
@@ -1228,6 +1416,7 @@ impl App {
     if self
       .open_select_dropdown_rect
       .is_some_and(|rect| rect.contains(pos_points))
+      || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos_points))
     {
       self.hover_sync_pending = false;
       self.cursor_in_page = false;
@@ -1301,6 +1490,10 @@ impl App {
           self.cancel_select_dropdown();
           self.window.request_redraw();
         }
+        if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
+          self.close_context_menu();
+          self.window.request_redraw();
+        }
         if self.pointer_captured {
           self.cancel_pointer_capture();
           self.window.request_redraw();
@@ -1309,10 +1502,15 @@ impl App {
       WindowEvent::CursorLeft { .. } => {
         let had_pointer_capture = self.pointer_captured;
         let had_cursor_in_page = self.cursor_in_page;
+        let had_context_menu = self.open_context_menu.is_some() || self.pending_context_menu_request.is_some();
 
         // Winit does not provide cursor coordinates when leaving the window. Clear our cached
         // position so hover updates are not suppressed by stale dropdown rect checks.
         self.last_cursor_pos_points = None;
+
+        if had_context_menu {
+          self.close_context_menu();
+        }
 
         if had_pointer_capture {
           self.cancel_pointer_capture();
@@ -1320,6 +1518,8 @@ impl App {
 
         if had_cursor_in_page || had_pointer_capture {
           self.clear_page_hover();
+        }
+        if had_cursor_in_page || had_pointer_capture || had_context_menu {
           self.window.request_redraw();
         }
       }
@@ -1332,6 +1532,7 @@ impl App {
         if self
           .open_select_dropdown_rect
           .is_some_and(|rect| rect.contains(pos_points))
+          || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos_points))
         {
           return;
         }
@@ -1411,6 +1612,19 @@ impl App {
           return;
         };
 
+        if matches!(state, ElementState::Pressed) && self.open_context_menu.is_some() {
+          // While the context menu is open, clicks inside it are handled by egui. Any click outside
+          // should dismiss it before we forward the interaction to the page/chrome.
+          if self
+            .open_context_menu_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          self.close_context_menu();
+          self.window.request_redraw();
+        }
+
         if matches!(state, ElementState::Pressed) && self.open_select_dropdown.is_some() {
           // If the dropdown popup is open, clicks inside it are handled by egui (option selection).
           if self
@@ -1468,6 +1682,23 @@ impl App {
             let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
               return;
             };
+
+            if matches!(mapped_button, fastrender::ui::PointerButton::Secondary) {
+              // Right-click: request worker hit-test and open an egui context menu once the worker
+              // responds with link information.
+              self.page_has_focus = true;
+              self.cursor_in_page = true;
+              self.close_context_menu();
+              self.pending_context_menu_request = Some(PendingContextMenuRequest {
+                tab_id,
+                pos_css,
+                anchor_points: pos_points,
+              });
+              self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css });
+              self.window.request_redraw();
+              return;
+            }
+
             self.page_has_focus = true;
             if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
               self.pointer_captured = true;
@@ -1708,6 +1939,7 @@ impl App {
     if !actions.is_empty() {
       self.cancel_select_dropdown();
       self.cancel_pointer_capture();
+      self.close_context_menu();
     }
 
     for action in actions {
@@ -2091,6 +2323,7 @@ impl App {
     });
 
     self.render_select_dropdown(&ctx);
+    self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();

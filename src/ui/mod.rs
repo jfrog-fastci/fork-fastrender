@@ -53,7 +53,7 @@ pub mod wgpu_pixmap_texture;
 
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
-pub use url::{normalize_user_url, validate_user_navigation_url_scheme};
+pub use url::{normalize_user_url, resolve_link_url, validate_user_navigation_url_scheme};
 
 pub use history::{HistoryEntry, TabHistory};
 pub use browser_app::{

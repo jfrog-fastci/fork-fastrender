@@ -211,6 +211,20 @@ pub enum UiToWorker {
     pos_css: (f32, f32),
     button: PointerButton,
   },
+  /// Request a page hit-test for context menu purposes.
+  ///
+  /// The worker responds with [`WorkerToUi::ContextMenu`] containing a resolved link URL (if the
+  /// hit target is a link).
+  ContextMenuRequest {
+    tab_id: TabId,
+    /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    /// The worker is responsible for converting viewport-local coords to page coords by adding the
+    /// current scroll offset.
+    pos_css: (f32, f32),
+  },
   /// User chose an option in a dropdown `<select>` popup.
   ///
   /// The UI should send this after receiving [`WorkerToUi::SelectDropdownOpened`].
@@ -321,6 +335,14 @@ pub enum WorkerToUi {
   },
   SelectDropdownClosed {
     tab_id: TabId,
+  },
+  /// Response to [`UiToWorker::ContextMenuRequest`].
+  ContextMenu {
+    tab_id: TabId,
+    /// Pointer position in viewport-local CSS pixels as provided by the UI request.
+    pos_css: (f32, f32),
+    /// Fully-resolved link URL under the cursor, if any.
+    link_url: Option<String>,
   },
 }
 

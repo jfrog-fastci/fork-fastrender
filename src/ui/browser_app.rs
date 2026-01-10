@@ -653,6 +653,11 @@ impl BrowserAppState {
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
+      WorkerToUi::ContextMenu { .. } => {
+        // Front-ends may use this message to open a page context menu; it does not directly mutate
+        // the shared tab model, but it should trigger a redraw so UIs can react immediately.
+        update.request_redraw = true;
+      }
     }
 
     update
