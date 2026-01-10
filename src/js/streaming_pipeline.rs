@@ -903,15 +903,25 @@ mod tests {
  
   impl ScriptLoader for DynHost {
     type Handle = usize;
- 
-    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+  
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
       Err(Error::Other(format!("unexpected load_blocking for url={url}")))
     }
- 
-    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+  
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
       Err(Error::Other(format!("unexpected start_load for url={url}")))
     }
- 
+  
     fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
       Ok(None)
     }
