@@ -3255,13 +3255,23 @@ impl FormattingContext for FlexFormattingContext {
                       }
                     }
 
+                    // Resolve percentage padding/border lengths against the containing block's
+                    // width. During intrinsic sizing Taffy may probe with tiny 0/1px values and
+                    // we intentionally preserve those in `inline_percentage_base` to avoid
+                    // accidentally resolving percentages against an unrelated base (e.g. the
+                    // viewport). When stripping padding/borders from an already-laid-out fragment,
+                    // however, using a 0/1px probe base would fail to subtract percentage padding
+                    // and cause it to be applied twice (FastRender would return border-box size to
+                    // Taffy and then Taffy would add padding again). Prefer a meaningful base when
+                    // available.
                     let percentage_base = constraints
                       .inline_percentage_base
+                      .filter(|b| b.is_finite() && *b > 1.0)
                       .or_else(|| match avail.width {
-                        AvailableSpace::Definite(w) => Some(w),
+                        AvailableSpace::Definite(w) if w.is_finite() && w > 1.0 => Some(w),
                         _ => None,
                       })
-                      .or_else(|| constraints.width())
+                      .or_else(|| constraints.width().filter(|w| w.is_finite() && *w > 1.0))
                       .unwrap_or_else(|| fragment.bounds.width());
                     let mut content_size = this.content_box_size(&fragment, &box_node.style, percentage_base);
                     // For fit-content, the fit computation operates on border-box sizes. Override the
@@ -3277,23 +3287,51 @@ impl FormattingContext for FlexFormattingContext {
                     let eps = 0.01;
                     let mut subtree_deadline_counter = 0usize;
                     let mut intrinsic_size = Size::new(0.0, 0.0);
-                    let needs_intrinsic_size = content_size.width <= eps
-                      || content_size.height <= eps
-                      || log_skinny
-                      || (!log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id));
-                    if needs_intrinsic_size {
-                      // Guard against zero-sized measurements when the fragment actually has content.
+                    let wants_log_intrinsic_size = log_skinny || log_measure_seq.is_some();
+                    if wants_log_intrinsic_size {
                       intrinsic_size =
                         match Self::fragment_subtree_size(&fragment, &mut subtree_deadline_counter) {
                           Ok(size) => size,
                           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                           Err(_) => Size::new(0.0, 0.0),
                         };
-                      if content_size.width <= eps && intrinsic_size.width > eps {
-                        content_size.width = intrinsic_size.width;
+                    }
+
+                    // Guard against zero-sized measurements when the fragment actually has in-flow
+                    // content.
+                    //
+                    // `content_box_size()` strips padding/border, so an element that sizes itself
+                    // purely via padding (common "aspect-ratio box" hacks like
+                    // `::after { padding-bottom: 56.25% }`) legitimately has a 0px content-box size
+                    // even though its border-box is non-zero. In that case we *must* return 0 to
+                    // Taffy so it can add padding once; otherwise padding is applied twice and the
+                    // box becomes 2× too large (cnn.com).
+                    //
+                    // When the fragment has in-flow descendants, return their span instead of the
+                    // root node's border box (which includes padding/border).
+                    let mut descendant_span_cache: Option<Option<Size>> = None;
+                    let mut descendant_span = || -> Option<Size> {
+                      if let Some(cached) = descendant_span_cache {
+                        return cached;
                       }
-                      if content_size.height <= eps && intrinsic_size.height > eps {
-                        content_size.height = intrinsic_size.height;
+                      let computed =
+                        match Self::fragment_descendant_span(&fragment, &mut subtree_deadline_counter) {
+                          Ok(span) => span,
+                          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                          Err(_) => None,
+                        };
+                      descendant_span_cache = Some(computed);
+                      computed
+                    };
+
+                    if content_size.width <= eps || content_size.height <= eps {
+                      if let Some(span) = descendant_span() {
+                        if content_size.width <= eps && span.width > eps {
+                          content_size.width = span.width;
+                        }
+                        if content_size.height <= eps && span.height > eps {
+                          content_size.height = span.height;
+                        }
                       }
                     }
                     if matches!(
@@ -3303,13 +3341,7 @@ impl FormattingContext for FlexFormattingContext {
                         && physical_min_width_is_auto(measure_style)
                         && physical_max_width_is_auto(measure_style)
                     {
-                        let descendant_span =
-                          match Self::fragment_descendant_span(&fragment, &mut subtree_deadline_counter) {
-                            Ok(span) => span,
-                            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                            Err(_) => None,
-                          };
-                        if let Some(span) = descendant_span {
+                        if let Some(span) = descendant_span() {
                             if span.width > eps
                                 && content_size.width > span.width + 0.5
                                 && span.width < this.viewport_size.width - eps

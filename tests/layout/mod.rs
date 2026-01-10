@@ -103,6 +103,7 @@ mod flex_used_border_box_override;
 mod flex_item_used_border_box_width_overrides_percent_width;
 mod flex_padding_calc_percent;
 mod flex_negative_padding_calc;
+mod flex_percent_padding_bottom;
 mod flex_row_reverse_percent_flex;
 mod flex_out_of_flow_positioned_descendants;
 mod flex_positioned_relayout;
