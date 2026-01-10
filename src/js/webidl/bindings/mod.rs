@@ -481,6 +481,35 @@ mod tests {
     let size_val = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, params_val, &[])?;
     assert_eq!(size_val, Value::Number(2.0));
 
+    // Calling the getter with an invalid receiver should throw a TypeError("Illegal invocation").
+    {
+      let err = vm
+        .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get, Value::Undefined, &[])
+        .expect_err("expected Illegal invocation error for URLSearchParams.prototype.size getter");
+      let thrown = err
+        .thrown_value()
+        .expect("expected a thrown exception value");
+      let Value::Object(thrown_obj) = thrown else {
+        panic!("expected thrown error to be an object");
+      };
+      scope.push_root(thrown)?;
+      let name_key = alloc_key(&mut scope, "name")?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
+      let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
+      let Value::String(name_s) = name_val else {
+        panic!("expected error.name to be a string");
+      };
+      let Value::String(message_s) = message_val else {
+        panic!("expected error.message to be a string");
+      };
+      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+      assert_eq!(
+        scope.heap().get_string(message_s)?.to_utf8_lossy(),
+        "Illegal invocation"
+      );
+    }
+
     // --- Set a writable attribute via the generated accessor setter ---
     let url_ctor_key = alloc_key(&mut scope, "URL")?;
     let url_ctor = scope
@@ -552,11 +581,22 @@ mod tests {
     };
 
     let element_node_key = alloc_key(&mut scope, "ELEMENT_NODE")?;
-    let element_node_val = scope
+    let Some(element_node_desc) = scope
       .heap()
-      .object_get_own_data_property_value(node_ctor_obj, &element_node_key)?
-      .expect("Node.ELEMENT_NODE should be defined");
-    assert_eq!(element_node_val, Value::Number(1.0));
+      .object_get_own_property(node_ctor_obj, &element_node_key)?
+    else {
+      panic!("Node.ELEMENT_NODE should be defined");
+    };
+    assert!(!element_node_desc.enumerable, "constants must be non-enumerable");
+    assert!(
+      !element_node_desc.configurable,
+      "constants must be non-configurable"
+    );
+    let PropertyKind::Data { value, writable } = element_node_desc.kind else {
+      panic!("Node.ELEMENT_NODE should be a data property");
+    };
+    assert_eq!(value, Value::Number(1.0));
+    assert!(!writable, "constants must be non-writable");
 
     drop(scope);
     realm.teardown(&mut heap);
