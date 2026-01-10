@@ -12019,28 +12019,37 @@ mod tests {
   }
 
   #[test]
-  fn grid_scrollable_available_space_safeguard_vertical_writing_mode_drops_width() {
+  fn grid_scrollable_available_space_safeguard_vertical_writing_modes_drop_width() {
     let _hint_guard = crate::layout::formatting_context::set_fragmentainer_block_size_hint(None);
 
-    let mut style = ComputedStyle::default();
-    style.display = CssDisplay::Grid;
-    style.writing_mode = WritingMode::VerticalRl;
-    style.width = None;
-    style.width_keyword = None;
-    style.height = None;
-    style.height_keyword = None;
+    let writing_modes = [
+      WritingMode::VerticalRl,
+      WritingMode::VerticalLr,
+      WritingMode::SidewaysRl,
+      WritingMode::SidewaysLr,
+    ];
 
     let constraints = LayoutConstraints::definite(100.0, 200.0);
-    let available = taffy_available_space_for_grid_container(&style, &constraints);
+    for writing_mode in writing_modes {
+      let mut style = ComputedStyle::default();
+      style.display = CssDisplay::Grid;
+      style.writing_mode = writing_mode;
+      style.width = None;
+      style.width_keyword = None;
+      style.height = None;
+      style.height_keyword = None;
 
-    assert!(matches!(
-      available.width,
-      taffy::style::AvailableSpace::MaxContent
-    ));
-    assert!(matches!(
-      available.height,
-      taffy::style::AvailableSpace::Definite(h) if h == 200.0
-    ));
+      let available = taffy_available_space_for_grid_container(&style, &constraints);
+
+      assert!(matches!(
+        available.width,
+        taffy::style::AvailableSpace::MaxContent
+      ));
+      assert!(matches!(
+        available.height,
+        taffy::style::AvailableSpace::Definite(h) if h == 200.0
+      ));
+    }
   }
 
   #[test]
