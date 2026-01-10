@@ -314,6 +314,7 @@ fn grid_item_parallel_flow_required_block_size(
   axes: FragmentAxes,
   fragmentainer_size: f32,
   item_abs_start: f32,
+  context: FragmentationContext,
 ) -> f32 {
   let axis = axis_from_fragment_axes(axes);
   let item_block_size = axis.block_size(&item.bounds).max(0.0);
@@ -325,8 +326,8 @@ fn grid_item_parallel_flow_required_block_size(
   // lands on later fragmentainers (see `apply_grid_parallel_flow_forced_break_shifts`). After those
   // shifts, the grid item's logical bounding box captures the effective block-size increase.
   //
-  // Prefer that geometry-derived extent here so column-forced breaks (and any other descendant
-  // overflow) are reflected when determining which fragmentainers this item overlaps.
+  // Prefer that geometry-derived extent here so any descendant overflow is reflected when
+  // determining which fragmentainers this item overlaps.
   let bbox_block_size = axis.block_size(&item.logical_bounding_box());
   let mut required = if bbox_block_size.is_finite() {
     bbox_block_size.max(item_block_size)
@@ -335,36 +336,51 @@ fn grid_item_parallel_flow_required_block_size(
   };
 
   // Backwards-compatibility fallback: if no descendant overflow is visible but a fragmentainer size
-  // is available, still model forced *page* breaks as inserting blank space. This keeps pagination
+  // is available, still model forced breaks as inserting blank space. This keeps fragmentation
   // robust even when callers invoke clipping without applying shift modelling first.
   if required <= item_block_size + BREAK_EPSILON
     && fragmentainer_size.is_finite()
     && fragmentainer_size > 0.0
   {
-    let mut boundaries = collect_forced_boundaries_with_axes(item, 0.0, axes);
-    if !boundaries.is_empty() {
-      let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
-      positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-      positions.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
-
-      // Model forced breaks as inserting blank space up to the next fragmentainer boundary. This
-      // matches the spec language that a forced break "effectively increases the size of its
-      // contents" (CSS Grid 2 §Fragmenting Grid Layout).
-      let mut shift = 0.0f32;
-      for pos in positions {
-        if pos <= BREAK_EPSILON {
-          continue;
-        }
-        if pos >= item_block_size - BREAK_EPSILON {
-          continue;
-        }
-        let effective = pos + shift;
-        let remainder = (item_abs_start + effective).rem_euclid(fragmentainer_size);
-        // If the forced break already aligns to a fragmentainer boundary, no extra space is needed.
-        let advance = (fragmentainer_size - remainder).rem_euclid(fragmentainer_size);
-        shift += advance;
+    let item_abs_end = item_abs_start + item_block_size;
+    let mut positions: Vec<f32> = match context {
+      FragmentationContext::Page => collect_forced_boundaries_with_axes(item, item_abs_start, axes)
+        .into_iter()
+        .map(|b| b.position)
+        .collect(),
+      FragmentationContext::Column => {
+        let default_style = default_style();
+        let item_writing_mode = item
+          .style
+          .as_ref()
+          .map(|s| s.writing_mode)
+          .unwrap_or(default_style.writing_mode);
+        let mut collection = BreakCollection::default();
+        collect_break_opportunities(
+          item,
+          item_abs_start,
+          &mut collection,
+          0,
+          0,
+          context,
+          &axis,
+          item_writing_mode,
+          true,
+          false,
+        );
+        collection
+          .opportunities
+          .into_iter()
+          .filter(|o| matches!(o.strength, BreakStrength::Forced))
+          .map(|o| o.pos)
+          .collect()
       }
+    };
 
+    positions
+      .retain(|p| *p > item_abs_start + BREAK_EPSILON && *p < item_abs_end - BREAK_EPSILON);
+    if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+      let shift = shifts.breaks.last().map(|(_, shift)| *shift).unwrap_or(0.0);
       required = required.max(item_block_size + shift);
     }
   }
@@ -788,9 +804,6 @@ fn grid_container_parallel_flow_required_block_size(
   fragmentainer_size: f32,
   context: FragmentationContext,
 ) -> Option<f32> {
-  if !matches!(context, FragmentationContext::Page) {
-    return None;
-  }
   if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
     return None;
   }
@@ -827,7 +840,7 @@ fn grid_container_parallel_flow_required_block_size(
     );
     let child_abs_start = abs_start + child_start;
     let child_required =
-      grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start);
+      grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start, context);
     required = required.max(child_start + child_required);
   }
 
@@ -906,9 +919,6 @@ pub(crate) fn parallel_flow_content_extent(
     }
   };
 
-  if !matches!(context, FragmentationContext::Page) {
-    return extent;
-  }
   let Some(fragmentainer_size) = fragmentainer_size_hint.filter(|s| s.is_finite() && *s > 0.0)
   else {
     return extent;
@@ -920,6 +930,7 @@ pub(crate) fn parallel_flow_content_extent(
     axis: &FragmentAxis,
     axes: FragmentAxes,
     fragmentainer_size: f32,
+    context: FragmentationContext,
     extent: &mut f32,
   ) {
     let node_block_size = axis.block_size(&node.bounds);
@@ -929,7 +940,7 @@ pub(crate) fn parallel_flow_content_extent(
       axis,
       axes,
       fragmentainer_size,
-      FragmentationContext::Page,
+      context,
     ) {
       *extent = extent.max(abs_start + required);
     }
@@ -942,12 +953,21 @@ pub(crate) fn parallel_flow_content_extent(
         axis,
         axes,
         fragmentainer_size,
+        context,
         extent,
       );
     }
   }
 
-  walk(root, 0.0, &axis, axes, fragmentainer_size, &mut extent);
+  walk(
+    root,
+    0.0,
+    &axis,
+    axes,
+    fragmentainer_size,
+    context,
+    &mut extent,
+  );
   extent
 }
 
@@ -1221,12 +1241,7 @@ impl FragmentationAnalyzer {
     });
 
     let content_extent = parallel_flow_content_extent(root, axes, fragmentainer_size_hint, context);
-    let table_repetitions = collect_table_repetition_info_with_axis(
-      root,
-      0.0,
-      &axis,
-      context,
-    );
+    let table_repetitions = collect_table_repetition_info_with_axis(root, 0.0, &axis, context);
     let line_containers = collection.line_containers;
     let line_starts = vec![0; line_containers.len()];
     Self {
@@ -1979,7 +1994,12 @@ fn fragment_tree_impl(
   // ensures the continuation content appears on later pages without forcing sibling grid items onto
   // the next page.
   let mut root = root.clone();
-  apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size, context);
+  apply_grid_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
   apply_float_parallel_flow_forced_break_shifts(
     &mut root,
     axes,
@@ -2076,13 +2096,14 @@ pub(crate) fn propagate_fragment_metadata(node: &mut FragmentNode, index: usize,
   }
 }
 
-fn clip_grid_item_parallel_for_page(
+fn clip_grid_item_parallel_for_fragmentainer(
   item: &FragmentNode,
   axis: &FragmentAxis,
   axes: FragmentAxes,
   fragmentainer_size: f32,
-  page_index: usize,
+  fragment_index: usize,
   offset_in_fragment: f32,
+  context: FragmentationContext,
 ) -> Result<Option<FragmentNode>, LayoutError> {
   if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
     return Ok(None);
@@ -2150,22 +2171,23 @@ fn clip_grid_item_parallel_for_page(
     (local_item, false)
   };
 
-  let mut analyzer = FragmentationAnalyzer::new(
-    &flow_root,
-    FragmentationContext::Page,
-    axes,
-    true,
-    Some(fragmentainer_size),
-  );
+  let mut analyzer = FragmentationAnalyzer::new(&flow_root, context, axes, true, Some(fragmentainer_size));
+  // Forced breaks inside parallel grid items are modelled as blank insertion via
+  // `apply_grid_parallel_flow_forced_break_shifts`. When fragmenting the item subtree to obtain the
+  // per-fragmentainer slice, suppress the original forced break opportunities so they do not
+  // introduce additional boundaries (which would effectively apply the forced break twice).
+  analyzer
+    .opportunities
+    .retain(|o| !matches!(o.strength, BreakStrength::Forced));
   let total_extent = analyzer.content_extent();
   let boundaries = analyzer.boundaries(fragmentainer_size, total_extent)?;
   let fragment_count = boundaries.len().saturating_sub(1);
-  if fragment_count == 0 || page_index >= fragment_count {
+  if fragment_count == 0 || fragment_index >= fragment_count {
     return Ok(None);
   }
 
-  let start = boundaries[page_index];
-  let end = boundaries[page_index + 1];
+  let start = boundaries[fragment_index];
+  let end = boundaries[fragment_index + 1];
   if end <= start + BREAK_EPSILON {
     return Ok(None);
   }
@@ -2179,9 +2201,9 @@ fn clip_grid_item_parallel_for_page(
     start,
     end,
     axis.block_size(&flow_root.bounds),
-    page_index,
+    fragment_index,
     fragment_count,
-    FragmentationContext::Page,
+    context,
     fragmentainer_size,
     axes,
   )?
@@ -2203,7 +2225,7 @@ fn clip_grid_item_parallel_for_page(
   // The synthetic wrapper introduces a leading offset before the grid item. For the first fragment,
   // `clip_node` returns the item positioned at that offset. Shift it back so the returned fragment
   // behaves like a normal clipped subtree rooted at the item origin.
-  if page_index == 0 {
+  if fragment_index == 0 {
     let item_block_start = axis.block_start(&item_fragment.bounds);
     if item_block_start.abs() > BREAK_EPSILON {
       let delta_point = if axis.block_is_horizontal {
@@ -2277,11 +2299,10 @@ pub(crate) fn clip_node(
   let mut node_bbox_flow_end = (node_bbox_flow_start + node_bbox_block_size).max(node_flow_end);
 
   // Parallel flows (grid items in a row) can extend the effective block size of descendants even
-  // when their laid-out bounds fit within a single page. Pagination inflates the total extent using
-  // `parallel_flow_content_extent`, so clipping must also treat ancestor nodes as overlapping later
-  // pages or the continuation content would be dropped.
-  if matches!(context, FragmentationContext::Page)
-    && fragmentainer_size.is_finite()
+  // when their laid-out bounds fit within a single fragmentainer. Boundary resolution inflates the
+  // total extent using `parallel_flow_content_extent`, so clipping must also treat ancestor nodes as
+  // overlapping later fragmentainers (pages/columns) or the continuation content would be dropped.
+  if fragmentainer_size.is_finite()
     && fragmentainer_size > 0.0
     && node_bbox_flow_end <= fragment_start
   {
@@ -2453,7 +2474,7 @@ pub(crate) fn clip_node(
         .flow_range(node_flow_start, original_node_block_size, &child.bounds)
         .0;
       let child_required =
-        grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start);
+        grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size, child_abs_start, context);
       let child_abs_end = child_abs_start + child_required;
       if child_abs_end <= fragment_start + BREAK_EPSILON
         || child_abs_start >= fragment_end - BREAK_EPSILON
@@ -2512,13 +2533,14 @@ pub(crate) fn clip_node(
         0
       };
 
-      if let Some(mut item_fragment) = clip_grid_item_parallel_for_page(
+      if let Some(mut item_fragment) = clip_grid_item_parallel_for_fragmentainer(
         child,
         axis,
         axes,
         fragmentainer_size,
         local_index,
         offset_in_fragment,
+        context,
       )? {
         // Position the clipped fragment in the current fragmentainer slice. This mirrors the
         // coordinate mapping performed by the normal `clip_node` recursion, but without slicing the
@@ -4855,6 +4877,13 @@ mod tests {
     FragmentAxes::from_writing_mode_and_direction(WritingMode::HorizontalTb, Direction::Ltr)
   }
 
+  fn box_id(node: &FragmentNode) -> Option<usize> {
+    match node.content {
+      FragmentContent::Block { box_id } => box_id,
+      _ => None,
+    }
+  }
+
   #[test]
   fn massive_opportunities_remains_fast() {
     let line_height = 1.0;
@@ -5388,7 +5417,7 @@ mod tests {
     );
 
     let required =
-      grid_item_parallel_flow_required_block_size(item, axes, fragmentainer_size, item_abs_start);
+      grid_item_parallel_flow_required_block_size(item, axes, fragmentainer_size, item_abs_start, FragmentationContext::Page);
     assert!(
       (required - 30.0).abs() < BREAK_EPSILON,
       "expected required block size to be 30px (20 + 10 blank), got {required}"
@@ -5674,6 +5703,228 @@ mod tests {
       (moved.bounds.height() - 30.0).abs() < 0.01,
       "moved node should retain its full block size, got h={}",
       moved.bounds.height()
+    );
+  }
+
+  #[test]
+  fn column_grid_parallel_item_forced_break_does_not_force_container_columns() {
+    let fragmentainer_size = 50.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_after = BreakBetween::Column;
+    let break_style = Arc::new(break_style);
+
+    let mut part_style = ComputedStyle::default();
+    part_style.display = Display::Block;
+    let part_style = Arc::new(part_style);
+
+    let mut part1 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 50.0, 10.0), vec![], break_style);
+    part1.content = FragmentContent::Block { box_id: Some(11) };
+
+    let mut part2 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 10.0, 50.0, 40.0),
+      vec![],
+      Arc::clone(&part_style),
+    );
+    part2.content = FragmentContent::Block { box_id: Some(12) };
+
+    let mut item1 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      vec![part1, part2],
+      Arc::clone(&item_style),
+    );
+    item1.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut item2 = FragmentNode::new_block_styled(
+      Rect::from_xywh(50.0, 0.0, 50.0, 50.0),
+      vec![{
+        let mut leaf = FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+          vec![],
+          Arc::clone(&item_style),
+        );
+        leaf.content = FragmentContent::Block { box_id: Some(21) };
+        leaf
+      }],
+      item_style,
+    );
+    item2.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+      vec![item1, item2],
+      grid_style,
+    );
+    root.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 50.0)],
+      columns: vec![(0.0, 50.0), (50.0, 100.0)],
+    }));
+    root.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 1,
+          row_end: 2,
+          column_start: 2,
+          column_end: 3,
+        },
+      ],
+    }));
+
+    // Break opportunities inside the first grid item must not force the grid container's column
+    // boundaries. Without parallel-flow suppression, the forced break at flow pos 10 would become
+    // a mandatory column break for the whole container.
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Column,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .expect("boundaries");
+    assert!(
+      !boundaries
+        .iter()
+        .any(|b| (*b - 10.0).abs() < BREAK_EPSILON),
+      "expected the grid item's forced break to be suppressed from the container flow, got boundaries={boundaries:?}"
+    );
+
+    let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
+    let fragments = fragment_tree(&root, &options).expect("fragment tree");
+    assert_eq!(
+      fragments.len(),
+      2,
+      "expected the forced break inside the parallel grid item to create a continuation column"
+    );
+
+    let col0 = &fragments[0];
+    let col1 = &fragments[1];
+
+    let col0_ids: Vec<_> = col0.children.iter().map(box_id).collect();
+    assert_eq!(
+      col0_ids,
+      vec![Some(1), Some(2)],
+      "expected both grid items to remain in the first column fragment, got {col0_ids:?}"
+    );
+
+    let col1_ids: Vec<_> = col1.children.iter().map(box_id).collect();
+    assert_eq!(
+      col1_ids,
+      vec![Some(1)],
+      "expected only the breaking grid item to continue in later columns, got {col1_ids:?}"
+    );
+
+    let item1_col0 = &col0.children[0];
+    let item1_col1 = &col1.children[0];
+    let item1_col0_child_ids: Vec<_> = item1_col0.children.iter().map(box_id).collect();
+    let item1_col1_child_ids: Vec<_> = item1_col1.children.iter().map(box_id).collect();
+    assert_eq!(
+      item1_col0_child_ids,
+      vec![Some(11)],
+      "expected the breaking grid item to contain only pre-break content in the first column, got {item1_col0_child_ids:?}"
+    );
+    assert_eq!(
+      item1_col1_child_ids,
+      vec![Some(12)],
+      "expected the breaking grid item continuation content to appear in later columns, got {item1_col1_child_ids:?}"
+    );
+    assert!(
+      (item1_col1.children[0].bounds.y() - 0.0).abs() < 0.01,
+      "expected continuation content to be rebased to the top of the grid item slice in the next column, got y={}",
+      item1_col1.children[0].bounds.y()
+    );
+  }
+
+  #[test]
+  fn column_grid_parallel_item_uses_independent_clipping_path() {
+    let axes = default_axes();
+    let axis = axis_from_fragment_axes(axes);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    // Place the grid item starting partway through the second fragmentainer slice [50, 100] so the
+    // "local" fragment index (relative to the item's own fragmentation flow) differs from the
+    // global fragment index passed to `clip_node`.
+    let mut item = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 60.0, 100.0, 20.0),
+      vec![{
+        let mut leaf = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 20.0), vec![]);
+        leaf.content = FragmentContent::Block { box_id: Some(101) };
+        leaf
+      }],
+      item_style,
+    );
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 80.0),
+      vec![item],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(60.0, 80.0)],
+      columns: vec![(0.0, 100.0)],
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let clipped = clip_node(
+      &grid,
+      &axis,
+      50.0,
+      100.0,
+      0.0,
+      50.0,
+      100.0,
+      axis.block_size(&grid.bounds),
+      1,
+      2,
+      FragmentationContext::Column,
+      50.0,
+      axes,
+    )
+    .expect("clip")
+    .expect("expected grid container to overlap the fragment slice");
+
+    assert_eq!(clipped.children.len(), 1);
+    let item_fragment = &clipped.children[0];
+    assert_eq!(
+      item_fragment.fragment_index, 0,
+      "expected the grid item to be clipped via the parallel flow path (local fragment index), got {}",
+      item_fragment.fragment_index
     );
   }
 }
