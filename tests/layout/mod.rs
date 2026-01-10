@@ -138,6 +138,7 @@ mod inline_intrinsic_max_content_text_items;
 mod inline_intrinsic_max_content;
 mod inline_replaced_in_block;
 mod inline_shaping_fallback;
+mod inline_padding_does_not_affect_line_height;
 mod text_justify_inter_word_no_fragment_churn;
 mod intrinsic_sizing_keywords;
 mod legend_shrink_to_fit;

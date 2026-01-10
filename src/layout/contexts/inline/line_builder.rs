@@ -200,6 +200,19 @@ impl InlineItem {
     }
   }
 
+  /// Returns baseline metrics used for line box height calculation.
+  ///
+  /// For non-atomic inline boxes (`InlineItem::InlineBox`), CSS 2.1 specifies that vertical
+  /// padding/borders do not affect line box dimensions; they overflow instead.
+  pub fn line_metrics(&self) -> BaselineMetrics {
+    match self {
+      InlineItem::InlineBox(b) => {
+        super::compute_inline_box_line_metrics(&b.children, b.strut_metrics)
+      }
+      _ => self.baseline_metrics(),
+    }
+  }
+
   /// Returns the vertical alignment for this item
   pub fn vertical_align(&self) -> VerticalAlign {
     match self {
@@ -3838,8 +3851,12 @@ impl<'a> LineBuilder<'a> {
 
   /// Places an item on the current line without breaking
   fn place_item_with_width(&mut self, item: InlineItem, item_width: f32) {
-    let metrics = item.baseline_metrics();
     let vertical_align = item.vertical_align();
+    let metrics = if vertical_align.is_line_relative() {
+      item.baseline_metrics()
+    } else {
+      item.line_metrics()
+    };
 
     // Calculate baseline offset
     let baseline_offset = if vertical_align.is_line_relative() {
@@ -3949,8 +3966,12 @@ impl<'a> LineBuilder<'a> {
     // need to recompute it so the line box height/baseline do not include trimmed whitespace.
     self.baseline_acc = LineBaselineAccumulator::new(&self.strut_metrics);
     for positioned in &mut self.current_line.items {
-      let metrics = positioned.item.baseline_metrics();
       let vertical_align = positioned.item.vertical_align();
+      let metrics = if vertical_align.is_line_relative() {
+        positioned.item.baseline_metrics()
+      } else {
+        positioned.item.line_metrics()
+      };
       positioned.baseline_offset = if vertical_align.is_line_relative() {
         self
           .baseline_acc

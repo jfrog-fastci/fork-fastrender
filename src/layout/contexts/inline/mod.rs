@@ -7942,6 +7942,62 @@ fn compute_inline_box_metrics(
   }
 }
 
+fn compute_inline_box_line_metrics(
+  children: &[InlineItem],
+  fallback: BaselineMetrics,
+) -> BaselineMetrics {
+  fn metrics_for_item(item: &InlineItem) -> BaselineMetrics {
+    match item {
+      InlineItem::InlineBox(b) => compute_inline_box_line_metrics(&b.children, b.strut_metrics),
+      _ => item.baseline_metrics(),
+    }
+  }
+
+  let effective_children: Vec<&InlineItem> = children
+    .iter()
+    .filter(|child| {
+      !matches!(
+        child,
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+      )
+    })
+    .collect();
+
+  if effective_children.is_empty() {
+    return fallback;
+  }
+
+  let mut content_height: f32 = fallback.height.max(0.0);
+  for child in &effective_children {
+    content_height = content_height.max(metrics_for_item(child).height);
+  }
+
+  let baseline_child = effective_children
+    .iter()
+    .copied()
+    .find(|c| c.vertical_align().is_baseline_relative())
+    .unwrap_or(effective_children[0]);
+  let child_metrics = metrics_for_item(baseline_child);
+
+  let baseline_offset = child_metrics
+    .baseline_offset
+    .max(fallback.baseline_offset)
+    .min(content_height);
+  let height = content_height;
+  let descent = (height - baseline_offset).max(0.0);
+
+  BaselineMetrics {
+    baseline_offset,
+    height,
+    ascent: baseline_offset,
+    descent,
+    line_gap: child_metrics.line_gap,
+    // Preserve the authored line-height for vertical-align percentage/length resolution.
+    line_height: fallback.line_height,
+    x_height: child_metrics.x_height,
+  }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct NormalizedText {
