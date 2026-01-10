@@ -14,7 +14,9 @@
 use crate::error::{Error, Result};
 use crate::js::import_maps::ImportMapState;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
-use crate::resource::ResourceFetcher;
+use crate::resource::{
+  ensure_http_success, ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher,
+};
 
 use parse_js::ast::import_export::{ExportNames, ImportNames, ModuleExportImportName};
 use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl};
@@ -234,7 +236,14 @@ impl ModuleGraphLoader {
 
     self.cache.insert(url.to_string(), CachedModule::Loading);
     let result = (|| {
-      let res = self.fetcher.fetch(url)?;
+      // Module scripts are fetched in CORS mode (like `<script type="module">`).
+      // Use `fetch_partial_with_request` to enforce `max_module_bytes` without downloading an
+      // unbounded response body.
+      let max_fetch = max_module_bytes.saturating_add(1);
+      let req = FetchRequest::new(url, FetchDestination::ScriptCors);
+      let res = self.fetcher.fetch_partial_with_request(req, max_fetch)?;
+      ensure_http_success(&res, url)?;
+      ensure_script_mime_sane(&res, url)?;
       if res.bytes.len() > max_module_bytes {
         return Err(Error::Other(format!(
           "module {url} is too large ({} bytes > max {})",
@@ -794,6 +803,44 @@ mod tests {
     }
   }
 
+  #[derive(Default)]
+  struct DestRecordingFetcher {
+    entries: Mutex<HashMap<String, Vec<u8>>>,
+    destinations: Mutex<Vec<FetchDestination>>,
+  }
+
+  impl DestRecordingFetcher {
+    fn insert(&self, url: &str, source: &str) {
+      self
+        .entries
+        .lock()
+        .unwrap()
+        .insert(url.to_string(), source.as_bytes().to_vec());
+    }
+
+    fn take_destinations(&self) -> Vec<FetchDestination> {
+      std::mem::take(&mut *self.destinations.lock().unwrap())
+    }
+  }
+
+  impl ResourceFetcher for DestRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      let bytes = self
+        .entries
+        .lock()
+        .unwrap()
+        .get(url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("missing fixture: {url}")))?;
+      Ok(FetchedResource::with_final_url(bytes, None, Some(url.to_string())))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self.destinations.lock().unwrap().push(req.destination);
+      self.fetch(req.url)
+    }
+  }
+
   #[test]
   fn resolves_relative_module_specifier_against_base_url() {
     let resolved = resolve_module_specifier_without_import_maps("./dep.js", "https://example.com/dir/main.js").unwrap();
@@ -862,5 +909,29 @@ mod tests {
     assert!(bundle.contains("__fastrDefineModule"));
     assert_eq!(fetcher.count("https://example.com/a.js"), 1);
     assert_eq!(fetcher.count("https://example.com/b.js"), 1);
+  }
+
+  #[test]
+  fn module_graph_loader_fetches_modules_with_scriptcors_destination() {
+    let fetcher = Arc::new(DestRecordingFetcher::default());
+    fetcher.insert("https://example.com/main.js", r#"import "./dep.js";"#);
+    fetcher.insert("https://example.com/dep.js", r#"export default 1;"#);
+
+    let mut loader = ModuleGraphLoader::new(fetcher.clone());
+    let _bundle = loader
+      .build_bundle_for_url("https://example.com/main.js", 1024 * 1024)
+      .unwrap();
+
+    let destinations = fetcher.take_destinations();
+    assert!(
+      !destinations.is_empty(),
+      "expected ModuleGraphLoader to issue at least one fetch_with_request"
+    );
+    assert!(
+      destinations
+        .iter()
+        .all(|d| matches!(d, FetchDestination::ScriptCors)),
+      "expected all module fetches to use FetchDestination::ScriptCors, got: {destinations:?}"
+    );
   }
 }
