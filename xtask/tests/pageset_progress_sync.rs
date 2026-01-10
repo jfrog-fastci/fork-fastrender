@@ -3,9 +3,13 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+fn repo_root() -> std::path::PathBuf {
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
 #[test]
 fn pageset_progress_json_matches_pageset_entries() {
-  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+  let repo_root = repo_root();
   let progress_dir = repo_root.join("progress/pages");
 
   let entries = pageset_entries();
@@ -53,3 +57,64 @@ fn pageset_progress_json_matches_pageset_entries() {
   );
 }
 
+#[test]
+fn pageset_fixtures_exist_for_all_entries() {
+  let repo_root = repo_root();
+  let fixtures_root = repo_root.join("tests/pages/fixtures");
+
+  let expected: BTreeSet<String> = pageset_entries()
+    .into_iter()
+    .map(|entry| entry.cache_stem)
+    .collect();
+
+  let mut missing = Vec::new();
+  for stem in expected {
+    let path = fixtures_root.join(&stem).join("index.html");
+    if !path.is_file() {
+      missing.push(format!("{stem} ({})", path.display()));
+    }
+  }
+
+  assert!(
+    missing.is_empty(),
+    "tests/pages/fixtures is missing pageset fixture(s): {}",
+    if missing.is_empty() {
+      "(none)".to_string()
+    } else {
+      missing.join(", ")
+    }
+  );
+}
+
+#[test]
+fn pageset_progress_entries_include_accuracy() {
+  let repo_root = repo_root();
+  let progress_dir = repo_root.join("progress/pages");
+
+  let expected: BTreeSet<String> = pageset_entries()
+    .into_iter()
+    .map(|entry| entry.cache_stem)
+    .collect();
+
+  let mut missing = Vec::new();
+  for stem in expected {
+    let path = progress_dir.join(format!("{stem}.json"));
+    let raw = fs::read_to_string(&path)
+      .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let value: serde_json::Value =
+      serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+    if value.get("accuracy").is_none() {
+      missing.push(stem);
+    }
+  }
+
+  assert!(
+    missing.is_empty(),
+    "progress/pages entries missing accuracy: {}",
+    if missing.is_empty() {
+      "(none)".to_string()
+    } else {
+      missing.join(", ")
+    }
+  );
+}
