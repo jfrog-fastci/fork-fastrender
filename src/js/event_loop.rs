@@ -2163,7 +2163,7 @@ mod tests {
     assert_eq!(host.count, 5);
   }
 
-    #[test]
+  #[test]
   fn limited_microtask_checkpoint_stops_infinite_microtask_chains() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
@@ -2193,6 +2193,116 @@ mod tests {
     assert_eq!(run_state.microtasks_executed(), 5);
     // The next microtask should still be queued: the limit is enforced before popping.
     assert_eq!(event_loop.pending_microtask_count(), 1);
+    Ok(())
+  }
+
+  fn self_requeue_microtask_advancing_clock(
+    clock: Arc<VirtualClock>,
+    advance_by: Duration,
+  ) -> impl FnOnce(&mut TestHost, &mut EventLoop<TestHost>) -> Result<()> {
+    move |host, event_loop| {
+      host.count += 1;
+      clock.advance(advance_by);
+      event_loop.queue_microtask(self_requeue_microtask_advancing_clock(
+        Arc::clone(&clock),
+        advance_by,
+      ))?;
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn limited_microtask_checkpoint_stops_on_wall_time_before_popping_next_microtask() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock_for_loop));
+
+    event_loop.queue_microtask(self_requeue_microtask_advancing_clock(
+      Arc::clone(&clock),
+      Duration::from_millis(10),
+    ))?;
+
+    let mut run_state = RunState::new(
+      RunLimits {
+        max_tasks: usize::MAX,
+        max_microtasks: usize::MAX,
+        max_wall_time: Some(Duration::from_millis(5)),
+      },
+      clock_for_loop,
+      event_loop.default_deadline_stage(),
+    );
+
+    assert_eq!(
+      event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state)?,
+      MicrotaskCheckpointLimitedOutcome::Stopped(RunUntilIdleStopReason::WallTime {
+        elapsed: Duration::from_millis(10),
+        limit: Duration::from_millis(5),
+      })
+    );
+    assert_eq!(host.count, 1);
+    assert_eq!(run_state.microtasks_executed(), 1);
+    // The next microtask should still be queued: the limit is enforced before popping.
+    assert_eq!(event_loop.pending_microtask_count(), 1);
+    Ok(())
+  }
+
+  #[test]
+  fn run_next_task_limited_stops_on_wall_time_before_popping_next_task() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock_for_loop));
+
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task1");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    let limits = RunLimits {
+      max_tasks: usize::MAX,
+      max_microtasks: usize::MAX,
+      max_wall_time: Some(Duration::from_millis(5)),
+    };
+    let mut run_state = RunState::new(
+      limits,
+      Arc::clone(&clock_for_loop),
+      event_loop.default_deadline_stage(),
+    );
+
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(host.log, vec!["task1"]);
+    assert_eq!(run_state.tasks_executed(), 1);
+
+    // Advance virtual time beyond the wall-time budget.
+    clock.advance(Duration::from_millis(10));
+
+    // The next task must not be popped once the wall-time budget is exhausted.
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Stopped(RunUntilIdleStopReason::WallTime {
+        elapsed: Duration::from_millis(10),
+        limit: Duration::from_millis(5),
+      })
+    );
+    assert_eq!(host.log, vec!["task1"]);
+    assert_eq!(run_state.tasks_executed(), 1);
+    assert_eq!(event_loop.pending_task_count(), 1);
+
+    // A fresh run state should allow the queued task to run, proving it wasn't dropped.
+    let mut run_state2 = event_loop.new_run_state(limits);
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state2)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(host.log, vec!["task1", "task2"]);
     Ok(())
   }
 
