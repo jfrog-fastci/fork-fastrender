@@ -18,9 +18,9 @@ use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
-use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
 use super::script_scheduler::{ScriptElementEvent, ScriptId, ScriptScheduler, ScriptSchedulerAction};
+use super::DomHost;
 use super::{determine_script_type_dom2, ScriptElementSpec, ScriptType};
 use super::{EventLoop, TaskSource};
 
@@ -273,9 +273,7 @@ impl ClassicScriptPipelineState {
         .scheduler
         .discovered_parser_script(spec.clone(), script_node_id, base_url_at_discovery)?;
 
-    self
-      .script_node_by_id
-      .insert(discovered.id, script_node_id);
+    self.script_node_by_id.insert(discovered.id, script_node_id);
     self
       .script_type_by_id
       .insert(discovered.id, spec.script_type);
@@ -373,8 +371,9 @@ impl ClassicScriptPipelineState {
       .flatten()
       .map(|v| v.to_string());
     let src_attr_present = raw_src.is_some();
-    let src =
-      raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));
+    let src = raw_src
+      .as_deref()
+      .and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));
 
     let (integrity_attr_present, integrity) = super::clamp_integrity_attribute(
       dom.get_attribute(script_node_id, "integrity").ok().flatten(),
@@ -684,11 +683,7 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     Ok(())
   }
 
-  pub fn queue_fetch_completion(
-    &mut self,
-    script_id: ScriptId,
-    source_text: String,
-  ) -> Result<()> {
+  pub fn queue_fetch_completion(&mut self, script_id: ScriptId, source_text: String) -> Result<()> {
     let state = Rc::clone(&self.state);
     self
       .event_loop
@@ -903,6 +898,7 @@ mod tests {
  
   impl ScriptLoader for DynHost {
     type Handle = usize;
+ 
     fn load_blocking(
       &mut self,
       url: &str,
@@ -911,6 +907,7 @@ mod tests {
     ) -> Result<String> {
       Err(Error::Other(format!("unexpected load_blocking for url={url}")))
     }
+ 
     fn start_load(
       &mut self,
       url: &str,
@@ -962,14 +959,18 @@ mod tests {
     doc
       .set_attribute(inert_script, "src", "inert.js")
       .expect("set_attribute");
-    doc.append_child(template, inert_script).expect("append_child");
+    doc
+      .append_child(template, inert_script)
+      .expect("append_child");
     doc.append_child(html, template).expect("append_child");
 
     let foreign_script = doc.create_element("script", SVG_NAMESPACE);
     doc
       .set_attribute(foreign_script, "src", "foreign.js")
       .expect("set_attribute");
-    doc.append_child(html, foreign_script).expect("append_child");
+    doc
+      .append_child(html, foreign_script)
+      .expect("append_child");
 
     let pipeline = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     let base_url = Some("https://ex/doc.html".to_string());
@@ -983,10 +984,11 @@ mod tests {
     assert!(inert_spec.src.is_none());
     assert_eq!(inert_spec.inline_text, "");
 
-    let foreign_spec = pipeline
-      .state
-      .borrow()
-      .build_script_element_spec(&doc, foreign_script, base_url);
+    let foreign_spec =
+      pipeline
+        .state
+        .borrow()
+        .build_script_element_spec(&doc, foreign_script, base_url);
     assert_eq!(foreign_spec.script_type, ScriptType::Unknown);
     assert!(foreign_spec.src.is_none());
     assert_eq!(foreign_spec.inline_text, "");
@@ -1000,7 +1002,8 @@ mod tests {
       r#"<!doctype html><template><script src="/a.js"></script></template><script>LIVE</script>"#,
     )?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
       p.parsing_finished(),
@@ -1313,16 +1316,23 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str("<script>A</script><script>B</script>")?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,
-      vec!["A".to_string(), "mA".to_string(), "B".to_string(), "mB".to_string()]
+      vec![
+        "A".to_string(),
+        "mA".to_string(),
+        "B".to_string(),
+        "mB".to_string()
+      ]
     );
     Ok(())
   }
 
   #[test]
-  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task() -> Result<()> {
+  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task(
+  ) -> Result<()> {
     let mut host = Host::default();
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
 
@@ -1339,17 +1349,23 @@ mod tests {
     // Run the parse task first (without pre-draining microtasks) to ensure the pre-script
     // checkpoint at `</script>` boundaries is the mechanism that flushes the microtask.
     assert!(p.event_loop().run_next_task(&mut host)?);
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
       host.log,
-      vec!["microtask".to_string(), "RUN".to_string(), "mRUN".to_string()]
+      vec![
+        "microtask".to_string(),
+        "RUN".to_string(),
+        "mRUN".to_string()
+      ]
     );
     Ok(())
   }
 
   #[test]
-  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty(
+  ) -> Result<()> {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.
@@ -1361,7 +1377,8 @@ mod tests {
       Ok(())
     })?;
 
-    let mut state = ClassicScriptPipelineState::new(Some("https://ex/doc.html"), ParseBudget::default());
+    let mut state =
+      ClassicScriptPipelineState::new(Some("https://ex/doc.html"), ParseBudget::default());
     state.parser.push_str("<script>RUN</script>");
     state.parser.set_eof();
     let (script_node_id, base_url_at_this_point) = match state.parser.pump()? {
@@ -1399,18 +1416,24 @@ mod tests {
   }
 
   #[test]
-  fn blocking_external_script_delays_later_scripts_until_fetch_completes_and_executes() -> Result<()> {
+  fn blocking_external_script_delays_later_scripts_until_fetch_completes_and_executes() -> Result<()>
+  {
     let mut host = Host::default();
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script src="/a.js"></script><script>INLINE</script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
-    assert!(host.log.is_empty(), "blocking external script should not execute without fetch");
+    assert!(
+      host.log.is_empty(),
+      "blocking external script should not execute without fetch"
+    );
 
     let blocking_id = host.started_fetches[0].0;
     p.on_fetch_completed(&mut host, blocking_id, "A_JS")?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
       host.log,
@@ -1430,14 +1453,16 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script async src="/a.js"></script><script>INLINE</script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
     // Inline script executed during parsing.
     assert_eq!(host.log, vec!["INLINE".to_string(), "mINLINE".to_string()]);
 
     let async_id = host.started_fetches[0].0;
     p.on_fetch_completed(&mut host, async_id, "A_JS")?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
       host.log,
@@ -1456,7 +1481,8 @@ mod tests {
     let mut host = Host::default();
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script defer src="/d1.js"></script><script defer src="/d2.js"></script>"#)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 2);
 
     // Complete out of order before parsing finishes.
@@ -1466,12 +1492,14 @@ mod tests {
     p.on_fetch_completed(&mut host, d1, "d1")?;
 
     // Deferred scripts must not run before parsing completes.
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, Vec::<String>::new());
 
     // Now finish parsing: defer scripts should be queued in document order (d1, d2).
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
       host.log,
@@ -1491,7 +1519,8 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<head><script src="a.js"></script><base href="https://ex/base/"></head>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
     let (_id, url, _dest, _credentials_mode) = &host.started_fetches[0];
     assert_eq!(url, "https://ex/a.js");
@@ -1506,14 +1535,16 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(None);
     p.feed_str(r#"<script src="a.js"></script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
     let id = host.started_fetches[0].0;
     let url = host.started_fetches[0].1.clone();
     assert_eq!(url, "a.js");
 
     p.on_fetch_completed(&mut host, id, "A_JS")?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, vec!["A_JS".to_string(), "mA_JS".to_string()]);
     Ok(())
   }
@@ -1528,7 +1559,8 @@ mod tests {
 
     // First chunk: discover the async script and start fetch.
     p.feed_str(r#"<script async src="/a.js"></script>"#)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
     let async_id = host.started_fetches[0].0;
 
@@ -1541,7 +1573,8 @@ mod tests {
     // Enqueue async fetch completion ahead of the next parse chunk.
     p.queue_fetch_completion(async_id, "A_JS".to_string())?;
     p.feed_str("<p>after</p>")?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.log, vec!["A_JS".to_string(), "mA_JS".to_string()]);
     assert!(
@@ -1551,7 +1584,8 @@ mod tests {
 
     // Now end the input stream; parsing can finish.
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.state.borrow().parsing_finished());
     Ok(())
   }
@@ -1564,14 +1598,16 @@ mod tests {
       ParseBudget::new(1),
     );
     p.feed_str(r#"<script async src="/a.js"></script>"#)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
     let async_id = host.started_fetches[0].0;
 
     // Parse a declarative shadow root after discovering the async script (but before the async
     // fetch completes).
     p.feed_str(r#"<div id=host><template shadowroot=open><span>shadow</span></template></div>"#)?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     host.assert_dom_state_on_execute = Some(Box::new(|dom| {
       let host_id = dom.get_element_by_id("host").expect("missing #host");
@@ -1587,7 +1623,8 @@ mod tests {
     }));
 
     p.queue_fetch_completion(async_id, "A_JS".to_string())?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, vec!["A_JS".to_string(), "mA_JS".to_string()]);
     Ok(())
   }
@@ -1598,11 +1635,75 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script type="module" src="/a.js"></script><script>INLINE</script>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     // The classic pipeline only handles classic scripts; module scripts must be ignored.
     assert!(host.started_fetches.is_empty());
     assert_eq!(host.log, vec!["INLINE".to_string(), "mINLINE".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn empty_parser_inserted_script_is_not_started_and_is_mutatable_later() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script id=s></script>"#)?;
+    p.finish_input()?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.log.is_empty(),
+      "empty parser-inserted script must not execute"
+    );
+    let doc = p.finished_document().expect("expected parsing to finish");
+    let script = doc.get_element_by_id("s").expect("expected #s script");
+    let node = doc.node(script);
+    assert!(!node.script_already_started);
+    assert!(!node.script_parser_document);
+    assert!(node.script_force_async);
+    Ok(())
+  }
+
+  #[test]
+  fn unsupported_type_parser_inserted_script_is_not_started_and_is_mutatable_later() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script type="text/plain" id=s>hi</script>"#)?;
+    p.finish_input()?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.log.is_empty(),
+      "unsupported-type parser-inserted script must not execute"
+    );
+    let doc = p.finished_document().expect("expected parsing to finish");
+    let script = doc.get_element_by_id("s").expect("expected #s script");
+    let node = doc.node(script);
+    assert!(!node.script_already_started);
+    assert!(!node.script_parser_document);
+    assert!(node.script_force_async);
+    Ok(())
+  }
+
+  #[test]
+  fn empty_parser_inserted_script_with_async_attr_clears_parser_document_but_keeps_force_async_false(
+  ) -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script async id=s></script>"#)?;
+    p.finish_input()?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let doc = p.finished_document().expect("expected parsing to finish");
+    let script = doc.get_element_by_id("s").expect("expected #s script");
+    let node = doc.node(script);
+    assert!(!node.script_already_started);
+    assert!(!node.script_parser_document);
+    assert!(!node.script_force_async);
     Ok(())
   }
 
@@ -1618,16 +1719,14 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str("<script>1</script><div id=after></div>")?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.log, vec!["1".to_string(), "m1".to_string()]);
 
     let after_present_in_final_doc = {
       let s = p.state.borrow();
-      let final_doc = s
-        .document
-        .as_ref()
-        .expect("expected parsing to finish");
+      let final_doc = s.document.as_ref().expect("expected parsing to finish");
       final_doc.get_element_by_id("after").is_some()
     };
     assert!(
@@ -1643,7 +1742,8 @@ mod tests {
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     p.feed_str(r#"<script src="/a.js"></script><div id=after></div>"#)?;
     p.finish_input()?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.started_fetches.len(), 1);
     let blocking_id = host.started_fetches[0].0;
@@ -1670,7 +1770,8 @@ mod tests {
     );
 
     p.on_fetch_completed(&mut host, blocking_id, "A_JS")?;
-    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    p.event_loop()
+      .run_until_idle(&mut host, RunLimits::unbounded())?;
 
     let after_present_in_final_doc = {
       let s = p.state.borrow();

@@ -156,7 +156,10 @@ where
   }
 
   pub fn with_options(options: JsExecutionOptions) -> Self {
-    Self { options, ..Self::default() }
+    Self {
+      options,
+      ..Self::default()
+    }
   }
 
   pub fn options(&self) -> JsExecutionOptions {
@@ -186,14 +189,17 @@ where
     // suppressing inline execution, even if the value is empty/invalid. Therefore we key off
     // `src_attr_present` instead of `src.is_none()`.
     if !spec.src_attr_present {
-      self
-        .options
-        .check_script_source(&spec.inline_text, "source=inline")?;
-      // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
-      // parser-inserted script when the JS execution context stack is empty.
+      // HTML: if the script has no `src` attribute and the source text is empty, preparing the
+      // script is a no-op and the element must remain eligible to run after later mutation.
       if spec.parser_inserted && self.js_execution_depth.get() == 0 {
         event_loop.perform_microtask_checkpoint(host)?;
       }
+      if spec.inline_text.is_empty() {
+        return Ok(());
+      }
+      self
+        .options
+        .check_script_source(&spec.inline_text, "source=inline")?;
       {
         let _stage_guard = StageGuard::install(Some(RenderStage::Script));
         record_stage(StageHeartbeat::Script);
@@ -369,9 +375,10 @@ where
       let Some(source) = entry.source.take() else {
         break;
       };
-      self
-        .options
-        .check_script_source(&source, &format!("source=external defer_idx={}", self.next_defer_to_queue))?;
+      self.options.check_script_source(
+        &source,
+        &format!("source=external defer_idx={}", self.next_defer_to_queue),
+      )?;
       let spec = entry
         .spec
         .take()
@@ -513,7 +520,10 @@ pub enum ScriptSchedulerAction<NodeId> {
   /// Block the HTML parser until the referenced script has executed.
   ///
   /// This is emitted for parsing-blocking external scripts (no `async`/`defer`).
-  BlockParserUntilExecuted { script_id: ScriptId, node_id: NodeId },
+  BlockParserUntilExecuted {
+    script_id: ScriptId,
+    node_id: NodeId,
+  },
   /// Execute a script immediately (synchronously in the caller's stack).
   ///
   /// The orchestrator must perform a microtask checkpoint immediately after executing the script.
@@ -736,8 +746,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
           }
         } else {
           // Inline classic scripts:
-          // - parser-inserted: execute synchronously (parsing-blocking),
-          // - dynamically inserted: queue as a task (MVP: keep DOM mutation calls non-reentrant).
+          // - If empty: no-op (do not mark as started; allows later mutations to run it).
+          // - parser-inserted: execute synchronously (parsing-blocking)
+          // - dynamically inserted: queue as a task (keeps DOM mutation calls non-reentrant)
+          if element.inline_text.is_empty() {
+            return Ok(DiscoveredScript { id, actions });
+          }
           if element.parser_inserted {
             actions.push(ScriptSchedulerAction::ExecuteNow {
               script_id: id,
@@ -1709,7 +1723,9 @@ mod tests {
 
     let scheduler_for_task = Rc::clone(&scheduler);
     event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      scheduler_for_task.borrow_mut().handle_script(host, event_loop, inline_script("RUN"))?;
+      scheduler_for_task
+        .borrow_mut()
+        .handle_script(host, event_loop, inline_script("RUN"))?;
       Ok(())
     })?;
 
@@ -1963,7 +1979,10 @@ mod state_machine_tests {
               .started_fetches
               .push((script_id, node_id, url, destination, credentials_mode));
           }
-          ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
+          ScriptSchedulerAction::BlockParserUntilExecuted {
+            script_id,
+            node_id: _,
+          } => {
             self.blocked_parser_on = Some(script_id);
           }
           ScriptSchedulerAction::ExecuteNow {
@@ -2018,9 +2037,9 @@ mod state_machine_tests {
     }
 
     fn discover_dynamic(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
-      let discovered = self
-        .scheduler
-        .discovered_script(element, /* node_id */ 1, /* base_url_at_discovery */ None)?;
+      let discovered = self.scheduler.discovered_script(
+        element, /* node_id */ 1, /* base_url_at_discovery */ None,
+      )?;
       let id = discovered.id;
       self.apply_actions(discovered.actions)?;
       Ok(id)
@@ -2072,7 +2091,10 @@ mod state_machine_tests {
     let script_id =
       h.discover_dynamic(classic_external_dynamic("dyn.js", false, false, /* force_async */ true))?;
     assert_eq!(h.started_fetches.len(), 1);
-    assert!(h.blocked_parser_on.is_none(), "dynamic scripts must not block parsing");
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic scripts must not block parsing"
+    );
 
     h.fetch_complete(script_id, "DYN")?;
     // Completion should queue as a task.
@@ -2313,7 +2335,10 @@ mod state_machine_tests {
       h.host.log.is_empty(),
       "expected no inline execution when src attribute is present"
     );
-    assert!(h.blocked_parser_on.is_none(), "invalid external scripts must not block parsing");
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "invalid external scripts must not block parsing"
+    );
     Ok(())
   }
 

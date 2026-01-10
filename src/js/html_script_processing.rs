@@ -192,8 +192,8 @@ impl<'a, Host: 'static, Runner, HostWrapper> ScriptBlockExecutor<HostWrapper>
   for ScriptRunnerExecutor<'a, Host, Runner>
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
-  Runner:
-    Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
+    + 'static,
 {
   fn execute_script(
     &mut self,
@@ -440,7 +440,6 @@ where
           let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker)
         };
-
         let should_run = {
           let mut doc = parser.document_mut().ok_or_else(|| {
             Error::Other("html_script_processing: parser document unavailable".to_string())
@@ -760,7 +759,8 @@ mod tests {
   }
 
   #[test]
-  fn microtasks_queued_before_first_script_run_before_script_when_parsing_inside_task() -> Result<()> {
+  fn microtasks_queued_before_first_script_run_before_script_when_parsing_inside_task() -> Result<()>
+  {
     // Regression test for the old heuristic that keyed off the event-loop task state:
     // HTML parsing commonly occurs inside event-loop tasks, but the pre-`</script>` microtask
     // checkpoint must still happen when the JS execution context stack is empty.

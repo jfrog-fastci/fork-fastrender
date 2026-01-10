@@ -176,9 +176,7 @@ impl Dom2TreeSink {
     (in_head, in_foreign_namespace, in_template)
   }
 
-  fn element_info<'a>(
-    kind: &'a NodeKind,
-  ) -> Option<(&'a str, &'a str, &'a [(String, String)])> {
+  fn element_info<'a>(kind: &'a NodeKind) -> Option<(&'a str, &'a str, &'a [(String, String)])> {
     match kind {
       NodeKind::Element {
         tag_name,
@@ -198,7 +196,12 @@ impl Dom2TreeSink {
     let Some(old_parent) = doc.node(target).parent else {
       return;
     };
-    let Some(pos) = doc.node(old_parent).children.iter().position(|&c| c == target) else {
+    let Some(pos) = doc
+      .node(old_parent)
+      .children
+      .iter()
+      .position(|&c| c == target)
+    else {
       doc.node_mut(target).parent = None;
       return;
     };
@@ -218,7 +221,11 @@ impl Dom2TreeSink {
     }
 
     let insertion_idx = match reference {
-      Some(reference) => doc.node(parent).children.iter().position(|&c| c == reference),
+      Some(reference) => doc
+        .node(parent)
+        .children
+        .iter()
+        .position(|&c| c == reference),
       None => Some(doc.node(parent).children.len()),
     };
     let Some(insertion_idx) = insertion_idx else {
@@ -269,7 +276,12 @@ impl Dom2TreeSink {
     let Some(reference) = reference else {
       return;
     };
-    let Some(insert_pos) = doc.node(parent).children.iter().position(|&c| c == reference) else {
+    let Some(insert_pos) = doc
+      .node(parent)
+      .children
+      .iter()
+      .position(|&c| c == reference)
+    else {
       return;
     };
     let prev = if insert_pos == 0 {
@@ -280,7 +292,8 @@ impl Dom2TreeSink {
 
     let can_merge_prev = !break_text_merge
       && prev.is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }));
-    let can_merge_next = !break_text_merge && matches!(&doc.node(reference).kind, NodeKind::Text { .. });
+    let can_merge_next =
+      !break_text_merge && matches!(&doc.node(reference).kind, NodeKind::Text { .. });
 
     if can_merge_prev {
       let Some(prev_id) = prev else {
@@ -324,7 +337,12 @@ impl Dom2TreeSink {
     doc.node_mut(parent).children.insert(insert_pos, text_id);
   }
 
-  fn record_ignored_insertion_point(&self, doc: &Document, parent: NodeId, reference: Option<NodeId>) {
+  fn record_ignored_insertion_point(
+    &self,
+    doc: &Document,
+    parent: NodeId,
+    reference: Option<NodeId>,
+  ) {
     let mut should_record = false;
 
     match reference {
@@ -342,7 +360,12 @@ impl Dom2TreeSink {
       }
       Some(reference) => {
         // Insertion is before `reference`; prevent merging with adjacent text siblings at this boundary.
-        let Some(insert_pos) = doc.node(parent).children.iter().position(|&c| c == reference) else {
+        let Some(insert_pos) = doc
+          .node(parent)
+          .children
+          .iter()
+          .position(|&c| c == reference)
+        else {
           return;
         };
 
@@ -420,7 +443,6 @@ impl Dom2TreeSink {
         );
       return;
     }
-
     if tag_name.eq_ignore_ascii_case("link") && Self::is_html_namespace(namespace) {
       if in_template || in_foreign_namespace {
         return;
@@ -625,18 +647,16 @@ impl TreeSink for Dom2TreeSink {
 
   fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
     let namespace = Self::normalize_namespace_for_storage(name.ns.as_ref());
+    let is_html_namespace = Self::is_html_namespace(namespace.as_str());
     let mut attributes = Vec::with_capacity(attrs.len());
     for attr in attrs {
       attributes.push((attr.name.local.to_string(), attr.value.to_string()));
     }
 
-    let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot")
-      && Self::is_html_namespace(namespace.as_str());
-    let is_html_script = name.local.as_ref().eq_ignore_ascii_case("script")
-      && Self::is_html_namespace(namespace.as_str());
+    let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot") && is_html_namespace;
+    let is_html_script = name.local.as_ref().eq_ignore_ascii_case("script") && is_html_namespace;
 
-    let inert_subtree = name.local.as_ref().eq_ignore_ascii_case("template")
-      && Self::is_html_namespace(namespace.as_str());
+    let inert_subtree = name.local.as_ref().eq_ignore_ascii_case("template") && is_html_namespace;
     let kind = if is_html_slot {
       NodeKind::Slot {
         namespace,
@@ -711,7 +731,13 @@ impl TreeSink for Dom2TreeSink {
       NodeOrText::AppendText(text) => {
         let mut doc = self.document.borrow_mut();
         let break_text_merge = self.take_ignored_insertion_point(parent, Some(*sibling));
-        Self::append_text_at(&mut doc, parent, Some(*sibling), text.as_ref(), break_text_merge);
+        Self::append_text_at(
+          &mut doc,
+          parent,
+          Some(*sibling),
+          text.as_ref(),
+          break_text_merge,
+        );
       }
       NodeOrText::AppendNode(node) => {
         let mut doc = self.document.borrow_mut();
@@ -727,7 +753,12 @@ impl TreeSink for Dom2TreeSink {
     }
   }
 
-  fn append_based_on_parent_node(&self, element: &NodeId, prev_element: &NodeId, child: NodeOrText<NodeId>) {
+  fn append_based_on_parent_node(
+    &self,
+    element: &NodeId,
+    prev_element: &NodeId,
+    child: NodeOrText<NodeId>,
+  ) {
     let parent = {
       let doc = self.document.borrow();
       if element.index() >= doc.nodes_len() {
@@ -743,7 +774,12 @@ impl TreeSink for Dom2TreeSink {
     self.append(prev_element, child)
   }
 
-  fn append_doctype_to_document(&self, name: StrTendril, public_id: StrTendril, system_id: StrTendril) {
+  fn append_doctype_to_document(
+    &self,
+    name: StrTendril,
+    public_id: StrTendril,
+    system_id: StrTendril,
+  ) {
     let _ = (name, public_id, system_id);
     // Do not materialize doctype nodes in dom2 for now; rely on `set_quirks_mode` instead.
     let doc = self.document.borrow();
@@ -942,7 +978,10 @@ mod tests {
     let snapshot = doc.to_renderer_dom();
     assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
     assert!(
-      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Comment { .. })),
+      !doc
+        .nodes()
+        .iter()
+        .any(|node| matches!(node.kind, NodeKind::Comment { .. })),
       "comments should not be materialized in dom2 HTML parsing"
     );
   }
@@ -964,7 +1003,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("template element not found");
@@ -1025,7 +1066,10 @@ mod tests {
       }
     );
     assert_eq!(
-      doc_missing_doctype.node(doc_missing_doctype.root()).kind.clone(),
+      doc_missing_doctype
+        .node(doc_missing_doctype.root())
+        .kind
+        .clone(),
       NodeKind::Document {
         quirks_mode: expected_missing_doctype.document_quirks_mode()
       }
@@ -1046,7 +1090,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("<p> not found");
@@ -1077,7 +1123,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("<div> not found");
@@ -1114,7 +1162,9 @@ mod tests {
       .iter()
       .enumerate()
       .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => {
+          Some(NodeId(idx))
+        }
         _ => None,
       })
       .expect("<div> not found");
@@ -1176,11 +1226,17 @@ mod tests {
     assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
 
     assert!(
-      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Doctype { .. })),
+      !doc
+        .nodes()
+        .iter()
+        .any(|node| matches!(node.kind, NodeKind::Doctype { .. })),
       "doctype nodes should not be materialized in dom2 HTML parsing"
     );
     assert!(
-      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Comment { .. })),
+      !doc
+        .nodes()
+        .iter()
+        .any(|node| matches!(node.kind, NodeKind::Comment { .. })),
       "comment nodes should not be materialized in dom2 HTML parsing"
     );
     assert!(
@@ -1206,7 +1262,11 @@ mod tests {
   }
 
   fn html_name(local: &str) -> QualName {
-    QualName::new(None, Namespace::from(HTML_NAMESPACE), LocalName::from(local))
+    QualName::new(
+      None,
+      Namespace::from(HTML_NAMESPACE),
+      LocalName::from(local),
+    )
   }
 
   fn attr(local: &str, value: &str) -> Attribute {
@@ -1232,14 +1292,22 @@ mod tests {
       panic!("expected element node");
     };
     assert!(
-      attributes.iter().any(|(k, v)| k.eq_ignore_ascii_case("id") && v == "a"),
+      attributes
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("id") && v == "a"),
       "expected existing id attribute to be preserved"
     );
     assert!(
-      attributes.iter().any(|(k, v)| k.eq_ignore_ascii_case("class") && v == "c"),
+      attributes
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("class") && v == "c"),
       "expected missing class attribute to be added"
     );
-    assert_eq!(attributes.len(), 2, "expected no duplicate/overwritten attributes");
+    assert_eq!(
+      attributes.len(),
+      2,
+      "expected no duplicate/overwritten attributes"
+    );
   }
 
   #[test]
@@ -1271,7 +1339,11 @@ mod tests {
     sink.append(&parent2, NodeOrText::AppendText("b".into()));
     let text_id = {
       let doc = sink.document();
-      *doc.node(parent2).children.last().expect("text child exists")
+      *doc
+        .node(parent2)
+        .children
+        .last()
+        .expect("text child exists")
     };
     sink.append_before_sibling(&text_id, NodeOrText::AppendText("a".into()));
 
@@ -1414,7 +1486,10 @@ mod base_url_tests {
   fn base_href_freezes_after_first_valid_base_in_head() {
     let html =
       "<!doctype html><html><head><base href=\"https://a/\"><base href=\"https://b/\"></head></html>";
-    assert_eq!(parse_and_capture_base_url(html).as_deref(), Some("https://a/"));
+    assert_eq!(
+      parse_and_capture_base_url(html).as_deref(),
+      Some("https://a/")
+    );
   }
 
   #[test]
@@ -1453,7 +1528,10 @@ mod base_url_tests {
         saw_template_base = true;
       }
     }
-    assert!(saw_template_base, "expected one <base> to be inside a template subtree");
+    assert!(
+      saw_template_base,
+      "expected one <base> to be inside a template subtree"
+    );
   }
 
   #[test]
@@ -1492,7 +1570,10 @@ mod base_url_tests {
     let base_url = tokenizer.sink.sink.current_base_url();
 
     // No `<base>` in `<head>` means the base URL should remain the document URL.
-    assert_eq!(base_url.as_deref(), Some("https://example.com/dir/page.html"));
+    assert_eq!(
+      base_url.as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
 
     let doc = tokenizer.sink.sink.document.borrow().clone();
 
@@ -1512,8 +1593,7 @@ mod base_url_tests {
       panic!("expected <base> element node kind");
     };
     assert_eq!(
-      namespace,
-      "",
+      namespace, "",
       "expected integration point <base> to be in the HTML namespace"
     );
 
@@ -1526,14 +1606,19 @@ mod base_url_tests {
 
     // Regression check: encountering a `<base>` inside foreign content must not freeze base-href
     // selection. A later valid `<base href>` in `<head>` should still apply.
-    tokenizer.sink.sink.base_url_tracker.borrow_mut().on_element_inserted(
-      "base",
-      "",
-      &[("href".to_string(), "https://good/".to_string())],
-      true,
-      false,
-      false,
-    );
+    tokenizer
+      .sink
+      .sink
+      .base_url_tracker
+      .borrow_mut()
+      .on_element_inserted(
+        "base",
+        "",
+        &[("href".to_string(), "https://good/".to_string())],
+        true,
+        false,
+        false,
+      );
     assert_eq!(
       tokenizer.sink.sink.current_base_url().as_deref(),
       Some("https://good/")
@@ -1585,5 +1670,4 @@ mod base_url_tests {
       Some("https://ex/base/")
     );
   }
-
 }

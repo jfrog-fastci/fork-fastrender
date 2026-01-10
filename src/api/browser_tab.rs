@@ -876,7 +876,7 @@ impl BrowserTabHost {
               script,
               &base,
             );
-
+ 
             // HTML: "prepare the script element" can return early without executing the script
             // (e.g. unsupported `type`, empty inline script). In that case, the spec clears the
             // "parser document" internal slot (and may set force-async) so future mutations/insertion
@@ -901,7 +901,6 @@ impl BrowserTabHost {
               }
               continue;
             }
-
             let base_url_at_discovery = spec.base_url.clone();
 
             with_active_streaming_parser(&state.parser, || {
@@ -1387,6 +1386,9 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
+    let failed_to_run = (!spec_for_table.src_attr_present && spec_for_table.inline_text.is_empty())
+      || spec_for_table.script_type == ScriptType::Unknown;
+
     if matches!(
       spec_for_table.script_type,
       ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
@@ -1400,6 +1402,11 @@ impl BrowserTabHost {
     let discovered = self
       .scheduler
       .discovered_script(spec, node_id, base_url_at_discovery)?;
+    if failed_to_run && discovered.actions.is_empty() {
+      // HTML "prepare the script element" early-outs without marking the script as started when it
+      // does not run. Keep it eligible for later mutations (src/children changed steps).
+      return Ok(discovered.id);
+    }
     self.scripts.insert(
       discovered.id,
       ScriptEntry {

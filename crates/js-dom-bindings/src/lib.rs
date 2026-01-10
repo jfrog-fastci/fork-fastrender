@@ -5,9 +5,9 @@
 #![cfg(feature = "quickjs")]
 
 use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
+use fastrender::js::CurrentScriptStateHandle;
 use fastrender::js::DomHost;
 use fastrender::web::dom::DomException;
-use fastrender::js::CurrentScriptStateHandle;
 use rquickjs::{Ctx, Function, Object, Result as JsResult};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -98,27 +98,31 @@ where
   // into Rust, so it always reflects the host-maintained orchestrator state.
   let dom_for_getter = Rc::clone(&dom);
   let state_for_getter = current_script_state.clone();
-  let getter = Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> JsResult<Option<Object<'js>>> {
-    let Some(node_id) = state_for_getter.borrow().current_script else {
-      return Ok(None);
-    };
+  let getter = Function::new(
+    ctx.clone(),
+    move |ctx: Ctx<'js>| -> JsResult<Option<Object<'js>>> {
+      let Some(node_id) = state_for_getter.borrow().current_script else {
+        return Ok(None);
+      };
 
-    // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
-    // surface `null` rather than crashing.
-    let is_valid_script = dom_for_getter.borrow().with_dom(|dom| {
-      node_id.index() < dom.nodes_len() && matches!(&dom.node(node_id).kind, NodeKind::Element { .. })
-    });
-    if !is_valid_script {
-      return Ok(None);
-    };
+      // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
+      // surface `null` rather than crashing.
+      let is_valid_script = dom_for_getter.borrow().with_dom(|dom| {
+        node_id.index() < dom.nodes_len()
+          && matches!(&dom.node(node_id).kind, NodeKind::Element { .. })
+      });
+      if !is_valid_script {
+        return Ok(None);
+      };
 
-    // Create/lookup a JS wrapper so `document.currentScript` can be used like a real element
-    // (`.id`, `.getAttribute`, `.dataset`, etc.).
-    let globals = ctx.globals();
-    let wrap_fn: Function<'js> = globals.get("__fastrender_wrap_node_id")?;
-    let el: Object<'js> = wrap_fn.call((node_id.index() as u32, "element"))?;
-    Ok(Some(el))
-  })?;
+      // Create/lookup a JS wrapper so `document.currentScript` can be used like a real element
+      // (`.id`, `.getAttribute`, `.dataset`, etc.).
+      let globals = ctx.globals();
+      let wrap_fn: Function<'js> = globals.get("__fastrender_wrap_node_id")?;
+      let el: Object<'js> = wrap_fn.call((node_id.index() as u32, "element"))?;
+      Ok(Some(el))
+    },
+  )?;
 
   globals.set("__fastrender_get_current_script", getter)?;
   ctx.eval::<(), _>(concat!(
@@ -127,8 +131,8 @@ where
     // `Document.currentScript` to return `null` when no script is currently executing, so wrap the
     // host getter to normalize `undefined` to `null`.
     "  get: function () { return globalThis.__fastrender_get_current_script() ?? null; },",
-     "});"
-    ))?;
+    "});"
+  ))?;
 
   install_dom_exceptions_and_minimal_dom(ctx.clone(), globals, Rc::clone(&dom))?;
 
@@ -469,14 +473,15 @@ where
       move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
         let mut dom = dom.borrow_mut();
         let scope = match scope {
-          Some(id) => Some(match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
-            Ok(id) => id,
-            Err(err) => return throw_dom_error(ctx, err),
-          }),
+          Some(id) => Some(
+            match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
+              Ok(id) => id,
+              Err(err) => return throw_dom_error(ctx, err),
+            },
+          ),
           None => None,
         };
-        let result = dom
-          .mutate_dom(|dom| (dom.query_selector(&selectors, scope), false));
+        let result = dom.mutate_dom(|dom| (dom.query_selector(&selectors, scope), false));
         match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
           Err(DomException::SyntaxError { message }) => {
@@ -503,16 +508,22 @@ where
       move |ctx: Ctx<'js>, selectors: String, scope: Option<u32>| {
         let mut dom = dom.borrow_mut();
         let scope = match scope {
-          Some(id) => Some(match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
-            Ok(id) => id,
-            Err(err) => return throw_dom_error(ctx, err),
-          }),
+          Some(id) => Some(
+            match dom.with_dom(|dom| dom.node_id_from_index(id as usize)) {
+              Ok(id) => id,
+              Err(err) => return throw_dom_error(ctx, err),
+            },
+          ),
           None => None,
         };
-        let result = dom
-          .mutate_dom(|dom| (dom.query_selector_all(&selectors, scope), false));
+        let result = dom.mutate_dom(|dom| (dom.query_selector_all(&selectors, scope), false));
         match result {
-          Ok(found) => Ok(found.into_iter().map(|id| id.index() as u32).collect::<Vec<_>>()),
+          Ok(found) => Ok(
+            found
+              .into_iter()
+              .map(|id| id.index() as u32)
+              .collect::<Vec<_>>(),
+          ),
           Err(DomException::SyntaxError { message }) => {
             throw_dom_exception(ctx, "SyntaxError", &message)
           }
@@ -540,8 +551,7 @@ where
           Ok(id) => id,
           Err(err) => return throw_dom_error(ctx, err),
         };
-        let result = dom
-          .mutate_dom(|dom| (dom.matches_selector(node_id, &selectors), false));
+        let result = dom.mutate_dom(|dom| (dom.matches_selector(node_id, &selectors), false));
         match result {
           Ok(matched) => Ok(matched),
           Err(DomException::SyntaxError { message }) => {
@@ -609,7 +619,8 @@ where
       move |ctx: Ctx<'js>, node: u32, name: String| {
         let result = dom.borrow().with_dom(|dom| {
           let node_id = dom.node_id_from_index(node as usize)?;
-          dom.get_attribute(node_id, &name)
+          dom
+            .get_attribute(node_id, &name)
             .map(|v| v.map(|s| s.to_string()))
         });
         match result {
@@ -777,14 +788,12 @@ where
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |node: u32, prop: String| {
-        let result = dom
-          .borrow()
-          .with_dom(|dom| {
-            dom
-              .node_id_from_index(node as usize)
-              .ok()
-              .and_then(|node_id| dom.dataset_get(node_id, &prop).map(|v| v.to_string()))
-          });
+        let result = dom.borrow().with_dom(|dom| {
+          dom
+            .node_id_from_index(node as usize)
+            .ok()
+            .and_then(|node_id| dom.dataset_get(node_id, &prop).map(|v| v.to_string()))
+        });
         Ok::<Option<String>, rquickjs::Error>(result)
       }
     })?,
@@ -847,7 +856,9 @@ where
           dom
             .node_id_from_index(node as usize)
             .ok()
-            .map_or_else(String::new, |node_id| dom.style_get_property_value(node_id, &name))
+            .map_or_else(String::new, |node_id| {
+              dom.style_get_property_value(node_id, &name)
+            })
         });
         Ok::<String, rquickjs::Error>(result)
       }
@@ -2169,14 +2180,15 @@ const DOM_BINDINGS_SHIM: &str = r##"
 "##;
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::install_dom_bindings;
   use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
   use fastrender::error::{Error, Result};
-  use fastrender::js::{
-    CurrentScriptHost, CurrentScriptStateHandle, ScriptBlockExecutor, ScriptOrchestrator, ScriptType,
-  };
   use fastrender::js::DomHost;
+  use fastrender::js::{
+    CurrentScriptHost, CurrentScriptStateHandle, ScriptBlockExecutor, ScriptOrchestrator,
+    ScriptType,
+  };
   use rquickjs::{Context, Runtime};
   use std::cell::RefCell;
   use std::rc::Rc;
@@ -2309,7 +2321,9 @@ const DOM_BINDINGS_SHIM: &str = r##"
       self
         .ctx
         .with(|ctx| {
-          ctx.eval::<(), _>("globalThis.obs.push(document.currentScript && document.currentScript.id)")
+          ctx.eval::<(), _>(
+            "globalThis.obs.push(document.currentScript && document.currentScript.id)",
+          )
         })
         .map_err(|e| Error::Other(e.to_string()))?;
       Ok(())
@@ -2373,15 +2387,15 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
 
   fn read_obs_bool(ctx: &Context) -> Vec<bool> {
-    ctx.with(|ctx| ctx.eval::<Vec<bool>, _>("globalThis.obs"))
+    ctx
+      .with(|ctx| ctx.eval::<Vec<bool>, _>("globalThis.obs"))
       .expect("read obs")
   }
 
   #[test]
   fn document_current_script_tracks_sequential_script_execution() -> Result<()> {
-    let renderer_dom = fastrender::dom::parse_html(
-      "<!doctype html><script id=a></script><script id=b></script>",
-    )?;
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><script id=a></script><script id=b></script>")?;
     let dom = Dom2Document::from_renderer_dom(&renderer_dom);
     let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
     let script_a = find_script_by_id(&dom, "a");
@@ -2397,18 +2411,8 @@ const DOM_BINDINGS_SHIM: &str = r##"
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = JsObservingExecutor { ctx };
 
-    orchestrator.execute_script_element(
-      &mut host,
-      script_a,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
-    orchestrator.execute_script_element(
-      &mut host,
-      script_b,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script_a, ScriptType::Classic, &mut executor)?;
+    orchestrator.execute_script_element(&mut host, script_b, ScriptType::Classic, &mut executor)?;
 
     assert_eq!(
       read_obs(&executor.ctx),
@@ -2464,7 +2468,9 @@ const DOM_BINDINGS_SHIM: &str = r##"
       self
         .ctx
         .with(|ctx| {
-          ctx.eval::<(), _>("globalThis.obs.push(document.currentScript && document.currentScript.id)")
+          ctx.eval::<(), _>(
+            "globalThis.obs.push(document.currentScript && document.currentScript.id)",
+          )
         })
         .map_err(|e| Error::Other(e.to_string()))?;
       Ok(())
@@ -2495,9 +2501,8 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
   #[test]
   fn document_current_script_restores_after_nested_execution() -> Result<()> {
-    let renderer_dom = fastrender::dom::parse_html(
-      "<!doctype html><script id=a></script><script id=b></script>",
-    )?;
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><script id=a></script><script id=b></script>")?;
     let dom = Dom2Document::from_renderer_dom(&renderer_dom);
     let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
     let script_a = find_script_by_id(&dom, "a");
@@ -2513,12 +2518,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = NestedJsExecutor::new(ctx, script_a, script_b);
 
-    orchestrator.execute_script_element(
-      &mut host,
-      script_a,
-      ScriptType::Classic,
-      &mut executor,
-    )?;
+    orchestrator.execute_script_element(&mut host, script_a, ScriptType::Classic, &mut executor)?;
 
     assert_eq!(
       read_obs(&executor.ctx),
@@ -2579,7 +2579,8 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
 
   #[test]
-  fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror_domexception() -> Result<()> {
+  fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror_domexception() -> Result<()>
+  {
     let renderer_dom = fastrender::dom::parse_html("<!doctype html>")?;
     let dom = Rc::new(RefCell::new(TestDomHost {
       dom: Dom2Document::from_renderer_dom(&renderer_dom),
@@ -2628,21 +2629,21 @@ const DOM_BINDINGS_SHIM: &str = r##"
             return String(e.name) + "|" + String(e instanceof DOMException);
           }
         })()"#,
-       );
-        assert_eq!(out, "9|#document|true");
+      );
+      assert_eq!(out, "9|#document|true");
 
-         let out = eval_str(
-           &ctx,
-           r#"(() => {
-            try {
-              document.querySelector("[");
-             return "no throw";
-           } catch (e) {
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            document.querySelector("[");
+            return "no throw";
+          } catch (e) {
             return String(e.name) + "|" + String(e instanceof DOMException) + "|" + String(e instanceof SyntaxError);
-           }
-         })()"#,
-       );
-       assert_eq!(out, "SyntaxError|true|false");
+          }
+        })()"#,
+      );
+      assert_eq!(out, "SyntaxError|true|false");
 
       let out = eval_str(
         &ctx,
@@ -3316,19 +3317,35 @@ const DOM_BINDINGS_SHIM: &str = r##"
     let body = dom_ref.body().expect("expected body");
     let children = dom_ref.children(body).expect("read body children");
     assert_eq!(children.len(), 5);
-    assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("outside"));
-    assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("repl1"));
-    assert_eq!(dom_ref.get_attribute(children[2], "id").unwrap(), Some("inside2"));
-    assert_eq!(dom_ref.get_attribute(children[3], "id").unwrap(), Some("inside3"));
-    assert_eq!(dom_ref.get_attribute(children[4], "id").unwrap(), Some("marker"));
+    assert_eq!(
+      dom_ref.get_attribute(children[0], "id").unwrap(),
+      Some("outside")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(children[1], "id").unwrap(),
+      Some("repl1")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(children[2], "id").unwrap(),
+      Some("inside2")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(children[3], "id").unwrap(),
+      Some("inside3")
+    );
+    assert_eq!(
+      dom_ref.get_attribute(children[4], "id").unwrap(),
+      Some("marker")
+    );
 
     Ok(())
   }
 
   #[test]
   fn class_list_add_remove_toggle_updates_class_attribute() -> Result<()> {
-    let renderer_dom =
-      fastrender::dom::parse_html("<!doctype html><html><body><div id=x class='a b'></div></body></html>")?;
+    let renderer_dom = fastrender::dom::parse_html(
+      "<!doctype html><html><body><div id=x class='a b'></div></body></html>",
+    )?;
     let dom = Rc::new(RefCell::new(TestDomHost {
       dom: Dom2Document::from_renderer_dom(&renderer_dom),
     }));
@@ -3356,7 +3373,9 @@ const DOM_BINDINGS_SHIM: &str = r##"
     assert_eq!(outcome, "ok");
 
     let dom_ref = &dom.borrow().dom;
-    let x = dom_ref.get_element_by_id("x").expect("element should exist");
+    let x = dom_ref
+      .get_element_by_id("x")
+      .expect("element should exist");
     let class_attr = dom_ref
       .get_attribute(x, "class")
       .expect("get_attribute should succeed")
@@ -3731,4 +3750,4 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
     Ok(())
   }
-}  
+}

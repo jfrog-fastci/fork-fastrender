@@ -468,13 +468,14 @@ pub(crate) fn prepare_script_element_dom2(
     doc.node_mut(script).script_force_async = true;
   }
 
-  let should_run = if spec.script_type != ScriptType::Classic {
-    false
-  } else if spec.src_attr_present {
-    spec.src.as_deref().is_some_and(|src| !src.is_empty())
-  } else {
-    !spec.inline_text.is_empty()
-  };
+  // HTML `prepare the script element` early-returns (without setting `already started`) when:
+  // - there is no `src` attribute and the source text is empty; or
+  // - the script block's type string is unsupported (type left as null / unknown).
+  //
+  // These are the cases where the spec wants the element to remain eligible to run later after
+  // mutation, using `force async` for async-by-default behavior.
+  let should_run =
+    !(!spec.src_attr_present && spec.inline_text.is_empty()) && spec.script_type != ScriptType::Unknown;
 
   if should_run && was_parser_inserted {
     doc.node_mut(script).script_parser_document = true;

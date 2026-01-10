@@ -1,32 +1,32 @@
 use crate::css::selectors::FastRenderSelectorImpl;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
-use crate::web::dom::DocumentReadyState;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
+use crate::web::dom::DocumentReadyState;
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
 use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
-use selectors::OpaqueElement;
 use selectors::parser::SelectorList;
+use selectors::OpaqueElement;
 
 mod attrs;
 mod class_list;
 mod error;
 pub use error::{DomError, Result as DomResult};
 
+mod dom_parsing;
+mod html;
 mod html5ever_tree_sink;
 mod html_parse;
 pub mod import;
 mod js_shims;
 mod mutation;
+mod scripting_parser;
+mod serialization;
 mod shadow_dom;
 mod style_attr;
-mod html;
-mod dom_parsing;
-mod serialization;
-mod scripting_parser;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
@@ -688,9 +688,12 @@ impl Document {
         .is_some_and(|node| node.parent == Some(html))
     };
 
-    if let Some(body) = html_node.children.iter().copied().find(|&child| {
-      is_direct_child(child) && self.is_html_element(child, "body")
-    }) {
+    if let Some(body) = html_node
+      .children
+      .iter()
+      .copied()
+      .find(|&child| is_direct_child(child) && self.is_html_element(child, "body"))
+    {
       return Some(body);
     }
 
@@ -754,16 +757,16 @@ impl Document {
           quirks_mode: *quirks_mode,
           scripting_enabled,
         },
-         NodeKind::DocumentFragment => {
-           // The renderer DOM snapshot format does not have a first-class DocumentFragment node
-           // type. Fragments should never be connected (insertion moves their children and leaves the
-           // fragment detached), but map them defensively to a plain document node to avoid panics if
-           // an invalid tree is constructed.
-           DomNodeType::Document {
-             quirks_mode: QuirksMode::NoQuirks,
-             scripting_enabled,
-           }
-         }
+        NodeKind::DocumentFragment => {
+          // The renderer DOM snapshot format does not have a first-class DocumentFragment node
+          // type. Fragments should never be connected (insertion moves their children and leaves the
+          // fragment detached), but map them defensively to a plain document node to avoid panics if
+          // an invalid tree is constructed.
+          DomNodeType::Document {
+            quirks_mode: QuirksMode::NoQuirks,
+            scripting_enabled,
+          }
+        }
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,
@@ -802,13 +805,18 @@ impl Document {
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled).unwrap_or_else(|| {
-        debug_assert!(false, "document root must be representable in renderer DOM snapshot");
-        DomNodeType::Document {
-          quirks_mode: QuirksMode::NoQuirks,
-          scripting_enabled,
-        }
-      }),
+      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled).unwrap_or_else(
+        || {
+          debug_assert!(
+            false,
+            "document root must be representable in renderer DOM snapshot"
+          );
+          DomNodeType::Document {
+            quirks_mode: QuirksMode::NoQuirks,
+            scripting_enabled,
+          }
+        },
+      ),
       children: Vec::with_capacity(root_src.children.len()),
     };
 
@@ -837,8 +845,7 @@ impl Document {
           continue;
         }
 
-        let Some(child_node_type) =
-          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
         else {
           continue;
         };
@@ -958,8 +965,7 @@ impl Document {
         if child_src.parent != Some(parent_id) {
           continue;
         }
-        let Some(child_node_type) =
-          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
         else {
           continue;
         };
@@ -1004,7 +1010,9 @@ impl Document {
     fn node_is_renderable(kind: &NodeKind) -> bool {
       !matches!(
         kind,
-        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } | NodeKind::Doctype { .. }
+        NodeKind::Comment { .. }
+          | NodeKind::ProcessingInstruction { .. }
+          | NodeKind::Doctype { .. }
       )
     }
 
@@ -1084,7 +1092,9 @@ impl Document {
       // drop html5ever-only nodes such as comments and doctypes.
       !matches!(
         kind,
-        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } | NodeKind::Doctype { .. }
+        NodeKind::Comment { .. }
+          | NodeKind::ProcessingInstruction { .. }
+          | NodeKind::Doctype { .. }
       )
     }
 
@@ -1250,8 +1260,9 @@ impl Document {
         }
 
         let current_shadow_root = shadow_root_stack.last().copied();
-        let shadow_ok = allowed_shadow_root
-          .map_or(current_shadow_root.is_none(), |allowed| current_shadow_root == Some(allowed));
+        let shadow_ok = allowed_shadow_root.map_or(current_shadow_root.is_none(), |allowed| {
+          current_shadow_root == Some(allowed)
+        });
 
         if scope_active && item.node.is_element() && shadow_ok {
           if node_matches_selector_list(
@@ -1398,8 +1409,9 @@ impl Document {
         }
 
         let current_shadow_root = shadow_root_stack.last().copied();
-        let shadow_ok = allowed_shadow_root
-          .map_or(current_shadow_root.is_none(), |allowed| current_shadow_root == Some(allowed));
+        let shadow_ok = allowed_shadow_root.map_or(current_shadow_root.is_none(), |allowed| {
+          current_shadow_root == Some(allowed)
+        });
 
         if scope_active && item.node.is_element() && shadow_ok {
           if node_matches_selector_list(
@@ -1615,15 +1627,21 @@ pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
 }
 
 pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
-  doc
-    .set_attribute(node, name, value)
-    .unwrap_or(false)
+  doc.set_attribute(node, name, value).unwrap_or(false)
 }
 
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]
 mod class_list_tests;
+#[cfg(test)]
+mod contextual_fragment_tests;
+#[cfg(test)]
+mod html5ever_sink_tests;
+#[cfg(test)]
+mod html_tests;
+#[cfg(test)]
+mod inner_html_tests;
 #[cfg(test)]
 mod mapping_tests;
 #[cfg(test)]
@@ -1637,17 +1655,9 @@ mod selector_query_tests;
 #[cfg(test)]
 mod selectors_detached_tests;
 #[cfg(test)]
-mod wbr_tests;
-#[cfg(test)]
-mod html5ever_sink_tests;
-#[cfg(test)]
-mod inner_html_tests;
-#[cfg(test)]
-mod html_tests;
-#[cfg(test)]
-mod contextual_fragment_tests;
-#[cfg(test)]
 mod script_internal_slots_tests;
+#[cfg(test)]
+mod wbr_tests;
 
 #[cfg(test)]
 mod helper_tests {
@@ -1785,7 +1795,10 @@ mod template_inert_tests {
 
     let outside_qs = doc.query_selector("#outside", None).unwrap();
     let outside_id = doc.get_element_by_id("outside");
-    assert!(outside_qs.is_some(), "expected #outside to be query-selectable");
+    assert!(
+      outside_qs.is_some(),
+      "expected #outside to be query-selectable"
+    );
     assert_eq!(outside_qs, outside_id);
   }
 
@@ -1863,7 +1876,12 @@ mod template_inert_tests {
     );
 
     let inert_template_id = doc.nodes().iter().enumerate().find_map(|(idx, node)| {
-      let NodeKind::Element { tag_name, attributes, .. } = &node.kind else {
+      let NodeKind::Element {
+        tag_name,
+        attributes,
+        ..
+      } = &node.kind
+      else {
         return None;
       };
       if !tag_name.eq_ignore_ascii_case("template") {
