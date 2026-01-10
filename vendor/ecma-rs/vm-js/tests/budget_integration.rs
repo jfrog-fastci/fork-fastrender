@@ -141,6 +141,30 @@ fn function_parameter_list_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn function_use_strict_directive_scan_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Function object creation checks for a `"use strict"` directive by scanning the directive
+  // prologue. The directive does not need to be the first statement, so a hostile script can place
+  // it after many other string-literal directives and force an `O(N)` scan without evaluating any
+  // nested statements/expressions.
+  let mut src = String::from("function f(){");
+  for _ in 0..5000 {
+    src.push_str("\"x\";");
+  }
+  src.push_str("\"use strict\";}");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn var_declarator_list_instantiation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);

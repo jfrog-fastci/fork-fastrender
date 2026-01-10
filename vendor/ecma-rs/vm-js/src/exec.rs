@@ -111,8 +111,15 @@ fn global_var_binding_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
-fn detect_use_strict_directive(stmts: &[Node<Stmt>]) -> bool {
-  for stmt in stmts {
+fn detect_use_strict_directive(
+  stmts: &[Node<Stmt>],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<bool, VmError> {
+  const TICK_EVERY: usize = 32;
+  for (i, stmt) in stmts.iter().enumerate() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
     let Stmt::Expr(expr_stmt) = &*stmt.stx else {
       break;
     };
@@ -129,10 +136,10 @@ fn detect_use_strict_directive(stmts: &[Node<Stmt>]) -> bool {
     };
 
     if lit.stx.value == "use strict" {
-      return true;
+      return Ok(true);
     }
   }
-  false
+  Ok(false)
 }
 
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
@@ -646,7 +653,6 @@ impl JsRuntime {
     };
     let top = parse_with_options(&source.text, opts)
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
-    let strict = detect_use_strict_directive(&top.stx.body);
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -677,6 +683,8 @@ impl JsRuntime {
       // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
       // interrupt budgets.
       vm_frame.tick()?;
+
+      let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
 
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -736,7 +744,6 @@ impl JsRuntime {
     };
     let top = parse_with_options(&source.text, opts)
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
-    let strict = detect_use_strict_directive(&top.stx.body);
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -762,6 +769,8 @@ impl JsRuntime {
       // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
       // interrupt budgets.
       vm_frame.tick()?;
+
+      let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
 
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -1440,7 +1449,7 @@ impl<'a> Evaluator<'a> {
     }
     let is_strict = self.strict
       || match &func.body {
-        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
+        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
         Some(FuncBody::Expression(_)) => false,
         None => return Err(VmError::Unimplemented("function without body")),
       };
@@ -3218,7 +3227,7 @@ impl<'a> Evaluator<'a> {
     }
     let is_strict = self.strict
       || match &func.body {
-        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
+        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
         Some(FuncBody::Expression(_)) => false,
         None => return Err(VmError::Unimplemented("function without body")),
       };
@@ -3291,7 +3300,7 @@ impl<'a> Evaluator<'a> {
     }
     let is_strict = self.strict
       || match &func.body {
-        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
+        Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
         Some(FuncBody::Expression(_)) => false,
         None => return Err(VmError::Unimplemented("function without body")),
       };
@@ -3752,12 +3761,12 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-              let is_strict = self.strict
-                || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
-                  Some(FuncBody::Expression(_)) => false,
-                  None => return Err(VmError::Unimplemented("method without body")),
-                };
+                let is_strict = self.strict
+                  || match &func_node.stx.body {
+                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
+                    Some(FuncBody::Expression(_)) => false,
+                    None => return Err(VmError::Unimplemented("method without body")),
+                  };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -3838,12 +3847,12 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-              let is_strict = self.strict
-                || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
-                  Some(FuncBody::Expression(_)) => false,
-                  None => return Err(VmError::Unimplemented("getter without body")),
-                };
+                let is_strict = self.strict
+                  || match &func_node.stx.body {
+                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
+                    Some(FuncBody::Expression(_)) => false,
+                    None => return Err(VmError::Unimplemented("getter without body")),
+                  };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -3920,12 +3929,12 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-              let is_strict = self.strict
-                || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts),
-                  Some(FuncBody::Expression(_)) => false,
-                  None => return Err(VmError::Unimplemented("setter without body")),
-                };
+                let is_strict = self.strict
+                  || match &func_node.stx.body {
+                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
+                    Some(FuncBody::Expression(_)) => false,
+                    None => return Err(VmError::Unimplemented("setter without body")),
+                  };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -4502,7 +4511,7 @@ impl<'a> Evaluator<'a> {
     };
     let top = parse_with_options(&source.text, opts)
       .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
-    let strict = self.strict || detect_use_strict_directive(&top.stx.body);
+    let strict = self.strict || detect_use_strict_directive(&top.stx.body, || self.tick())?;
 
     // Save and restore the runtime's source and lexical environment while running eval code. This
     // keeps nested function source spans aligned with the eval input.
