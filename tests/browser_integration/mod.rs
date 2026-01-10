@@ -86,6 +86,7 @@ mod ui_stage_heartbeat_forwarding;
 mod ui_worker_base_url_isolation;
 mod ui_worker_cancellation;
 mod ui_worker_dpr;
+mod ui_worker_zoom;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;

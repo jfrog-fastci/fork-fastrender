@@ -20,6 +20,7 @@ pub mod messages;
 pub mod shortcuts;
 pub mod worker;
 pub mod url;
+pub mod zoom;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
@@ -58,6 +59,10 @@ pub use history::{HistoryEntry, TabHistory};
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, FrameReadyUpdate, LatestFrameMeta,
   OpenSelectDropdownUpdate,
+};
+pub use zoom::{
+  clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,
+  DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
 
 #[cfg(feature = "browser_ui")]

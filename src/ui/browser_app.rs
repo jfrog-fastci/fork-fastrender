@@ -81,6 +81,12 @@ pub struct BrowserTabState {
   pub stage: Option<StageHeartbeat>,
   pub can_go_back: bool,
   pub can_go_forward: bool,
+  /// Per-tab page zoom factor.
+  ///
+  /// This affects how the windowed UI computes `viewport_css` + `dpr` for rendering:
+  /// - higher zoom → fewer CSS pixels in the viewport + higher DPR
+  /// - lower zoom → more CSS pixels in the viewport + lower DPR
+  pub zoom: f32,
   pub scroll_state: ScrollState,
   pub latest_frame_meta: Option<LatestFrameMeta>,
   debug_log: VecDeque<String>,
@@ -98,6 +104,7 @@ impl BrowserTabState {
       stage: None,
       can_go_back: false,
       can_go_forward: false,
+      zoom: crate::ui::zoom::DEFAULT_ZOOM,
       scroll_state: ScrollState::default(),
       latest_frame_meta: None,
       debug_log: VecDeque::new(),

@@ -19791,6 +19791,7 @@ mod tests {
         root_style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .expect("line layout")
@@ -24925,6 +24926,7 @@ mod tests {
         style.unicode_bidi,
         None,
         0.0,
+        0.0,
         None,
       )
       .unwrap()
@@ -24984,6 +24986,7 @@ mod tests {
         style.direction,
         style.unicode_bidi,
         None,
+        0.0,
         0.0,
         None,
       )

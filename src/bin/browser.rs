@@ -1876,11 +1876,18 @@ impl App {
     egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
-      let viewport_css = (
-        (logical_viewport_points.x.max(0.0).floor() as u32).max(1),
-        (logical_viewport_points.y.max(0.0).floor() as u32).max(1),
+      // Browser-like zoom: keep the drawn page size constant (in egui points) while scaling the
+      // number of CSS pixels in the viewport by adjusting viewport_css + dpr.
+      let zoom = self
+        .browser_state
+        .active_tab()
+        .map(|t| t.zoom)
+        .unwrap_or(fastrender::ui::DEFAULT_ZOOM);
+      let (viewport_css, dpr) = fastrender::ui::viewport_css_and_dpr_for_zoom(
+        (logical_viewport_points.x, logical_viewport_points.y),
+        self.pixels_per_point,
+        zoom,
       );
-      let dpr = self.pixels_per_point;
       self.send_viewport_changed_if_needed(viewport_css, dpr);
 
       self.page_rect_points = None;

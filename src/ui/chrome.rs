@@ -3,6 +3,7 @@
 use crate::ui::browser_app::BrowserAppState;
 use crate::render_control::StageHeartbeat;
 use crate::ui::messages::TabId;
+use crate::ui::zoom;
 
 #[derive(Debug, Clone)]
 pub enum ChromeAction {
@@ -41,7 +42,15 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   // Ctrl/Cmd+L should not steal focus from other egui text fields (e.g. devtools inputs), but we
   // still want it to re-select the URL when the address bar is already focused.
   let allow_focus_address_bar = !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus;
-  let (focus_address_bar, new_tab, close_tab, reload, tab_delta, tab_number) = ctx.input(|i| {
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  enum ZoomAction {
+    In,
+    Out,
+    Reset,
+  }
+
+  let (focus_address_bar, new_tab, close_tab, reload, tab_delta, tab_number, zoom_action) =
+    ctx.input(|i| {
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
@@ -50,6 +59,7 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
     let mut reload = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
+    let mut zoom_action: Option<ZoomAction> = None;
 
     for event in &i.events {
       let egui::Event::Key {
@@ -73,6 +83,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
         egui::Key::T if cmd_or_ctrl => new_tab = true,
         egui::Key::W if cmd_or_ctrl => close_tab = true,
         egui::Key::R if cmd_or_ctrl => reload = true,
+        // Browser-like zoom shortcuts.
+        egui::Key::PlusEquals if cmd_or_ctrl => zoom_action = Some(ZoomAction::In),
+        egui::Key::Minus if cmd_or_ctrl => zoom_action = Some(ZoomAction::Out),
+        egui::Key::Num0 if cmd_or_ctrl => zoom_action = Some(ZoomAction::Reset),
         egui::Key::Tab if cmd_or_ctrl => {
           tab_delta = Some(if modifiers.shift { -1isize } else { 1isize })
         }
@@ -94,7 +108,15 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       }
     }
 
-    (focus_address_bar, new_tab, close_tab, reload, tab_delta, tab_number)
+    (
+      focus_address_bar,
+      new_tab,
+      close_tab,
+      reload,
+      tab_delta,
+      tab_number,
+      zoom_action,
+    )
   });
 
   if focus_address_bar {
@@ -116,6 +138,15 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   }
   if reload {
     actions.push(ChromeAction::Reload);
+  }
+  if let Some(zoom_action) = zoom_action {
+    if let Some(tab) = app.active_tab_mut() {
+      tab.zoom = match zoom_action {
+        ZoomAction::In => zoom::zoom_in(tab.zoom),
+        ZoomAction::Out => zoom::zoom_out(tab.zoom),
+        ZoomAction::Reset => zoom::zoom_reset(),
+      };
+    }
   }
   if let Some(delta) = tab_delta {
     let active = app.active_tab_id();
@@ -210,10 +241,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
     // Navigation + address bar row.
     ui.horizontal(|ui| {
-      let (can_back, can_forward, loading, stage, error) = app
+      let (can_back, can_forward, loading, stage, error, zoom_factor) = app
         .active_tab()
-        .map(|t| (t.can_go_back, t.can_go_forward, t.loading, t.stage, t.error.clone()))
-        .unwrap_or((false, false, false, None, None));
+        .map(|t| (t.can_go_back, t.can_go_forward, t.loading, t.stage, t.error.clone(), t.zoom))
+        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
 
       if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
         actions.push(ChromeAction::Back);
@@ -226,6 +257,29 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       }
       if ui.button("⟳").clicked() {
         actions.push(ChromeAction::Reload);
+      }
+
+      // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
+      // non-US keyboard layouts).
+      if ui.small_button("−").clicked() {
+        if let Some(tab) = app.active_tab_mut() {
+          tab.zoom = zoom::zoom_out(tab.zoom);
+        }
+      }
+      let percent = zoom::zoom_percent(zoom_factor);
+      if ui
+        .small_button(format!("{percent}%"))
+        .on_hover_text("Reset zoom (Ctrl/Cmd+0)")
+        .clicked()
+      {
+        if let Some(tab) = app.active_tab_mut() {
+          tab.zoom = zoom::zoom_reset();
+        }
+      }
+      if ui.small_button("+").clicked() {
+        if let Some(tab) = app.active_tab_mut() {
+          tab.zoom = zoom::zoom_in(tab.zoom);
+        }
       }
 
       let address_bar_id = ui.make_persistent_id("address_bar");
@@ -517,6 +571,79 @@ mod tests {
     assert!(
       !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
       "expected no CloseTab action when only one tab exists, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_plus_zooms_in_active_tab() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = new_context_with_key(
+      egui::Key::PlusEquals,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let _actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let zoom = app.active_tab().unwrap().zoom;
+    assert!(zoom > 1.0, "expected zoom to increase, got {zoom}");
+  }
+
+  #[test]
+  fn ctrl_minus_zooms_out_active_tab() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = new_context_with_key(
+      egui::Key::Minus,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let _actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let zoom = app.active_tab().unwrap().zoom;
+    assert!(zoom < 1.0, "expected zoom to decrease, got {zoom}");
+  }
+
+  #[test]
+  fn ctrl_0_resets_zoom() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    // First zoom in.
+    let ctx = new_context_with_key(
+      egui::Key::PlusEquals,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let _actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+    assert!(app.active_tab().unwrap().zoom > 1.0);
+
+    // Then reset.
+    let ctx = new_context_with_key(
+      egui::Key::Num0,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let _actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+    assert!(
+      (app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON
     );
   }
 
