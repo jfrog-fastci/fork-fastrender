@@ -420,13 +420,13 @@ mod tests {
     scope.push_root(Value::String(init_str))?;
     let init = Value::String(init_str);
 
-    let params_val = vm.call_with_host_and_hooks(
+    let params_val = vm.construct_with_host_and_hooks(
       &mut host,
       &mut scope,
       &mut hooks,
       params_ctor,
-      Value::Undefined,
       &[init],
+      params_ctor,
     )?;
     scope.push_root(params_val)?;
     let Value::Object(_params_obj) = params_val else {
@@ -470,13 +470,13 @@ mod tests {
     scope.push_root(Value::String(url_arg_str))?;
     let url_arg = Value::String(url_arg_str);
 
-    let url_val = vm.call_with_host_and_hooks(
+    let url_val = vm.construct_with_host_and_hooks(
       &mut host,
       &mut scope,
       &mut hooks,
       url_ctor,
-      Value::Undefined,
       &[url_arg],
+      url_ctor,
     )?;
     scope.push_root(url_val)?;
     let Value::Object(_url_obj) = url_val else {

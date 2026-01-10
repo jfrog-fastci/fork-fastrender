@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use vm_js::{
   GcObject, HostSlots, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm,
@@ -146,6 +146,20 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     name: &str,
     length: u32,
     f: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error>;
+
+  /// Create a host-defined constructor function object with WebIDL-visible metadata.
+  ///
+  /// `vm-js` distinguishes between `[[Call]]` and `[[Construct]]` internal methods, so WebIDL
+  /// interface objects with a `constructor(...)` member must provide both:
+  /// - `call` is used for `Ctor(...)` and should generally throw a TypeError ("Illegal constructor").
+  /// - `construct` is used for `new Ctor(...)`.
+  fn create_constructor(
+    &mut self,
+    name: &str,
+    length: u32,
+    call: NativeHostFunction<Self, Host>,
+    construct: NativeHostFunction<Self, Host>,
   ) -> Result<Self::JsValue, Self::Error>;
 
   /// Root and return a WebIDL callback function handle.
@@ -312,6 +326,8 @@ pub struct VmJsWebIdlBindingsState<Host> {
   pub limits: webidl::WebIdlLimits,
   pub hooks: Box<dyn WebIdlHooks<Value>>,
   native_call_id: Cell<Option<vm_js::NativeFunctionId>>,
+  native_construct_id: Cell<Option<vm_js::NativeConstructId>>,
+  dispatch_records: RefCell<Vec<Box<NativeDispatchRecord>>>,
   _phantom: PhantomData<fn(Host)>,
 }
 
@@ -326,8 +342,20 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
       limits,
       hooks,
       native_call_id: Cell::new(None),
+      native_construct_id: Cell::new(None),
+      dispatch_records: RefCell::new(Vec::new()),
       _phantom: PhantomData,
     }
+  }
+
+  fn alloc_dispatch_record(&self, call: usize, construct: usize) -> *const NativeDispatchRecord {
+    let mut records = self.dispatch_records.borrow_mut();
+    records.push(Box::new(NativeDispatchRecord { call, construct }));
+    // SAFETY: boxed value has a stable address even if `records` reallocates.
+    records
+      .last()
+      .expect("push ensured an element exists")
+      .as_ref() as *const NativeDispatchRecord
   }
 }
 
@@ -341,6 +369,14 @@ pub struct VmJsWebIdlBindingsCx<'a, Host> {
   cached_next_key: Option<PropertyKey>,
   cached_done_key: Option<PropertyKey>,
   cached_value_key: Option<PropertyKey>,
+}
+
+const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
+
+#[derive(Clone, Copy)]
+struct NativeDispatchRecord {
+  call: usize,
+  construct: usize,
 }
 
 impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
@@ -464,8 +500,8 @@ fn dispatch_native_call<Host: 'static>(
 ) -> Result<Value, VmError> {
   let slots = read_callee_slots(scope, callee)?;
   let state_ptr = slots.a as *const VmJsWebIdlBindingsState<Host>;
-  let f_ptr = slots.b as usize;
-  if state_ptr.is_null() || f_ptr == 0 {
+  let dispatch_ptr = slots.b as *const NativeDispatchRecord;
+  if state_ptr.is_null() || dispatch_ptr.is_null() {
     return Err(VmError::InvariantViolation(
       "WebIDL bindings function has null dispatch metadata",
     ));
@@ -474,8 +510,14 @@ fn dispatch_native_call<Host: 'static>(
   // SAFETY:
   // - `VmJsWebIdlBindingsState` is expected to be stored in a stable address (e.g. `Box`) for the
   //   lifetime of any JS function objects created by `create_function`.
-  // - The stored function pointer is a plain Rust `fn` pointer.
+  // - `dispatch_ptr` points to a `NativeDispatchRecord` owned by the same state.
   let state: &VmJsWebIdlBindingsState<Host> = unsafe { &*state_ptr };
+  let dispatch: &NativeDispatchRecord = unsafe { &*dispatch_ptr };
+  if dispatch.call == 0 {
+    return Err(VmError::InvariantViolation(
+      "WebIDL bindings function missing [[Call]] dispatch entry",
+    ));
+  }
 
   let host = host_from_vm_host::<Host>(host)?;
 
@@ -483,9 +525,58 @@ fn dispatch_native_call<Host: 'static>(
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
-    unsafe { std::mem::transmute(f_ptr) };
+    unsafe { std::mem::transmute(dispatch.call) };
 
   f(&mut rt, host, this, args)
+}
+
+fn dispatch_native_construct<Host: 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // For now, enforce `new_target === callee` so we can be deterministic while we do not support
+  // subclassing semantics in the WebIDL bindings layer.
+  if new_target != Value::Object(callee) {
+    let intr = vm.intrinsics().ok_or(VmError::InvariantViolation(
+      "vm-js intrinsics not installed; expected an initialized Realm",
+    ))?;
+    return Err(vm_js::throw_type_error(
+      scope,
+      intr,
+      ILLEGAL_CONSTRUCTOR_ERROR,
+    ));
+  }
+
+  let slots = read_callee_slots(scope, callee)?;
+  let state_ptr = slots.a as *const VmJsWebIdlBindingsState<Host>;
+  let dispatch_ptr = slots.b as *const NativeDispatchRecord;
+  if state_ptr.is_null() || dispatch_ptr.is_null() {
+    return Err(VmError::InvariantViolation(
+      "WebIDL bindings function has null dispatch metadata",
+    ));
+  }
+
+  // SAFETY: see `dispatch_native_call`.
+  let state: &VmJsWebIdlBindingsState<Host> = unsafe { &*state_ptr };
+  let dispatch: &NativeDispatchRecord = unsafe { &*dispatch_ptr };
+  if dispatch.construct == 0 {
+    return Err(VmError::InvariantViolation(
+      "WebIDL bindings function missing [[Construct]] dispatch entry",
+    ));
+  }
+
+  let host = host_from_vm_host::<Host>(host)?;
+  let mut rt = VmJsWebIdlBindingsCx::new_in_scope(vm, scope, state);
+
+  // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
+  let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
+    unsafe { std::mem::transmute(dispatch.construct) };
+  f(&mut rt, host, Value::Undefined, args)
 }
 
 impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Host> {
@@ -872,9 +963,64 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       .heap_mut()
       .object_set_prototype(func, Some(intr.function_prototype()))?;
 
+    let dispatch_ptr = self.state.alloc_dispatch_record(f as usize, 0);
     let slots = HostSlots {
       a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
-      b: f as usize as u64,
+      b: dispatch_ptr as u64,
+    };
+    self.cx.scope.heap_mut().object_set_host_slots(func, slots)?;
+
+    Ok(Value::Object(func))
+  }
+
+  fn create_constructor(
+    &mut self,
+    name: &str,
+    length: u32,
+    call: NativeHostFunction<Self, Host>,
+    construct: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
+    let call_id = if let Some(id) = self.state.native_call_id.get() {
+      id
+    } else {
+      let id = self.cx.vm.register_native_call(dispatch_native_call::<Host>)?;
+      self.state.native_call_id.set(Some(id));
+      id
+    };
+
+    let construct_id = if let Some(id) = self.state.native_construct_id.get() {
+      id
+    } else {
+      let id = self
+        .cx
+        .vm
+        .register_native_construct(dispatch_native_construct::<Host>)?;
+      self.state.native_construct_id.set(Some(id));
+      id
+    };
+
+    let intr = self.intrinsics()?;
+
+    // Root the name across allocation of the function object.
+    let name_s = self.cx.scope.alloc_string(name)?;
+    self.cx.scope.push_root(Value::String(name_s))?;
+
+    let func = self
+      .cx
+      .scope
+      .alloc_native_function(call_id, Some(construct_id), name_s, length)?;
+    self.cx.scope.push_root(Value::Object(func))?;
+    self.cx
+      .scope
+      .heap_mut()
+      .object_set_prototype(func, Some(intr.function_prototype()))?;
+
+    let dispatch_ptr = self
+      .state
+      .alloc_dispatch_record(call as usize, construct as usize);
+    let slots = HostSlots {
+      a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
+      b: dispatch_ptr as u64,
     };
     self.cx.scope.heap_mut().object_set_host_slots(func, slots)?;
 
@@ -1306,6 +1452,20 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
   ) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(
       self, name, length, f,
+    )
+  }
+
+  fn create_constructor(
+    &mut self,
+    name: &str,
+    length: u32,
+    _call: NativeHostFunction<Self, Host>,
+    construct: NativeHostFunction<Self, Host>,
+  ) -> Result<Self::JsValue, Self::Error> {
+    // The legacy heap-only runtime does not model `[[Construct]]` separately. Preserve existing
+    // behavior by treating constructors as plain callables and ignoring the "illegal call" stub.
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(
+      self, name, length, construct,
     )
   }
 

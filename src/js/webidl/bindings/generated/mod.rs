@@ -1121,8 +1121,12 @@ pub mod window {
       event_target_remove_event_listener::<Host, R>,
     )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
-    let ctor_event_target =
-      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    let ctor_event_target = rt.create_constructor(
+      "EventTarget",
+      0,
+      illegal_constructor::<Host, R>,
+      event_target_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
     let ctor_node = rt.create_function("Node", 0, illegal_constructor::<Host, R>)?;
     rt.define_constructor(global, "Node", ctor_node, proto_node)?;
@@ -1161,7 +1165,12 @@ pub mod window {
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
-    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    let ctor_u_r_l = rt.create_constructor(
+      "URL",
+      1,
+      illegal_constructor::<Host, R>,
+      u_r_l_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
     let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
     rt.define_method(ctor_u_r_l, "canParse", func)?;
@@ -1196,9 +1205,10 @@ pub mod window {
     )?;
     let set = rt.js_undefined();
     rt.define_attribute_accessor(proto_u_r_l_search_params, "size", get, set)?;
-    let ctor_u_r_l_search_params = rt.create_function(
+    let ctor_u_r_l_search_params = rt.create_constructor(
       "URLSearchParams",
       0,
+      illegal_constructor::<Host, R>,
       u_r_l_search_params_constructor::<Host, R>,
     )?;
     rt.define_constructor(
@@ -2124,6 +2134,19 @@ pub mod worker {
     }
   }
 
+  #[allow(dead_code)]
+  fn illegal_constructor<Host, R>(
+    rt: &mut R,
+    _host: &mut Host,
+    _this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
   pub fn install_worker_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
@@ -2147,15 +2170,24 @@ pub mod worker {
       event_target_remove_event_listener::<Host, R>,
     )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
-    let ctor_event_target =
-      rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
+    let ctor_event_target = rt.create_constructor(
+      "EventTarget",
+      0,
+      illegal_constructor::<Host, R>,
+      event_target_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
     let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
     rt.define_method(proto_u_r_l, "toJSON", func)?;
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;
     let set = rt.create_function("set href", 1, u_r_l_set_attribute_href::<Host, R>)?;
     rt.define_attribute_accessor(proto_u_r_l, "href", get, set)?;
-    let ctor_u_r_l = rt.create_function("URL", 1, u_r_l_constructor::<Host, R>)?;
+    let ctor_u_r_l = rt.create_constructor(
+      "URL",
+      1,
+      illegal_constructor::<Host, R>,
+      u_r_l_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "URL", ctor_u_r_l, proto_u_r_l)?;
     let func = rt.create_function("canParse", 1, u_r_l_can_parse::<Host, R>)?;
     rt.define_method(ctor_u_r_l, "canParse", func)?;
@@ -2190,9 +2222,10 @@ pub mod worker {
     )?;
     let set = rt.js_undefined();
     rt.define_attribute_accessor(proto_u_r_l_search_params, "size", get, set)?;
-    let ctor_u_r_l_search_params = rt.create_function(
+    let ctor_u_r_l_search_params = rt.create_constructor(
       "URLSearchParams",
       0,
+      illegal_constructor::<Host, R>,
       u_r_l_search_params_constructor::<Host, R>,
     )?;
     rt.define_constructor(

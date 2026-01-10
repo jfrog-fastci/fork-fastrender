@@ -1466,14 +1466,18 @@ fn generate_bindings_module_for_target_unformatted(
     }
   }
 
-  // Shared illegal constructor stub for interfaces that expose a constructor object but are not
-  // constructible (e.g. Node, which hosts constants on `Node`).
+  // Shared illegal constructor stub for WebIDL interface objects.
+  //
+  // - For constructible interfaces, this is installed as `[[Call]]` so `Ctor(...)` throws a
+  //   TypeError.
+  // - For non-constructible interfaces that still expose an interface object (e.g. `Node` hosting
+  //   constants), this is installed as the only `[[Call]]` handler.
   let needs_illegal_constructor = selected.values().any(|iface| {
     let needs_ctor_obj = !iface.constructors.is_empty()
       || !iface.static_operations.is_empty()
       || !iface.static_attributes.is_empty()
       || !iface.constants.is_empty();
-    needs_ctor_obj && iface.constructors.is_empty()
+    needs_ctor_obj
   });
   if needs_illegal_constructor {
     out.push_str("#[allow(dead_code)]\nfn illegal_constructor<Host, R>(rt: &mut R, _host: &mut Host, _this: R::JsValue, _args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  Err(rt.throw_type_error(\"Illegal constructor\"))\n}\n\n");
@@ -1603,25 +1607,31 @@ fn generate_bindings_module_for_target_unformatted(
       continue;
     }
 
-    // Constructor function (even for static-only interfaces like URL).
-    let ctor_fn = if iface.constructors.is_empty() {
-      "illegal_constructor".to_string()
-    } else {
-      ctor_wrapper_fn_name(&iface.name)
-    };
     let ctor_length = iface
       .constructors
       .iter()
       .map(|sig| required_arg_count(&sig.arguments))
       .min()
       .unwrap_or(0);
-    out.push_str(&format!(
-      "  let ctor_{snake} = rt.create_function(\"{name}\", {length}, {ctor_fn}::<Host, R>)?;\n",
-      snake = to_snake_ident(&iface.name),
-      name = iface.name.as_str(),
-      length = ctor_length,
-      ctor_fn = ctor_fn
-    ));
+
+    // Constructor function (even for static-only interfaces like URL).
+    if iface.constructors.is_empty() {
+      out.push_str(&format!(
+        "  let ctor_{snake} = rt.create_function(\"{name}\", {length}, illegal_constructor::<Host, R>)?;\n",
+        snake = to_snake_ident(&iface.name),
+        name = iface.name.as_str(),
+        length = ctor_length,
+      ));
+    } else {
+      let ctor_fn = ctor_wrapper_fn_name(&iface.name);
+      out.push_str(&format!(
+        "  let ctor_{snake} = rt.create_constructor(\"{name}\", {length}, illegal_constructor::<Host, R>, {ctor_fn}::<Host, R>)?;\n",
+        snake = to_snake_ident(&iface.name),
+        name = iface.name.as_str(),
+        length = ctor_length,
+        ctor_fn = ctor_fn,
+      ));
+    }
     out.push_str(&format!(
       "  rt.define_constructor(global, \"{name}\", ctor_{snake}, {proto})?;\n",
       name = iface.name.as_str(),

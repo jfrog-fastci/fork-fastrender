@@ -73,6 +73,7 @@ mod vm_js_define_own_property_smoke;
 mod vm_js_dom_bindings;
 mod vm_js_function_call_apply_bind_smoke;
 mod vm_js_function_object_properties_smoke;
+mod vm_js_webidl_generated_constructors;
 mod vm_js_webidl_generated_descriptors;
 mod vm_js_module_graph_loader_smoke;
 mod vm_js_new_target_smoke;
