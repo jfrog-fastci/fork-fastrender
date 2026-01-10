@@ -4560,7 +4560,7 @@ impl DisplayListRenderer {
 
   #[inline]
   fn snap_rect_origin_to_device_pixels(rect: Rect) -> Rect {
-    Rect::from_xywh(rect.x().trunc(), rect.y().trunc(), rect.width(), rect.height())
+    Rect::from_xywh(rect.x().round(), rect.y().round(), rect.width(), rect.height())
   }
 
   #[inline]
@@ -4588,8 +4588,8 @@ impl DisplayListRenderer {
     let eff_x = rect.x() + transform.tx;
     let eff_y = rect.y() + transform.ty;
     Rect::from_xywh(
-      eff_x.trunc() - transform.tx,
-      eff_y.trunc() - transform.ty,
+      eff_x.round() - transform.tx,
+      eff_y.round() - transform.ty,
       rect.width(),
       rect.height(),
     )
