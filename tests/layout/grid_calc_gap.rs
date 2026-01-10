@@ -68,3 +68,46 @@ fn grid_column_gap_calc_percentage_resolves_against_container_inline_size() {
   assert_approx(second.bounds.width(), 40.0, "second column width");
 }
 
+#[test]
+fn grid_row_gap_calc_percentage_resolves_against_container_inline_size() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![GridTrack::Length(Length::px(50.0))];
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(10.0)),
+    GridTrack::Length(Length::px(10.0)),
+  ];
+  parent_style.grid_row_gap_is_normal = false;
+  parent_style.grid_row_gap = calc_percent_plus_px(10.0, -5.0);
+  // Make the inline size (width) differ from the block size so the percentage base is observable.
+  parent_style.width = Some(Length::px(200.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.height = Some(Length::px(10.0));
+
+  let child1 = BoxNode::new_block(Arc::new(child_style.clone()), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 300.0))
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 2);
+  let first = &fragment.children[0];
+  let second = &fragment.children[1];
+
+  // Row-gap percentage resolution uses the grid container's inline size (200px):
+  // 10% of 200px = 20px; calc(20px - 5px) = 15px.
+  assert_approx(first.bounds.y(), 0.0, "first row origin");
+  assert_approx(first.bounds.height(), 10.0, "first row height");
+  assert_approx(second.bounds.y(), 25.0, "second row offset includes resolved gap");
+  assert_approx(second.bounds.height(), 10.0, "second row height");
+}

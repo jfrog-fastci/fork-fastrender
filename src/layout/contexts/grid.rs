@@ -4069,137 +4069,6 @@ impl GridFormattingContext {
     Ok(())
   }
 
-  /// Patch root grid gaps so `calc()` values mixing percentages and lengths are resolved against a
-  /// definite grid container size when available.
-  ///
-  /// Taffy stores gaps as [`LengthPercentage`] and can therefore represent pure percentages, but it
-  /// cannot represent arbitrary `calc(<percentage> + <length>)` expressions. When the percentage
-  /// base is not definite, falling back to `Length::to_px()` produces nonsense negative gaps.
-  ///
-  /// When the grid container’s content-box size is definite in a given axis, resolve `calc(%)` gaps
-  /// to an absolute length. When the base is not definite, treat the gap as `0px`.
-  fn patch_root_calc_percentage_gaps(
-    &self,
-    taffy: &mut TaffyTree<*const BoxNode>,
-    root_id: TaffyNodeId,
-    style: &ComputedStyle,
-    constraints: &LayoutConstraints,
-  ) -> Result<(), LayoutError> {
-    if !Self::style_has_calc_percentage_gaps(style) {
-      return Ok(());
-    }
-
-    let Ok(existing) = taffy.style(root_id) else {
-      return Ok(());
-    };
-
-    let cb_width = constraints.width().filter(|w| w.is_finite() && *w >= 0.0).or_else(|| {
-      if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-        constraints
-          .inline_percentage_base
-          .filter(|w| w.is_finite() && *w >= 0.0)
-      } else {
-        None
-      }
-    });
-    let cb_height = constraints.height().filter(|h| h.is_finite() && *h >= 0.0);
-
-    let border_box_width = constraints
-      .used_border_box_width
-      .filter(|w| w.is_finite() && *w >= 0.0)
-      .or_else(|| existing.size.width.into_option().filter(|w| w.is_finite() && *w >= 0.0))
-      .or_else(|| {
-        if existing.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG {
-          cb_width
-            .map(|base| existing.size.width.value() * base)
-            .filter(|w| w.is_finite() && *w >= 0.0)
-        } else {
-          None
-        }
-      })
-      .or(cb_width);
-    let border_box_height = constraints
-      .used_border_box_height
-      .filter(|h| h.is_finite() && *h >= 0.0)
-      .or_else(|| existing.size.height.into_option().filter(|h| h.is_finite() && *h >= 0.0))
-      .or_else(|| {
-        if existing.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG {
-          cb_height
-            .map(|base| existing.size.height.value() * base)
-            .filter(|h| h.is_finite() && *h >= 0.0)
-        } else {
-          None
-        }
-      })
-      .or(cb_height);
-
-    // Padding percentages resolve against the containing block's width.
-    let padding_percentage_base = cb_width.unwrap_or(0.0);
-    let padding_left =
-      self.resolve_length_for_width(style.padding_left, padding_percentage_base, style);
-    let padding_right =
-      self.resolve_length_for_width(style.padding_right, padding_percentage_base, style);
-    let padding_top =
-      self.resolve_length_for_width(style.padding_top, padding_percentage_base, style);
-    let padding_bottom =
-      self.resolve_length_for_width(style.padding_bottom, padding_percentage_base, style);
-    let border_left =
-      self.resolve_length_for_width(style.used_border_left_width(), padding_percentage_base, style);
-    let border_right =
-      self.resolve_length_for_width(style.used_border_right_width(), padding_percentage_base, style);
-    let border_top =
-      self.resolve_length_for_width(style.used_border_top_width(), padding_percentage_base, style);
-    let border_bottom =
-      self.resolve_length_for_width(style.used_border_bottom_width(), padding_percentage_base, style);
-
-    let content_width_base = border_box_width.map(|w| {
-      (w - padding_left - padding_right - border_left - border_right)
-        .max(0.0)
-    });
-    let content_height_base = border_box_height.map(|h| {
-      (h - padding_top - padding_bottom - border_top - border_bottom)
-        .max(0.0)
-    });
-
-    let swap_grid_axes = existing.axes_swapped;
-    let gap_x = if swap_grid_axes {
-      style.grid_row_gap
-    } else {
-      style.grid_column_gap
-    };
-    let gap_y = if swap_grid_axes {
-      style.grid_column_gap
-    } else {
-      style.grid_row_gap
-    };
-
-    let mut updated = existing.clone();
-
-    let maybe_apply_gap = |len: Length, base: Option<f32>, slot: &mut LengthPercentage| {
-      use crate::style::values::LengthUnit;
-      if !len.has_percentage() || !(len.unit == LengthUnit::Calc || len.calc.is_some()) {
-        return;
-      }
-      let base = base.filter(|b| b.is_finite() && *b >= 0.0);
-      let px = self
-        .resolve_length_px_with_base(len, base, style)
-        .filter(|v| v.is_finite())
-        .unwrap_or(0.0)
-        .max(0.0);
-      *slot = LengthPercentage::length(px);
-    };
-
-    maybe_apply_gap(gap_x, content_width_base, &mut updated.gap.width);
-    maybe_apply_gap(gap_y, content_height_base, &mut updated.gap.height);
-    maybe_apply_gap(gap_x, content_width_base, &mut updated.subgrid_gap.width);
-    maybe_apply_gap(gap_y, content_height_base, &mut updated.subgrid_gap.height);
-
-    taffy
-      .set_style(root_id, updated)
-      .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
-
-    Ok(())
-  }
 
   /// Converts GridTrack Vec to Taffy track list
   fn convert_grid_template(
@@ -7545,7 +7414,6 @@ impl GridFormattingContext {
       &intrinsic_constraints,
     )?;
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
-    self.patch_root_calc_percentage_gaps(&mut taffy, root_id, style, &intrinsic_constraints)?;
 
     // Use appropriate available space for intrinsic sizing
     let available_space = match mode {
@@ -10164,7 +10032,6 @@ impl FormattingContext for GridFormattingContext {
 
     ctx.patch_root_calc_percentage_sizing_and_edges(&mut taffy, root_id, style, constraints)?;
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
-    ctx.patch_root_calc_percentage_gaps(&mut taffy, root_id, style, constraints)?;
 
     let mut available_space = taffy_available_space_for_grid_container(style, constraints);
     // If the grid container itself is sized with intrinsic keywords, map the available space we
@@ -11502,7 +11369,6 @@ impl FormattingContext for GridFormattingContext {
     }
 
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
-    self.patch_root_calc_percentage_gaps(&mut taffy, root_id, style, &intrinsic_constraints)?;
 
     // Convert constraints to Taffy available space. The intrinsic sizing probes for block-size
     // mirror the default `FormattingContext::compute_intrinsic_block_size` implementation:
