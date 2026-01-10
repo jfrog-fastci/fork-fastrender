@@ -517,6 +517,41 @@ fn item_allows_soft_wrap(item: &InlineItem) -> bool {
   }
 }
 
+fn is_no_break_after_character(ch: char) -> bool {
+  // Unicode line-breaking treats NO-BREAK SPACE and related "glue" characters as forbidding
+  // a soft wrap opportunity after them (UAX#14 "GL"/"WJ" classes).
+  //
+  // This matters when inline content mixes text with atomic inlines (inline-block/replaced):
+  // `Community&nbsp;<span class="caret"></span>` must not allow the caret to wrap onto a new line.
+  // If the sequence doesn't fit, it should overflow as an unbreakable unit.
+  matches!(ch, '\u{00A0}' | '\u{202F}' | '\u{2060}' | '\u{FEFF}')
+}
+
+fn last_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
+  match item {
+    InlineItem::Text(text) => text.text.chars().next_back(),
+    InlineItem::InlineBox(inline_box) => inline_box
+      .children
+      .iter()
+      .rev()
+      .find_map(last_text_char_for_soft_wrap),
+    InlineItem::Ruby(ruby) => ruby.segments.iter().rev().find_map(|seg| {
+      seg
+        .base_items
+        .iter()
+        .rev()
+        .find_map(last_text_char_for_soft_wrap)
+    }),
+    InlineItem::SoftBreak
+    | InlineItem::Tab(_)
+    | InlineItem::HardBreak
+    | InlineItem::InlineBlock(_)
+    | InlineItem::Replaced(_)
+    | InlineItem::Floating(_)
+    | InlineItem::StaticPositionAnchor(_) => None,
+  }
+}
+
 pub(crate) fn log_line_width_enabled() -> bool {
   runtime::runtime_toggles().truthy("FASTR_LOG_LINE_WIDTH")
 }
@@ -1356,7 +1391,8 @@ impl TextItem {
         Some((prev, next))
       })
       .filter(|(prev, next)| {
-        Self::is_expandable_space_for_justify(*prev) && !Self::is_expandable_space_for_justify(*next)
+        Self::is_expandable_space_for_justify(*prev)
+          && !Self::is_expandable_space_for_justify(*next)
       })
       .count()
   }
@@ -2147,7 +2183,11 @@ impl TextItem {
       right_run.end = right_run.text.len();
       right_run.glyphs = right_glyphs;
       let run_axis = run_inline_axis(&right_run);
-      right_run.advance = right_run.glyphs.iter().map(|g| glyph_inline_advance(g, run_axis)).sum();
+      right_run.advance = right_run
+        .glyphs
+        .iter()
+        .map(|g| glyph_inline_advance(g, run_axis))
+        .sum();
       after_runs.insert(0, right_run);
     }
 
@@ -2663,8 +2703,10 @@ fn collect_line_baselines(
   // `position: absolute`) must not contribute; including them can cause inline-block baselines to
   // clamp to the bottom edge, inflating line box heights.
   if let Some(style) = fragment.style.as_deref() {
-    if matches!(style.position, crate::style::position::Position::Absolute | crate::style::position::Position::Fixed)
-    {
+    if matches!(
+      style.position,
+      crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+    ) {
       return;
     }
   }
@@ -3179,7 +3221,11 @@ impl<'a> LineBuilder<'a> {
       base_target
     };
 
-    if should_indent { self.indent } else { 0.0 }
+    if should_indent {
+      self.indent
+    } else {
+      0.0
+    }
   }
 
   fn is_collapsible_space_item(item: &InlineItem) -> bool {
@@ -3303,7 +3349,8 @@ impl<'a> LineBuilder<'a> {
     self.current_line.left_offset = space.left_edge;
     self.current_y = self.current_y.max((space.y - self.float_base_y).max(0.0));
 
-    (self.current_y - before_y).abs() > 0.0001 || (self.current_line.available_width - before_width).abs() > 0.0001
+    (self.current_y - before_y).abs() > 0.0001
+      || (self.current_line.available_width - before_width).abs() > 0.0001
   }
 
   /// Creates a new line builder
@@ -3468,7 +3515,9 @@ impl<'a> LineBuilder<'a> {
       if self.current_line.is_empty() {
         let required_width = match &resolved {
           InlineItem::Text(text) => self.min_required_width_for_text_item(text),
-          InlineItem::InlineBox(inline_box) => self.min_required_width_for_inline_box_item(inline_box),
+          InlineItem::InlineBox(inline_box) => {
+            self.min_required_width_for_inline_box_item(inline_box)
+          }
           _ => item_width,
         };
         if self.reposition_empty_line_for_floats(required_width) {
@@ -3489,6 +3538,27 @@ impl<'a> LineBuilder<'a> {
         // No break possible (or wrapping is disabled); overflow this line.
         self.place_item_with_width(resolved, item_width);
         return Ok(());
+      }
+
+      // If the previous item ends with a non-breaking "glue" character (notably `&nbsp;`), there is
+      // no soft wrap opportunity at the boundary. In that case we must overflow instead of pushing
+      // the atomic item onto the next line.
+      if let Some(prev) = self
+        .current_line
+        .items
+        .iter()
+        .rev()
+        .find_map(|pos| match &pos.item {
+          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) | InlineItem::HardBreak => {
+            None
+          }
+          other => Some(other),
+        })
+      {
+        if last_text_char_for_soft_wrap(prev).is_some_and(is_no_break_after_character) {
+          self.place_item_with_width(resolved, item_width);
+          return Ok(());
+        }
       }
 
       self.finish_line()?;
@@ -3553,7 +3623,10 @@ impl<'a> LineBuilder<'a> {
         }
 
         let mut iter = inline_box.children.iter().filter(|child| {
-          !matches!(child, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_))
+          !matches!(
+            child,
+            InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
+          )
         });
         let first = iter.next();
         if iter.next().is_some() {
@@ -3563,7 +3636,10 @@ impl<'a> LineBuilder<'a> {
       }
       InlineItem::SoftBreak | InlineItem::HardBreak => true,
       InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
-      InlineItem::Tab(_) | InlineItem::InlineBlock(_) | InlineItem::Ruby(_) | InlineItem::Replaced(_) => false,
+      InlineItem::Tab(_)
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Ruby(_)
+      | InlineItem::Replaced(_) => false,
     }
   }
 
@@ -3596,7 +3672,10 @@ impl<'a> LineBuilder<'a> {
     let end_edge = inline_box.end_edge.max(0.0);
 
     let mut iter = inline_box.children.iter().filter(|child| {
-      !matches!(child, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_))
+      !matches!(
+        child,
+        InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
+      )
     });
     let first_child = iter.next();
     let has_multiple_children = iter.next().is_some();
@@ -3881,13 +3960,33 @@ impl<'a> LineBuilder<'a> {
             _ => LINE_FIT_EPSILON,
           };
           if used_width + next_width <= available_children_width + fit_epsilon {
-            fragment_has_in_flow_children |= !matches!(
-              next,
-              InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
-            );
+            fragment_has_in_flow_children |=
+              !matches!(&next, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_));
             fragment_children.push(next);
             used_width += next_width;
             continue;
+          }
+
+          // If the previous inline item ends with a non-breaking glue character (e.g. `&nbsp;`),
+          // do not allow an atomic inline to wrap onto the next line. Overflow the fragment
+          // instead so the sequence stays together.
+          if !next.is_breakable() {
+            if let Some(prev) = fragment_children.iter().rev().find(|child| {
+              !matches!(
+                child,
+                InlineItem::StaticPositionAnchor(_)
+                  | InlineItem::Floating(_)
+                  | InlineItem::HardBreak
+              )
+            }) {
+              if last_text_char_for_soft_wrap(prev).is_some_and(is_no_break_after_character) {
+                fragment_has_in_flow_children |=
+                  !matches!(&next, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_));
+                fragment_children.push(next);
+                used_width += next_width;
+                continue;
+              }
+            }
           }
 
           match next {
@@ -3978,8 +4077,7 @@ impl<'a> LineBuilder<'a> {
 
                         if !drop_before
                           && before.advance_for_layout > 0.0
-                          && before.advance_for_layout
-                            <= remaining_width + LINE_FIT_EPSILON
+                          && before.advance_for_layout <= remaining_width + LINE_FIT_EPSILON
                         {
                           break_opportunity = Some(candidate);
                         }
@@ -4117,7 +4215,25 @@ impl<'a> LineBuilder<'a> {
               }
 
               if !fragment_has_in_flow_children || !allows_soft_wrap(text_item.style.as_ref()) {
+                let first_in_flow_child = !fragment_has_in_flow_children;
+                // Even when the first text run overflows the line (no break opportunities fit), we
+                // still need to keep processing subsequent inline items. This matters when the run
+                // ends with a non-breaking glue character like `&nbsp;` and is immediately followed
+                // by an atomic inline (e.g. a caret span): the sequence must stay together and
+                // overflow as a unit rather than wrapping the atomic inline onto the next line.
                 fragment_children.push(InlineItem::Text(text_item));
+                fragment_has_in_flow_children = true;
+                used_width += next_width;
+
+                if first_in_flow_child {
+                  if fragment_children
+                    .last()
+                    .and_then(last_text_char_for_soft_wrap)
+                    .is_some_and(is_no_break_after_character)
+                  {
+                    continue;
+                  }
+                }
               } else {
                 remaining.push_front(InlineItem::Text(text_item));
               }
@@ -4139,7 +4255,9 @@ impl<'a> LineBuilder<'a> {
                     ends_with_hard_break,
                     force_break,
                   } => (fragment, remainder, ends_with_hard_break, force_break),
-                  SplitInlineBoxForLineResult::BreakBefore { inline_box: child_box } => {
+                  SplitInlineBoxForLineResult::BreakBefore {
+                    inline_box: child_box,
+                  } => {
                     remaining.push_front(InlineItem::InlineBox(child_box));
                     let remaining_children: Vec<InlineItem> = remaining.into();
                     let metrics = super::compute_inline_box_metrics(
@@ -5764,7 +5882,11 @@ mod tests {
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
-    let line_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
     assert_eq!(line_text, "My Visit");
   }
 
@@ -8095,12 +8217,10 @@ mod tests {
       match item {
         InlineItem::Text(t) if t.text == needle => Some(t),
         InlineItem::InlineBox(b) => b.children.iter().find_map(|c| find_text(c, needle)),
-        InlineItem::Ruby(r) => r.segments.iter().find_map(|seg| {
-          seg
-            .base_items
-            .iter()
-            .find_map(|c| find_text(c, needle))
-        }),
+        InlineItem::Ruby(r) => r
+          .segments
+          .iter()
+          .find_map(|seg| seg.base_items.iter().find_map(|c| find_text(c, needle))),
         _ => None,
       }
     }

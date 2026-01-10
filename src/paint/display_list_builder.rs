@@ -6449,29 +6449,29 @@ impl DisplayListBuilder {
           // `srcset` points at markup). Instead they render the "broken image" placeholder (+alt).
           //
           // Only attempt to decode the selected candidate (the first entry in `sources`).
-           let mut deferred_async = false;
-           let decoded = sources.first().and_then(|source| {
-             if loading == ImageLoadingAttribute::Lazy {
-               if let Some(visible) = culling_rect {
-                 if !slot_rect.intersects(visible) {
-                   // `loading="lazy"` images typically fetch/decode after the initial page load.
-                   // When the image is outside the visible culling rectangle, keep it transparent
-                   // so author-supplied placeholders (e.g. background-image blur SVGs) remain
-                   // visible.
-                   //
-                   // NOTE: `culling_rect` is already mapped into the local (pre-transform)
-                   // coordinate space at stacking-context boundaries (see `visible_in_local_space`),
-                   // so it can safely be compared against `slot_rect` even when ancestor transforms
-                   // move the element into view (common for carousels and centered layouts).
-                   deferred_async = true;
-                   return None;
-                 }
-               }
-             }
-             if decoding == ImageDecodingAttribute::Async
-               && self.should_defer_async_image_decode(
-                 slot_rect.width(),
-                 slot_rect.height(),
+          let mut deferred_async = false;
+          let decoded = sources.first().and_then(|source| {
+            if loading == ImageLoadingAttribute::Lazy {
+              if let Some(visible) = culling_rect {
+                if !slot_rect.intersects(visible) {
+                  // `loading="lazy"` images typically fetch/decode after the initial page load.
+                  // When the image is outside the visible culling rectangle, keep it transparent
+                  // so author-supplied placeholders (e.g. background-image blur SVGs) remain
+                  // visible.
+                  //
+                  // NOTE: `culling_rect` is already mapped into the local (pre-transform)
+                  // coordinate space at stacking-context boundaries (see `visible_in_local_space`),
+                  // so it can safely be compared against `slot_rect` even when ancestor transforms
+                  // move the element into view (common for carousels and centered layouts).
+                  deferred_async = true;
+                  return None;
+                }
+              }
+            }
+            if decoding == ImageDecodingAttribute::Async
+              && self.should_defer_async_image_decode(
+                slot_rect.width(),
+                slot_rect.height(),
                 source.url,
                 crossorigin,
                 referrer_policy,

@@ -1,60 +1,98 @@
-use base64::prelude::BASE64_STANDARD;
-use base64::Engine as _;
-use fastrender::api::FastRender;
-use image::codecs::png::PngEncoder;
-use image::ExtendedColorType;
-use image::ImageEncoder;
+use super::util::{
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+};
+use tiny_skia::Pixmap;
 
-fn solid_color_png(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> String {
-  let mut buf = Vec::new();
-  let pixels: Vec<u8> = std::iter::repeat([r, g, b, a])
-    .take((width * height) as usize)
-    .flatten()
-    .collect();
+// 1×1 RGBA red PNG.
+const RED_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
-  PngEncoder::new(&mut buf)
-    .write_image(&pixels, width, height, ExtendedColorType::Rgba8)
-    .expect("encode png");
+fn pixel_rgb(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8) {
+  let p = pixmap.pixel(x, y).expect("pixel");
+  (p.red(), p.green(), p.blue())
+}
 
-  format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&buf))
+fn assert_center_pixel_is_red(pixmap: &Pixmap) {
+  let (r, g, b) = pixel_rgb(pixmap, pixmap.width() / 2, pixmap.height() / 2);
+  assert!(
+    r > 200 && g < 50 && b < 50,
+    "expected lazy image to be painted (red), got r={r} g={g} b={b}"
+  );
+}
+
+fn assert_center_pixel_is_green(pixmap: &Pixmap) {
+  let (r, g, b) = pixel_rgb(pixmap, pixmap.width() / 2, pixmap.height() / 2);
+  assert!(
+    g > 200 && r < 50 && b < 50,
+    "expected lazy image to be deferred (green background), got r={r} g={g} b={b}"
+  );
 }
 
 #[test]
-fn lazy_image_in_viewport_is_painted() {
-  let red = solid_color_png(4, 4, 255, 0, 0, 255);
+fn loading_lazy_images_in_viewport_paints_in_display_list_backend() {
+  let mut renderer = create_stacking_context_bounds_renderer();
   let html = format!(
     r#"
-    <style>
-      html, body {{ margin: 0; background: rgb(255 255 255); }}
-      img {{ display: block; }}
-    </style>
-    <img loading="lazy" src="{red}">
+      <style>
+        body {{ margin: 0; background: rgb(0, 255, 0); }}
+        img {{ display: block; width: 40px; height: 40px; }}
+      </style>
+      <img loading="lazy" src="{RED_PNG_DATA_URL}">
     "#
   );
 
-  let mut renderer = FastRender::new().expect("renderer");
-  let pixmap = renderer.render_html(&html, 10, 10).expect("render html");
-  let px = pixmap.pixel(1, 1).expect("pixel inside image");
-  assert_eq!((px.red(), px.green(), px.blue()), (255, 0, 0));
+  let pixmap = renderer.render_html(&html, 40, 40).expect("render");
+  assert_center_pixel_is_red(&pixmap);
 }
 
 #[test]
-fn lazy_image_outside_viewport_is_not_painted() {
-  let red = solid_color_png(4, 4, 255, 0, 0, 255);
+fn loading_lazy_images_in_viewport_paints_in_legacy_backend() {
+  let mut renderer = create_stacking_context_bounds_renderer_legacy();
   let html = format!(
     r#"
-    <style>
-      html, body {{ margin: 0; background: rgb(255 255 255); }}
-      img {{ display: block; }}
-    </style>
-    <div style="height: 2000px"></div>
-    <img loading="lazy" src="{red}">
+      <style>
+        body {{ margin: 0; background: rgb(0, 255, 0); }}
+        img {{ display: block; width: 40px; height: 40px; }}
+      </style>
+      <img loading="lazy" src="{RED_PNG_DATA_URL}">
     "#
   );
 
-  let mut renderer = FastRender::new().expect("renderer");
-  let pixmap = renderer.render_html(&html, 10, 10).expect("render html");
-  let px = pixmap.pixel(1, 1).expect("pixel in viewport");
-  assert_eq!((px.red(), px.green(), px.blue()), (255, 255, 255));
+  let pixmap = renderer.render_html(&html, 40, 40).expect("render");
+  assert_center_pixel_is_red(&pixmap);
 }
 
+#[test]
+fn loading_lazy_images_below_viewport_does_not_paint_in_display_list_backend() {
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let html = format!(
+    r#"
+      <style>
+        body {{ margin: 0; background: rgb(0, 255, 0); }}
+        img {{ display: block; width: 40px; height: 40px; }}
+      </style>
+      <div style="height: 2000px"></div>
+      <img loading="lazy" src="{RED_PNG_DATA_URL}">
+    "#
+  );
+
+  let pixmap = renderer.render_html(&html, 40, 40).expect("render");
+  assert_center_pixel_is_green(&pixmap);
+}
+
+#[test]
+fn loading_lazy_images_below_viewport_does_not_paint_in_legacy_backend() {
+  let mut renderer = create_stacking_context_bounds_renderer_legacy();
+  let html = format!(
+    r#"
+      <style>
+        body {{ margin: 0; background: rgb(0, 255, 0); }}
+        img {{ display: block; width: 40px; height: 40px; }}
+      </style>
+      <div style="height: 2000px"></div>
+      <img loading="lazy" src="{RED_PNG_DATA_URL}">
+    "#
+  );
+
+  let pixmap = renderer.render_html(&html, 40, 40).expect("render");
+  assert_center_pixel_is_green(&pixmap);
+}

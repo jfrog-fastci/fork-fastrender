@@ -8455,41 +8455,45 @@ fn compute_inline_box_line_metrics(
   children: &[InlineItem],
   fallback: BaselineMetrics,
 ) -> BaselineMetrics {
-  fn metrics_for_item(item: &InlineItem) -> BaselineMetrics {
-    match item {
-      InlineItem::InlineBox(b) => compute_inline_box_line_metrics(&b.children, b.strut_metrics),
-      _ => item.baseline_metrics(),
-    }
-  }
+  let effective_children: Vec<&InlineItem> = children
+    .iter()
+    .filter(|child| {
+      !matches!(
+        child,
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+      )
+    })
+    .collect();
 
-  let mut last_metrics: Option<BaselineMetrics> = None;
-  let mut baseline_metrics: Option<BaselineMetrics> = None;
-  let mut content_height: f32 = fallback.height.max(0.0);
-
-  for child in children {
-    if matches!(child, InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)) {
-      continue;
-    }
-    let metrics = metrics_for_item(child);
-    last_metrics = Some(metrics);
-    if child.vertical_align().is_baseline_relative() {
-      baseline_metrics = Some(metrics);
-    }
-    content_height = content_height.max(metrics.height);
-  }
-
-  // See `compute_inline_box_metrics`: the inline box baseline is taken from the last in-flow line,
-  // which is best approximated by the last baseline-relative child.
-  let Some(last_metrics) = last_metrics else {
+  if effective_children.is_empty() {
     return fallback;
-  };
-  let child_metrics = baseline_metrics.unwrap_or(last_metrics);
+  }
 
-  let baseline_offset = child_metrics
-    .baseline_offset
-    .max(fallback.baseline_offset)
-    .min(content_height);
-  let height = content_height;
+  // Inline boxes can contain inline-level children whose `vertical-align` affects the line box
+  // extents. For example, an `<a><img style="vertical-align:middle"></a>` should not reserve extra
+  // descent space below the image (the image should contribute descent via its own alignment),
+  // whereas a baseline-aligned replaced element does reserve descent space for the root strut.
+  //
+  // Our line builder treats `InlineItem::InlineBox` as a single positioned item (it isn't flattened
+  // into the parent line), so we must compute a baseline + height that reflects the inline box's
+  // in-flow children after applying their `vertical-align` against this inline box's own strut.
+  let mut acc = LineBaselineAccumulator::new(&fallback);
+  for child in &effective_children {
+    let vertical_align = child.vertical_align();
+    let metrics = if vertical_align.is_line_relative() {
+      child.baseline_metrics()
+    } else {
+      child.line_metrics()
+    };
+    if vertical_align.is_line_relative() {
+      acc.add_line_relative(&metrics, vertical_align);
+    } else {
+      acc.add_baseline_relative(&metrics, vertical_align, Some(&fallback));
+    }
+  }
+
+  let baseline_offset = acc.baseline_position();
+  let height = acc.line_height();
   let descent = (height - baseline_offset).max(0.0);
 
   BaselineMetrics {
@@ -8497,10 +8501,10 @@ fn compute_inline_box_line_metrics(
     height,
     ascent: baseline_offset,
     descent,
-    line_gap: child_metrics.line_gap,
+    line_gap: fallback.line_gap,
     // Preserve the authored line-height for vertical-align percentage/length resolution.
     line_height: fallback.line_height,
-    x_height: child_metrics.x_height,
+    x_height: fallback.x_height,
   }
 }
 

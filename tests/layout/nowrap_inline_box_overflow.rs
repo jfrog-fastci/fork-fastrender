@@ -69,3 +69,19 @@ fn nowrap_does_not_soft_wrap_before_inline_boxes() {
   assert_eq!(lines, ["Hello"]);
 }
 
+#[test]
+fn nbsp_does_not_soft_wrap_before_inline_block_pseudo_element() {
+  // Regression: `&nbsp;` must suppress soft-wrap opportunities across atomic inline boundaries.
+  // This matters for patterns like `Community&nbsp;<span class="caret"></span>` where the caret
+  // should stay glued to the preceding word and overflow instead of wrapping onto a new line.
+  let html = r#"
+    <style>
+      .live::after { content: "LongLongLongLong"; display: inline-block }
+    </style>
+    <div style="width: 20px; font-family: 'DejaVu Sans', sans-serif; font-size: 16px">
+      <span class="live">A&nbsp;</span>
+    </div>
+  "#;
+  let lines = line_texts(html, 200);
+  assert_eq!(lines, ["A\u{00A0}LongLongLongLong"]);
+}

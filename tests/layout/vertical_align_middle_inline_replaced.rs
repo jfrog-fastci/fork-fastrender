@@ -89,7 +89,10 @@ fn vertical_align_middle_affects_inline_replaced_line_box_metrics() {
   else {
     panic!("expected BASE fragment to be a line");
   };
-  let FragmentContent::Line { baseline: mid_baseline } = mid_line.content else {
+  let FragmentContent::Line {
+    baseline: mid_baseline,
+  } = mid_line.content
+  else {
     panic!("expected MID fragment to be a line");
   };
 
@@ -147,5 +150,46 @@ fn vertical_align_middle_affects_inline_replaced_line_box_metrics() {
   assert!(
     mid_img_bottom_abs > mid_baseline_abs + 0.5,
     "expected vertical-align: middle to move replaced element baseline below the line baseline (img_bottom={mid_img_bottom_abs}, baseline={mid_baseline_abs})"
+  );
+}
+
+#[test]
+fn vertical_align_middle_affects_inline_replaced_inside_inline_box_line_metrics() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
+
+  let data_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XWcJAAAAAASUVORK5CYII=";
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          .v-mid {{ vertical-align: middle; }}
+        </style>
+      </head>
+      <body style="margin:0; font-family:sans-serif; font-size:20px; line-height:20px">
+        <div><a href="x"><img src="{data_png}" style="width:80px; height:80px">BASE</a></div>
+        <div><a href="x"><img class="v-mid" src="{data_png}" style="width:80px; height:80px">MID</a></div>
+      </body>
+    </html>
+  "#,
+  );
+
+  let dom = renderer.parse_html(&html).expect("parse");
+  let tree = renderer.layout_document(&dom, 800, 200).expect("layout");
+
+  let (_base_line_y, base_line) =
+    find_line_with_text_abs_y(&tree.root, "BASE", 0.0).expect("BASE line fragment");
+  let (_mid_line_y, mid_line) =
+    find_line_with_text_abs_y(&tree.root, "MID", 0.0).expect("MID line fragment");
+
+  let base_line_height = base_line.bounds.height();
+  let mid_line_height = mid_line.bounds.height();
+  assert!(
+    base_line_height > mid_line_height + 0.5,
+    "expected vertical-align: middle to reduce line box height even when the replaced element is inside an inline box (base={base_line_height}, mid={mid_line_height})"
   );
 }
