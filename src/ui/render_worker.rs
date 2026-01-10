@@ -6,7 +6,8 @@
 //! large-stack thread.
 
 use crate::api::{
-  BrowserDocument, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions,
+  BrowserDocument, BrowserTab, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions,
+  VmJsBrowserTabExecutor,
 };
 use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
@@ -131,6 +132,7 @@ struct TabState {
   /// immediately-following scroll events before rendering.
   scroll_coalesce: bool,
   document: Option<BrowserDocument>,
+  js_tab: Option<BrowserTab>,
   interaction: InteractionEngine,
   cancel: CancelGens,
   last_committed_url: Option<String>,
@@ -158,6 +160,7 @@ impl TabState {
       scroll_state: ScrollState::default(),
       scroll_coalesce: false,
       document: None,
+      js_tab: None,
       interaction: InteractionEngine::new(),
       cancel,
       last_committed_url: None,
@@ -1743,87 +1746,150 @@ impl BrowserRuntime {
       .to_string();
     let scroll_snapshot = tab.scroll_state.clone();
     let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
-    let engine = &mut tab.interaction;
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
-    let (dom_changed, action, anchor_css, focus_scroll) =
-      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled = (!scroll_snapshot.elements.is_empty())
-          .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-        let (dom_changed, action) = engine.pointer_up_with_scroll(
-          dom,
-          box_tree,
-          hit_tree,
-          &scroll_snapshot,
-          viewport_point,
-          button,
-          modifiers,
-          &document_url,
-          &base_url,
-        );
-
-        let anchor_css = match &action {
-          InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
-            // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
-            // offsets internally.
-            select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
-          }
-          _ => None,
-        };
-
-        let focus_scroll = match &action {
-          InteractionAction::FocusChanged {
-            node_id: Some(node_id),
-          } => crate::interaction::focus_scroll::scroll_state_for_focus(
-            box_tree,
-            fragment_tree,
-            &scroll_snapshot,
-            *node_id,
-          )
-          .filter(|_| {
-            // Pointer-driven focus changes (e.g. clicking a `<label>` that focuses a visually-hidden
-            // checkbox) should not unexpectedly scroll the page away from the clicked content.
-            //
-            // Only apply focus scrolling when the focused element is the actual hit-test target at
-            // the pointer location.
-            let page_point = viewport_point.translate(scroll_snapshot.viewport);
-            crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
-              .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
-          }),
-          _ => None,
-        };
-
-        (dom_changed, (dom_changed, action, anchor_css, focus_scroll))
-      }) {
-        Ok(result) => result,
-        Err(_) => return,
+    let (dom_changed, action, anchor_css, scroll_changed, click_target, click_target_element_id) = {
+      let Some(doc) = tab.document.as_mut() else {
+        return;
       };
+      let engine = &mut tab.interaction;
+      let (dom_changed, action, anchor_css, focus_scroll, click_target, click_target_element_id) =
+        match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let scrolled = (!scroll_snapshot.elements.is_empty())
+            .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
+          let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+          let (dom_changed, action) = engine.pointer_up_with_scroll(
+            dom,
+            box_tree,
+            hit_tree,
+            &scroll_snapshot,
+            viewport_point,
+            button,
+            modifiers,
+            &document_url,
+            &base_url,
+          );
 
-    let mut scroll_changed = false;
-    if let Some(next_scroll) = focus_scroll {
-      tab.scroll_state = next_scroll;
-      doc.set_scroll_state(tab.scroll_state.clone());
-      scroll_changed = true;
-      let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-        tab_id,
-        scroll: tab.scroll_state.clone(),
-      });
+          let click_target = engine.take_last_click_target();
+          let click_target_element_id = click_target.and_then(|target_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .map(|id| id.to_string())
+          });
+
+          let anchor_css = match &action {
+            InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
+              // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
+              // offsets internally.
+              select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
+            }
+            _ => None,
+          };
+
+          let focus_scroll = match &action {
+            InteractionAction::FocusChanged {
+              node_id: Some(node_id),
+            } => crate::interaction::focus_scroll::scroll_state_for_focus(
+              box_tree,
+              fragment_tree,
+              &scroll_snapshot,
+              *node_id,
+            )
+            .filter(|_| {
+              // Pointer-driven focus changes (e.g. clicking a `<label>` that focuses a visually-hidden
+              // checkbox) should not unexpectedly scroll the page away from the clicked content.
+              //
+              // Only apply focus scrolling when the focused element is the actual hit-test target at
+              // the pointer location.
+              let page_point = viewport_point.translate(scroll_snapshot.viewport);
+              crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
+                .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
+            }),
+            _ => None,
+          };
+
+          (
+            dom_changed,
+            (
+              dom_changed,
+              action,
+              anchor_css,
+              focus_scroll,
+              click_target,
+              click_target_element_id,
+            ),
+          )
+        }) {
+          Ok(result) => result,
+          Err(_) => return,
+        };
+
+      let mut scroll_changed = false;
+      if let Some(next_scroll) = focus_scroll {
+        tab.scroll_state = next_scroll;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+
+      (
+        dom_changed,
+        action,
+        anchor_css,
+        scroll_changed,
+        click_target,
+        click_target_element_id,
+      )
+    };
+
+    let mut default_allowed = true;
+    if let Some(target_id) = click_target {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let target = click_target_element_id
+          .as_deref()
+          .and_then(|id| js_tab.dom().get_element_by_id(id))
+          .or_else(|| {
+            let idx = target_id.saturating_sub(1);
+            js_tab.dom().node_id_from_index(idx).ok()
+          });
+
+        if let Some(node_id) = target {
+          match js_tab.dispatch_click_event(node_id) {
+            Ok(allowed) => default_allowed = allowed,
+            Err(err) => {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js click event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
     }
 
     match action {
       InteractionAction::Navigate { href } => {
-        self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
+        if default_allowed {
+          self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
+        } else if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
       }
       InteractionAction::OpenInNewTab { href } => {
-        let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
-        if dom_changed {
+        if default_allowed {
+          let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+        }
+        if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
       }
       InteractionAction::NavigateRequest { request } => {
-        self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+        if default_allowed {
+          self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+        } else if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
       }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
@@ -1848,7 +1914,7 @@ impl BrowserRuntime {
           control,
           anchor_css,
         });
-        if dom_changed {
+        if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
       }
@@ -2341,6 +2407,70 @@ impl BrowserRuntime {
     }
   }
 
+  fn sync_js_tab_for_committed_navigation(
+    tab_id: TabId,
+    tab: &mut TabState,
+    committed_url: &str,
+    viewport_css: (u32, u32),
+    dpr: f32,
+    msgs: &mut Vec<WorkerToUi>,
+  ) {
+    // `BrowserTab` navigations are powered by the resource fetcher (http/file/data); it does not
+    // know how to fetch internal `about:` pages rendered by the UI worker.
+    if about_pages::is_about_url(committed_url) {
+      tab.js_tab = None;
+      return;
+    }
+    let Some(doc) = tab.document.as_ref() else {
+      tab.js_tab = None;
+      return;
+    };
+
+    let options = RenderOptions::default()
+      .with_viewport(viewport_css.0, viewport_css.1)
+      .with_device_pixel_ratio(dpr);
+    let fetcher = doc.fetcher();
+    let blank_html =
+      "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
+
+    if let Some(js_tab) = tab.js_tab.as_mut() {
+      if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
+        tab.js_tab = None;
+        msgs.push(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("js tab navigation failed: {err}"),
+        });
+      }
+      return;
+    }
+
+    let mut js_tab = match BrowserTab::from_html_with_document_url_and_fetcher(
+      blank_html,
+      about_pages::ABOUT_BLANK,
+      options.clone(),
+      VmJsBrowserTabExecutor::default(),
+      fetcher,
+    ) {
+      Ok(tab) => tab,
+      Err(err) => {
+        msgs.push(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("failed to create JS tab: {err}"),
+        });
+        return;
+      }
+    };
+
+    if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
+      msgs.push(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("js tab navigation failed: {err}"),
+      });
+      return;
+    }
+    tab.js_tab = Some(js_tab);
+  }
+
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let request_for_retry = request.clone();
@@ -2628,6 +2758,15 @@ impl BrowserRuntime {
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
 
+          Self::sync_js_tab_for_committed_navigation(
+            tab_id,
+            tab,
+            &committed_url,
+            viewport_css,
+            dpr,
+            &mut msgs,
+          );
+
           let _ = tab
             .history
             .commit_navigation(&original_url, Some(committed_url.as_str()));
@@ -2745,6 +2884,15 @@ impl BrowserRuntime {
     tab.tick_animation_time_ms = 0.0;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
+
+    Self::sync_js_tab_for_committed_navigation(
+      tab_id,
+      tab,
+      &committed_url,
+      viewport_css,
+      dpr,
+      &mut msgs,
+    );
 
     let _ = tab
       .history
@@ -3005,6 +3153,7 @@ impl BrowserRuntime {
       }
     };
     tab.interaction = InteractionEngine::new();
+    tab.js_tab = None;
     tab.tick_animation_time_ms = 0.0;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());

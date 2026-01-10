@@ -77,6 +77,7 @@ pub struct InteractionEngine {
   ime_composition: Option<ImeCompositionState>,
   text_edit: Option<TextEditState>,
   modality: InputModality,
+  last_click_target: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1990,11 +1991,22 @@ impl InteractionEngine {
       ime_composition: None,
       text_edit: None,
       modality: InputModality::Pointer,
+      last_click_target: None,
     }
   }
 
   pub fn focused_node_id(&self) -> Option<usize> {
     self.focused
+  }
+
+  /// Returns the most recent click target (pre-order DOM node id) produced by
+  /// [`InteractionEngine::pointer_up_with_scroll`].
+  ///
+  /// This is a UI-layer hook that allows external code to dispatch higher-level click events
+  /// (e.g. JavaScript DOM `"click"` listeners) using the same hit-test/label remapping semantics
+  /// as the interaction engine's built-in default actions.
+  pub fn take_last_click_target(&mut self) -> Option<usize> {
+    self.last_click_target.take()
   }
 
   fn set_focus(
@@ -2403,6 +2415,7 @@ impl InteractionEngine {
     remap_vec(&mut self.hover_chain, old_index, new_ids);
     remap_vec(&mut self.active_chain, old_index, new_ids);
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
+    remap_opt(&mut self.last_click_target, old_index, new_ids);
     if let Some(state) = &mut self.range_drag {
       let new_node_id = old_index
         .id_to_node
@@ -2481,6 +2494,8 @@ impl InteractionEngine {
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
+    self.last_click_target = None;
+
     let range_drag = self.range_drag.take();
     let text_drag = self.text_drag.take();
     let prev_focus = text_drag
@@ -2538,6 +2553,8 @@ impl InteractionEngine {
         }
       }
     }
+
+    self.last_click_target = click_target;
 
     if click_qualifies {
       if let Some(target_id) = click_target {

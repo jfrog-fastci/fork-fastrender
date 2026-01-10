@@ -112,6 +112,7 @@ mod ui_worker_keyboard;
 mod ui_keyboard_scrolling;
 mod ui_worker_text_editing;
 mod ui_worker_open_in_new_tab;
+mod ui_worker_click_prevent_default;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
 mod ui_worker_robustness;

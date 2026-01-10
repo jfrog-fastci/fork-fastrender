@@ -494,6 +494,10 @@ impl BrowserDocument {
     &self.renderer.image_cache
   }
 
+  pub(crate) fn fetcher(&self) -> Arc<dyn crate::resource::ResourceFetcher> {
+    self.renderer.resource_fetcher()
+  }
+
   /// Updates the document URL used for origin/referrer policy decisions.
   ///
   /// This is intentionally distinct from the effective base URL derived from `<base href>`, which
