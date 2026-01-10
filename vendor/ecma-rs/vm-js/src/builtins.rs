@@ -550,16 +550,23 @@ pub fn object_get_prototype_of(
 }
 
 pub fn object_set_prototype_of(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-object.setprototypeof
+  //
+  // Note: `Object.setPrototypeOf` does **not** perform `ToObject(O)`. It only performs
+  // `RequireObjectCoercible(O)` and returns the original value unchanged when `O` is not an object.
+  // This matches JS behaviour where attempting to set the prototype of a primitive is a no-op.
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  if matches!(obj_val, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError("Cannot convert undefined or null to object"));
+  }
   let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let proto = match proto_val {
     Value::Object(o) => Some(o),
@@ -571,8 +578,14 @@ pub fn object_set_prototype_of(
     }
   };
 
-  scope.heap_mut().object_set_prototype(obj, proto)?;
-  Ok(Value::Object(obj))
+  match obj_val {
+    Value::Object(obj) => {
+      scope.heap_mut().object_set_prototype(obj, proto)?;
+      Ok(Value::Object(obj))
+    }
+    // If `O` is not an object, the spec returns it unchanged.
+    other => Ok(other),
+  }
 }
 
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {

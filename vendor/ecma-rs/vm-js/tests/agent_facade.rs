@@ -49,7 +49,9 @@ fn run_script_restores_budget_after_success_and_termination() {
   agent.vm_mut().set_budget(initial.clone());
 
   let run_budget = Budget {
-    fuel: Some(10),
+    // Script execution currently charges multiple ticks during parsing + hoisting + evaluation.
+    // Use a generous budget so this test focuses on budget restoration rather than tick granularity.
+    fuel: Some(100),
     deadline: None,
     check_time_every: 1,
   };

@@ -287,7 +287,7 @@ fn object_get_prototype_of_boxes_primitives() -> Result<(), VmError> {
 }
 
 #[test]
-fn object_set_prototype_of_boxes_primitives() -> Result<(), VmError> {
+fn object_set_prototype_of_does_not_box_primitives() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
   let object_proto = rt.realm.intrinsics().object_prototype();
@@ -304,11 +304,7 @@ fn object_set_prototype_of_boxes_primitives() -> Result<(), VmError> {
   let out = rt
     .vm
     .call_without_host(&mut scope, Value::Object(set_proto), Value::Object(object), &args)?;
-  let Value::Object(out_obj) = out else {
-    panic!("Object.setPrototypeOf should return an object");
-  };
-
-  assert_eq!(scope.heap().object_prototype(out_obj)?, Some(object_proto));
+  assert_eq!(out, Value::Number(1.0));
   Ok(())
 }
 
