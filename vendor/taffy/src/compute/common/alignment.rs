@@ -229,8 +229,9 @@ mod tests {
   #[test]
   fn apply_alignment_fallback_non_finite_free_space_matches_zero_free_space() {
     for (free_space, label) in [(f32::NAN, "NaN"), (f32::INFINITY, "INFINITY")] {
-      let fallback = super::apply_alignment_fallback(free_space, 1, AlignContent::SpaceBetween, true);
-      let expected = super::apply_alignment_fallback(0.0, 1, AlignContent::SpaceBetween, true);
+      let fallback =
+        super::apply_alignment_fallback(free_space, 1, AlignContent::SpaceBetween, true, true);
+      let expected = super::apply_alignment_fallback(0.0, 1, AlignContent::SpaceBetween, true, true);
       assert_eq!(fallback, expected, "{label}");
     }
   }

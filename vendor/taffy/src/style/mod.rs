@@ -1352,6 +1352,8 @@ mod tests {
       subgrid_columns: false,
       #[cfg(feature = "grid")]
       axes_swapped: false,
+      #[cfg(any(feature = "flexbox", feature = "grid"))]
+      start_end_axis_positive: Point { x: true, y: true },
       #[cfg(feature = "grid")]
       subgrid_row_names: Default::default(),
       #[cfg(feature = "grid")]
