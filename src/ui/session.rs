@@ -5,6 +5,7 @@
 use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::validate_user_navigation_url_scheme;
+use crate::ui::zoom;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -46,7 +47,10 @@ impl BrowserSession {
       if validate_user_navigation_url_scheme(&url).is_err() {
         url = about_pages::ABOUT_NEWTAB.to_string();
       }
-      tabs.push(BrowserSessionTab { url, zoom: None });
+      tabs.push(BrowserSessionTab {
+        url,
+        zoom: Some(tab.zoom),
+      });
     }
 
     let active_tab_index = app
@@ -75,6 +79,17 @@ impl BrowserSession {
       if tab.url.trim().is_empty() || validate_user_navigation_url_scheme(&tab.url).is_err() {
         tab.url = about_pages::ABOUT_NEWTAB.to_string();
       }
+
+      tab.zoom = tab
+        .zoom
+        .map(|raw| {
+          if !raw.is_finite() || raw <= 0.0 {
+            zoom::DEFAULT_ZOOM
+          } else {
+            zoom::clamp_zoom(raw)
+          }
+        })
+        .and_then(|zoom| (zoom != zoom::DEFAULT_ZOOM).then_some(zoom));
     }
 
     if self.active_tab_index >= self.tabs.len() {
@@ -82,6 +97,65 @@ impl BrowserSession {
     }
 
     self
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn session_sanitizes_invalid_zoom_values() {
+    let session = BrowserSession {
+      tabs: vec![
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(f32::NAN),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(f32::INFINITY),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(0.0),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(-1.0),
+        },
+        // Finite but outside the supported UI range should clamp.
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(0.1),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(999.0),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(2.0),
+        },
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(zoom::DEFAULT_ZOOM),
+        },
+      ],
+      active_tab_index: 0,
+    }
+    .sanitized();
+
+    // Non-finite / <= 0 should fall back to DEFAULT_ZOOM, represented as `None` in the session.
+    assert_eq!(session.tabs[0].zoom, None);
+    assert_eq!(session.tabs[1].zoom, None);
+    assert_eq!(session.tabs[2].zoom, None);
+    assert_eq!(session.tabs[3].zoom, None);
+
+    assert_eq!(session.tabs[4].zoom, Some(zoom::MIN_ZOOM));
+    assert_eq!(session.tabs[5].zoom, Some(zoom::MAX_ZOOM));
+    assert_eq!(session.tabs[6].zoom, Some(2.0));
+    assert_eq!(session.tabs[7].zoom, None);
   }
 }
 

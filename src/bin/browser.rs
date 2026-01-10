@@ -862,7 +862,10 @@ impl App {
       let tab_id = fastrender::ui::TabId::new();
       tab_ids.push(tab_id);
 
-      let tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
+      let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
+      if let Some(zoom) = tab.zoom {
+        tab_state.zoom = zoom;
+      }
       let cancel = tab_state.cancel.clone();
       self.tab_cancel.insert(tab_id, cancel.clone());
       self.browser_state.push_tab(tab_state, false);

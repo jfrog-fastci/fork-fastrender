@@ -74,15 +74,15 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     tabs: vec![
       fastrender::ui::BrowserSessionTab {
         url: "about:newtab".to_string(),
-        zoom: None,
+        zoom: Some(1.5),
       },
       fastrender::ui::BrowserSessionTab {
         url: "about:blank".to_string(),
-        zoom: None,
+        zoom: Some(0.75),
       },
       fastrender::ui::BrowserSessionTab {
         url: "about:test-scroll".to_string(),
-        zoom: None,
+        zoom: Some(2.0),
       },
     ],
     active_tab_index: 2,
