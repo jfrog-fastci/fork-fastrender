@@ -4989,6 +4989,7 @@ pub(crate) fn apply_property_from_source(
     }
     "box-pack" => styles.justify_content = source.justify_content,
     "box-align" => styles.align_items = source.align_items,
+    "box-flex-wrap" => styles.flex_wrap = source.flex_wrap,
     "box-flex" => styles.flex_grow = source.flex_grow,
     "box-ordinal-group" => styles.order = source.order,
     "visibility" => {
@@ -9724,6 +9725,19 @@ fn apply_declaration_with_base_internal_with_order(
           styles.webkit_box_direction = WebkitBoxDirection::Reverse;
         }
         update_flex_direction_from_webkit_box(styles);
+      }
+    }
+    "box-flex-wrap" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.flex_wrap = if kw.eq_ignore_ascii_case("nowrap") {
+          FlexWrap::NoWrap
+        } else if kw.eq_ignore_ascii_case("wrap") {
+          FlexWrap::Wrap
+        } else if kw.eq_ignore_ascii_case("wrap-reverse") {
+          FlexWrap::WrapReverse
+        } else {
+          styles.flex_wrap
+        };
       }
     }
     "box-pack" => {
@@ -23935,9 +23949,9 @@ mod tests {
   #[test]
   fn legacy_webkit_box_properties_map_to_flexbox_equivalents() {
     let decls = parse_declarations(
-      "box-pack: justify; box-align: center; box-orient: vertical; box-direction: reverse; box-flex: 2; box-ordinal-group: 1;",
+      "box-pack: justify; box-align: center; box-orient: vertical; box-direction: reverse; box-flex-wrap: wrap-reverse; box-flex: 2; box-ordinal-group: 1;",
     );
-    assert_eq!(decls.len(), 6);
+    assert_eq!(decls.len(), 7);
 
     let mut styles = ComputedStyle::default();
     let parent = ComputedStyle::default();
@@ -23948,6 +23962,7 @@ mod tests {
     assert_eq!(styles.justify_content, JustifyContent::SpaceBetween);
     assert_eq!(styles.align_items, AlignItems::Center);
     assert_eq!(styles.flex_direction, FlexDirection::ColumnReverse);
+    assert_eq!(styles.flex_wrap, FlexWrap::WrapReverse);
     assert!((styles.flex_grow - 2.0).abs() < f32::EPSILON);
     assert_eq!(styles.order, 0);
   }
