@@ -129,6 +129,31 @@ fn var_declarator_list_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn var_destructuring_pattern_instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // A single `var` statement can contain a huge destructuring pattern. Put it behind `if(false)`
+  // so runtime binding is skipped and the test isolates instantiation/hoisting work.
+  let mut src = String::from("if(false){ var {");
+  for i in 0..5000 {
+    if i != 0 {
+      src.push(',');
+    }
+    write!(src, "p{i}").unwrap();
+  }
+  src.push_str("} = o; }");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn var_declarator_list_evaluation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
