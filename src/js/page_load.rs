@@ -2,8 +2,8 @@ use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::{Error, Result};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 use crate::js::{
-  DocumentLifecycle, DocumentLifecycleHost, EventLoop, ScriptElementSpec, ScriptScheduler,
-  ScriptSchedulerAction, ScriptType, TaskSource,
+  DocumentLifecycle, DocumentLifecycleHost, EventLoop, LoadBlockerKind, ScriptElementSpec,
+  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
@@ -73,8 +73,10 @@ where
   executor: E,
   script_nodes: HashMap<crate::js::ScriptId, NodeId>,
   deferred_scripts: HashSet<crate::js::ScriptId>,
+  pending_script_load_blockers: HashSet<crate::js::ScriptId>,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
+  lifecycle_events: Vec<String>,
   script_events: Vec<String>,
 }
 
@@ -113,8 +115,10 @@ where
       executor,
       script_nodes: HashMap::new(),
       deferred_scripts: HashSet::new(),
+      pending_script_load_blockers: HashSet::new(),
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
+      lifecycle_events: Vec::new(),
       script_events: Vec::new(),
     }
   }
@@ -254,7 +258,11 @@ where
       let mut doc = sink.document_mut();
       crate::js::prepare_script_element_dom2(&mut doc, script_node, &spec)
     };
-    if !should_run {
+    // `prepare_script_element_dom2` returns whether the script should actually execute. However,
+    // HTML still requires that certain "non-executing" cases (notably: `src` present but empty or
+    // invalid) queue an `error` event task. Let the scheduler handle those cases by continuing when
+    // `src` is present even if the script will not execute.
+    if !should_run && !spec.src_attr_present {
       return Ok(());
     }
 
@@ -303,6 +311,15 @@ where
           credentials_mode,
           ..
         } => {
+          if !self.pending_script_load_blockers.insert(script_id) {
+            return Err(Error::Other(format!(
+              "page_load: ScriptScheduler requested StartFetch more than once for script_id={}",
+              script_id.as_u64()
+            )));
+          }
+          self
+            .lifecycle
+            .register_pending_load_blocker(LoadBlockerKind::Script);
           self
             .fetcher
             .start_fetch(script_id, &url, destination, credentials_mode)?;
@@ -315,11 +332,11 @@ where
           source_text,
           ..
         } => {
-          {
+          let exec_result = {
             let _guard = self.enter_js_execution();
             let executor = &mut self.executor;
-            executor.execute(&source_text, event_loop)?;
-          }
+            executor.execute(&source_text, event_loop)
+          };
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
           // microtasks until the outermost script returns.
@@ -330,6 +347,12 @@ where
             self.blocked_on = None;
             self.queue_parse_task(event_loop)?;
           }
+          if self.pending_script_load_blockers.remove(&script_id) {
+            self
+              .lifecycle
+              .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
+          }
+          exec_result?;
         }
         ScriptSchedulerAction::QueueTask {
           script_id,
@@ -339,10 +362,16 @@ where
           let is_deferred = self.deferred_scripts.contains(&script_id);
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let _guard = host.enter_js_execution();
-            host.executor.execute(&source_text, event_loop)?;
+            let exec_result = host.executor.execute(&source_text, event_loop);
             if is_deferred {
               host.lifecycle.deferred_script_executed(event_loop)?;
             }
+            if host.pending_script_load_blockers.remove(&script_id) {
+              host
+                .lifecycle
+                .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
+            }
+            exec_result?;
             Ok(())
           })?;
         }
@@ -408,6 +437,7 @@ where
       .finished_document
       .as_ref()
       .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
+    self.lifecycle_events.push(event.type_.clone());
     let mut invoker = NoopInvoker;
     dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
       .map(|_default_not_prevented| ())
@@ -592,6 +622,70 @@ mod tests {
         "script:final".to_string(),
         "microtask:final".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn load_waits_for_async_external_script_execution() -> Result<()> {
+    use crate::web::dom::DocumentReadyState;
+    let html = "<!doctype html><script async src=a.js></script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    spin_until_started_fetches(&mut host, &mut event_loop, 1)?;
+    let (script_id, _url, _dest, _credentials_mode) = host.fetcher.started[0].clone();
+
+    // Allow parsing to finish and fire DOMContentLoaded, but do not complete the async script yet.
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let doc = host
+      .finished_document
+      .as_ref()
+      .expect("document should have finished parsing");
+    assert_eq!(
+      doc.ready_state(),
+      DocumentReadyState::Interactive,
+      "expected DOMContentLoaded to have fired while async script is still pending"
+    );
+    assert!(
+      host.pending_script_load_blockers.contains(&script_id),
+      "expected async script to remain registered as a load blocker until executed"
+    );
+    assert_eq!(
+      host.lifecycle_events,
+      vec!["readystatechange".to_string(), "DOMContentLoaded".to_string()],
+      "expected DOMContentLoaded but not load before async script execution"
+    );
+
+    // Now complete the async fetch and run the resulting tasks; `load` should fire afterwards.
+    host.queue_fetch_completed(script_id, "A".to_string(), &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let doc = host
+      .finished_document
+      .as_ref()
+      .expect("document should still exist");
+    assert_eq!(doc.ready_state(), DocumentReadyState::Complete);
+    assert!(
+      !host.pending_script_load_blockers.contains(&script_id),
+      "expected async script to complete its load blocker after execution"
+    );
+    assert_eq!(
+      host.lifecycle_events,
+      vec![
+        "readystatechange".to_string(),
+        "DOMContentLoaded".to_string(),
+        "readystatechange".to_string(),
+        "load".to_string(),
+      ],
     );
     Ok(())
   }
@@ -851,6 +945,10 @@ mod tests {
       ManualFetcher::default(),
       LoggingExecutor::default(),
     );
+    host.scheduler.set_options(crate::js::JsExecutionOptions {
+      supports_module_scripts: true,
+      ..Default::default()
+    });
     let mut event_loop = EventLoop::<TestHost>::new();
 
     host.start(&mut event_loop)?;
@@ -877,6 +975,10 @@ mod tests {
       ManualFetcher::default(),
       LoggingExecutor::default(),
     );
+    host.scheduler.set_options(crate::js::JsExecutionOptions {
+      supports_module_scripts: true,
+      ..Default::default()
+    });
     let mut event_loop = EventLoop::<TestHost>::new();
 
     host.start(&mut event_loop)?;
