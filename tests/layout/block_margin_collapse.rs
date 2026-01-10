@@ -819,6 +819,84 @@ fn negative_margins_collapse_correctly() {
 }
 
 #[test]
+fn sibling_positive_margins_collapse_to_max() {
+  let header = block_with_height_and_margins(50.0, 0.0, 0.0);
+  let a = block_with_height_and_margins(27.0, 16.0, 23.0);
+
+  let mut b_style = block_style_with_height(Some(4.0));
+  b_style.margin_top = Some(Length::px(21.0));
+  b_style.width = Some(Length::px(40.0));
+  b_style.width_keyword = None;
+  b_style.margin_left = None;
+  b_style.margin_right = None;
+  let b = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
+
+  let mut inner_style = block_style_with_height(None);
+  inner_style.padding_top = Length::px(50.0);
+  inner_style.padding_bottom = Length::px(60.0);
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Block,
+    vec![header, a, b],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![inner],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let inner_fragment = &fragment.children[0];
+  let a_fragment = &inner_fragment.children[1];
+  let b_fragment = &inner_fragment.children[2];
+  assert_approx(
+    b_fragment.bounds.y() - a_fragment.bounds.max_y(),
+    23.0,
+    "expected sibling margins to collapse: max(23, 21) = 23",
+  );
+}
+
+#[test]
+fn sibling_margin_collapse_is_not_broken_by_external_float_base_rounding() {
+  let spacer = block_with_height_and_margins(16_777_216.0, 0.0, 0.0);
+  let a = block_with_height_and_margins(10.1, 0.0, 23.0);
+  let b = block_with_height_and_margins(4.0, 21.0, 0.0);
+
+  let inner = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![a, b],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![spacer, inner],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let inner_fragment = &fragment.children[1];
+  let a_fragment = &inner_fragment.children[0];
+  let b_fragment = &inner_fragment.children[1];
+  assert_approx(
+    b_fragment.bounds.y() - a_fragment.bounds.max_y(),
+    23.0,
+    "expected sibling margins to collapse (external float base should not introduce clearance)",
+  );
+}
+
+#[test]
 fn mixed_signs_collapse_across_three_or_more_adjoining_margins() {
   // Collapsing across an empty block joins all adjoining margins into one chain:
   //   30 (a mb) + max(-10, -20) (negatives) => 30 + (-20) = 10

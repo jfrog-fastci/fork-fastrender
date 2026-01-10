@@ -5389,12 +5389,10 @@ impl BlockFormattingContext {
         float_cursor_y = float_cursor_y.max(float_base_y_local);
 
         // Honor clearance against existing floats for this float's placement only.
-        float_cursor_y = float_ctx
-          .compute_clearance(
-            float_base_y + float_cursor_y,
-            resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
-          )
-          - float_base_y;
+        float_cursor_y += float_ctx.clearance_amount(
+          float_base_y + float_cursor_y,
+          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
+        );
 
         let percentage_base = containing_width;
         let margin_left = child
