@@ -1,3 +1,5 @@
+#![cfg(feature = "quickjs")]
+
 use fastrender::dom::parse_html;
 use fastrender::dom2::{Document, NodeId, NodeKind};
 use fastrender::js::quickjs_dom::{install_dom2_bindings, SharedDom2Document};

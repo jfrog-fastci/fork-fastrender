@@ -20,7 +20,7 @@ how to update it.
   - FastRender’s canonical `vm-js` embedding adapter lives in `crates/webidl-vm-js` (a workspace-local
     copy of `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`) as
     `webidl_vm_js::VmJsWebIdlCx`.
-- **Bindings runtime (canonical)**: `src/js/webidl_runtime_vmjs.rs`
+- **Bindings runtime (canonical)**: `src/js/webidl/runtime_vmjs.rs`
   - This is FastRender’s in-tree “bindings runtime” layer that installs WebIDL-generated APIs onto a
     **real `vm-js` realm** (`vm_js::{Vm, Heap, Realm, Scope}`) and performs conversions using the
     canonical `webidl` crate.

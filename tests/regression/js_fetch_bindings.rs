@@ -1,4 +1,4 @@
-#[path = "../../src/js/quickjs_fetch.rs"]
+#[path = "../../src/js/legacy/quickjs_fetch.rs"]
 mod quickjs_fetch;
 
 use std::sync::{Arc, Mutex};

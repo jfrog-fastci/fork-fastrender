@@ -42,7 +42,7 @@ const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
 #[cfg(test)]
 const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number";
 
-fn callback_budget_from_render_deadline() -> Budget {
+pub(crate) fn callback_budget_from_render_deadline() -> Budget {
   // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
   let mut check_time_every = DEFAULT_CHECK_TIME_EVERY;
   let deadline = match render_control::root_deadline() {
@@ -231,7 +231,7 @@ fn store_timer_record(
   Ok(())
 }
 
-fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> crate::error::Error {
+pub(crate) fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> crate::error::Error {
   vm_error_format::vm_error_to_error(heap, err)
 }
 

@@ -1,3 +1,5 @@
+#![cfg(feature = "quickjs")]
+
 use fastrender::js::{
   EventLoop, JsVmHost, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock, WebTime,
 };

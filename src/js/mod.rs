@@ -3,6 +3,22 @@
 //! See [`docs/html_script_processing.md`](../../docs/html_script_processing.md) for the spec-mapped
 //! design of HTML `<script>` processing + parser integration (classic scripts first).
 //!
+//! # Module layout
+//!
+//! `src/js/` intentionally contains multiple layers of JavaScript-related code:
+//!
+//! - `src/js/vmjs/*`: `vm-js` embedding code (WindowRealm/WindowHost + Window Web APIs). This is
+//!   the canonical path for executing scripts against a document.
+//!   - Canonical entrypoints: [`WindowHost::exec_script`],
+//!     [`WindowHostState::exec_script_in_event_loop`], and
+//!     [`WindowHostState::exec_script_with_name_in_event_loop`].
+//!   - Canonical Promise-job adapter: [`window_timers::VmJsEventLoopHooks`] (Promise jobs must be
+//!     routed onto the host [`EventLoop`] microtask queue).
+//! - `src/js/webidl/*`: WebIDL runtime scaffolding + generated bindings integration (codegen output,
+//!   binding glue, and MVP WebIDL-shaped DOM/event helpers).
+//! - `src/js/legacy/*`: deprecated/legacy runtimes and experiments. QuickJS-backed code is gated
+//!   behind the `quickjs` Cargo feature.
+//!
 //! # WARNING: `dom_scripts` is tooling-only
 //!
 //! The HTML script processing model is *parse-time* semantics: the parser pauses for
@@ -20,15 +36,9 @@ pub mod dom_scripts;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
-pub mod dom_integration;
 pub mod clock;
-pub mod dom_bindings_context;
-pub mod events;
-pub mod ecma_embed;
-pub mod ecma_vm_runtime;
 pub mod document_lifecycle;
 pub mod event_loop;
-pub mod ecma_microtasks;
 pub mod host_document;
 pub mod html_classic_scripts;
 pub mod html_scripting;
@@ -47,44 +57,77 @@ pub mod script_scheduler;
 pub mod promise;
 pub mod script_loader_resource;
 pub(crate) mod sri;
-pub mod runtime;
 pub mod time;
 pub mod url;
 pub mod url_resolve;
-pub mod url_bindings;
-pub mod window_animation_frame;
-pub mod window_abort;
-pub mod dom_platform;
-pub mod vm_dom;
-pub mod window_fetch;
-pub mod window_timers;
-pub mod window_url;
-pub(crate) mod vm_budgets;
-#[cfg(feature = "quickjs")]
-pub mod vm_host;
-pub mod vm_limits;
-pub(crate) mod vm_error_format;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
 pub mod fetch;
 pub mod webidl;
-pub mod webidl_runtime_vmjs;
-pub mod bindings;
-pub mod window_realm;
-pub mod dom_bindings;
-pub mod events_bindings;
+
+// --- vm-js embedding (`src/js/vmjs/*`) ---
+
+#[path = "vmjs/dom_platform.rs"]
+pub mod dom_platform;
+#[path = "vmjs/runtime.rs"]
+pub mod runtime;
+#[path = "vmjs/vm_budgets.rs"]
+pub(crate) mod vm_budgets;
+#[path = "vmjs/vm_limits.rs"]
+pub mod vm_limits;
+#[path = "vmjs/vm_error_format.rs"]
+pub(crate) mod vm_error_format;
+#[path = "vmjs/window.rs"]
 pub mod window;
-#[cfg(feature = "quickjs")]
-pub mod quickjs_dom;
+#[path = "vmjs/window_abort.rs"]
+pub mod window_abort;
+#[path = "vmjs/window_animation_frame.rs"]
+pub mod window_animation_frame;
+#[path = "vmjs/window_env.rs"]
 pub mod window_env;
+#[path = "vmjs/window_fetch.rs"]
+pub mod window_fetch;
+#[path = "vmjs/window_realm.rs"]
+pub mod window_realm;
+#[path = "vmjs/window_timers.rs"]
+pub mod window_timers;
+#[path = "vmjs/window_url.rs"]
+pub mod window_url;
+
+// --- WebIDL runtime + bindings integration (`src/js/webidl/*`) ---
+
+#[path = "webidl/runtime_vmjs.rs"]
+pub mod webidl_runtime_vmjs;
+#[path = "webidl/bindings/mod.rs"]
+pub mod bindings;
+#[path = "webidl/dom_bindings/mod.rs"]
+pub mod dom_bindings;
+#[path = "webidl/events.rs"]
+pub mod events;
+#[path = "webidl/events_bindings.rs"]
+pub mod events_bindings;
+#[path = "webidl/url_bindings.rs"]
+pub mod url_bindings;
+
+// --- Legacy runtimes (`src/js/legacy/*`) ---
+
+#[cfg(feature = "quickjs")]
+#[path = "legacy/vm_host.rs"]
+pub mod vm_host;
+#[cfg(feature = "quickjs")]
+#[path = "legacy/quickjs_dom.rs"]
+pub mod quickjs_dom;
+
+// Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
+#[path = "legacy/vm_dom.rs"]
+pub mod vm_dom;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
-pub use ecma_vm_runtime::{EcmaVmRuntime, EcmaVmRuntimeConfig};
 pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost};
 pub use crate::web::dom::DocumentReadyState;
 pub use event_loop::{
@@ -93,11 +136,6 @@ pub use event_loop::{
   Task, TaskSource, TimerId,
 };
 pub use options::JsExecutionOptions;
-pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};
-pub use ecma_embed::{
-  HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,
-  ScriptTerminationReason, ScriptValue, VmJsScriptRealm,
-};
 pub use host_document::{DocumentHostState, HostDocumentState};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
@@ -127,7 +165,6 @@ pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
-pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_resolve::{resolve_url, UrlResolveError};

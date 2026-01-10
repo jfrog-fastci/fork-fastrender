@@ -10,16 +10,13 @@
 //! This module is the missing JavaScript-facing wrapper layer for the `WindowRealm` (`vm-js`)
 //! embedding.
 
-use crate::error::Error;
 use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
-use crate::js::vm_error_format;
-use crate::js::window_realm::{
-  dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealm, WindowRealmHost,
-  WindowRealmUserData,
+use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
+use crate::js::window_timers::{
+  callback_budget_from_render_deadline, vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
-use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
   RequestCredentials, RequestMode, RequestRedirect, ResponseType, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
@@ -30,10 +27,9 @@ use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
 use vm_js::{
-  Budget, ExecutionContext, GcObject, Heap, Job, JobCallback, PropertyDescriptor, PropertyKey, PropertyKind,
-  NativeFunctionId, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  GcObject, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -539,297 +535,6 @@ fn map_web_fetch_error_to_throw(
     other => throw_type_error(vm, scope, host, hooks, &other.to_string()),
   }
 }
-
-fn callback_budget_from_render_deadline() -> Budget {
-  let mut check_time_every: u32 = 100;
-  let deadline = match render_control::root_deadline() {
-    Some(deadline) => match deadline.remaining_timeout() {
-      Some(remaining) => {
-        if remaining.is_zero() {
-          check_time_every = 1;
-        }
-        Instant::now().checked_add(remaining)
-      }
-      None => {
-        if deadline.timeout_limit().is_some() {
-          check_time_every = 1;
-          Some(Instant::now())
-        } else {
-          None
-        }
-      }
-    },
-    None => None,
-  };
-  Budget {
-    fuel: Some(1_000_000),
-    deadline,
-    check_time_every,
-  }
-}
-
-fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> Error {
-  vm_error_format::vm_error_to_error(heap, err)
-}
-
-struct HeapRootContext<'a> {
-  heap: &'a mut Heap,
-}
-
-impl VmJobContext for HeapRootContext<'_> {
-  fn call(
-    &mut self,
-    _host: &mut dyn VmHostHooks,
-    _callee: Value,
-    _this: Value,
-    _args: &[Value],
-  ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented("HeapRootContext::call"))
-  }
-
-  fn construct(
-    &mut self,
-    _host: &mut dyn VmHostHooks,
-    _callee: Value,
-    _args: &[Value],
-    _new_target: Value,
-  ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented("HeapRootContext::construct"))
-  }
-
-  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
-    self.heap.add_root(value)
-  }
-
-  fn remove_root(&mut self, id: RootId) {
-    self.heap.remove_root(id);
-  }
-}
-
-struct WindowRealmJobContext<'a> {
-  window_realm: &'a mut WindowRealm,
-  host: &'a mut dyn VmHost,
-  realm: Option<RealmId>,
-}
-
-impl<'a> WindowRealmJobContext<'a> {
-  fn new(window_realm: &'a mut WindowRealm, host: &'a mut dyn VmHost, realm: Option<RealmId>) -> Self {
-    Self {
-      window_realm,
-      host,
-      realm,
-    }
-  }
-}
-
-impl VmJobContext for WindowRealmJobContext<'_> {
-  fn call(
-    &mut self,
-    host_hooks: &mut dyn VmHostHooks,
-    callee: Value,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError> {
-    let host = &mut *self.host;
-    let (vm, heap) = self.window_realm.vm_and_heap_mut();
-    let mut scope = heap.scope();
-    if let Some(realm) = self.realm {
-      let mut vm = vm.execution_context_guard(ExecutionContext {
-        realm,
-        script_or_module: None,
-      });
-      vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
-    } else {
-      vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
-    }
-  }
-
-  fn construct(
-    &mut self,
-    host_hooks: &mut dyn VmHostHooks,
-    callee: Value,
-    args: &[Value],
-    new_target: Value,
-  ) -> Result<Value, VmError> {
-    let host = &mut *self.host;
-    let (vm, heap) = self.window_realm.vm_and_heap_mut();
-    let mut scope = heap.scope();
-    if let Some(realm) = self.realm {
-      let mut vm = vm.execution_context_guard(ExecutionContext {
-        realm,
-        script_or_module: None,
-      });
-      vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
-    } else {
-      vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
-    }
-  }
-
-  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
-    self.window_realm.heap_mut().add_root(value)
-  }
-
-  fn remove_root(&mut self, id: RootId) {
-    self.window_realm.heap_mut().remove_root(id);
-  }
-}
-
-struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
-  host_ctx: *mut dyn VmHost,
-  pending_discard: Vec<Job>,
-  enqueue_error: Option<Error>,
-  _marker: std::marker::PhantomData<fn() -> Host>,
-}
-
-impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
-  fn new(host_ctx: &mut dyn VmHost) -> Self {
-    // `*mut dyn VmHost` defaults the trait object lifetime to `'static`; erase the shorter
-    // lifetime of the borrow we're handed.
-    //
-    // SAFETY: The returned pointer is only used within VM call boundaries while the original
-    // `&mut dyn VmHost` is still borrowed by the enclosing event-loop task/microtask.
-    let host_ctx: *mut (dyn VmHost + '_) = host_ctx;
-    let host_ctx: *mut dyn VmHost =
-      unsafe { std::mem::transmute::<*mut (dyn VmHost + '_), *mut dyn VmHost>(host_ctx) };
-    Self {
-      host_ctx,
-      pending_discard: Vec::new(),
-      enqueue_error: None,
-      _marker: std::marker::PhantomData,
-    }
-  }
-
-  fn finish(mut self, heap: &mut Heap) -> Option<Error> {
-    if !self.pending_discard.is_empty() {
-      let mut ctx = HeapRootContext { heap };
-      for job in self.pending_discard.drain(..) {
-        job.discard(&mut ctx);
-      }
-    }
-    self.enqueue_error.take()
-  }
-}
-
-impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
-  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-    // SAFETY: `VmJsEventLoopHooks` is only constructed for the duration of a JS call while the
-    // referenced `VmHost` context is already borrowed mutably by the event loop task/microtask.
-    // The returned `&mut dyn Any` must not escape the native call boundary.
-    Some(unsafe { (&mut *self.host_ctx).as_any_mut() })
-  }
-
-  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
-    if self.enqueue_error.is_some() {
-      self.pending_discard.push(job);
-      return;
-    }
-
-    let job_cell: std::rc::Rc<std::cell::RefCell<Option<Job>>> =
-      std::rc::Rc::new(std::cell::RefCell::new(Some(job)));
-    let job_cell_for_closure = std::rc::Rc::clone(&job_cell);
-
-    let enqueue_result: crate::error::Result<()> = (|| {
-      let Some(event_loop) = current_event_loop_mut::<Host>() else {
-        return Err(Error::Other(
-          "vm-js Promise job enqueued without an active EventLoop".to_string(),
-        ));
-      };
-
-      event_loop.queue_microtask(move |host, event_loop| {
-        let Some(job) = job_cell_for_closure.borrow_mut().take() else {
-          return Ok(());
-        };
-
-        // Borrow-split the host so we can pass both:
-        // - a real `VmHost` context to native calls, and
-        // - a mutable `WindowRealm` for executing the job.
-        let (host_ctx, window_realm) = host.vm_host_and_window_realm();
-        window_realm.reset_interrupt();
-
-        with_event_loop(event_loop, || {
-          let vm = window_realm.vm_mut();
-          vm.set_budget(callback_budget_from_render_deadline());
-          let tick_result = vm.tick();
-
-          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
-          let job_result = match tick_result {
-            Ok(()) => {
-              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
-              job.run(&mut ctx, &mut hooks)
-            }
-            Err(err) => {
-              let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
-              job.discard(&mut ctx);
-              Err(err)
-            }
-          };
-
-          if let Some(err) = hooks.finish(window_realm.heap_mut()) {
-            return Err(err);
-          }
-          job_result
-            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
-            .map(|_| ())
-        })
-      })
-    })();
-
-    if let Err(err) = enqueue_result {
-      if let Some(job) = job_cell.borrow_mut().take() {
-        self.pending_discard.push(job);
-      }
-      self.enqueue_error = Some(err);
-    }
-  }
-
-  fn host_exotic_get(
-    &mut self,
-    scope: &mut Scope<'_>,
-    obj: vm_js::GcObject,
-    key: vm_js::PropertyKey,
-    receiver: vm_js::Value,
-  ) -> Result<Option<vm_js::Value>, VmError> {
-    let _ = receiver;
-    dataset_exotic_get(scope, obj, key)
-  }
-
-  fn host_exotic_set(
-    &mut self,
-    scope: &mut Scope<'_>,
-    obj: vm_js::GcObject,
-    key: vm_js::PropertyKey,
-    value: vm_js::Value,
-    receiver: vm_js::Value,
-  ) -> Result<Option<bool>, VmError> {
-    let _ = receiver;
-    dataset_exotic_set(scope, obj, key, value)
-  }
-
-  fn host_exotic_delete(
-    &mut self,
-    scope: &mut Scope<'_>,
-    obj: vm_js::GcObject,
-    key: vm_js::PropertyKey,
-  ) -> Result<Option<bool>, VmError> {
-    dataset_exotic_delete(scope, obj, key)
-  }
-
-  fn host_call_job_callback(
-    &mut self,
-    ctx: &mut dyn VmJobContext,
-    callback: &JobCallback,
-    this_argument: Value,
-    arguments: &[Value],
-  ) -> Result<Value, VmError> {
-    ctx.call(
-      self,
-      Value::Object(callback.callback_object()),
-      this_argument,
-      arguments,
-    )
-  }
-}
-
 fn env_id_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let value = slots.get(SLOT_ENV_ID).copied().unwrap_or(Value::Undefined);
@@ -4022,9 +3727,9 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 #[cfg(test)]
 mod tests {
   use super::*;
-
+  use crate::js::window_realm::WindowRealm;
   use std::collections::VecDeque;
-  use vm_js::{HeapLimits, VmOptions};
+  use vm_js::{ExecutionContext, HeapLimits, RootId, VmOptions};
   use vm_js::{Job, RealmId, VmHostHooks};
 
   struct DummyHost;

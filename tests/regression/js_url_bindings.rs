@@ -1,4 +1,4 @@
-#[path = "../../src/js/quickjs_url.rs"]
+#[path = "../../src/js/legacy/quickjs_url.rs"]
 mod quickjs_url;
 
 use rquickjs::{Context, Runtime};

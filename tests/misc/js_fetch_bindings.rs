@@ -8,7 +8,7 @@ use fastrender::resource::{
   HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 
-#[path = "../../src/js/quickjs/fetch.rs"]
+#[path = "../../src/js/legacy/quickjs/fetch.rs"]
 mod quickjs_fetch;
 
 use quickjs_fetch::{install_fetch_bindings, QuickjsFetchEnv};
