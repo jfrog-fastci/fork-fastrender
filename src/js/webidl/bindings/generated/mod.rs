@@ -214,7 +214,7 @@ pub mod window {
   fn event_target_dispatch_event(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
@@ -330,7 +330,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    args: &[Value],
+    _args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -369,7 +369,7 @@ pub mod window {
     rt.scope.push_root(Value::Object(obj))?;
 
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       let _ = bindings_host.call_operation(
         &mut *rt.vm,
@@ -417,17 +417,17 @@ pub mod window {
   fn u_r_l_to_j_s_o_n(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -448,7 +448,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -495,7 +495,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -805,17 +805,17 @@ pub mod window {
   fn u_r_l_search_params_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -833,7 +833,7 @@ pub mod window {
   fn u_r_l_search_params_for_each(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
@@ -1001,17 +1001,17 @@ pub mod window {
   fn u_r_l_search_params_keys(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -1073,17 +1073,17 @@ pub mod window {
   fn u_r_l_search_params_values(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -1216,14 +1216,14 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let receiver = None;
     if args.len() == 0 {
       {
-        let mut converted_args: Vec<Value> = Vec::new();
+        let converted_args: Vec<Value> = Vec::new();
         let bindings_host = host_from_hooks(hooks)?;
         bindings_host.call_operation(
           &mut *rt.vm,
@@ -1269,7 +1269,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -1308,7 +1308,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -1344,10 +1344,10 @@ pub mod window {
   fn window_queue_microtask(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -1382,7 +1382,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -1434,7 +1434,7 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -2089,7 +2089,7 @@ pub mod worker {
   fn event_target_dispatch_event(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
@@ -2205,7 +2205,7 @@ pub mod worker {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    args: &[Value],
+    _args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -2244,7 +2244,7 @@ pub mod worker {
     rt.scope.push_root(Value::Object(obj))?;
 
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       let _ = bindings_host.call_operation(
         &mut *rt.vm,
@@ -2263,17 +2263,17 @@ pub mod worker {
   fn u_r_l_to_j_s_o_n(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -2294,7 +2294,7 @@ pub mod worker {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -2341,7 +2341,7 @@ pub mod worker {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
-    this: Value,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
@@ -2651,17 +2651,17 @@ pub mod worker {
   fn u_r_l_search_params_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -2679,7 +2679,7 @@ pub mod worker {
   fn u_r_l_search_params_for_each(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
@@ -2847,17 +2847,17 @@ pub mod worker {
   fn u_r_l_search_params_keys(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,
@@ -2919,17 +2919,17 @@ pub mod worker {
   fn u_r_l_search_params_values(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
-      let mut converted_args: Vec<Value> = Vec::new();
+      let converted_args: Vec<Value> = Vec::new();
       let bindings_host = host_from_hooks(hooks)?;
       bindings_host.call_operation(
         &mut *rt.vm,

@@ -3909,8 +3909,14 @@ fn write_operation_wrapper(
 ) -> Result<()> {
   let _ = config;
   let fn_name = op_wrapper_fn_name(interface, op_name);
+  let this_ident = if is_global || is_static { "_this" } else { "this" };
+  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
+    "_args"
+  } else {
+    "args"
+  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, {this_ident}: R::JsValue, {args_ident}: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   let receiver_expr = if is_global || is_static {
@@ -4282,7 +4288,11 @@ fn emit_overload_call(
 ) -> String {
   let mut out = String::new();
   out.push_str("{\n");
-  out.push_str("  let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  if arguments.is_empty() {
+    out.push_str("  let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  } else {
+    out.push_str("  let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  }
   for (idx, arg) in arguments.iter().enumerate() {
     if arg.variadic {
       out.push_str(&format!(
@@ -5007,8 +5017,13 @@ fn write_constructor_wrapper(
   _config: &WebIdlBindingsCodegenConfig,
 ) -> Result<()> {
   let fn_name = ctor_wrapper_fn_name(interface);
+  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
+    "_args"
+  } else {
+    "args"
+  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, {args_ident}: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   if overloads.len() == 1 {
@@ -5347,7 +5362,11 @@ fn emit_ctor_overload_call(
 ) -> String {
   let mut out = String::new();
   out.push_str("{\n");
-  out.push_str("  let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  if arguments.is_empty() {
+    out.push_str("  let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  } else {
+    out.push_str("  let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();\n");
+  }
   for (idx, arg) in arguments.iter().enumerate() {
     if arg.variadic {
       out.push_str(&format!(
@@ -5384,8 +5403,22 @@ fn write_operation_wrapper_vmjs(
   is_global: bool,
 ) {
   let fn_name = op_wrapper_fn_name(interface, op_name);
+  let host_ident = if overloads
+    .iter()
+    .any(|sig| args_need_host_vmjs(resolved, &sig.arguments))
+  {
+    "host"
+  } else {
+    "_host"
+  };
+  let this_ident = if is_global || is_static { "_this" } else { "this" };
+  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
+    "_args"
+  } else {
+    "args"
+  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  {this_ident}: Value,\n  {args_ident}: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
 
@@ -5571,7 +5604,11 @@ fn emit_overload_call_vmjs(
 ) -> String {
   let mut out = String::new();
   out.push_str("  {\n");
-  out.push_str("    let mut converted_args: Vec<Value> = Vec::new();\n");
+  if arguments.is_empty() {
+    out.push_str("    let converted_args: Vec<Value> = Vec::new();\n");
+  } else {
+    out.push_str("    let mut converted_args: Vec<Value> = Vec::new();\n");
+  }
 
   for (idx, arg) in arguments.iter().enumerate() {
     if arg.variadic {
@@ -5604,6 +5641,40 @@ fn emit_overload_call_vmjs(
   out
 }
 
+fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
+  match ty {
+    IdlType::Builtin(b) => match b {
+      BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => true,
+      BuiltinType::Long
+      | BuiltinType::UnsignedLong
+      | BuiltinType::Byte
+      | BuiltinType::Octet
+      | BuiltinType::Short
+      | BuiltinType::UnsignedShort
+      | BuiltinType::LongLong
+      | BuiltinType::UnsignedLongLong
+      | BuiltinType::Float
+      | BuiltinType::UnrestrictedFloat
+      | BuiltinType::Double
+      | BuiltinType::UnrestrictedDouble => true,
+      BuiltinType::Undefined | BuiltinType::Any | BuiltinType::Object | BuiltinType::Boolean => false,
+    },
+    IdlType::Named(name) => resolved.dictionaries.contains_key(name),
+    IdlType::Nullable(inner) => type_needs_host_vmjs(resolved, inner),
+    IdlType::Union(_)
+    | IdlType::Sequence(_)
+    | IdlType::FrozenArray(_)
+    | IdlType::Promise(_)
+    | IdlType::Record { .. } => false,
+  }
+}
+
+fn args_need_host_vmjs(resolved: &ResolvedWebIdlWorld, args: &[Argument]) -> bool {
+  args
+    .iter()
+    .any(|arg| type_needs_host_vmjs(resolved, &arg.type_))
+}
+
 fn write_constructor_wrapper_vmjs(
   out: &mut String,
   resolved: &ResolvedWebIdlWorld,
@@ -5623,8 +5694,14 @@ fn write_constructor_wrapper_vmjs(
   out.push_str("}\n\n");
 
   let construct_fn_name = ctor_construct_fn_name(interface);
+  let host_ident = "host";
+  let args_ident = if overloads.len() == 1 && overloads[0].arguments.is_empty() {
+    "_args"
+  } else {
+    "args"
+  };
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  args: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
+    "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  {args_ident}: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   if overloads.is_empty() {
@@ -5711,7 +5788,11 @@ fn emit_ctor_overload_call_vmjs(
 ) -> String {
   let mut out = String::new();
   out.push_str("  {\n");
-  out.push_str("    let mut converted_args: Vec<Value> = Vec::new();\n");
+  if arguments.is_empty() {
+    out.push_str("    let converted_args: Vec<Value> = Vec::new();\n");
+  } else {
+    out.push_str("    let mut converted_args: Vec<Value> = Vec::new();\n");
+  }
 
   for (idx, arg) in arguments.iter().enumerate() {
     if arg.variadic {
