@@ -2,7 +2,7 @@ use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::{
   EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
-  VirtualClock, WindowFetchEnv, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::resource::{
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
@@ -321,6 +321,65 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
     .exec_script("location.href")
     .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(get_string(realm.heap(), value), url);
+  Ok(())
+}
+
+#[test]
+fn strict_script_top_level_this_is_window() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+"use strict";
+globalThis.__strict_this_ok = (this === window) && (this === globalThis);
+"#,
+  )?;
+
+  let strict_this_ok = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    get_data_prop(&mut scope, global, "__strict_this_ok")
+  };
+  assert_eq!(strict_this_ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn promise_jobs_and_queue_microtask_preserve_fifo_order() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__log = "";
+Promise.resolve().then(() => { globalThis.__log += "p1,"; });
+queueMicrotask(() => { globalThis.__log += "qm,"; });
+Promise.resolve().then(() => { globalThis.__log += "p2,"; });
+"#,
+  )?;
+
+  let before = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__log");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(before, "");
+
+  host.perform_microtask_checkpoint()?;
+
+  let after = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__log");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(after, "p1,qm,p2,");
   Ok(())
 }
 

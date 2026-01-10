@@ -194,6 +194,14 @@ impl WindowRealm {
     self.runtime.exec_script(source)
   }
 
+  pub(crate) fn exec_script_with_host(
+    &mut self,
+    host: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.runtime.exec_script_with_host(host, source)
+  }
+
   /// Execute a classic script with an explicit source name for stack traces.
   pub fn exec_script_with_name(
     &mut self,

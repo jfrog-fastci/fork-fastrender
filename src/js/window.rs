@@ -134,7 +134,14 @@ impl WindowHost {
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
       let window = host.window_mut();
-      window.exec_script(source).map_err(|e| Error::Other(e.to_string()))
+      let mut hooks = crate::js::window_timers::VmJsEventLoopHooks::<WindowHostState>::new();
+      let result = window
+        .exec_script_with_host(&mut hooks, source)
+        .map_err(|e| Error::Other(e.to_string()));
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
     })
   }
 }
