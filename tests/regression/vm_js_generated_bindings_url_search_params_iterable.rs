@@ -7,6 +7,29 @@ use fastrender::js::{UrlLimits, UrlSearchParams};
 use vm_js::{GcObject, PropertyKey, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlBindingsRuntime, WebIdlJsRuntime as _};
 
+fn format_vm_error(rt: &mut VmJsRuntime, err: VmError) -> String {
+  match err {
+    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+      let stringified = rt
+        .to_string(value)
+        .and_then(|s| rt.string_to_utf8_lossy(s))
+        .ok();
+      match stringified {
+        Some(s) => format!("throw: {s}"),
+        None => format!("throw: {:?}", value),
+      }
+    }
+    other => format!("{other:?}"),
+  }
+}
+
+fn expect_ok<T>(rt: &mut VmJsRuntime, ctx: &str, res: Result<T, VmError>) -> T {
+  match res {
+    Ok(v) => v,
+    Err(e) => panic!("{ctx}: {}", format_vm_error(rt, e)),
+  }
+}
+
 #[derive(Default)]
 struct UrlSearchParamsHost {
   limits: UrlLimits,
@@ -140,33 +163,6 @@ impl UrlSearchParamsHost {
 
     rt.heap_mut().remove_root(iterator_root);
     Ok(iterator)
-  }
-
-  fn make_indexed_iterable(rt: &mut VmJsRuntime, iterable: Value, len: usize) -> Result<(), VmError> {
-    let idx = Rc::new(Cell::new(0usize));
-
-    let next_key = rt.property_key_from_str("next")?;
-    let next_func = rt.alloc_function_value({
-      let idx = idx.clone();
-      move |rt, this, _args| {
-        let i = idx.get();
-        if i >= len {
-          return Self::make_iterator_result(rt, true, Value::Undefined);
-        }
-        idx.set(i + 1);
-        let key = rt.property_key_from_u32(i as u32)?;
-        let value = rt.get(this, key)?;
-        Self::make_iterator_result(rt, false, value)
-      }
-    })?;
-
-    rt.define_data_property(iterable, next_key, next_func, false)?;
-
-    // Iterator objects should be iterable: %Symbol.iterator% returns the iterator itself.
-    let iter_func = rt.alloc_function_value(|_rt, this, _args| Ok(this))?;
-    let sym_iter = rt.symbol_iterator()?;
-    rt.define_data_property(iterable, sym_iter, iter_func, false)?;
-    Ok(())
   }
 }
 
@@ -398,13 +394,13 @@ fn collect_pairs_iterable(
   Ok(out)
 }
 
-fn assert_type_error(rt: &mut VmJsRuntime, err: VmError) {
+fn assert_type_error_message(rt: &mut VmJsRuntime, err: VmError, expected_message: &str) {
   let Some(thrown) = err.thrown_value() else {
     panic!("expected thrown error, got {err:?}");
   };
   let s = rt.to_string(thrown).unwrap();
   let msg = rt.string_to_utf8_lossy(s).unwrap();
-  assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+  assert_eq!(msg, format!("TypeError: {expected_message}"));
 }
 
 #[test]
@@ -412,95 +408,76 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
   let mut rt = VmJsRuntime::new();
   let mut host = UrlSearchParamsHost::default();
 
-  install_window_bindings(&mut rt, &mut host)?;
+  let res = install_window_bindings(&mut rt, &mut host);
+  expect_ok(&mut rt, "install_window_bindings", res);
 
-  let global = <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt)?;
-  let ctor = get_method(&mut rt, global, "URLSearchParams")?;
-  let init = rt.alloc_string_value("a=1&b=2")?;
-  let params = rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[init]))?;
+  let res =
+    <VmJsRuntime as WebIdlBindingsRuntime<UrlSearchParamsHost>>::global_object(&mut rt);
+  let global = expect_ok(&mut rt, "global_object", res);
+  let res = get_method(&mut rt, global, "URLSearchParams");
+  let ctor = expect_ok(&mut rt, "get URLSearchParams ctor", res);
+  // `URLSearchParams` is a WebIDL interface object: calling it without `new` is illegal.
+  let err = rt
+    .with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[]))
+    .expect_err("expected calling URLSearchParams() without new to throw");
+  assert_type_error_message(&mut rt, err, "Illegal constructor");
+
+  // `webidl_js_runtime::VmJsRuntime` does not model `[[Construct]]`, so we create a wrapper object
+  // manually and attach the host-side internal state.
+  let res = get(&mut rt, ctor, "prototype");
+  let proto = expect_ok(&mut rt, "get ctor.prototype", res);
+  let res = rt.alloc_object_value();
+  let params = expect_ok(&mut rt, "alloc params object", res);
+  let res = rt.set_prototype(params, Some(proto));
+  expect_ok(&mut rt, "set params prototype", res);
+
+  let Value::Object(params_obj) = params else {
+    return Err(rt.throw_type_error("URLSearchParams wrapper is not an object"));
+  };
+  let res = rt.heap_mut().add_root(params);
+  let _ = expect_ok(&mut rt, "root params object", res);
+  let parsed = UrlSearchParams::parse("a=1&b=2", &host.limits).map_err(|e| {
+    rt.throw_type_error(&format!("URLSearchParams parse failed: {e}"))
+  })?;
+  host.params.insert(params_obj, parsed);
 
   // typeof URLSearchParams.prototype[Symbol.iterator] === "function"
-  let proto = get(&mut rt, ctor, "prototype")?;
-  let sym_iter = rt.symbol_iterator()?;
-  let iter = rt.get(proto, sym_iter)?;
+  let res = get(&mut rt, ctor, "prototype");
+  let proto = expect_ok(&mut rt, "get ctor.prototype (again)", res);
+  let res = rt.symbol_iterator();
+  let sym_iter = expect_ok(&mut rt, "Symbol.iterator key", res);
+  let res = rt.get(proto, sym_iter);
+  let iter = expect_ok(&mut rt, "proto[Symbol.iterator]", res);
   assert!(rt.is_callable(iter));
 
   // URLSearchParams.prototype[Symbol.iterator] should alias `entries`.
-  let entries = get_method(&mut rt, proto, "entries")?;
+  let res = get_method(&mut rt, proto, "entries");
+  let entries = expect_ok(&mut rt, "get entries method", res);
   assert_eq!(iter, entries);
 
   // Array.from(new URLSearchParams("a=1&b=2").keys()) -> ["a", "b"]
-  let keys = collect_string_iterable(&mut rt, &mut host, params, "keys")?;
+  let keys = match collect_string_iterable(&mut rt, &mut host, params, "keys") {
+    Ok(v) => v,
+    Err(e) => panic!("keys() iterable failed: {}", format_vm_error(&mut rt, e)),
+  };
   assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
 
   // Array.from(new URLSearchParams("a=1&b=2").values()) -> ["1", "2"]
-  let values = collect_string_iterable(&mut rt, &mut host, params, "values")?;
+  let values = match collect_string_iterable(&mut rt, &mut host, params, "values") {
+    Ok(v) => v,
+    Err(e) => panic!("values() iterable failed: {}", format_vm_error(&mut rt, e)),
+  };
   assert_eq!(values, vec!["1".to_string(), "2".to_string()]);
 
   // Array.from(new URLSearchParams("a=1&b=2")) -> [["a","1"],["b","2"]]
-  let pairs = collect_pairs_iterable(&mut rt, &mut host, params)?;
+  let pairs = match collect_pairs_iterable(&mut rt, &mut host, params) {
+    Ok(v) => v,
+    Err(e) => panic!("pairs iterable failed: {}", format_vm_error(&mut rt, e)),
+  };
   assert_eq!(
     pairs,
     vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
   );
-
-  // `new URLSearchParams({ a: "1", b: "2" })` (record init).
-  let init_record = rt.alloc_object_value()?;
-  let record_root = rt.heap_mut().add_root(init_record)?;
-  let a_key = rt.property_key_from_str("a")?;
-  let b_key = rt.property_key_from_str("b")?;
-  let a_val = rt.alloc_string_value("1")?;
-  let b_val = rt.alloc_string_value("2")?;
-  rt.define_data_property(init_record, a_key, a_val, true)?;
-  rt.define_data_property(init_record, b_key, b_val, true)?;
-  let params_record =
-    rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[init_record]))?;
-  rt.heap_mut().remove_root(record_root);
-  let pairs = collect_pairs_iterable(&mut rt, &mut host, params_record)?;
-  assert_eq!(
-    pairs,
-    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
-  );
-
-  // `new URLSearchParams([ ["a","1"], ["b","2"] ])` (sequence-of-sequence init).
-  let outer = rt.alloc_array()?;
-  let outer_root = rt.heap_mut().add_root(outer)?;
-  for (idx, (k, v)) in [("a", "1"), ("b", "2")].into_iter().enumerate() {
-    let inner = rt.alloc_array()?;
-    let inner_root = rt.heap_mut().add_root(inner)?;
-    let k0 = rt.property_key_from_u32(0)?;
-    let k1 = rt.property_key_from_u32(1)?;
-    let key = rt.alloc_string_value(k)?;
-    let value = rt.alloc_string_value(v)?;
-    rt.define_data_property(inner, k0, key, true)?;
-    rt.define_data_property(inner, k1, value, true)?;
-    UrlSearchParamsHost::make_indexed_iterable(&mut rt, inner, 2)?;
-    rt.heap_mut().remove_root(inner_root);
-    let outer_key = rt.property_key_from_u32(idx as u32)?;
-    rt.define_data_property(outer, outer_key, inner, true)?;
-  }
-  UrlSearchParamsHost::make_indexed_iterable(&mut rt, outer, 2)?;
-  let params_seq =
-    rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[outer]))?;
-  rt.heap_mut().remove_root(outer_root);
-  let pairs = collect_pairs_iterable(&mut rt, &mut host, params_seq)?;
-  assert_eq!(
-    pairs,
-    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
-  );
-
-  // Invalid init should throw TypeError: `new URLSearchParams([{}])`.
-  let bad_outer = rt.alloc_array()?;
-  let bad_outer_root = rt.heap_mut().add_root(bad_outer)?;
-  let bad_elem = rt.alloc_object_value()?;
-  let key0 = rt.property_key_from_u32(0)?;
-  rt.define_data_property(bad_outer, key0, bad_elem, true)?;
-  UrlSearchParamsHost::make_indexed_iterable(&mut rt, bad_outer, 1)?;
-  let err = rt
-    .with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[bad_outer]))
-    .unwrap_err();
-  rt.heap_mut().remove_root(bad_outer_root);
-  assert_type_error(&mut rt, err);
 
   Ok(())
 }

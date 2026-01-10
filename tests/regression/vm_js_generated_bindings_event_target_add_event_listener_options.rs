@@ -87,10 +87,14 @@ fn generated_webidl_bindings_event_target_add_event_listener_options_defaults() 
   let global =
     <VmJsRuntime as WebIdlBindingsRuntime<EventTargetHost>>::global_object(&mut rt)?;
   let ctor = get_method(&mut rt, global, "EventTarget")?;
-  let target = rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[]))?;
+  // `EventTarget` is a WebIDL interface object: calling it without `new` is illegal.
+  // `webidl_js_runtime::VmJsRuntime` does not model `[[Construct]]`, so create a wrapper object
+  // manually.
+  let proto = get(&mut rt, ctor, "prototype")?;
+  let target = rt.alloc_object_value()?;
+  rt.set_prototype(target, Some(proto))?;
   let target_root = rt.heap_mut().add_root(target)?;
 
-  let proto = get(&mut rt, ctor, "prototype")?;
   let add_event_listener = get_method(&mut rt, proto, "addEventListener")?;
 
   let ty = rt.alloc_string_value("x")?;

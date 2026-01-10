@@ -828,18 +828,6 @@ mod tests {
   }
 
   impl AttributeAndConstHost {
-    fn prototype_for<'a>(
-      &mut self,
-      rt: &mut VmJsWebIdlBindingsCx<'a, Self>,
-      name: &str,
-    ) -> Result<Value, VmError> {
-      let global = rt.global_object()?;
-      let ctor_key = rt.property_key(name)?;
-      let ctor = rt.get(global, ctor_key)?;
-      let proto_key = rt.property_key("prototype")?;
-      rt.get(ctor, proto_key)
-    }
-
     fn value_to_rust_string<'a>(
       rt: &mut VmJsWebIdlBindingsCx<'a, Self>,
       value: Value,
@@ -882,7 +870,7 @@ mod tests {
     fn call_operation(
       &mut self,
       rt: &mut VmJsWebIdlBindingsCx<'a, AttributeAndConstHost>,
-      _receiver: Option<Value>,
+      receiver: Option<Value>,
       interface: &'static str,
       operation: &'static str,
       _overload: usize,
@@ -890,6 +878,12 @@ mod tests {
     ) -> Result<BindingValue<Value>, VmError> {
       match (interface, operation) {
         ("URLSearchParams", "constructor") => {
+          let Some(Value::Object(obj_handle)) = receiver else {
+            return Err(rt.throw_type_error(
+              "URLSearchParams constructor called without wrapper object receiver",
+            ));
+          };
+
           let init = match args.get(0) {
             None => String::new(),
             Some(BindingValue::String(s)) => s.clone(),
@@ -904,36 +898,21 @@ mod tests {
               .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?
           };
 
-          // Root the prototype before allocating the wrapper object so it survives any GC triggered
-          // during allocation.
-          let proto = self.prototype_for(rt, "URLSearchParams")?;
-          let obj = rt.create_object()?;
-          rt.set_prototype(obj, Some(proto))?;
-
-          let Value::Object(obj_handle) = obj else {
-            return Err(rt.throw_type_error("URLSearchParams constructor did not create an object"));
-          };
           self.params.insert(WeakGcObject::from(obj_handle), params);
-
-          Ok(BindingValue::Object(obj))
+          Ok(BindingValue::Undefined)
         }
         ("URL", "constructor") => {
+          let Some(Value::Object(obj_handle)) = receiver else {
+            return Err(rt.throw_type_error("URL constructor called without wrapper object receiver"));
+          };
+
           let href = match args.get(0) {
             Some(BindingValue::String(s)) => s.clone(),
             Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
             _ => String::new(),
           };
-
-          let proto = self.prototype_for(rt, "URL")?;
-          let obj = rt.create_object()?;
-          rt.set_prototype(obj, Some(proto))?;
-
-          let Value::Object(obj_handle) = obj else {
-            return Err(rt.throw_type_error("URL constructor did not create an object"));
-          };
           self.urls.insert(WeakGcObject::from(obj_handle), href);
-
-          Ok(BindingValue::Object(obj))
+          Ok(BindingValue::Undefined)
         }
         _ => Err(rt.throw_type_error("unimplemented host operation")),
       }

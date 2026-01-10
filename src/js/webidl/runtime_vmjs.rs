@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use crate::js::bindings::DomExceptionClassVmJs;
 use vm_js::{
@@ -381,6 +382,7 @@ pub struct VmJsWebIdlBindingsState<Host> {
   pub hooks: Box<dyn WebIdlHooks<Value>>,
   native_call_id: Cell<Option<vm_js::NativeFunctionId>>,
   native_construct_id: Cell<Option<vm_js::NativeConstructId>>,
+  constructor_default_protos: RefCell<HashMap<GcObject, GcObject>>,
   dispatch_records: RefCell<Vec<Box<NativeDispatchRecord>>>,
   _phantom: PhantomData<fn(Host)>,
 }
@@ -397,6 +399,7 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
       hooks,
       native_call_id: Cell::new(None),
       native_construct_id: Cell::new(None),
+      constructor_default_protos: RefCell::new(HashMap::new()),
       dispatch_records: RefCell::new(Vec::new()),
       _phantom: PhantomData,
     }
@@ -637,19 +640,6 @@ fn dispatch_native_construct<Host: 'static>(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
-  // For now, enforce `new_target === callee` so we can be deterministic while we do not support
-  // subclassing semantics in the WebIDL bindings layer.
-  if new_target != Value::Object(callee) {
-    let intr = vm.intrinsics().ok_or(VmError::InvariantViolation(
-      "vm-js intrinsics not installed; expected an initialized Realm",
-    ))?;
-    return Err(vm_js::throw_type_error(
-      scope,
-      intr,
-      ILLEGAL_CONSTRUCTOR_ERROR,
-    ));
-  }
-
   let slots = read_callee_slots(scope, callee)?;
   let state_ptr = slots.a as *const VmJsWebIdlBindingsState<Host>;
   let dispatch_ptr = slots.b as *const NativeDispatchRecord;
@@ -663,14 +653,40 @@ fn dispatch_native_construct<Host: 'static>(
   let state: &VmJsWebIdlBindingsState<Host> = unsafe { &*state_ptr };
   let dispatch: &NativeDispatchRecord = unsafe { &*dispatch_ptr };
   if dispatch.construct == 0 {
-    return Err(VmError::InvariantViolation(
-      "WebIDL bindings function missing [[Construct]] dispatch entry",
+    let intr = vm.intrinsics().ok_or(VmError::InvariantViolation(
+      "vm-js intrinsics not installed; expected an initialized Realm",
+    ))?;
+    return Err(vm_js::throw_type_error(
+      scope,
+      intr,
+      ILLEGAL_CONSTRUCTOR_ERROR,
     ));
   }
 
   // See `dispatch_native_call` for why we capture raw pointers here.
   let host_ptr: *mut dyn VmHost = host;
   let hooks_ptr: *mut dyn VmHostHooks = hooks;
+  let default_proto = state
+    .constructor_default_protos
+    .borrow()
+    .get(&callee)
+    .copied()
+    .ok_or(VmError::InvariantViolation(
+      "WebIDL constructor missing default prototype mapping",
+    ))?;
+
+  // Root the inputs across `GetPrototypeFromConstructor` and wrapper allocation.
+  scope.push_root(new_target)?;
+  scope.push_root(Value::Object(default_proto))?;
+
+  // WebIDL constructors use `GetPrototypeFromConstructor(newTarget, defaultProto)` so that
+  // subclassing can override the wrapper's `[[Prototype]]`.
+  let proto = vm_js::get_prototype_from_constructor(vm, scope, new_target, default_proto)?;
+  scope.push_root(Value::Object(proto))?;
+
+  // Allocate a fresh wrapper and brand it by setting the prototype.
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(obj))?;
 
   let host = host_from_vm_host::<Host>(host)?;
   let mut rt = VmJsWebIdlBindingsCx::from_native_call(
@@ -684,7 +700,11 @@ fn dispatch_native_construct<Host: 'static>(
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
     unsafe { std::mem::transmute(dispatch.construct) };
-  f(&mut rt, host, Value::Undefined, args)
+
+  // Constructors initialize the pre-allocated wrapper (`this`). The return value is ignored and
+  // the wrapper is returned to JS.
+  let _ = f(&mut rt, host, Value::Object(obj), args)?;
+  Ok(Value::Object(obj))
 }
 
 impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Host> {
@@ -1230,7 +1250,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
     let dispatch_ptr = self
       .state
-      .alloc_dispatch_record(call as usize, construct as usize);
+      .alloc_dispatch_record(call as usize, if call as usize == construct as usize { 0 } else { construct as usize });
     let slots = HostSlots {
       a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
       b: dispatch_ptr as u64,
@@ -1260,6 +1280,36 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     self.cx.scope.push_root(Value::Object(self.state.global_object))?;
     Ok(Value::Object(self.state.global_object))
+  }
+
+  fn define_constructor(
+    &mut self,
+    global: Self::JsValue,
+    name: &str,
+    ctor: Self::JsValue,
+    proto: Self::JsValue,
+  ) -> Result<(), Self::Error> {
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(self.throw_type_error("define_constructor: expected object constructor"));
+    };
+    let Value::Object(proto_obj) = proto else {
+      return Err(self.throw_type_error("define_constructor: expected object prototype"));
+    };
+
+    self
+      .state
+      .constructor_default_protos
+      .borrow_mut()
+      .insert(ctor_obj, proto_obj);
+
+    // Follow the Web IDL JavaScript binding:
+    // - `global[name]`: writable + configurable, non-enumerable
+    // - `ctor.prototype`: non-writable, non-enumerable, non-configurable
+    // - `proto.constructor`: writable + configurable, non-enumerable
+    self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
+    self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
+    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    Ok(())
   }
 
   fn define_data_property_with_attrs(
@@ -1734,13 +1784,14 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     &mut self,
     name: &str,
     length: u32,
-    _call: NativeHostFunction<Self, Host>,
-    construct: NativeHostFunction<Self, Host>,
+    call: NativeHostFunction<Self, Host>,
+    _construct: NativeHostFunction<Self, Host>,
   ) -> Result<Self::JsValue, Self::Error> {
-    // The legacy heap-only runtime does not model `[[Construct]]` separately. Preserve existing
-    // behavior by treating constructors as plain callables and ignoring the "illegal call" stub.
+    // `webidl_js_runtime::VmJsRuntime` is a heap-only adapter that cannot execute JS source and does
+    // not model `[[Construct]]`. Keep the migration shim spec-shaped by installing the `[[Call]]`
+    // handler (typically `Illegal constructor`) and ignoring the constructor initializer.
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_function(
-      self, name, length, construct,
+      self, name, length, call,
     )
   }
 

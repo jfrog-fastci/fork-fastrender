@@ -86,7 +86,7 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    if args.len() == 1 && (matches!(args[0], Value::String(_))) {
+    if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -108,7 +108,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() == 1 && (matches!(args[0], Value::Number(_))) {
+    } else if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::Number(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -186,7 +186,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
+    } else if args.len() >= 2 && args.len() <= 2 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -216,7 +216,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
+    } else if args.len() >= 2 && args.len() <= 2 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {

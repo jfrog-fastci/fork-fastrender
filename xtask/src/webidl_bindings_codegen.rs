@@ -4956,7 +4956,7 @@ fn write_constructor_wrapper(
 ) -> Result<()> {
   let fn_name = ctor_wrapper_fn_name(interface);
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, _this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   if overloads.len() == 1 {
@@ -5313,11 +5313,11 @@ fn emit_ctor_overload_call(
     out.push_str(&format!("  converted_args.push({expr});\n"));
   }
   out.push_str(&format!(
-    "  let result = host.call_operation(rt, None, {iface_lit}, \"constructor\", {overload_idx}, converted_args)?;\n",
+    "  let _ = host.call_operation(rt, Some(this), {iface_lit}, \"constructor\", {overload_idx}, converted_args)?;\n",
     iface_lit = rust_string_literal(interface),
     overload_idx = overload_idx
   ));
-  out.push_str("  binding_value_to_js::<Host, R>(rt, result)\n");
+  out.push_str("  Ok(rt.js_undefined())\n");
   out.push_str("}\n");
   out
 }
@@ -5485,7 +5485,12 @@ fn emit_args_len_check(args_ident: &str, required: usize, max: Option<usize>) ->
   match max {
     Some(max) => {
       if required == max {
-        format!("{args_ident}.len() == {required}")
+        if required == 0 {
+          // Avoid generating `len() >= 0` (always true) in the common range-check form.
+          format!("{args_ident}.len() == 0")
+        } else {
+          format!("{args_ident}.len() >= {required} && {args_ident}.len() <= {max}")
+        }
       } else if required == 0 {
         // `len() >= 0` is always true for `usize` and triggers `unused_comparisons`.
         format!("{args_ident}.len() <= {max}")

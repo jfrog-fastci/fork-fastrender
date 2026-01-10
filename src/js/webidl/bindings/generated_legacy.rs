@@ -332,7 +332,7 @@ pub mod window {
   fn event_target_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -341,9 +341,15 @@ pub mod window {
   {
     {
       let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result =
-        host.call_operation(rt, None, "EventTarget", "constructor", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+      let _ = host.call_operation(
+        rt,
+        Some(this),
+        "EventTarget",
+        "constructor",
+        0,
+        converted_args,
+      )?;
+      Ok(rt.js_undefined())
     }
   }
 
@@ -464,24 +470,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -530,7 +518,7 @@ pub mod window {
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -561,8 +549,8 @@ pub mod window {
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
-      let result = host.call_operation(rt, None, "URL", "constructor", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+      let _ = host.call_operation(rt, Some(this), "URL", "constructor", 0, converted_args)?;
+      Ok(rt.js_undefined())
     }
   }
 
@@ -928,7 +916,7 @@ pub mod window {
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -1030,15 +1018,15 @@ pub mod window {
           }
         }
       });
-      let result = host.call_operation(
+      let _ = host.call_operation(
         rt,
-        None,
+        Some(this),
         "URLSearchParams",
         "constructor",
         0,
         converted_args,
       )?;
-      binding_value_to_js::<Host, R>(rt, result)
+      Ok(rt.js_undefined())
     }
   }
 
@@ -1804,7 +1792,7 @@ pub mod worker {
   fn event_target_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -1813,9 +1801,15 @@ pub mod worker {
   {
     {
       let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result =
-        host.call_operation(rt, None, "EventTarget", "constructor", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+      let _ = host.call_operation(
+        rt,
+        Some(this),
+        "EventTarget",
+        "constructor",
+        0,
+        converted_args,
+      )?;
+      Ok(rt.js_undefined())
     }
   }
 
@@ -1936,24 +1930,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2002,7 +1978,7 @@ pub mod worker {
   fn u_r_l_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -2033,8 +2009,8 @@ pub mod worker {
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
-      let result = host.call_operation(rt, None, "URL", "constructor", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
+      let _ = host.call_operation(rt, Some(this), "URL", "constructor", 0, converted_args)?;
+      Ok(rt.js_undefined())
     }
   }
 
@@ -2400,7 +2376,7 @@ pub mod worker {
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    _this: R::JsValue,
+    this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
@@ -2502,15 +2478,15 @@ pub mod worker {
           }
         }
       });
-      let result = host.call_operation(
+      let _ = host.call_operation(
         rt,
-        None,
+        Some(this),
         "URLSearchParams",
         "constructor",
         0,
         converted_args,
       )?;
-      binding_value_to_js::<Host, R>(rt, result)
+      Ok(rt.js_undefined())
     }
   }
 
