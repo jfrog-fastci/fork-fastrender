@@ -105,6 +105,48 @@ fn generated_webidl_bindings_legacy_still_match_golden() {
 }
 
 #[test]
+fn vmjs_overload_dispatch_does_not_emit_usize_len_ge_zero_checks() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  // Exercise a 0-arg overload alongside a 1-arg overload (similar to `Window.alert`).
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      undefined bar();
+      undefined bar(DOMString s);
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  assert!(
+    !out.contains("len() >= 0"),
+    "vm-js backend should not emit useless `args.len() >= 0` checks (usize is always >= 0)"
+  );
+  assert!(
+    out.contains("args.is_empty()") || out.contains("args.len() == 0"),
+    "expected 0-arg overload dispatch to use an `args is empty` check"
+  );
+}
+
+#[test]
 fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()

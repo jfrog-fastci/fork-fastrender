@@ -6,8 +6,9 @@
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
-  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
+  use webidl_vm_js::host_from_hooks;
 
+  #[allow(dead_code)]
   fn to_int32_f64(n: f64) -> i32 {
     if !n.is_finite() || n == 0.0 {
       return 0;
@@ -25,6 +26,7 @@ pub mod window {
     }
   }
 
+  #[allow(dead_code)]
   fn to_uint32_f64(n: f64) -> u32 {
     if !n.is_finite() || n == 0.0 {
       return 0;
@@ -84,7 +86,7 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::String(_))) {
+    if args.len() == 1 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -106,7 +108,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::Number(_))) {
+    } else if args.len() == 1 && (matches!(args[0], Value::Number(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -184,7 +186,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() >= 2 && args.len() <= 2 && (matches!(args[0], Value::String(_))) {
+    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
@@ -214,7 +216,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() >= 2 && args.len() <= 2 && (matches!(args[0], Value::String(_))) {
+    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
