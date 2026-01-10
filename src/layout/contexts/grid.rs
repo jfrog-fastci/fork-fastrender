@@ -822,7 +822,7 @@ fn constraints_from_taffy(
   _viewport_size: crate::geometry::Size,
   mut known: taffy::geometry::Size<Option<f32>>,
   available: taffy::geometry::Size<taffy::style::AvailableSpace>,
-  inline_percentage_base: Option<f32>,
+  _inline_percentage_base: Option<f32>,
 ) -> LayoutConstraints {
   // Taffy can probe leaf nodes with "tiny" definite constraints (0px/1px) when it really means
   // "unknown"/unconstrained. Our integration treats these as indefinite; normalize known sizes in
@@ -891,7 +891,14 @@ fn constraints_from_taffy(
       taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
       _ => None,
     })
-    .or(inline_percentage_base);
+    // When the grid area width is not definite (e.g. intrinsic sizing probes like min/max-content),
+    // percentages on grid items must behave as if the containing block is indefinite, i.e. the
+    // percentage can't be resolved and should be treated as `auto` per CSS Sizing.
+    //
+    // Do not fall back to the grid container's percentage base here, otherwise values like
+    // `width: 100%` will resolve against the container during intrinsic measurement and can force
+    // tracks (notably `fit-content(<percentage>)`) to consume the full container width.
+    ;
   constraints
 }
 
@@ -3243,6 +3250,33 @@ impl GridFormattingContext {
     }
 
     if containing_grid.is_some() {
+      // CSS Grid track sizing treats percentage-based preferred sizes as `auto` when the grid
+      // area's size is indefinite. (Percentages depend on the final track size, and resolving
+      // them early can create a cyclic dependency that collapses sibling tracks; this pattern
+      // occurs on apnews.com where a `width: 100%` grid item lives in a `fit-content(<percentage>)`
+      // column.)
+      //
+      // Taffy, however, will eagerly resolve percentage `width` values against whatever available
+      // inline size it sees during track sizing. For leaf grid items (non-grid descendants in the
+      // Taffy tree), represent percentage widths as `auto` so the track sizing algorithm queries
+      // intrinsic sizes instead. These leaf items are re-laid out later via our own formatting
+      // contexts; that layout pass still sees the authored percentage `width` and can resolve it
+      // against the now-definite grid area width.
+      if !is_grid_node
+        && style
+          .width
+          .as_ref()
+          .is_some_and(crate::style::values::Length::has_percentage)
+        && taffy_style.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
+      {
+        taffy_style.size.width = Dimension::auto();
+        if matches!(taffy_style.justify_self, Some(taffy::style::AlignItems::Stretch)) {
+          // `stretch` only stretches auto-sized items. Since the authored size is non-auto (a
+          // percentage), fall back to `start` to match CSS behaviour.
+          taffy_style.justify_self = Some(convert_item_alignment(AlignItems::Start, PhysicalAxis::X));
+        }
+      }
+
       // Auto margins override alignment per-axis; map them to self-alignment to keep grid items centered or pushed.
       let inline_start_auto = if inline_is_horizontal_item {
         if inline_positive_item {
@@ -3882,8 +3916,15 @@ impl GridFormattingContext {
   fn grid_track_has_calc_percentage(track: &GridTrack) -> bool {
     use crate::style::values::LengthUnit;
     match track {
-      GridTrack::Length(len) | GridTrack::FitContent(len) => {
-        len.unit == LengthUnit::Calc && len.has_percentage()
+      GridTrack::Length(len) => len.unit == LengthUnit::Calc && len.has_percentage(),
+      // `fit-content(<percentage>)` needs the grid container size to resolve the percentage clamp.
+      // When the container size is treated as indefinite, Taffy falls back to an infinite clamp,
+      // allowing the track to consume all available space and collapsing sibling tracks.
+      //
+      // Patch the template to resolve these percent clamps against a definite content-box size
+      // when we have one (otherwise treat as `auto`, per CSS Grid rules for percentage tracks).
+      GridTrack::FitContent(len) => {
+        (len.unit == LengthUnit::Calc && len.has_percentage()) || len.unit == LengthUnit::Percent
       }
       GridTrack::MinMax(min, max) => {
         Self::grid_track_has_calc_percentage(min) || Self::grid_track_has_calc_percentage(max)
@@ -3916,18 +3957,19 @@ impl GridFormattingContext {
     has_calc_percentage(&style.grid_row_gap) || has_calc_percentage(&style.grid_column_gap)
   }
 
-  /// Patch root grid track definitions so `calc()` values mixing percentages and lengths are
-  /// resolved against a definite grid container size when available.
+  /// Patch root grid track definitions (and gap sizes) so percentage-based sizing functions that
+  /// Taffy cannot directly resolve are converted into absolute pixel lengths when the grid
+  /// container’s content box size is definite.
   ///
-  /// Taffy track sizing supports percentages but not arbitrary `calc()` expressions. Our style
-  /// conversion previously fell back to `Length::to_px()` for unresolved `calc(%)` values, which
-  /// treats the percentage term as a raw number and can produce negative track sizes like
-  /// `calc(100% - 40px - 320px) -> -260px`. This cascades into collapsed tracks and wildly
-  /// misplaced grid items.
+  /// This handles:
+  /// - `calc()` expressions mixing percentages and lengths (Taffy does not support these directly).
+  /// - `fit-content(<percentage>)` clamps, which Taffy resolves via the container size; if the
+  ///   container size is treated as indefinite, the clamp becomes infinite and can collapse
+  ///   sibling tracks.
   ///
-  /// When we know the grid container’s definite content-box size in a given axis, resolve those
-  /// `calc(%)` tracks to an absolute pixel length. When the base is not definite, treat them as
-  /// `auto` (CSS Grid treats percentages as auto when the container size is indefinite).
+  /// When we know the grid container’s definite content-box size in a given axis, resolve these
+  /// tracks to an absolute pixel length. When the base is not definite, treat them as `auto`
+  /// (CSS Grid treats percentages as auto when the container size is indefinite).
   fn patch_root_calc_percentage_tracks(
     &self,
     taffy: &mut TaffyTree<*const BoxNode>,
@@ -4231,7 +4273,9 @@ impl GridFormattingContext {
   ) -> Option<LengthPercentage> {
     use crate::style::values::LengthUnit;
     match length.unit {
-      LengthUnit::Percent => Some(LengthPercentage::percent(length.value / 100.0)),
+      LengthUnit::Percent => percentage_base.map(|base| {
+        LengthPercentage::length((base * (length.value / 100.0)).max(0.0))
+      }),
       LengthUnit::Calc if length.has_percentage() => self
         .resolve_length_px_with_base(*length, percentage_base, style)
         .map(LengthPercentage::length),
