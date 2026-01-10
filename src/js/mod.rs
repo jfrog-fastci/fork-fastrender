@@ -57,6 +57,7 @@ pub mod vm_dom;
 pub mod window_fetch;
 pub mod window_timers;
 pub mod window_url;
+pub(crate) mod vm_budgets;
 pub mod vm_host;
 pub(crate) mod vm_error_format;
 pub mod streaming;

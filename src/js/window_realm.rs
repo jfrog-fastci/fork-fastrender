@@ -6,6 +6,7 @@ use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
+use crate::js::JsExecutionOptions;
 use crate::js::CurrentScriptStateHandle;
 use crate::render_control;
 use crate::resource::ResourceFetcher;
@@ -163,6 +164,75 @@ impl WindowRealmUserData {
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm_options = VmOptions::default();
+    // Window realms should be interruptible even before full script execution is wired up.
+    // This is separate from the renderer-level interrupt flag: it's resettable per realm.
+    let interrupt_flag = Arc::new(AtomicBool::new(false));
+    vm_options.interrupt_flag = Some(Arc::clone(&interrupt_flag));
+    // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
+    // `Vm::tick()`.
+    vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
+    let vm = Vm::new(vm_options);
+    let heap = Heap::new(config.heap_limits);
+
+    let mut runtime = Box::new(VmJsRuntime::new(vm, heap)?);
+    runtime
+      .vm
+      .set_user_data(WindowRealmUserData::new(config.document_url.clone()));
+    let realm_id = runtime.realm().id();
+
+    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+
+    let (console_sink_id, current_script_source_id, match_media_env_id) =
+      init_window_globals(vm, heap, realm, &config)?;
+    let time_bindings = crate::js::time::install_time_bindings(
+      vm,
+      realm,
+      heap,
+      Arc::clone(&config.clock),
+      config.web_time,
+    )?;
+    Ok(Self {
+      runtime,
+      realm_id,
+      console_sink_id,
+      current_script_source_id,
+      match_media_env_id,
+      time_bindings: Some(time_bindings),
+      interrupt_flag,
+    })
+  }
+
+  pub fn new_with_js_execution_options(
+    mut config: WindowRealmConfig,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self, VmError> {
+    if let Some(max_bytes) = js_execution_options.max_vm_heap_bytes {
+      const MIN_HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+      let mut capped_max = max_bytes;
+
+      // If the process is constrained by `RLIMIT_AS`, keep JS heap usage to a small fraction of that
+      // ceiling so other renderer subsystems still have headroom.
+      #[cfg(target_os = "linux")]
+      {
+        if let Ok((cur, _max)) = crate::process_limits::get_address_space_limit_bytes() {
+          if cur > 0 && cur < u64::MAX {
+            let suggested = cur / 8;
+            if let Ok(suggested) = usize::try_from(suggested) {
+              capped_max = capped_max.min(suggested.max(MIN_HEAP_MAX_BYTES));
+            }
+          }
+        }
+      }
+
+      let gc_threshold = (capped_max / 2).min(capped_max);
+      config.heap_limits = HeapLimits::new(capped_max, gc_threshold);
+    }
+
+    let mut vm_options = VmOptions::default();
+    if let Some(max_stack_depth) = js_execution_options.max_stack_depth {
+      vm_options.max_stack_depth = max_stack_depth;
+    }
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag: it's resettable per realm.
     let interrupt_flag = Arc::new(AtomicBool::new(false));

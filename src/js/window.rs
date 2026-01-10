@@ -3,13 +3,14 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
+use crate::js::vm_budgets::vm_budget_for_js_run;
 use crate::js::window_realm::{
   register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
-  WindowFetchBindings, WindowFetchEnv,
+  install_window_timers_bindings, DomHost, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome,
+  TaskSource, WindowFetchBindings, WindowFetchEnv,
 };
 use crate::js::{Clock, RealClock};
 use crate::js::vm_error_format;
@@ -33,7 +34,12 @@ pub struct WindowHost {
 
 impl WindowHost {
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
-    Self::new_with_fetcher(dom, document_url, Arc::new(HttpFetcher::new()))
+    Self::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn new_with_fetcher(
@@ -42,7 +48,13 @@ impl WindowHost {
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
     let event_loop = EventLoop::<WindowHostState>::new();
-    Self::new_with_fetcher_and_event_loop(dom, document_url, fetcher, event_loop)
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      fetcher,
+      event_loop,
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn new_with_event_loop(
@@ -50,7 +62,13 @@ impl WindowHost {
     document_url: impl Into<String>,
     event_loop: EventLoop<WindowHostState>,
   ) -> Result<Self> {
-    Self::new_with_fetcher_and_event_loop(dom, document_url, Arc::new(HttpFetcher::new()), event_loop)
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      event_loop,
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn new_with_fetcher_and_event_loop(
@@ -59,8 +77,71 @@ impl WindowHost {
     fetcher: Arc<dyn ResourceFetcher>,
     event_loop: EventLoop<WindowHostState>,
   ) -> Result<Self> {
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      fetcher,
+      event_loop,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  pub fn new_with_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    options: JsExecutionOptions,
+  ) -> Result<Self> {
+    let event_loop = EventLoop::<WindowHostState>::new();
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      event_loop,
+      options,
+    )
+  }
+
+  pub fn new_with_fetcher_and_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    options: JsExecutionOptions,
+  ) -> Result<Self> {
+    let event_loop = EventLoop::<WindowHostState>::new();
+    Self::new_with_fetcher_and_event_loop_and_options(dom, document_url, fetcher, event_loop, options)
+  }
+
+  pub fn new_with_event_loop_and_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    event_loop: EventLoop<WindowHostState>,
+    options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Self::new_with_fetcher_and_event_loop_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      event_loop,
+      options,
+    )
+  }
+
+  pub fn new_with_fetcher_and_event_loop_and_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    mut event_loop: EventLoop<WindowHostState>,
+    options: JsExecutionOptions,
+  ) -> Result<Self> {
+    event_loop.set_queue_limits(options.event_loop_queue_limits);
     let clock = event_loop.clock();
-    let host = WindowHostState::new_with_fetcher_and_clock(dom, document_url, fetcher, clock)?;
+    let host = WindowHostState::new_with_fetcher_and_clock_and_options(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      options,
+    )?;
     Ok(Self { host, event_loop })
   }
 
@@ -119,7 +200,15 @@ impl WindowHost {
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
+      let js_opts = host.js_execution_options;
       let WindowHostState { document, window, .. } = host;
+      {
+        let (vm, heap) = window.vm_and_heap_mut();
+        vm.set_budget(vm_budget_for_js_run(js_opts));
+        if let Err(err) = vm.tick() {
+          return Err(vm_error_format::vm_error_to_error(heap, err));
+        }
+      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
       if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -145,11 +234,17 @@ pub struct WindowHostState {
   document: Box<DocumentHostState>,
   window: WindowRealm,
   _fetch_bindings: WindowFetchBindings,
+  js_execution_options: JsExecutionOptions,
 }
 
 impl WindowHostState {
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
-    Self::new_with_fetcher(dom, document_url, Arc::new(HttpFetcher::new()))
+    Self::new_with_fetcher_and_options(
+      dom,
+      document_url,
+      Arc::new(HttpFetcher::new()),
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn new_with_fetcher(
@@ -158,7 +253,13 @@ impl WindowHostState {
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
     let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
-    Self::new_with_fetcher_and_clock(dom, document_url, fetcher, clock)
+    Self::new_with_fetcher_and_clock_and_options(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      JsExecutionOptions::default(),
+    )
   }
 
   pub fn new_with_fetcher_and_clock(
@@ -167,17 +268,44 @@ impl WindowHostState {
     fetcher: Arc<dyn ResourceFetcher>,
     clock: Arc<dyn Clock>,
   ) -> Result<Self> {
+    Self::new_with_fetcher_and_clock_and_options(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  pub fn new_with_fetcher_and_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
+    Self::new_with_fetcher_and_clock_and_options(dom, document_url, fetcher, clock, js_execution_options)
+  }
+
+  pub fn new_with_fetcher_and_clock_and_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    clock: Arc<dyn Clock>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
     let document_url = document_url.into();
     // The JS bindings store a `dom_source_id` that resolves to a raw pointer in a thread-local
     // registry. That pointer must remain stable for the lifetime of this host, so keep the
     // `DocumentHostState` on the heap.
     let mut document = Box::new(DocumentHostState::new(dom));
     let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
-    let mut window = match WindowRealm::new(
+    let mut window = match WindowRealm::new_with_js_execution_options(
       WindowRealmConfig::new(document_url.clone())
         .with_dom_source_id(dom_source_id)
         .with_current_script_state(document.current_script_state().clone())
         .with_clock(clock),
+      js_execution_options,
     ) {
       Ok(window) => window,
       Err(err) => {
@@ -221,6 +349,7 @@ impl WindowHostState {
       document,
       window,
       _fetch_bindings: fetch_bindings,
+      js_execution_options,
     })
   }
 
@@ -260,6 +389,10 @@ impl WindowHostState {
     &mut self.window
   }
 
+  pub fn js_execution_options(&self) -> JsExecutionOptions {
+    self.js_execution_options
+  }
+
   /// Execute a classic script while integrating Promise jobs into the provided [`EventLoop`]'s
   /// microtask queue.
   ///
@@ -276,7 +409,15 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     with_event_loop(event_loop, || {
+      let js_opts = self.js_execution_options;
       let WindowHostState { document, window, .. } = self;
+      {
+        let (vm, heap) = window.vm_and_heap_mut();
+        vm.set_budget(vm_budget_for_js_run(js_opts));
+        if let Err(err) = vm.tick() {
+          return Err(vm_error_format::vm_error_to_error(heap, err));
+        }
+      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
 
@@ -303,7 +444,15 @@ impl WindowHostState {
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
     with_event_loop(event_loop, || {
+      let js_opts = self.js_execution_options;
       let WindowHostState { document, window, .. } = self;
+      {
+        let (vm, heap) = window.vm_and_heap_mut();
+        vm.set_budget(vm_budget_for_js_run(js_opts));
+        if let Err(err) = vm.tick() {
+          return Err(vm_error_format::vm_error_to_error(heap, err));
+        }
+      }
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result =
         window.exec_script_source_with_host_and_hooks(document.as_mut(), &mut hooks, source);
@@ -728,7 +877,7 @@ mod tests {
     let url = format!("http://{addr}/");
     let server = std::thread::spawn(move || {
       let deadline = Instant::now() + Duration::from_secs(5);
- 
+
       // First request: respond with Set-Cookie so subsequent requests should include it.
       let mut stream = accept_with_deadline(&listener, deadline).expect("accept first request");
       stream
@@ -743,7 +892,7 @@ mod tests {
       stream.write_all(headers.as_bytes()).expect("write headers");
       stream.write_all(body).expect("write body");
       drop(stream);
- 
+
       // Second request must include both the Set-Cookie cookie and the document.cookie cookie.
       let mut stream = accept_with_deadline(&listener, deadline).expect("accept second request");
       stream
@@ -755,7 +904,7 @@ mod tests {
         req2_s.contains("cookie:") && req2_s.contains("a=b") && req2_s.contains("c=d"),
         "expected second fetch request to include cookies a=b and c=d, got:\\n{req2_s}"
       );
- 
+
       let body = b"second";
       let headers = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -764,11 +913,11 @@ mod tests {
       stream.write_all(headers.as_bytes()).expect("write headers");
       stream.write_all(body).expect("write body");
     });
- 
+
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let fetcher = Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let mut host = WindowHost::new_with_fetcher(dom, url, fetcher)?;
- 
+
     host.exec_script(
       r#"
       var g = this;
@@ -787,17 +936,17 @@ mod tests {
         });
       "#,
     )?;
- 
+
     host.run_until_idle(RunLimits {
       max_tasks: 10,
       max_microtasks: 100,
       max_wall_time: Some(Duration::from_secs(5)),
     })?;
- 
+
     if let Some(err) = get_global_prop_utf8(&mut host, "__err") {
       panic!("fetch script errored: {err}");
     }
- 
+
     assert_eq!(
       get_global_prop_utf8(&mut host, "__fetch_text").as_deref(),
       Some("second")
@@ -806,7 +955,7 @@ mod tests {
       get_global_prop_utf8(&mut host, "__cookie").as_deref(),
       Some("a=b; c=d")
     );
- 
+
     server.join().expect("server thread panicked");
     Ok(())
   }

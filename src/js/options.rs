@@ -12,8 +12,9 @@ use super::{QueueLimits, RunLimits};
 /// - VM limits (instruction count, heap budget, stack depth) enforced by the JS engine.
 ///
 /// This struct is the single configuration surface for all of the above *JS-specific* limits. Some
-/// fields are currently host-enforced and others are placeholders until the ecma-rs VM exposes
-/// budgeting hooks.
+/// fields are currently host-enforced and others are enforced by the `vm-js` backend. When FastRender
+/// is built against a different JS engine, VM-specific fields may be treated as best-effort/no-ops
+/// until that backend exposes equivalent budgeting hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsExecutionOptions {
   /// Bounds for how much work can be *queued* in the host event loop.
@@ -27,17 +28,17 @@ pub struct JsExecutionOptions {
   /// Placeholder VM budget: maximum number of VM instructions that may be executed before the VM is
   /// interrupted.
   ///
-  /// Note: This is currently a no-op until the ecma-rs VM exposes an instruction counter hook.
+  /// For the `vm-js` backend, this is enforced as a per-run fuel budget.
   pub max_instruction_count: Option<u64>,
 
-  /// Placeholder VM budget: maximum heap bytes the VM is allowed to allocate.
+  /// Maximum heap bytes the VM is allowed to allocate.
   ///
-  /// Note: This is currently a no-op until the ecma-rs VM exposes heap limiting.
+  /// For the `vm-js` backend, this is enforced via the heap's hard [`vm_js::HeapLimits`].
   pub max_vm_heap_bytes: Option<usize>,
 
-  /// Placeholder VM budget: maximum allowed stack depth for JS execution.
+  /// Maximum allowed stack depth for JS execution.
   ///
-  /// Note: This is currently a no-op until the ecma-rs VM exposes stack depth checks.
+  /// For the `vm-js` backend, this is enforced via [`vm_js::VmOptions::max_stack_depth`].
   pub max_stack_depth: Option<usize>,
 }
 
@@ -77,11 +78,10 @@ impl Default for JsExecutionOptions {
       // bounded. Embedders can raise this when targeting real-world pages.
       max_script_bytes: 2 * 1024 * 1024,
 
-      // VM budgets (placeholders for ecma-rs).
+      // VM budgets (enforced by the `vm-js` backend).
       max_instruction_count: Some(50_000_000),
       max_vm_heap_bytes: Some(64 * 1024 * 1024),
       max_stack_depth: Some(1024),
     }
   }
 }
-
