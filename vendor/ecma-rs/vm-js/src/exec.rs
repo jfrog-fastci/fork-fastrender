@@ -1980,6 +1980,10 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     block: &BlockStmt,
   ) -> Result<Completion, VmError> {
+    if block.body.is_empty() {
+      return Ok(Completion::empty());
+    }
+
     let outer = self.env.lexical_env;
     let block_env = scope.env_create(Some(outer))?;
     self.env.set_lexical_env(scope.heap_mut(), block_env);
