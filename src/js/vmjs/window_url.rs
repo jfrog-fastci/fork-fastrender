@@ -987,6 +987,22 @@ fn urlsp_has_native(
   Ok(Value::Bool(has))
 }
 
+fn urlsp_sort_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let params = require_params(state, this)?;
+    params.sort().map_err(map_url_error)?;
+    Ok(Value::Undefined)
+  })
+}
+
 fn urlsp_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1021,6 +1037,22 @@ fn urlsp_set_native(
   )?;
   params.set(&name, &value).map_err(map_url_error)?;
   Ok(Value::Undefined)
+}
+
+fn urlsp_size_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let params = require_params(state, this)?;
+    let size = params.size().map_err(map_url_error)?;
+    Ok(Value::Number(size as f64))
+  })
 }
 
 fn urlsp_to_string_native(
@@ -1264,6 +1296,16 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     2,
     realm_slot,
   )?;
+  install_accessor(
+    vm,
+    &mut scope,
+    realm,
+    params_proto,
+    "size",
+    urlsp_size_get_native,
+    None,
+    realm_slot,
+  )?;
   install_method(
     vm,
     &mut scope,
@@ -1302,6 +1344,16 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     "has",
     urlsp_has_native,
     1,
+    realm_slot,
+  )?;
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    params_proto,
+    "sort",
+    urlsp_sort_native,
+    0,
     realm_slot,
   )?;
   install_method(
@@ -1368,6 +1420,13 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
+  fn get_number(value: Value) -> f64 {
+    match value {
+      Value::Number(n) => n,
+      other => panic!("expected number value, got {other:?}"),
+    }
+  }
+
   #[test]
   fn url_bindings_are_isolated_per_realm_and_gc_sweep_is_safe() -> Result<(), VmError> {
     let mut realm1 = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
@@ -1396,6 +1455,22 @@ mod tests {
     // Teardown should remove per-realm persistent roots without panicking.
     realm1.teardown();
     realm2.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_search_params_size_and_sort_are_exposed() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let size = realm.exec_script("new URLSearchParams('a=1&a=2').size")?;
+    assert_eq!(get_number(size), 2.0);
+
+    let sorted = realm.exec_script(
+      "const p = new URLSearchParams('b=1&a=2&a=1'); p.sort(); p.toString()",
+    )?;
+    assert_eq!(get_string(realm.heap(), sorted), "a=2&a=1&b=1");
+
+    realm.teardown();
     Ok(())
   }
 }
