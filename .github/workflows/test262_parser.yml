@@ -50,13 +50,13 @@ jobs:
 
           bash scripts/ci_init_ecma_rs_submodule.sh
 
-          if ! grep -q "test262/data" vendor/ecma-rs/.gitmodules; then
+          if ! grep -q "vendor/ecma-rs/test262/data" .gitmodules; then
             echo "::error::Missing test262 parser corpus submodule entry (vendor/ecma-rs/test262/data). Update the ecma-rs submodule pointer to a revision that includes it." >&2
             exit 1
           fi
 
           # Only initialize the parser corpus, not all optional nested submodules.
-          git -C vendor/ecma-rs submodule update --init test262/data
+          git submodule update --init vendor/ecma-rs/test262/data
 
           if [ ! -d vendor/ecma-rs/test262/data ]; then
             echo "::error::test262 parser corpus directory vendor/ecma-rs/test262/data is missing after submodule init." >&2
