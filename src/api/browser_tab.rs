@@ -1459,6 +1459,36 @@ impl BrowserTabHost {
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
+    // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script, but
+    // only when the JS execution context stack is empty.
+    //
+    // This matters even when the script ultimately does not run (e.g. empty inline scripts), as the
+    // checkpoint can mutate the document (including this `<script>` element).
+    if spec.parser_inserted && self.js_execution_depth.get() == 0 {
+      event_loop.perform_microtask_checkpoint(self)?;
+    }
+
+    // HTML: "prepare the script element" can return early without executing the script (e.g.
+    // unsupported `type`, empty inline script). In that case the spec clears the "parser document"
+    // internal slot (and may set force-async) so future mutations/insertion treat the element like a
+    // dynamic script.
+    //
+    // Note: we do this *before* CSP handling so empty inline scripts early-out before CSP checks
+    // (matching the spec's step ordering).
+    let should_run = self.mutate_dom(|dom| {
+      (
+        crate::js::prepare_script_element_dom2(dom, node_id, &spec),
+        /* changed */ false,
+      )
+    });
+    if !should_run {
+      let discovered =
+        self
+          .scheduler
+          .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
+      return Ok(discovered.id);
+    }
+
     fn trim_ascii_whitespace(value: &str) -> &str {
       value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
     }
@@ -1521,12 +1551,6 @@ impl BrowserTabHost {
           }
         }
       }
-    }
-
-    // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script, but
-    // only when the JS execution context stack is empty.
-    if spec.parser_inserted && self.js_execution_depth.get() == 0 {
-      event_loop.perform_microtask_checkpoint(self)?;
     }
 
     let spec_for_table = spec.clone();
@@ -5422,6 +5446,52 @@ mod tests {
         "pre".to_string(),
         "microtask:A".to_string()
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn empty_parser_inserted_script_can_execute_after_later_text_mutation_via_best_effort_scheduling() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) =
+      build_host("<!doctype html><html><body><script id=s></script></body></html>", Rc::clone(&log))?;
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (script, spec) = discovered.pop().unwrap();
+
+    host.register_and_schedule_script(script, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+
+    // Empty parser-inserted scripts must not execute during preparation.
+    assert!(log.borrow().is_empty());
+
+    let node = host.dom().node(script);
+    assert!(
+      !node.script_already_started,
+      "empty parser-inserted script must not be marked already started"
+    );
+    assert!(
+      !node.script_parser_document,
+      "empty parser-inserted script must clear parser document so later mutations can run it"
+    );
+    assert!(
+      node.script_force_async,
+      "empty parser-inserted script must set force-async so later src mutation is async-by-default"
+    );
+
+    // Simulate a later DOM mutation that provides inline script text.
+    host.mutate_dom(|dom| {
+      let text = dom.create_text("A");
+      dom.append_child(script, text).expect("append_child");
+      ((), true)
+    });
+
+    host.discover_dynamic_scripts(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()]
     );
     Ok(())
   }
