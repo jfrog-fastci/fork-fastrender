@@ -22,6 +22,7 @@ mod box_shadow_paint;
 mod canvas_background_propagation_test;
 mod viewport_scrollbar_gutter_test;
 mod canvas_test;
+mod opacity_layer_rounding_test;
 mod color_bitmap_glyph_test;
 mod color_font_cache_regression;
 mod color_font_colr_v0;

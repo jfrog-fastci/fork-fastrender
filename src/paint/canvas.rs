@@ -55,7 +55,6 @@ use crate::geometry::Size;
 use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::display_list::GlyphInstance;
 use crate::paint::display_list::TextItem;
-use crate::paint::gradient::{BAYER_4X4_XY, GradientLut};
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context};
 use crate::paint::text_rasterize::{
   concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState, TextStroke,
@@ -3928,13 +3927,24 @@ pub(crate) fn composite_layer_into_pixmap(
   origin: (i32, i32),
   clip: Option<&Mask>,
 ) {
-  fn composite_source_over_dither(
+  fn composite_source_over(
     target: &mut Pixmap,
     layer: &Pixmap,
     opacity: f32,
     origin: (i32, i32),
     clip: Option<&Mask>,
   ) {
+    // Match Chrome/Skia: the layer opacity is quantized to an 8-bit alpha (using rounding) and
+    // then applied to the premultiplied source pixels using integer `mul/255` arithmetic.
+    //
+    // Importantly, we do *not* apply ordered dithering here. Chrome's `opacity` compositing (e.g.
+    // `opacity: 0.3` over white) produces uniform pixels, whereas ordered dither introduces a
+    // checkerboard ±1 pattern that dominates strict page diffs.
+    let opacity_u8 = (opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+    if opacity_u8 == 0 {
+      return;
+    }
+
     let dst_w = target.width() as i32;
     let dst_h = target.height() as i32;
     if dst_w <= 0 || dst_h <= 0 {
@@ -3973,7 +3983,6 @@ pub(crate) fn composite_layer_into_pixmap(
     let dst_pixels = target.pixels_mut();
     let src_pixels = layer.pixels();
 
-    let inv_255 = 1.0 / 255.0;
     for row in 0..copy_h {
       let dst_y = dst_y0 as usize + row;
       let src_y = src_y0 + row;
@@ -3983,51 +3992,47 @@ pub(crate) fn composite_layer_into_pixmap(
       let dst_row = &mut dst_pixels[dst_row_start..dst_row_start + copy_w];
       let src_row = &src_pixels[src_row_start..src_row_start + copy_w];
 
-      let y_mod = dst_y & 3;
-      let mut x_mod = (dst_x0 as usize) & 3;
       for (col, (dst_px, src_px)) in dst_row.iter_mut().zip(src_row.iter()).enumerate() {
-        let mut sa = src_px.alpha() as f32 * opacity;
-        if sa <= 0.0 {
-          x_mod = (x_mod + 1) & 3;
-          continue;
-        }
-
-        let mut sr = src_px.red() as f32 * opacity;
-        let mut sg = src_px.green() as f32 * opacity;
-        let mut sb = src_px.blue() as f32 * opacity;
-
+        let mut scale = opacity_u8 as u16;
         if let Some(clip_data) = clip_data {
           let m = clip_data[dst_y * clip_stride + dst_x0 as usize + col];
           if m == 0 {
-            x_mod = (x_mod + 1) & 3;
             continue;
           }
           if m != 255 {
-            let mf = m as f32 * inv_255;
-            sr *= mf;
-            sg *= mf;
-            sb *= mf;
-            sa *= mf;
-            if sa <= 0.0 {
-              x_mod = (x_mod + 1) & 3;
+            scale = (scale * m as u16) / 255u16;
+            if scale == 0 {
               continue;
             }
           }
         }
 
-        let inv_sa = 1.0 - (sa * inv_255).clamp(0.0, 1.0);
-        let out = [
-          sr + dst_px.red() as f32 * inv_sa,
-          sg + dst_px.green() as f32 * inv_sa,
-          sb + dst_px.blue() as f32 * inv_sa,
-          sa + dst_px.alpha() as f32 * inv_sa,
-        ];
+        let sr = (src_px.red() as u16 * scale) / 255u16;
+        let sg = (src_px.green() as u16 * scale) / 255u16;
+        let sb = (src_px.blue() as u16 * scale) / 255u16;
+        let sa = (src_px.alpha() as u16 * scale) / 255u16;
+        if sa == 0 {
+          continue;
+        }
 
-        let idx = y_mod * 4 + x_mod;
-        let m = BAYER_4X4_XY[idx] as f32;
-        let dither = m * 0.0625 + 0.03125;
-        *dst_px = GradientLut::quantize_dither(out, dither);
-        x_mod = (x_mod + 1) & 3;
+        let inv_sa = 255u16 - sa;
+        let dr = dst_px.red() as u16;
+        let dg = dst_px.green() as u16;
+        let db = dst_px.blue() as u16;
+        let da = dst_px.alpha() as u16;
+
+        let out_a = sa + (da * inv_sa) / 255u16;
+        let out_r = sr + (dr * inv_sa) / 255u16;
+        let out_g = sg + (dg * inv_sa) / 255u16;
+        let out_b = sb + (db * inv_sa) / 255u16;
+
+        let out_a_u8 = out_a.min(255) as u8;
+        let clamp = out_a_u8 as u16;
+        let out_r_u8 = out_r.min(clamp).min(255) as u8;
+        let out_g_u8 = out_g.min(clamp).min(255) as u8;
+        let out_b_u8 = out_b.min(clamp).min(255) as u8;
+        *dst_px = PremultipliedColorU8::from_rgba(out_r_u8, out_g_u8, out_b_u8, out_a_u8)
+          .unwrap_or(PremultipliedColorU8::TRANSPARENT);
       }
     }
   }
@@ -4038,7 +4043,7 @@ pub(crate) fn composite_layer_into_pixmap(
   }
 
   if blend_mode == SkiaBlendMode::SourceOver {
-    composite_source_over_dither(target, layer, opacity, origin, clip);
+    composite_source_over(target, layer, opacity, origin, clip);
     return;
   }
 
@@ -5438,34 +5443,26 @@ mod tests {
   }
 
   #[test]
-  fn composite_layer_source_over_dithers_after_blend() {
-    let mut dst = new_pixmap(4, 1).expect("pixmap");
-    let dst_px = PremultipliedColorU8::from_rgba(200, 10, 30, 255).expect("premultiplied dst");
+  fn composite_layer_source_over_matches_chrome_rounding_without_dither() {
+    let mut dst = new_pixmap(4, 4).expect("pixmap");
+    let dst_px = PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("premultiplied dst");
     dst.pixels_mut().fill(dst_px);
 
-    let mut layer = new_pixmap(4, 1).expect("pixmap");
-    let src_px = PremultipliedColorU8::from_rgba(0, 0, 0, 1).expect("premultiplied src");
+    let mut layer = new_pixmap(4, 4).expect("pixmap");
+    let src_px = PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("premultiplied src");
     layer.pixels_mut().fill(src_px);
 
-    composite_layer_into_pixmap(&mut dst, &layer, 1.0, SkiaBlendMode::SourceOver, (0, 0), None);
+    composite_layer_into_pixmap(&mut dst, &layer, 0.3, SkiaBlendMode::SourceOver, (0, 0), None);
 
-    let inv_255 = 1.0 / 255.0;
-    let sa = src_px.alpha() as f32 * inv_255;
-    let inv = 1.0 - sa;
-    let out = [
-      src_px.red() as f32 + dst_px.red() as f32 * inv,
-      src_px.green() as f32 + dst_px.green() as f32 * inv,
-      src_px.blue() as f32 + dst_px.blue() as f32 * inv,
-      src_px.alpha() as f32 + dst_px.alpha() as f32 * inv,
-    ];
-
-    let dither0 = BAYER_4X4_XY[0] as f32 * 0.0625 + 0.03125;
-    let dither3 = BAYER_4X4_XY[3] as f32 * 0.0625 + 0.03125;
-    let expected0 = GradientLut::quantize_dither(out, dither0);
-    let expected3 = GradientLut::quantize_dither(out, dither3);
-
-    assert_eq!(dst.pixel(0, 0).expect("pixel"), expected0);
-    assert_eq!(dst.pixel(3, 0).expect("pixel"), expected3);
-    assert_ne!(expected0, expected3, "expected the dither pattern to differ across x");
+    for y in 0..4 {
+      for x in 0..4 {
+        let p = dst.pixel(x, y).expect("pixel");
+        assert_eq!(
+          (p.red(), p.green(), p.blue(), p.alpha()),
+          (178, 178, 178, 255),
+          "unexpected pixel at ({x}, {y})"
+        );
+      }
+    }
   }
 }
