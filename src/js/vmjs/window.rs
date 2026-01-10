@@ -1730,6 +1730,43 @@ mod tests {
   }
 
   #[test]
+  fn onunhandledrejection_handler_runs_and_return_false_cancels() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "this.__called = false;\n\
+         this.__default_prevented = false;\n\
+         this.__reason = undefined;\n\
+         this.onunhandledrejection = function (e) {\n\
+           this.__called = true;\n\
+           this.__reason = e.reason;\n\
+           // Read `defaultPrevented` after dispatch completes.\n\
+           queueMicrotask(() => { this.__default_prevented = e.defaultPrevented; });\n\
+           return false;\n\
+         };\n\
+         Promise.reject('x');\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    assert!(matches!(
+      get_global_prop(&mut host, "__default_prevented"),
+      Value::Bool(true)
+    ));
+
+    Ok(())
+  }
+
+  #[test]
   fn promise_rejection_events_use_promise_rejection_event_and_are_read_only() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

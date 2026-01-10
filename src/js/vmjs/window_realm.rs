@@ -6171,7 +6171,7 @@ fn event_target_dispatch_event_native(
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_ref() };
-  let result = web_events::dispatch_event(
+  let mut result = web_events::dispatch_event(
     resolved.target_id,
     &mut rust_event,
     dom,
@@ -6179,6 +6179,72 @@ fn event_target_dispatch_event_native(
     &mut invoker,
   )
   .map_err(|_err| VmError::TypeError("EventTarget.dispatchEvent failed"))?;
+
+  // Window promise rejection event handlers (`onunhandledrejection` / `onrejectionhandled`).
+  //
+  // These are special-cased until we have a more complete IDL-driven EventHandler attribute
+  // implementation.
+  if matches!(resolved.target_id, web_events::EventTargetId::Window) {
+    let handler_name = match rust_event.type_.as_str() {
+      "unhandledrejection" => Some("onunhandledrejection"),
+      "rejectionhandled" => Some("onrejectionhandled"),
+      _ => None,
+    };
+    if let Some(handler_name) = handler_name {
+      let handler_key = alloc_key(scope, handler_name)?;
+      if let Some(handler) = scope
+        .heap()
+        .object_get_own_data_property_value(resolved.window_obj, &handler_key)?
+      {
+        if scope.heap().is_callable(handler).unwrap_or(false) {
+          // Expose `currentTarget`/`eventPhase` while the handler runs.
+          rust_event.current_target = Some(web_events::EventTargetId::Window);
+          rust_event.event_phase = web_events::EventPhase::AtTarget;
+          invoker.sync_event_object(&rust_event)?;
+
+          // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
+          let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+          ACTIVE_EVENTS.with(|events| {
+            events
+              .borrow_mut()
+              .insert(event_id, NonNull::from(&mut rust_event));
+          });
+          let _active_guard = ActiveDomEventGuard { event_id };
+
+          let event_id_key = alloc_key(scope, EVENT_ID_KEY)?;
+          scope.define_property(event_obj, event_id_key, data_desc(Value::Number(event_id as f64)))?;
+
+          let call_result = vm.call_with_host_and_hooks(
+            vm_host,
+            scope,
+            hooks,
+            handler,
+            Value::Object(resolved.window_obj),
+            &[event_value],
+          );
+
+          match call_result {
+            Ok(ret) => {
+              // HTML EventHandler semantics: returning `false` cancels the event.
+              if matches!(ret, Value::Bool(false)) {
+                rust_event.prevent_default();
+              }
+            }
+            Err(err) => {
+              // Per web platform behavior, exceptions from event handlers should not abort
+              // `dispatchEvent`.
+              invoker.report_listener_exception(err);
+            }
+          }
+
+          // Restore final state.
+          rust_event.event_phase = web_events::EventPhase::None;
+          rust_event.current_target = None;
+          result = !rust_event.default_prevented;
+        }
+      }
+    }
+  }
 
   // Persist final per-dispatch state.
   {
