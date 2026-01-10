@@ -1,6 +1,9 @@
 use fastrender::dom::DomNode;
 use fastrender::dom2::{Document, NodeId, NodeKind};
-use fastrender::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion;
+use fastrender::js::dom_integration::{
+  prepare_dynamic_script_on_children_changed, prepare_dynamic_script_on_src_attribute_change,
+  prepare_dynamic_scripts_on_subtree_insertion,
+};
 use fastrender::js::{
   ClassicScriptScheduler, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
   ScriptElementEvent, ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
@@ -455,6 +458,8 @@ impl HostState {
               }
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
+                .expect("prepare_dynamic_script_on_children_changed failed");
               for root in insertion_roots {
                 prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
                   .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
@@ -495,6 +500,8 @@ impl HostState {
               }
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
+                .expect("prepare_dynamic_script_on_children_changed failed");
               for root in insertion_roots {
                 prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
                   .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
@@ -528,6 +535,8 @@ impl HostState {
               }
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              prepare_dynamic_script_on_children_changed(host, &mut scheduler, event_loop, parent)
+                .expect("prepare_dynamic_script_on_children_changed failed");
               for root in insertion_roots {
                 prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
                   .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
@@ -540,12 +549,27 @@ impl HostState {
         globals.set(
           "__fastrender_dom_set_attribute",
           Function::new(ctx.clone(), |node: u32, name: String, value: String| {
-            with_env_mut(|host, _event_loop| {
+            with_env_mut(|host, event_loop| {
               let node = host.resolve_node_handle(node).expect("invalid node handle");
-              host
+              let changed = host
                 .dom
                 .set_attribute(node, &name, &value)
                 .expect("setAttribute failed");
+              if !changed {
+                return;
+              }
+
+              if name.eq_ignore_ascii_case("src") {
+                let mut scheduler = std::mem::take(&mut host.script_scheduler);
+                prepare_dynamic_script_on_src_attribute_change(
+                  host,
+                  &mut scheduler,
+                  event_loop,
+                  node,
+                )
+                .expect("prepare_dynamic_script_on_src_attribute_change failed");
+                host.script_scheduler = scheduler;
+              }
             })
           })?,
         )?;

@@ -289,3 +289,111 @@ fn dynamic_script_already_started_prevents_reexecution() -> Result<()> {
   assert_eq!(h.take_log(), vec!["ONCE".to_string()]);
   Ok(())
 }
+
+#[test]
+fn empty_dynamic_inline_script_executes_when_text_added_after_insertion() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      var s = document.createElement("script");
+      s.setAttribute("id", "dyn");
+      document.body.appendChild(s);
+      console.log("after-append");
+    "#,
+  )?;
+  assert_eq!(h.take_log(), vec!["after-append".to_string()]);
+
+  // Append text after insertion: this should still cause the script to be prepared/executed.
+  h.exec_script(
+    r#"
+      s.appendChild(document.createTextNode(
+        "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('LATE');"
+      ));
+      console.log("after-text");
+    "#,
+  )?;
+  assert_eq!(h.take_log(), vec!["after-text".to_string()]);
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(h.take_log(), vec!["LATE".to_string()]);
+
+  // Further child mutations must not re-run an already-started script.
+  h.exec_script(
+    r#"
+      s.appendChild(document.createTextNode("console.log('AGAIN');"));
+    "#,
+  )?;
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert!(
+    h.take_log().is_empty(),
+    "already-started scripts must not execute on subsequent mutations"
+  );
+  Ok(())
+}
+
+#[test]
+fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+  h.set_external_script_sources(HashMap::from([
+    (
+      "/a.js".to_string(),
+      "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('A');".to_string(),
+    ),
+    (
+      "/b.js".to_string(),
+      "console.log('B');".to_string(),
+    ),
+  ]));
+
+  h.exec_script(
+    r#"
+      var s = document.createElement("script");
+      s.setAttribute("id", "dyn");
+      document.body.appendChild(s);
+      console.log("after-append");
+    "#,
+  )?;
+  assert_eq!(h.take_log(), vec!["after-append".to_string()]);
+
+  // No load should have started yet.
+  assert!(
+    h.complete_external_script("/a.js").is_err(),
+    "expected empty connected scripts to not start loading until src is set"
+  );
+
+  h.exec_script(
+    r#"
+      s.setAttribute("src", "/a.js");
+      console.log("after-src");
+    "#,
+  )?;
+  assert_eq!(h.take_log(), vec!["after-src".to_string()]);
+
+  h.complete_external_script("/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(h.take_log(), vec!["A".to_string()]);
+
+  // Re-setting `src` after execution must not trigger a new load/execution.
+  h.exec_script(
+    r#"
+      s.setAttribute("src", "/b.js");
+      console.log("after-src2");
+    "#,
+  )?;
+  assert_eq!(h.take_log(), vec!["after-src2".to_string()]);
+
+  assert!(
+    h.complete_external_script("/b.js").is_err(),
+    "already-started scripts must not start a new load on src changes"
+  );
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert!(
+    h.take_log().is_empty(),
+    "already-started scripts must not execute after src mutations"
+  );
+  Ok(())
+}
