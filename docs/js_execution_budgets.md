@@ -46,8 +46,14 @@ Some limits must be enforced inside the JS VM:
 - stack depth limits
 
 `JsExecutionOptions` exposes these as fields (`max_instruction_count`, `max_vm_heap_bytes`,
-`max_stack_depth`) but they are currently **placeholders** until the ecma-rs VM exposes budgeting
-hooks.
+`max_stack_depth`). When FastRender is built against the `vm-js` backend, these are enforced:
+
+- `max_instruction_count` → per-run `vm_js::Budget::fuel`
+- `max_vm_heap_bytes` → `vm_js::HeapLimits` (hard heap cap)
+- `max_stack_depth` → `vm_js::VmOptions::max_stack_depth`
+
+FastRender applies a fresh per-run `vm-js` budget at the entry to script execution (for example,
+`WindowRealm::exec_script*`), so an infinite loop like `for(;;){}` cannot run unbounded.
 
 ## How to think about layering
 
