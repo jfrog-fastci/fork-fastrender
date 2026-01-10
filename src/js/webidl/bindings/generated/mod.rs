@@ -1004,6 +1004,59 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn window_alert(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let receiver = None;
+    if args.len() >= 0 && args.len() <= 0 {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Window",
+          "alert",
+          0,
+          &converted_args,
+        )
+      }
+    } else if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::String(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Window",
+          "alert",
+          1,
+          &converted_args,
+        )
+      }
+    } else {
+      Err(rt.throw_type_error("no matching overload for Window.alert"))
+    }
+  }
+
+  #[allow(dead_code)]
   fn window_clear_interval(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1430,6 +1483,8 @@ pub mod window {
       Value::Object(ctor_u_r_l_search_params),
       ctor_link_attrs,
     )?;
+    let func = rt.alloc_native_function(window_alert, None, "alert", 0)?;
+    rt.define_data_property_str(global, "alert", Value::Object(func), global_var_attrs)?;
     let func = rt.alloc_native_function(window_clear_interval, None, "clearInterval", 0)?;
     rt.define_data_property_str(
       global,
