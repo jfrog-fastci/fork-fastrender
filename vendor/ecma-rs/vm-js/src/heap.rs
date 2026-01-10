@@ -2131,24 +2131,45 @@ impl Heap {
   /// ECMAScript `OrdinaryOwnPropertyKeys` / `[[OwnPropertyKeys]]` for ordinary objects.
   ///
   /// Spec: https://tc39.es/ecma262/#sec-ordinaryownpropertykeys
-  pub fn ordinary_own_property_keys(&self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
+  pub fn ordinary_own_property_keys_with_tick(
+    &self,
+    obj: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Vec<PropertyKey>, VmError> {
     let properties = &self.get_object_base(obj)?.properties;
 
     let property_count = properties.len();
+
+    // `[[OwnPropertyKeys]]` can be invoked from native builtins (`Object.keys`,
+    // destructuring/object spread) and can traverse very large property tables. Budget it so the
+    // runtime can still observe fuel/interrupt/deadline limits while enumerating keys.
+    const TICK_EVERY: usize = 1024;
 
     // 1. Array indices (String keys that are array indices) in ascending numeric order.
     let mut index_keys: Vec<(u32, PropertyKey)> = Vec::new();
     index_keys
       .try_reserve_exact(property_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    for prop in properties.iter() {
+    for (i, prop) in properties.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        tick()?;
+      }
       if matches!(prop.key, PropertyKey::String(_)) {
         if let Some(idx) = self.array_index(&prop.key) {
           index_keys.push((idx, prop.key));
         }
       }
     }
+
+    // Charge a little fuel and re-check interrupt/deadline state before and after the sort, which
+    // can be relatively expensive for very large index sets.
+    if !index_keys.is_empty() {
+      tick()?;
+    }
     index_keys.sort_by_key(|(idx, _)| *idx);
+    if !index_keys.is_empty() {
+      tick()?;
+    }
 
     // 2. String keys that are not array indices, in chronological creation order.
     // 3. Symbol keys, in chronological creation order.
@@ -2157,11 +2178,17 @@ impl Heap {
       .try_reserve_exact(property_count)
       .map_err(|_| VmError::OutOfMemory)?;
 
-    for (_, key) in index_keys.iter() {
+    for (i, (_, key)) in index_keys.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        tick()?;
+      }
       out.push(*key);
     }
 
-    for prop in properties.iter() {
+    for (i, prop) in properties.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        tick()?;
+      }
       let PropertyKey::String(_) = prop.key else {
         continue;
       };
@@ -2170,13 +2197,20 @@ impl Heap {
       }
     }
 
-    for prop in properties.iter() {
+    for (i, prop) in properties.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        tick()?;
+      }
       if matches!(prop.key, PropertyKey::Symbol(_)) {
         out.push(prop.key);
       }
     }
 
     Ok(out)
+  }
+
+  pub fn ordinary_own_property_keys(&self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
+    self.ordinary_own_property_keys_with_tick(obj, || Ok(()))
   }
 
   pub(crate) fn set_function_name_metadata(

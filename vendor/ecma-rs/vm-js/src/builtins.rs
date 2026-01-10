@@ -438,7 +438,7 @@ pub fn object_keys(
   // remain reachable during GC.
   scope.push_root(Value::Object(obj))?;
 
-  let own_keys = scope.ordinary_own_property_keys(obj)?;
+  let own_keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
   let mut names: Vec<crate::GcString> = Vec::new();
   names
     .try_reserve_exact(own_keys.len())
@@ -503,7 +503,7 @@ pub fn object_assign(
     };
     scope.push_root(Value::Object(source))?;
 
-    let keys = scope.ordinary_own_property_keys(source)?;
+    let keys = scope.ordinary_own_property_keys_with_tick(source, || vm.tick())?;
     for (j, key) in keys.into_iter().enumerate() {
       if j % 1024 == 0 {
         vm.tick()?;

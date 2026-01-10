@@ -275,7 +275,7 @@ fn bind_object_pattern(
   let rest_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(rest_obj))?;
 
-  let keys = scope.ordinary_own_property_keys(obj)?;
+  let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
   for key in keys {
     // Budget rest-property copying: `...rest` can iterate many keys even for a small pattern.
     vm.tick()?;

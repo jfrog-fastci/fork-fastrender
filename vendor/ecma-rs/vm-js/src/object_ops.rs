@@ -540,13 +540,19 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[OwnPropertyKeys]]` for ordinary objects.
-  pub fn ordinary_own_property_keys(&mut self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
+  pub fn ordinary_own_property_keys_with_tick(
+    &mut self,
+    obj: GcObject,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Vec<PropertyKey>, VmError> {
     if let Some(string_data) = self.string_object_data(obj)? {
       self.push_root(Value::Object(obj))?;
       self.push_root(Value::String(string_data))?;
 
       let len = self.heap().get_string(string_data)?.len_code_units();
-      let own_keys = self.heap().ordinary_own_property_keys(obj)?;
+      let own_keys = self
+        .heap()
+        .ordinary_own_property_keys_with_tick(obj, &mut tick)?;
 
       let out_len = len
         .checked_add(own_keys.len())
@@ -556,13 +562,20 @@ impl<'a> Scope<'a> {
         .try_reserve_exact(out_len)
         .map_err(|_| VmError::OutOfMemory)?;
 
+      const TICK_EVERY: usize = 1024;
       for i in 0..len {
+        if i % TICK_EVERY == 0 {
+          tick()?;
+        }
         let key_s = self.alloc_string(&i.to_string())?;
         self.push_root(Value::String(key_s))?;
         out.push(PropertyKey::from_string(key_s));
       }
 
-      for key in own_keys {
+      for (i, key) in own_keys.into_iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          tick()?;
+        }
         if let Some(idx) = self.heap().array_index(&key) {
           if idx as usize >= len {
             out.push(key);
@@ -579,7 +592,9 @@ impl<'a> Scope<'a> {
       self.push_root(Value::Object(obj))?;
 
       let len = self.heap().uint8_array_length(obj)?;
-      let own_keys = self.heap().ordinary_own_property_keys(obj)?;
+      let own_keys = self
+        .heap()
+        .ordinary_own_property_keys_with_tick(obj, &mut tick)?;
 
       let out_len = len
         .checked_add(own_keys.len())
@@ -589,13 +604,20 @@ impl<'a> Scope<'a> {
         .try_reserve_exact(out_len)
         .map_err(|_| VmError::OutOfMemory)?;
 
+      const TICK_EVERY: usize = 1024;
       for i in 0..len {
+        if i % TICK_EVERY == 0 {
+          tick()?;
+        }
         let key_s = self.alloc_string(&i.to_string())?;
         self.push_root(Value::String(key_s))?;
         out.push(PropertyKey::from_string(key_s));
       }
 
-      for key in own_keys {
+      for (i, key) in own_keys.into_iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          tick()?;
+        }
         if let Some(idx) = self.heap().array_index(&key) {
           if idx as usize >= len {
             out.push(key);
@@ -608,7 +630,11 @@ impl<'a> Scope<'a> {
       return Ok(out);
     }
 
-    self.heap().ordinary_own_property_keys(obj)
+    self.heap().ordinary_own_property_keys_with_tick(obj, tick)
+  }
+
+  pub fn ordinary_own_property_keys(&mut self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
+    self.ordinary_own_property_keys_with_tick(obj, || Ok(()))
   }
 
   pub fn create_data_property(

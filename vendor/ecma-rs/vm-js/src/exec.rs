@@ -2623,7 +2623,7 @@ impl<'a> Evaluator<'a> {
       // Budget/interrupt check while walking the prototype chain and collecting enumerable keys.
       self.tick()?;
 
-      let own_keys = iter_scope.ordinary_own_property_keys(obj)?;
+      let own_keys = iter_scope.ordinary_own_property_keys_with_tick(obj, || self.tick())?;
       for key in own_keys {
         key_count = key_count.wrapping_add(1);
         if (key_count & (KEY_COLLECTION_TICK_EVERY - 1)) == 0 {
@@ -4166,7 +4166,7 @@ impl<'a> Evaluator<'a> {
             _ => return Err(VmError::Unimplemented("object spread source type")),
           };
 
-          let keys = member_scope.ordinary_own_property_keys(src_obj)?;
+          let keys = member_scope.ordinary_own_property_keys_with_tick(src_obj, || self.tick())?;
           for key in keys {
             // Per-copied-property tick: spreading a large object can be `O(N)` without evaluating
             // nested expressions.

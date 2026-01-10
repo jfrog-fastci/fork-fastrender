@@ -892,9 +892,79 @@ fn builtins_object_keys_consumes_fuel_in_native_loop() {
   };
 
   // With only a single tick of fuel, the call-entry tick will succeed and the builtin will fail on
-  // its first in-loop tick.
+  // its first key-collection tick.
   vm.set_budget(Budget {
     fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = vm
+    .call_without_host(
+      &mut scope,
+      keys_func,
+      Value::Object(object_ctor),
+      &[Value::Object(obj)],
+    )
+    .unwrap_err();
+
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn own_property_keys_collection_consumes_fuel() {
+  fn enumerable_data_desc(value: Value) -> PropertyDescriptor {
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    }
+  }
+
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+
+  let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+  let intr = realm.intrinsics();
+
+  let mut scope = heap.scope();
+  let obj = scope.alloc_object().unwrap();
+  scope.push_root(Value::Object(obj)).unwrap();
+
+  // Construct a large property table *outside* the budgeted region so this test isolates the cost
+  // of `[[OwnPropertyKeys]]` (which can involve multiple passes over the property table and sorting
+  // of array index keys).
+  let n = 5000;
+  for i in 0..n {
+    let key_s = scope.alloc_string(&format!("p{i}")).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .define_property(obj, key, enumerable_data_desc(Value::Number(i as f64)))
+      .unwrap();
+  }
+
+  let keys_key = PropertyKey::from_string(scope.alloc_string("keys").unwrap());
+  let object_ctor = intr.object_constructor();
+  let keys_func = match scope
+    .heap()
+    .get_property(object_ctor, &keys_key)
+    .unwrap()
+    .unwrap()
+    .kind
+  {
+    PropertyKind::Data { value, .. } => value,
+    PropertyKind::Accessor { .. } => panic!("Object.keys should be a data property"),
+  };
+
+  // Without budgeting `[[OwnPropertyKeys]]`, this call would complete successfully with this fuel
+  // (the builtin's per-1024-element ticks are low). Once key collection itself is budgeted, fuel
+  // should be exhausted before we finish enumerating the large property table.
+  vm.set_budget(Budget {
+    fuel: Some(20),
     deadline: None,
     check_time_every: 1,
   });

@@ -1126,7 +1126,7 @@ pub fn import_attributes_from_options(
   };
 
   let own_keys = scope
-    .ordinary_own_property_keys(attributes_obj)
+    .ordinary_own_property_keys_with_tick(attributes_obj, || vm.tick())
     .map_err(ImportCallError::Vm)?;
 
   let mut attributes = Vec::<ImportAttribute>::new();
