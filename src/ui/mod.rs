@@ -57,8 +57,8 @@ pub use url::{normalize_user_url, validate_user_navigation_url_scheme};
 
 pub use history::{HistoryEntry, TabHistory};
 pub use browser_app::{
-  AppUpdate, BrowserAppState, BrowserTabState, ChromeState, FrameReadyUpdate, LatestFrameMeta,
-  OpenSelectDropdownUpdate,
+  AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
+  LatestFrameMeta, OpenSelectDropdownUpdate,
 };
 pub use zoom::{
   clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,

@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
+const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
@@ -75,7 +76,16 @@ pub struct BrowserTabState {
   /// This is driven by worker navigation events (e.g. [`WorkerToUi::NavigationCommitted`]), along
   /// with optimistic UI updates for typed navigations, and is *not* an authoritative history stack.
   pub current_url: Option<String>,
+  /// The last URL reported by the worker as committed (after redirects).
+  ///
+  /// Unlike `current_url`, this is not affected by optimistic UI updates for typed navigations.
+  pub committed_url: Option<String>,
   pub title: Option<String>,
+  /// The last title reported by the worker as committed.
+  ///
+  /// Unlike `title`, this is preserved across optimistic UI updates that clear `title` during a
+  /// pending navigation.
+  pub committed_title: Option<String>,
   pub loading: bool,
   pub error: Option<String>,
   pub stage: Option<StageHeartbeat>,
@@ -94,11 +104,14 @@ pub struct BrowserTabState {
 
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
+    let committed_url = initial_url.clone();
     Self {
       id: tab_id,
       cancel: CancelGens::new(),
       current_url: Some(initial_url),
+      committed_url: Some(committed_url),
       title: None,
+      committed_title: None,
       loading: false,
       error: None,
       stage: None,
@@ -176,6 +189,12 @@ impl BrowserTabState {
     }
     self.debug_log.push_back(line);
   }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedTabState {
+  pub url: String,
+  pub title: Option<String>,
 }
 
 #[cfg(test)]
@@ -269,6 +288,7 @@ pub struct ChromeState {
 pub struct BrowserAppState {
   pub tabs: Vec<BrowserTabState>,
   pub active_tab: Option<TabId>,
+  pub closed_tabs: Vec<ClosedTabState>,
   pub chrome: ChromeState,
 }
 
@@ -285,6 +305,7 @@ impl BrowserAppState {
     Self {
       tabs: Vec::new(),
       active_tab: None,
+      closed_tabs: Vec::new(),
       chrome: ChromeState::default(),
     }
   }
@@ -380,7 +401,15 @@ impl BrowserAppState {
       };
     }
 
-    self.tabs.remove(idx);
+    let closed = self.tabs.remove(idx);
+    self.push_closed_tab_state(ClosedTabState {
+      url: closed
+        .committed_url
+        .clone()
+        .or_else(|| closed.current_url.clone())
+        .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
+      title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+    });
 
     let was_active = self.active_tab == Some(tab_id);
     if !was_active {
@@ -416,6 +445,23 @@ impl BrowserAppState {
       new_active: Some(new_active),
       created_tab: None,
     }
+  }
+
+  fn push_closed_tab_state(&mut self, closed: ClosedTabState) {
+    if CLOSED_TAB_STACK_CAPACITY == 0 {
+      return;
+    }
+    if self.closed_tabs.len() >= CLOSED_TAB_STACK_CAPACITY {
+      // Drop the oldest entries first so `pop_closed_tab` behaves like a typical "reopen last
+      // closed tab" stack.
+      let overflow = self.closed_tabs.len() + 1 - CLOSED_TAB_STACK_CAPACITY;
+      self.closed_tabs.drain(0..overflow);
+    }
+    self.closed_tabs.push(closed);
+  }
+
+  pub fn pop_closed_tab(&mut self) -> Option<ClosedTabState> {
+    self.closed_tabs.pop()
   }
 
   pub fn sync_address_bar_to_active(&mut self) {
@@ -553,7 +599,10 @@ impl BrowserAppState {
       } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
+          tab.committed_url = Some(url.clone());
+          let committed_title = title.clone();
           tab.title = title;
+          tab.committed_title = committed_title;
           tab.loading = false;
           tab.error = None;
           tab.stage = None;
@@ -794,6 +843,79 @@ mod browser_app_tests {
     assert_eq!(ready.viewport_css, viewport_css);
     assert!((ready.dpr - dpr).abs() < f32::EPSILON);
     assert_eq!((ready.pixmap.width(), ready.pixmap.height()), (2, 3));
+  }
+
+  #[test]
+  fn closed_tabs_stack_push_pop_and_noop_when_empty() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+
+    let mut a = BrowserTabState::new(tab_a, "https://committed.example/".to_string());
+    a.committed_title = Some("Committed".to_string());
+    // Simulate an in-flight typed navigation where the optimistic UI state differs from the last
+    // committed navigation.
+    a.current_url = Some("https://typed.example/".to_string());
+    a.title = None;
+    let mut b = BrowserTabState::new(tab_b, "https://b.example/".to_string());
+    b.title = Some("B".to_string());
+
+    app.push_tab(a, true);
+    app.push_tab(b, false);
+    assert!(app.closed_tabs.is_empty());
+
+    let _ = app.remove_tab(tab_a);
+    assert_eq!(
+      app.closed_tabs,
+      vec![ClosedTabState {
+        url: "https://committed.example/".to_string(),
+        title: Some("Committed".to_string()),
+      }]
+    );
+
+    let popped = app.pop_closed_tab().expect("expected closed tab state");
+    assert_eq!(
+      popped,
+      ClosedTabState {
+        url: "https://committed.example/".to_string(),
+        title: Some("Committed".to_string()),
+      }
+    );
+    assert!(app.closed_tabs.is_empty());
+
+    // Pop on empty is a no-op.
+    assert_eq!(app.pop_closed_tab(), None);
+  }
+
+  #[test]
+  fn closed_tabs_stack_is_capped() {
+    let mut app = BrowserAppState::new();
+
+    // Create cap+2 tabs so we can close cap+1 of them (closing the last remaining tab is a no-op).
+    let total_tabs = CLOSED_TAB_STACK_CAPACITY + 2;
+    for i in 0..total_tabs {
+      let tab_id = TabId((i + 1) as u64);
+      let mut tab = BrowserTabState::new(tab_id, format!("https://example.com/{i}"));
+      tab.title = Some(format!("T{i}"));
+      app.push_tab(tab, i == 0);
+    }
+
+    for i in 0..(CLOSED_TAB_STACK_CAPACITY + 1) {
+      let tab_id = TabId((i + 1) as u64);
+      let _ = app.remove_tab(tab_id);
+    }
+
+    assert_eq!(app.closed_tabs.len(), CLOSED_TAB_STACK_CAPACITY);
+    assert_eq!(
+      app.closed_tabs.first().map(|t| t.url.as_str()),
+      Some("https://example.com/1"),
+      "expected the oldest entry to be dropped when exceeding the cap"
+    );
+    let expected_last = format!("https://example.com/{CLOSED_TAB_STACK_CAPACITY}");
+    assert_eq!(
+      app.closed_tabs.last().map(|t| t.url.as_str()),
+      Some(expected_last.as_str())
+    );
   }
 
   // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state

@@ -16,6 +16,7 @@ pub enum ChromeAction {
   FocusAddressBar,
   NewTab,
   CloseTab(TabId),
+  ReopenClosedTab,
   ActivateTab(TabId),
   NavigateTo(String),
   Back,
@@ -49,13 +50,22 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
     Reset,
   }
 
-  let (focus_address_bar, new_tab, close_tab, reload, tab_delta, tab_number, zoom_action) =
-    ctx.input(|i| {
+  let (
+    focus_address_bar,
+    new_tab,
+    close_tab,
+    reopen_closed_tab,
+    reload,
+    tab_delta,
+    tab_number,
+    zoom_action,
+  ) = ctx.input(|i| {
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
     let mut focus_address_bar = false;
     let mut new_tab = false;
     let mut close_tab = false;
+    let mut reopen_closed_tab = false;
     let mut reload = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
@@ -80,6 +90,8 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
         egui::Key::L | egui::Key::K if cmd_or_ctrl && allow_focus_address_bar => {
           focus_address_bar = true
         }
+        // Ctrl/Cmd+T creates a new tab; Ctrl/Cmd+Shift+T reopens the last closed tab.
+        egui::Key::T if cmd_or_ctrl && modifiers.shift => reopen_closed_tab = true,
         egui::Key::T if cmd_or_ctrl => new_tab = true,
         egui::Key::W if cmd_or_ctrl => close_tab = true,
         egui::Key::R if cmd_or_ctrl => reload = true,
@@ -112,6 +124,7 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       focus_address_bar,
       new_tab,
       close_tab,
+      reopen_closed_tab,
       reload,
       tab_delta,
       tab_number,
@@ -135,6 +148,9 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
         actions.push(ChromeAction::CloseTab(tab_id));
       }
     }
+  }
+  if reopen_closed_tab {
+    actions.push(ChromeAction::ReopenClosedTab);
   }
   if reload {
     actions.push(ChromeAction::Reload);
@@ -521,6 +537,35 @@ mod tests {
     assert!(
       actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
       "expected ChromeAction::NewTab, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_t_emits_reopen_closed_tab_action() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::T,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ReopenClosedTab)),
+      "expected ChromeAction::ReopenClosedTab, got {actions:?}"
+    );
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      "expected Ctrl/Cmd+Shift+T not to emit NewTab, got {actions:?}"
     );
   }
 

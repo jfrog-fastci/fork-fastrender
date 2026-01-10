@@ -1754,6 +1754,44 @@ impl App {
           self.focus_address_bar_select_all();
           self.window.request_redraw();
         }
+        ChromeAction::ReopenClosedTab => {
+          let Some(closed) = self.browser_state.pop_closed_tab() else {
+            continue;
+          };
+
+          let tab_id = fastrender::ui::TabId::new();
+          let url = closed.url;
+          let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
+          tab_state.title = closed.title.clone();
+          tab_state.committed_title = closed.title;
+          tab_state.loading = true;
+
+          let cancel = tab_state.cancel.clone();
+          self.tab_cancel.insert(tab_id, cancel.clone());
+          self.browser_state.push_tab(tab_state, true);
+          self.browser_state.chrome.address_bar_text = url.clone();
+          self.page_has_focus = false;
+          self.viewport_cache_tab = None;
+          self.pointer_captured = false;
+          self.captured_button = fastrender::ui::PointerButton::None;
+          self.cursor_in_page = false;
+          self.hover_sync_pending = true;
+          self.pending_pointer_move = None;
+
+          self.send_worker_msg(UiToWorker::CreateTab {
+            tab_id,
+            initial_url: Some(url),
+            cancel,
+          });
+          self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+          self.send_worker_msg(UiToWorker::RequestRepaint {
+            tab_id,
+            reason: RepaintReason::Explicit,
+          });
+
+          // Request a second frame so chrome UI reflects the newly created tab immediately.
+          self.window.request_redraw();
+        }
         ChromeAction::CloseTab(tab_id) => {
           if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
             continue;
