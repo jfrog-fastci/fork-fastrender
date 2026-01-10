@@ -80,7 +80,7 @@ fn planned_bundle_page_cache_command_includes_required_args() {
 
 #[test]
 fn planned_prefetch_assets_command_includes_prefetch_scripts_when_enabled() {
-  let mut args = plan_for_page("https://www.example.com/");
+  let mut args = plan_for_page("https://example.com/");
   args.include_scripts = true;
 
   let cmd = build_prefetch_assets_command_spec("example.com", &args, true);

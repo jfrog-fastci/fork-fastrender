@@ -614,6 +614,12 @@ PY
     # Always write the screenshot to a temp directory and then copy it into OUT_DIR.
     --screenshot="${tmp_png_path}"
   )
+  if [[ "${JS,,}" == "off" ]]; then
+    # With JS disabled (via CSP injection), Chrome's `--screenshot` flow can capture before some
+    # late-loading images have decoded/painted, leaving blank thumbnails. Give the page a small
+    # virtual-time budget so those images make it into the baseline.
+    chrome_args+=(--virtual-time-budget=5000)
+  fi
   if [[ -n "${USER_AGENT}" ]]; then
     chrome_args+=(--user-agent="${USER_AGENT}")
   fi

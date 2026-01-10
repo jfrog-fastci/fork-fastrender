@@ -134,6 +134,14 @@ use std::os::unix::process::CommandExt;
 /// See `docs/notes/chrome-headless-viewport-padding.md`.
 const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 87;
 
+/// Default `--virtual-time-budget` (ms) used for Chrome fixture screenshots when JS is disabled.
+///
+/// With JS disabled (via CSP injection), Chrome's built-in `--screenshot` flow can capture before
+/// late-loading images have decoded/painted, resulting in blank thumbnail slots on real-world
+/// fixtures. A small virtual-time budget gives the page enough breathing room to paint those images
+/// without requiring JS.
+const DEFAULT_HEADLESS_SCREENSHOT_VIRTUAL_TIME_BUDGET_MS: u64 = 5_000;
+
 fn headless_window_viewport_height_pad_px() -> Result<u32> {
   match std::env::var("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX") {
     Ok(raw) => {
@@ -473,6 +481,7 @@ fn render_fixture(
         &tmp_png_path,
         &chrome_log,
         timeout,
+        matches!(args.js, JsMode::Off),
       )?;
 
       let screenshot_len = fs::metadata(&tmp_png_path)
@@ -1216,6 +1225,7 @@ fn run_chrome_screenshot(
   screenshot_path: &Path,
   log_path: &Path,
   timeout: Option<Duration>,
+  disable_js: bool,
 ) -> Result<HeadlessMode> {
   let window_size = (
     viewport.0,
@@ -1223,10 +1233,19 @@ fn run_chrome_screenshot(
       .1
       .saturating_add(headless_window_viewport_height_pad_px()?),
   );
+  let virtual_time_budget_ms =
+    disable_js.then_some(DEFAULT_HEADLESS_SCREENSHOT_VIRTUAL_TIME_BUDGET_MS);
   // Prefer `--headless=new`, but fall back to legacy headless when the new compositor fails.
   // In practice, `--headless=new` can hang or OOM in container/CI environments on complex pages.
   // Retrying keeps fixture diffs deterministic and avoids requiring callers to special-case pages.
-  let args_new = build_chrome_args(HeadlessMode::New, profile_dir, window_size, dpr, screenshot_path)?;
+  let args_new = build_chrome_args(
+    HeadlessMode::New,
+    profile_dir,
+    window_size,
+    dpr,
+    screenshot_path,
+    virtual_time_budget_ms,
+  )?;
   let mut last_status = run_chrome_with_timeout(chrome, &args_new, url, log_path, timeout, false);
   if last_status.as_ref().is_ok_and(|status| status.success()) && screenshot_path.is_file() {
     // Some headless-new runs exit successfully yet fail to produce a real render (e.g. transient GPU
@@ -1253,7 +1272,14 @@ fn run_chrome_screenshot(
   }
 
   let args_legacy =
-    build_chrome_args(HeadlessMode::Legacy, profile_dir, window_size, dpr, screenshot_path)?;
+    build_chrome_args(
+      HeadlessMode::Legacy,
+      profile_dir,
+      window_size,
+      dpr,
+      screenshot_path,
+      virtual_time_budget_ms,
+    )?;
   if screenshot_path.exists() {
     let _ = fs::remove_file(screenshot_path);
   }
@@ -1296,8 +1322,12 @@ fn build_chrome_args(
   viewport: (u32, u32),
   dpr: f32,
   screenshot_path: &Path,
+  virtual_time_budget_ms: Option<u64>,
 ) -> Result<Vec<String>> {
   let mut args = build_chrome_common_args(headless, profile_dir, viewport, dpr)?;
+  if let Some(ms) = virtual_time_budget_ms {
+    args.push(format!("--virtual-time-budget={ms}"));
+  }
   args.push(format!("--screenshot={}", screenshot_path.display()));
   Ok(args)
 }
@@ -1594,5 +1624,26 @@ mod tests {
     assert!(chrome_log_indicates_transient_gpu_failure(&log));
     fs::write(&log, "everything is fine\n").expect("write log");
     assert!(!chrome_log_indicates_transient_gpu_failure(&log));
+  }
+
+  #[test]
+  fn chrome_args_include_virtual_time_budget_when_requested() {
+    let temp = tempdir().expect("tempdir");
+    let screenshot = temp.path().join("out.png");
+    let args = super::build_chrome_args(
+      super::HeadlessMode::New,
+      temp.path(),
+      (1040, 1240),
+      1.0,
+      &screenshot,
+      Some(super::DEFAULT_HEADLESS_SCREENSHOT_VIRTUAL_TIME_BUDGET_MS),
+    )
+    .expect("build chrome args");
+    assert!(
+      args
+        .iter()
+        .any(|arg| arg == "--virtual-time-budget=5000"),
+      "expected --virtual-time-budget=5000 in args: {args:?}"
+    );
   }
 }

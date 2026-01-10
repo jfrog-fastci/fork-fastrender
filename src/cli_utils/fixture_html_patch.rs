@@ -157,30 +157,53 @@ pub fn patch_html_bytes(
     .map(|b| b.to_ascii_lowercase())
     .collect::<Vec<_>>();
 
-  if let Some(out) = insert_after_open_tag(data, &lower, b"<head", &inserts) {
-    return out;
+  let mut out = if let Some(out) = insert_after_open_tag(data, &lower, b"<head", &inserts) {
+    out
+  } else {
+    let wrapped = [
+      b"<head>\n".as_slice(),
+      inserts.as_slice(),
+      b"</head>\n".as_slice(),
+    ]
+    .concat();
+    if let Some(out) = insert_after_open_tag(data, &lower, b"<html", &wrapped) {
+      out
+    } else if let Some(out) = insert_after_doctype(data, &lower, &inserts) {
+      out
+    } else {
+      // Fall back to prefixing the tags; the HTML parser will usually move them into an implicit
+      // head element.
+      [inserts, data.to_vec()].concat()
+    }
+  };
+
+  if disable_js {
+    // Many fixtures include `decoding="async"` on `<img>` elements. In headless screenshot mode,
+    // Chrome can capture before those async decodes have finished, producing blank thumbnails in
+    // the baseline PNGs. Force synchronous decode so screenshots are more representative.
+    out = replace_all_bytes(&out, br#"decoding="async""#, br#"decoding="sync""#);
   }
 
-  let wrapped = [
-    b"<head>\n".as_slice(),
-    inserts.as_slice(),
-    b"</head>\n".as_slice(),
-  ]
-  .concat();
-  if let Some(out) = insert_after_open_tag(data, &lower, b"<html", &wrapped) {
-    return out;
-  }
+  out
+}
 
-  // Some fixtures omit `<html>`/`<head>` but still include a `<!doctype html>` declaration. Do not
-  // inject anything before the doctype because that would flip the document into quirks mode in
-  // browsers and make baselines useless. Instead, inject our tags immediately after the doctype.
-  if let Some(out) = insert_after_doctype(data, &lower, &inserts) {
-    return out;
+fn replace_all_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+  if needle.is_empty() {
+    return haystack.to_vec();
   }
-
-  // Fall back to prefixing the tags; the HTML parser will usually move them into an implicit head
-  // element.
-  [inserts, data.to_vec()].concat()
+  let mut out = Vec::with_capacity(haystack.len());
+  let mut start = 0usize;
+  while let Some(pos) = haystack[start..]
+    .windows(needle.len())
+    .position(|window| window == needle)
+  {
+    let idx = start + pos;
+    out.extend_from_slice(&haystack[start..idx]);
+    out.extend_from_slice(replacement);
+    start = idx + needle.len();
+  }
+  out.extend_from_slice(&haystack[start..]);
+  out
 }
 
 fn insert_after_open_tag(
@@ -290,6 +313,21 @@ mod tests {
     assert!(
       output_str.contains("NotoSansMono-subset.ttf"),
       "patched HTML should reference the bundled monospace font"
+    );
+  }
+
+  #[test]
+  fn patch_html_forces_sync_img_decoding_when_js_disabled() {
+    let input = b"<!doctype html><html><head></head><body><img decoding=\"async\" src=\"x\"></body></html>";
+    let output = patch_html_bytes(input, None, true, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      output_str.contains("decoding=\"sync\""),
+      "patched HTML should force decoding=sync when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("decoding=\"async\""),
+      "patched HTML should rewrite decoding=async when JS is disabled; got: {output_str}"
     );
   }
 
