@@ -76,3 +76,32 @@ fn click_listeners_can_schedule_tasks_via_event_loop_web_apis() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn script_load_listeners_can_schedule_microtasks_via_event_loop_web_apis() -> Result<()> {
+  let html = r#"<!doctype html>
+<script id="s" src="a.js" async></script>
+<script>
+  var s = document.getElementById("s");
+  s.addEventListener("load", function () {
+    queueMicrotask(function () {
+      document.body.setAttribute("data-fired", "1");
+    });
+  });
+</script>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+  tab.register_script_source("a.js", "/* ok */");
+
+  let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  let body = tab.dom().body().expect("expected <body> element");
+  assert_eq!(
+    tab.dom().get_attribute(body, "data-fired").unwrap(),
+    Some("1")
+  );
+
+  Ok(())
+}

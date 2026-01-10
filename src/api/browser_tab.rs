@@ -358,8 +358,23 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn dispatch_script_error_event(&mut self, script_node_id: NodeId) -> Result<()> {
-    self.dispatch_script_event(script_node_id, "error")
+  fn dispatch_script_event_in_event_loop(
+    &mut self,
+    script_node_id: NodeId,
+    type_: &str,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    // Install the active event loop in TLS so `vm-js` Web APIs like `queueMicrotask`/`setTimeout`
+    // called from `<script>` load/error event listeners can schedule work.
+    with_event_loop(event_loop, || self.dispatch_script_event(script_node_id, type_))
+  }
+
+  fn dispatch_script_error_event_in_event_loop(
+    &mut self,
+    script_node_id: NodeId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    self.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)
   }
 
   pub fn dom(&self) -> &Document {
@@ -714,7 +729,7 @@ impl BrowserTabHost {
             // microtasks) complete, so ensure the checkpoint runs before event dispatch.
             if matches!(&exec_result, Err(Error::Render(_))) {
               if let Some(entry) = entry {
-                self.dispatch_script_event(entry.node_id, "error")?;
+                self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
               }
               return exec_result;
             }
@@ -731,7 +746,7 @@ impl BrowserTabHost {
                   if entry.spec.src_attr_present
                     && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
                   {
-                    self.dispatch_script_event(entry.node_id, "load")?;
+                    self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                   }
                 }
               }
@@ -739,7 +754,7 @@ impl BrowserTabHost {
                 let Some(entry) = entry else {
                   return Err(err);
                 };
-                self.dispatch_script_event(entry.node_id, "error")?;
+                self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
                 if matches!(err, Error::Render(_)) {
                   return Err(err);
                 }
@@ -1015,7 +1030,7 @@ impl BrowserTabHost {
   ) -> Result<()> {
     // HTML: external script fetch failure should dispatch an `error` event and the script should not
     // execute.
-    self.dispatch_script_event(script_node, "error")?;
+    self.dispatch_script_event_in_event_loop(script_node, "error", event_loop)?;
     // Mark the element as already-started so future scheduling attempts short-circuit.
     self.mutate_dom(|dom| {
       dom.node_mut(script_node).script_already_started = true;
@@ -1507,7 +1522,7 @@ impl BrowserTabHost {
                   span.arg_str("nonce", nonce);
                 }
 
-                self.dispatch_script_error_event(node_id)?;
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
                 self.mutate_dom(|dom| {
                   dom.node_mut(node_id).script_already_started = true;
                   ((), false)
@@ -1558,7 +1573,7 @@ impl BrowserTabHost {
             // Script execution timed out/cancelled. Preserve existing behavior: dispatch the script
             // element error event, then abort without attempting a microtask checkpoint.
             if let Some(entry) = entry {
-              self.dispatch_script_event(entry.node_id, "error")?;
+              self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
             }
             return exec_result;
           }
@@ -1573,7 +1588,7 @@ impl BrowserTabHost {
             Ok(()) => {
               if let Some(entry) = entry {
                 if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
-                  self.dispatch_script_event(entry.node_id, "load")?;
+                  self.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                 }
               }
             }
@@ -1581,7 +1596,7 @@ impl BrowserTabHost {
               let Some(entry) = entry else {
                 return Err(err);
               };
-              self.dispatch_script_event(entry.node_id, "error")?;
+              self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
               // Uncaught exceptions from scripts should not abort parsing/task scheduling (browser
               // behavior). Still propagate host-level render timeouts/cancellation.
               if matches!(err, Error::Render(_)) {
@@ -1634,7 +1649,7 @@ impl BrowserTabHost {
                   span.arg_str("nonce", nonce);
                 }
 
-                self.dispatch_script_error_event(node_id)?;
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
                 self.mutate_dom(|dom| {
                   dom.node_mut(node_id).script_already_started = true;
                   ((), false)
@@ -1656,7 +1671,7 @@ impl BrowserTabHost {
               // Preserve existing behavior: dispatch the script element error event, then abort
               // without attempting a microtask checkpoint.
               if let Some(entry) = entry {
-                host.dispatch_script_event(entry.node_id, "error")?;
+                host.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
               }
               return result;
             }
@@ -1671,7 +1686,7 @@ impl BrowserTabHost {
               Ok(()) => {
                 if let Some(entry) = entry {
                   if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
-                    host.dispatch_script_event(entry.node_id, "load")?;
+                    host.dispatch_script_event_in_event_loop(entry.node_id, "load", event_loop)?;
                   }
                 }
               }
@@ -1679,7 +1694,7 @@ impl BrowserTabHost {
                 let Some(entry) = entry else {
                   return Err(err);
                 };
-                host.dispatch_script_event(entry.node_id, "error")?;
+                host.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
                 if matches!(err, Error::Render(_)) {
                   return Err(err);
                 }

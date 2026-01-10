@@ -1,6 +1,7 @@
 use crate::dom2::NodeId;
 use crate::error::{Error, Result};
 use crate::js::event_loop::{EventLoop, TaskSource};
+use crate::js::runtime::with_event_loop;
 use crate::js::{ScriptElementSpec, ScriptType};
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
@@ -176,7 +177,7 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
         Some(TaskSource::DOMManipulation),
         "script element event tasks must run on the DOM manipulation task source"
       );
-      host.dispatch_script_element_event(node_id, event_name)?;
+      with_event_loop(event_loop, || host.dispatch_script_element_event(node_id, event_name))?;
       Ok(())
     })
   }
@@ -297,7 +298,7 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
                   Some(TaskSource::DOMManipulation),
                   "script element event tasks must run on the DOM manipulation task source"
                 );
-                host.dispatch_script_element_event(node_id, event_name)?;
+                with_event_loop(event_loop, || host.dispatch_script_element_event(node_id, event_name))?;
                 Ok(())
               })?;
             }
