@@ -1,7 +1,9 @@
 use super::{
-  create_import_map_parse_result, merge_existing_and_new_import_maps, parse_import_map_string, register_import_map,
-  resolve_module_integrity_metadata, resolve_module_specifier, ImportMap, ImportMapError, ImportMapState,
-  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  create_import_map_parse_result, create_import_map_parse_result_with_limits, merge_existing_and_new_import_maps,
+  merge_existing_and_new_import_maps_with_limits, parse_import_map_string, register_import_map,
+  register_import_map_with_limits, resolve_module_integrity_metadata, resolve_module_specifier, ImportMap,
+  ImportMapError, ImportMapLimits, ImportMapState, ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
+  SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 use super::types::code_unit_cmp;
@@ -222,7 +224,7 @@ fn scope_filtering_matches_on_serialized_base_url_prefix() {
 
   // Merge: the pkg/ rule would impact the already-resolved pkg/sub and must be removed, while the
   // unrelated "other" rule remains.
-  merge_existing_and_new_import_maps(&mut state, &new_scoped);
+  merge_existing_and_new_import_maps(&mut state, &new_scoped).unwrap();
 
   let scope = state
     .import_map
@@ -263,7 +265,7 @@ fn scope_filtering_does_not_apply_when_base_url_does_not_match_scope_prefix() {
     base,
   );
 
-  merge_existing_and_new_import_maps(&mut state, &new_scoped);
+  merge_existing_and_new_import_maps(&mut state, &new_scoped).unwrap();
 
   let scope = state
     .import_map
@@ -297,7 +299,7 @@ fn non_special_url_like_specifiers_do_not_trigger_scope_prefix_filtering() {
     base_url.as_str(),
   );
 
-  merge_existing_and_new_import_maps(&mut state, &scoped);
+  merge_existing_and_new_import_maps(&mut state, &scoped).unwrap();
 
   let scope = state
     .import_map
@@ -626,8 +628,8 @@ fn merge_integrity_ignores_duplicates() {
   .unwrap();
 
   let mut state = ImportMapState::default();
-  merge_existing_and_new_import_maps(&mut state, &first);
-  merge_existing_and_new_import_maps(&mut state, &second);
+  merge_existing_and_new_import_maps(&mut state, &first).unwrap();
+  merge_existing_and_new_import_maps(&mut state, &second).unwrap();
 
   let a = Url::parse("https://example.com/a.js").unwrap();
   assert_eq!(
@@ -710,7 +712,16 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
     integrity: ModuleIntegrityMap::default(),
   };
 
-  merge_existing_and_new_import_maps(&mut state, &new_import_map);
+  // This test uses a large synthetic import map, so use larger limits explicitly.
+  let limits = ImportMapLimits {
+    max_total_entries: 100_000,
+    max_imports_entries: 100_000,
+    max_scopes: 10,
+    max_scope_entries: 100_000,
+    max_integrity_entries: 0,
+    ..ImportMapLimits::default()
+  };
+  merge_existing_and_new_import_maps_with_limits(&mut state, &new_import_map, &limits).unwrap();
 
   assert!(!state.import_map.imports.contains_key("imp0"));
   assert!(!state.import_map.imports.contains_key("imp0/x"));
@@ -735,4 +746,38 @@ fn merge_filters_large_resolved_module_set_without_quadratic_scans() {
     merged_scope.contains_key("blob:https://example.com/"),
     "expected prefix rule to remain for non-special URL-like resolved specifier"
   );
+}
+
+#[test]
+fn registering_many_import_maps_is_bounded_by_merge_limits() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  let limits = ImportMapLimits {
+    max_total_entries: 2,
+    max_imports_entries: 2,
+    // No scopes/integrity in this test.
+    max_scopes: 0,
+    max_scope_entries: 0,
+    max_integrity_entries: 0,
+    ..ImportMapLimits::default()
+  };
+
+  for key in ["a", "b"] {
+    let json = format!(r#"{{ "imports": {{ "{key}": "/{key}.js" }} }}"#);
+    let result = create_import_map_parse_result_with_limits(&json, &base, &limits);
+    register_import_map_with_limits(&mut state, result, &limits).unwrap();
+  }
+
+  assert_eq!(state.import_map.imports.len(), 2);
+
+  let third = create_import_map_parse_result_with_limits(r#"{ "imports": { "c": "/c.js" } }"#, &base, &limits);
+  let err = register_import_map_with_limits(&mut state, third, &limits).unwrap_err();
+  assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
+
+  // The merge should fail without partially mutating state.
+  assert!(state.import_map.imports.contains_key("a"));
+  assert!(state.import_map.imports.contains_key("b"));
+  assert!(!state.import_map.imports.contains_key("c"));
+  assert_eq!(state.import_map.imports.len(), 2);
 }

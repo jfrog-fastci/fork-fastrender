@@ -1,4 +1,7 @@
-use super::{create_import_map_parse_result, parse_import_map_string, resolve_imports_match};
+use super::{
+  create_import_map_parse_result, parse_import_map_string, parse_import_map_string_with_limits, resolve_imports_match,
+  ImportMapLimits,
+};
 use super::{ImportMapError, ImportMapWarningKind};
 
 use url::Url;
@@ -357,4 +360,63 @@ fn imports_sorting_uses_utf16_code_units_not_scalar_values() {
   .unwrap();
   let keys: Vec<_> = map.imports.entries.iter().map(|(k, _)| k.as_str()).collect();
   assert_eq!(keys, vec!["a\u{FFFF}", "a💩"]);
+}
+
+
+#[test]
+fn input_size_limit_trips_before_json_parse() {
+  let limits = ImportMapLimits {
+    max_bytes: 0,
+    ..ImportMapLimits::default()
+  };
+  let err = parse_import_map_string_with_limits("{", &base_url(), &limits).unwrap_err();
+  assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
+}
+
+#[test]
+fn imports_entry_count_limit_is_enforced() {
+  let limits = ImportMapLimits {
+    max_imports_entries: 1,
+    max_total_entries: 1,
+    ..ImportMapLimits::default()
+  };
+  let err = parse_import_map_string_with_limits(
+    r#"{ "imports": { "a": "/a.js", "b": "/b.js" } }"#,
+    &base_url(),
+    &limits,
+  )
+  .unwrap_err();
+  assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
+}
+
+#[test]
+fn scopes_count_limit_is_enforced() {
+  let limits = ImportMapLimits {
+    max_scopes: 1,
+    max_total_entries: 1,
+    ..ImportMapLimits::default()
+  };
+  let err = parse_import_map_string_with_limits(
+    r#"{ "scopes": { "/a/": {}, "/b/": {} } }"#,
+    &base_url(),
+    &limits,
+  )
+  .unwrap_err();
+  assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
+}
+
+#[test]
+fn per_scope_entry_count_limit_is_enforced() {
+  let limits = ImportMapLimits {
+    max_scope_entries: 1,
+    max_total_entries: 2,
+    ..ImportMapLimits::default()
+  };
+  let err = parse_import_map_string_with_limits(
+    r#"{ "scopes": { "/a/": { "x": "/x.js", "y": "/y.js" } } }"#,
+    &base_url(),
+    &limits,
+  )
+  .unwrap_err();
+  assert!(matches!(err, ImportMapError::LimitExceeded(_)), "{err:?}");
 }

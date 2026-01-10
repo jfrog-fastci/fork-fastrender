@@ -559,6 +559,7 @@ fn format_import_map_error(err: &ImportMapError) -> String {
   match err {
     ImportMapError::Json(err) => format!("SyntaxError: {err}"),
     ImportMapError::TypeError(message) => format!("TypeError: {message}"),
+    ImportMapError::LimitExceeded(message) => format!("TypeError: {message}"),
   }
 }
 
@@ -767,6 +768,7 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
         let message = match err {
           ImportMapError::TypeError(message) => message,
           ImportMapError::Json(err) => err.to_string(),
+          ImportMapError::LimitExceeded(message) => message,
         };
         let err_value = Self::throw_type_error(vm, scope, &message)?;
         vm.finish_loading_imported_module(

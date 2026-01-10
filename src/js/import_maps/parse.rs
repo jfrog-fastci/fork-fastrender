@@ -1,95 +1,535 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::de::{MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::Deserializer;
 use url::Url;
 
+use super::limits::ImportMapLimits;
 use super::types::{
   code_unit_cmp, ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning, ImportMapWarningKind,
   ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap,
 };
+
+const LIMIT_EXCEEDED_ERROR_PREFIX: &str = "__fastrender_import_map_limit_exceeded__:";
+
+fn serde_json_error_to_import_map_error(err: serde_json::Error) -> ImportMapError {
+  let s = err.to_string();
+  if let Some(rest) = s.strip_prefix(LIMIT_EXCEEDED_ERROR_PREFIX) {
+    let detail = rest.split(" at line ").next().unwrap_or(rest).to_string();
+    return ImportMapError::LimitExceeded(detail);
+  }
+  ImportMapError::Json(err)
+}
+
+fn de_limit_exceeded<E: serde::de::Error>(detail: String) -> E {
+  E::custom(format!("{LIMIT_EXCEEDED_ERROR_PREFIX}{detail}"))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonStringOrOther {
+  String(String),
+  Other,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonObjectOrOther<V> {
+  Object(Vec<(String, V)>),
+  Other,
+}
+
+#[derive(Debug, Default)]
+struct ParsedImportMapJson {
+  imports: Option<JsonObjectOrOther<JsonStringOrOther>>,
+  scopes: Option<JsonObjectOrOther<JsonObjectOrOther<JsonStringOrOther>>>,
+  integrity: Option<JsonObjectOrOther<JsonStringOrOther>>,
+  unknown_top_level_keys: Vec<String>,
+}
+
+#[derive(Debug)]
+enum ParsedTopLevel {
+  Object(ParsedImportMapJson),
+  Other,
+}
+
+#[derive(Debug, Default)]
+struct ImportMapEntryCounter {
+  total_entries: usize,
+}
+
+impl ImportMapEntryCounter {
+  fn bump_total_entries<E: serde::de::Error>(&mut self, limits: &ImportMapLimits) -> Result<(), E> {
+    self.total_entries = self.total_entries.saturating_add(1);
+    if self.total_entries > limits.max_total_entries {
+      return Err(de_limit_exceeded(format!(
+        "max_total_entries exceeded ({} > max {})",
+        self.total_entries, limits.max_total_entries
+      )));
+    }
+    Ok(())
+  }
+}
+
+struct ImportMapTopLevelSeed<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+}
+
+impl<'de> DeserializeSeed<'de> for ImportMapTopLevelSeed<'_> {
+  type Value = ParsedTopLevel;
+
+  fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_any(ImportMapTopLevelVisitor {
+      limits: self.limits,
+      counter: self.counter,
+    })
+  }
+}
+
+struct ImportMapTopLevelVisitor<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+}
+
+impl<'de> Visitor<'de> for ImportMapTopLevelVisitor<'_> {
+  type Value = ParsedTopLevel;
+
+  fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("an import map JSON value")
+  }
+
+  fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+  where
+    A: MapAccess<'de>,
+  {
+    let mut out = ParsedImportMapJson::default();
+    while let Some(key) = map.next_key::<String>()? {
+      if key.len() > self.limits.max_key_bytes {
+        return Err(de_limit_exceeded(format!(
+          "top-level key exceeded max_key_bytes ({} > max {})",
+          key.len(),
+          self.limits.max_key_bytes
+        )));
+      }
+
+      match key.as_str() {
+        "imports" => {
+          let value = map.next_value_seed(StringMapOrOtherSeed {
+            limits: self.limits,
+            counter: self.counter,
+            max_entries: self.limits.max_imports_entries,
+            kind: "\"imports\"",
+          })?;
+          out.imports = Some(value);
+        }
+        "scopes" => {
+          let value = map.next_value_seed(ScopesMapOrOtherSeed {
+            limits: self.limits,
+            counter: self.counter,
+          })?;
+          out.scopes = Some(value);
+        }
+        "integrity" => {
+          let value = map.next_value_seed(StringMapOrOtherSeed {
+            limits: self.limits,
+            counter: self.counter,
+            max_entries: self.limits.max_integrity_entries,
+            kind: "\"integrity\"",
+          })?;
+          out.integrity = Some(value);
+        }
+        _ => {
+          // Unknown top-level keys are warnings; their values are ignored.
+          let _ignored: IgnoredAny = map.next_value()?;
+          out.unknown_top_level_keys.push(key);
+        }
+      }
+    }
+    Ok(ParsedTopLevel::Object(out))
+  }
+
+  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+  where
+    A: SeqAccess<'de>,
+  {
+    while let Some(_ignored) = seq.next_element::<IgnoredAny>()? {}
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_string<E>(self, _v: String) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_none<E>(self) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+
+  fn visit_unit<E>(self) -> Result<Self::Value, E> {
+    Ok(ParsedTopLevel::Other)
+  }
+}
+
+struct JsonStringOrOtherSeed<'a> {
+  limits: &'a ImportMapLimits,
+}
+
+impl<'de> DeserializeSeed<'de> for JsonStringOrOtherSeed<'_> {
+  type Value = JsonStringOrOther;
+
+  fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_any(JsonStringOrOtherVisitor { limits: self.limits })
+  }
+}
+
+struct JsonStringOrOtherVisitor<'a> {
+  limits: &'a ImportMapLimits,
+}
+
+impl<'de> Visitor<'de> for JsonStringOrOtherVisitor<'_> {
+  type Value = JsonStringOrOther;
+
+  fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("a JSON string or other JSON value")
+  }
+
+  fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    if v.len() > self.limits.max_value_bytes {
+      return Err(de_limit_exceeded(format!(
+        "string value exceeded max_value_bytes ({} > max {})",
+        v.len(),
+        self.limits.max_value_bytes
+      )));
+    }
+    Ok(JsonStringOrOther::String(v.to_string()))
+  }
+
+  fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    if v.len() > self.limits.max_value_bytes {
+      return Err(de_limit_exceeded(format!(
+        "string value exceeded max_value_bytes ({} > max {})",
+        v.len(),
+        self.limits.max_value_bytes
+      )));
+    }
+    Ok(JsonStringOrOther::String(v))
+  }
+
+  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+  where
+    A: SeqAccess<'de>,
+  {
+    while let Some(_ignored) = seq.next_element::<IgnoredAny>()? {}
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+  where
+    A: MapAccess<'de>,
+  {
+    while let Some((_k, _v)) = map.next_entry::<IgnoredAny, IgnoredAny>()? {}
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> {
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E> {
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E> {
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_none<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonStringOrOther::Other)
+  }
+
+  fn visit_unit<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonStringOrOther::Other)
+  }
+}
+
+struct StringMapOrOtherSeed<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+  max_entries: usize,
+  kind: &'static str,
+}
+
+impl<'de> DeserializeSeed<'de> for StringMapOrOtherSeed<'_> {
+  type Value = JsonObjectOrOther<JsonStringOrOther>;
+
+  fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_any(StringMapOrOtherVisitor {
+      limits: self.limits,
+      counter: self.counter,
+      max_entries: self.max_entries,
+      kind: self.kind,
+    })
+  }
+}
+
+struct StringMapOrOtherVisitor<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+  max_entries: usize,
+  kind: &'static str,
+}
+
+impl<'de> Visitor<'de> for StringMapOrOtherVisitor<'_> {
+  type Value = JsonObjectOrOther<JsonStringOrOther>;
+
+  fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("a JSON object or other JSON value")
+  }
+
+  fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+  where
+    A: MapAccess<'de>,
+  {
+    let mut entries: Vec<(String, JsonStringOrOther)> = Vec::new();
+    let mut count_in_map = 0usize;
+    while let Some(key) = map.next_key::<String>()? {
+      if key.len() > self.limits.max_key_bytes {
+        return Err(de_limit_exceeded(format!(
+          "{} key exceeded max_key_bytes ({} > max {})",
+          self.kind,
+          key.len(),
+          self.limits.max_key_bytes
+        )));
+      }
+
+      count_in_map = count_in_map.saturating_add(1);
+      if count_in_map > self.max_entries {
+        return Err(de_limit_exceeded(format!(
+          "{} exceeded max entries ({} > max {})",
+          self.kind, count_in_map, self.max_entries
+        )));
+      }
+
+      self.counter.bump_total_entries(self.limits)?;
+
+      let value = map.next_value_seed(JsonStringOrOtherSeed { limits: self.limits })?;
+      entries.push((key, value));
+    }
+    Ok(JsonObjectOrOther::Object(entries))
+  }
+
+  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+  where
+    A: SeqAccess<'de>,
+  {
+    while let Some(_ignored) = seq.next_element::<IgnoredAny>()? {}
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_string<E>(self, _v: String) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_none<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_unit<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+}
+
+struct ScopesMapOrOtherSeed<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+}
+
+impl<'de> DeserializeSeed<'de> for ScopesMapOrOtherSeed<'_> {
+  type Value = JsonObjectOrOther<JsonObjectOrOther<JsonStringOrOther>>;
+
+  fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_any(ScopesMapOrOtherVisitor {
+      limits: self.limits,
+      counter: self.counter,
+    })
+  }
+}
+
+struct ScopesMapOrOtherVisitor<'a> {
+  limits: &'a ImportMapLimits,
+  counter: &'a mut ImportMapEntryCounter,
+}
+
+impl<'de> Visitor<'de> for ScopesMapOrOtherVisitor<'_> {
+  type Value = JsonObjectOrOther<JsonObjectOrOther<JsonStringOrOther>>;
+
+  fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("a JSON object or other JSON value")
+  }
+
+  fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+  where
+    A: MapAccess<'de>,
+  {
+    let mut entries: Vec<(String, JsonObjectOrOther<JsonStringOrOther>)> = Vec::new();
+    let mut scope_count = 0usize;
+    while let Some(scope_prefix) = map.next_key::<String>()? {
+      if scope_prefix.len() > self.limits.max_key_bytes {
+        return Err(de_limit_exceeded(format!(
+          "\"scopes\" prefix exceeded max_key_bytes ({} > max {})",
+          scope_prefix.len(),
+          self.limits.max_key_bytes
+        )));
+      }
+
+      scope_count = scope_count.saturating_add(1);
+      if scope_count > self.limits.max_scopes {
+        return Err(de_limit_exceeded(format!(
+          "\"scopes\" exceeded max_scopes ({} > max {})",
+          scope_count, self.limits.max_scopes
+        )));
+      }
+
+      // Count scope prefixes toward the global total.
+      self.counter.bump_total_entries(self.limits)?;
+
+      let scope_value = map.next_value_seed(StringMapOrOtherSeed {
+        limits: self.limits,
+        counter: self.counter,
+        max_entries: self.limits.max_scope_entries,
+        kind: "scope",
+      })?;
+
+      entries.push((scope_prefix, scope_value));
+    }
+    Ok(JsonObjectOrOther::Object(entries))
+  }
+
+  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+  where
+    A: SeqAccess<'de>,
+  {
+    while let Some(_ignored) = seq.next_element::<IgnoredAny>()? {}
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+  where
+    E: serde::de::Error,
+  {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_string<E>(self, _v: String) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_none<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+
+  fn visit_unit<E>(self) -> Result<Self::Value, E> {
+    Ok(JsonObjectOrOther::Other)
+  }
+}
 
 /// Parse and normalize an import map string per the WHATWG HTML Standard.
 pub fn parse_import_map_string(
   input: &str,
   base_url: &Url,
 ) -> Result<(ImportMap, Vec<ImportMapWarning>), ImportMapError> {
-  let parsed: OrderedJsonValue = serde_json::from_str(input)?;
-  let OrderedJsonValue::Object(top_level) = parsed else {
-    return Err(ImportMapError::TypeError(
-      "top-level value needs to be a JSON object.".to_string(),
-    ));
-  };
-
-  let mut warnings = Vec::new();
-
-  for (key, _) in &top_level {
-    if key != "imports" && key != "scopes" && key != "integrity" {
-      warnings.push(ImportMapWarning::new(
-        ImportMapWarningKind::UnknownTopLevelKey { key: key.clone() },
-      ));
-    }
-  }
-
-  let mut imports = ModuleSpecifierMap::default();
-  if let Some(imports_value) = get_last_property(&top_level, "imports") {
-    let OrderedJsonValue::Object(map) = imports_value else {
-      return Err(ImportMapError::TypeError(
-        "the value for the \"imports\" top-level key needs to be a JSON object.".to_string(),
-      ));
-    };
-    imports = sort_and_normalize_module_specifier_map(map, base_url, &mut warnings);
-  }
-
-  let mut scopes = ScopesMap::default();
-  if let Some(scopes_value) = get_last_property(&top_level, "scopes") {
-    let OrderedJsonValue::Object(map) = scopes_value else {
-      return Err(ImportMapError::TypeError(
-        "the value for the \"scopes\" top-level key needs to be a JSON object.".to_string(),
-      ));
-    };
-    scopes = sort_and_normalize_scopes(map, base_url, &mut warnings)?;
-  }
-
-  let mut integrity = ModuleIntegrityMap::default();
-  if let Some(integrity_value) = get_last_property(&top_level, "integrity") {
-    let OrderedJsonValue::Object(map) = integrity_value else {
-      return Err(ImportMapError::TypeError(
-        "the value for the \"integrity\" top-level key needs to be a JSON object.".to_string(),
-      ));
-    };
-    integrity = normalize_module_integrity_map(map, base_url, &mut warnings);
-  }
-
-  Ok((ImportMap { imports, scopes, integrity }, warnings))
+  parse_import_map_string_with_limits(input, base_url, &ImportMapLimits::default())
 }
 
 /// WHATWG HTML: "create an import map parse result".
 pub fn create_import_map_parse_result(input: &str, base_url: &Url) -> ImportMapParseResult {
-  match parse_import_map_string(input, base_url) {
-    Ok((import_map, warnings)) => ImportMapParseResult {
-      import_map: Some(import_map),
-      error_to_rethrow: None,
-      warnings,
-    },
-    Err(err) => ImportMapParseResult {
-      import_map: None,
-      error_to_rethrow: Some(err),
-      warnings: Vec::new(),
-    },
-  }
-}
-
-fn get_last_property<'a>(
-  object: &'a [(String, OrderedJsonValue)],
-  key: &str,
-) -> Option<&'a OrderedJsonValue> {
-  object
-    .iter()
-    .rev()
-    .find(|(k, _)| k == key)
-    .map(|(_, v)| v)
+  create_import_map_parse_result_with_limits(input, base_url, &ImportMapLimits::default())
 }
 
 /// WHATWG HTML: "resolve a URL-like module specifier".
@@ -125,7 +565,7 @@ fn normalize_specifier_key(
 }
 
 fn sort_and_normalize_module_specifier_map(
-  original_map: &[(String, OrderedJsonValue)],
+  original_map: &[(String, JsonStringOrOther)],
   base_url: &Url,
   warnings: &mut Vec<ImportMapWarning>,
 ) -> ModuleSpecifierMap {
@@ -136,7 +576,7 @@ fn sort_and_normalize_module_specifier_map(
       continue;
     };
 
-    let OrderedJsonValue::String(address) = value else {
+    let JsonStringOrOther::String(address) = value else {
       warnings.push(ImportMapWarning::new(
         ImportMapWarningKind::AddressNotString {
           specifier_key: specifier_key.clone(),
@@ -180,18 +620,27 @@ fn sort_and_normalize_module_specifier_map(
 }
 
 fn sort_and_normalize_scopes(
-  original_map: &[(String, OrderedJsonValue)],
+  original_map: &[(String, JsonObjectOrOther<JsonStringOrOther>)],
   base_url: &Url,
   warnings: &mut Vec<ImportMapWarning>,
+  limits: &ImportMapLimits,
 ) -> Result<ScopesMap, ImportMapError> {
   let mut normalized: HashMap<String, ModuleSpecifierMap> = HashMap::new();
 
   for (scope_prefix, potential_specifier_map) in original_map {
-    let OrderedJsonValue::Object(map) = potential_specifier_map else {
+    let JsonObjectOrOther::Object(map) = potential_specifier_map else {
       return Err(ImportMapError::TypeError(format!(
         "the value of the scope with prefix {scope_prefix} needs to be a JSON object."
       )));
     };
+
+    if map.len() > limits.max_scope_entries {
+      return Err(ImportMapError::LimitExceeded(format!(
+        "scope {scope_prefix:?} exceeded max_scope_entries ({} > max {})",
+        map.len(),
+        limits.max_scope_entries
+      )));
+    }
 
     let scope_prefix_url = match base_url.join(scope_prefix) {
       Ok(url) => url,
@@ -218,7 +667,7 @@ fn sort_and_normalize_scopes(
 }
 
 fn normalize_module_integrity_map(
-  original_map: &[(String, OrderedJsonValue)],
+  original_map: &[(String, JsonStringOrOther)],
   base_url: &Url,
   warnings: &mut Vec<ImportMapWarning>,
 ) -> ModuleIntegrityMap {
@@ -232,7 +681,7 @@ fn normalize_module_integrity_map(
       continue;
     };
 
-    let OrderedJsonValue::String(metadata) = value else {
+    let JsonStringOrOther::String(metadata) = value else {
       warnings.push(ImportMapWarning::new(
         ImportMapWarningKind::IntegrityValueNotString { key: key.clone() },
       ));
@@ -251,92 +700,124 @@ fn normalize_module_integrity_map(
   ModuleIntegrityMap { entries }
 }
 
-/// JSON value with object insertion order preserved.
-#[derive(Debug, Clone, PartialEq)]
-enum OrderedJsonValue {
-  Null,
-  Bool(bool),
-  Number(serde_json::Number),
-  String(String),
-  Array(Vec<OrderedJsonValue>),
-  Object(Vec<(String, OrderedJsonValue)>),
-}
-
-impl<'de> Deserialize<'de> for OrderedJsonValue {
-  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-  where
-    D: Deserializer<'de>,
-  {
-    deserializer.deserialize_any(OrderedJsonVisitor)
-  }
-}
-
-struct OrderedJsonVisitor;
-
-impl<'de> Visitor<'de> for OrderedJsonVisitor {
-  type Value = OrderedJsonValue;
-
-  fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.write_str("a JSON value")
+/// Parse and normalize an import map string per the WHATWG HTML Standard with deterministic limits.
+pub fn parse_import_map_string_with_limits(
+  input: &str,
+  base_url: &Url,
+  limits: &ImportMapLimits,
+) -> Result<(ImportMap, Vec<ImportMapWarning>), ImportMapError> {
+  if input.len() > limits.max_bytes {
+    return Err(ImportMapError::LimitExceeded(format!(
+      "input exceeded max_bytes ({} > max {})",
+      input.len(),
+      limits.max_bytes
+    )));
   }
 
-  fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::Bool(v))
+  let mut de = serde_json::Deserializer::from_str(input);
+  let mut counter = ImportMapEntryCounter::default();
+  let top_level = ImportMapTopLevelSeed { limits, counter: &mut counter }
+    .deserialize(&mut de)
+    .map_err(serde_json_error_to_import_map_error)?;
+  de.end().map_err(serde_json_error_to_import_map_error)?;
+
+  let ParsedTopLevel::Object(parsed) = top_level else {
+    return Err(ImportMapError::TypeError(
+      "top-level value needs to be a JSON object.".to_string(),
+    ));
+  };
+
+  let mut warnings = Vec::new();
+  for key in parsed.unknown_top_level_keys {
+    warnings.push(ImportMapWarning::new(
+      ImportMapWarningKind::UnknownTopLevelKey { key },
+    ));
   }
 
-  fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::Number(serde_json::Number::from(v)))
-  }
-
-  fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::Number(serde_json::Number::from(v)))
-  }
-
-  fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-  where
-    E: serde::de::Error,
-  {
-    let Some(n) = serde_json::Number::from_f64(v) else {
-      return Err(E::custom("invalid number"));
+  let mut imports = ModuleSpecifierMap::default();
+  if let Some(imports_value) = parsed.imports {
+    let JsonObjectOrOther::Object(map) = imports_value else {
+      return Err(ImportMapError::TypeError(
+        "the value for the \"imports\" top-level key needs to be a JSON object.".to_string(),
+      ));
     };
-    Ok(OrderedJsonValue::Number(n))
-  }
 
-  fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::String(v.to_string()))
-  }
-
-  fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::String(v))
-  }
-
-  fn visit_none<E>(self) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::Null)
-  }
-
-  fn visit_unit<E>(self) -> Result<Self::Value, E> {
-    Ok(OrderedJsonValue::Null)
-  }
-
-  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-  where
-    A: SeqAccess<'de>,
-  {
-    let mut elements = Vec::new();
-    while let Some(elem) = seq.next_element::<OrderedJsonValue>()? {
-      elements.push(elem);
+    // Defense in depth: enforce limits post-parse too.
+    if map.len() > limits.max_imports_entries {
+      return Err(ImportMapError::LimitExceeded(format!(
+        "\"imports\" exceeded max_imports_entries ({} > max {})",
+        map.len(),
+        limits.max_imports_entries
+      )));
     }
-    Ok(OrderedJsonValue::Array(elements))
+
+    imports = sort_and_normalize_module_specifier_map(&map, base_url, &mut warnings);
   }
 
-  fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-  where
-    A: MapAccess<'de>,
-  {
-    let mut entries = Vec::new();
-    while let Some((k, v)) = map.next_entry::<String, OrderedJsonValue>()? {
-      entries.push((k, v));
+  let mut scopes = ScopesMap::default();
+  if let Some(scopes_value) = parsed.scopes {
+    let JsonObjectOrOther::Object(map) = scopes_value else {
+      return Err(ImportMapError::TypeError(
+        "the value for the \"scopes\" top-level key needs to be a JSON object.".to_string(),
+      ));
+    };
+
+    if map.len() > limits.max_scopes {
+      return Err(ImportMapError::LimitExceeded(format!(
+        "\"scopes\" exceeded max_scopes ({} > max {})",
+        map.len(),
+        limits.max_scopes
+      )));
     }
-    Ok(OrderedJsonValue::Object(entries))
+
+    scopes = sort_and_normalize_scopes(&map, base_url, &mut warnings, limits)?;
+  }
+
+  let mut integrity = ModuleIntegrityMap::default();
+  if let Some(integrity_value) = parsed.integrity {
+    let JsonObjectOrOther::Object(map) = integrity_value else {
+      return Err(ImportMapError::TypeError(
+        "the value for the \"integrity\" top-level key needs to be a JSON object.".to_string(),
+      ));
+    };
+
+    if map.len() > limits.max_integrity_entries {
+      return Err(ImportMapError::LimitExceeded(format!(
+        "\"integrity\" exceeded max_integrity_entries ({} > max {})",
+        map.len(),
+        limits.max_integrity_entries
+      )));
+    }
+
+    integrity = normalize_module_integrity_map(&map, base_url, &mut warnings);
+  }
+
+  let import_map = ImportMap {
+    imports,
+    scopes,
+    integrity,
+  };
+  limits.validate_import_map(&import_map)?;
+
+  Ok((import_map, warnings))
+}
+
+/// WHATWG HTML: "create an import map parse result" with deterministic limits.
+pub fn create_import_map_parse_result_with_limits(
+  input: &str,
+  base_url: &Url,
+  limits: &ImportMapLimits,
+) -> ImportMapParseResult {
+  match parse_import_map_string_with_limits(input, base_url, limits) {
+    Ok((import_map, warnings)) => ImportMapParseResult {
+      import_map: Some(import_map),
+      error_to_rethrow: None,
+      warnings,
+    },
+    Err(err) => ImportMapParseResult {
+      import_map: None,
+      error_to_rethrow: Some(err),
+      warnings: Vec::new(),
+    },
   }
 }

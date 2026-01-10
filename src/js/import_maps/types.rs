@@ -211,6 +211,9 @@ pub enum ImportMapError {
   /// The JSON value had the wrong type for the import map algorithm.
   #[error("TypeError: {0}")]
   TypeError(String),
+  /// A deterministic resource limit was exceeded while parsing or merging an import map.
+  #[error("TypeError: import map limit exceeded: {0}")]
+  LimitExceeded(String),
 }
 
 /// Errors raised while resolving module specifiers using an import map.

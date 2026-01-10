@@ -47,7 +47,7 @@ fn scopes_are_sorted_descending_by_utf16_code_units() {
     integrity: ModuleIntegrityMap::default(),
   };
 
-  merge_existing_and_new_import_maps(&mut state, &new_import_map);
+  merge_existing_and_new_import_maps(&mut state, &new_import_map).unwrap();
 
   let keys: Vec<&str> = state
     .import_map

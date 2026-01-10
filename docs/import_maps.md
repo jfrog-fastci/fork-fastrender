@@ -450,7 +450,8 @@ assert!(
 
 Rust API:
 
-* `fastrender::js::import_maps::merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import_map: &ImportMap)`
+* `fastrender::js::import_maps::merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import_map: &ImportMap)
+  -> Result<(), ImportMapError>`
 
 Spec mapping: “merge existing and new import maps”.
 
@@ -563,17 +564,27 @@ resolution must treat as “blocked”).
   * bare relative strings like `"node_modules/helper/index.mjs"` are **not** URL-like and will be
     rejected (they normalize to a `null` entry with an `AddressInvalid` warning)
 
-### Resource-safety notes (current limitations)
+### Resource-safety limits
 
-Import maps are attacker-controlled input, but this module currently has **no explicit size limits**:
+Import maps are attacker-controlled JSON. FastRender enforces **deterministic size limits** during
+import map parsing and merging via `ImportMapLimits`:
 
-* JSON parsing uses `serde_json` without an input-length cap.
-* URL parsing uses `url::Url` (unbounded) instead of FastRender’s bounded URL wrapper
-  (`crate::resource::web_url::WebUrl` / `js::Url`).
+* `parse_import_map_string(...)` and `create_import_map_parse_result(...)` use
+  `ImportMapLimits::default()`.
+* For custom budgets, use:
+  * `parse_import_map_string_with_limits(...)`
+  * `create_import_map_parse_result_with_limits(...)`
+  * `register_import_map_with_limits(...)` (prevents unbounded growth across many registered maps)
 
-As import maps become integrated into real page execution, consider enforcing size limits at the
-call-site (e.g. script size limits for `<script type="importmap">`) and/or migrating this module to
-use bounded URL parsing to match the rest of the JS-facing surface.
+The default limits cap:
+
+* input size (`max_bytes`) **before** JSON parsing
+* entry counts for `imports`, `scopes`, per-scope maps, and `integrity`
+* total entry count across the merged state (`max_total_entries`)
+* per-string sizes (`max_key_bytes`, `max_value_bytes`)
+
+Note: URL parsing still uses `url::Url` directly (unbounded); limits exist to keep import map inputs
+and the merged in-memory state deterministic and bounded.
 
 ### Trailing slash normalization edge case (implicit `/` from URL serialization)
 

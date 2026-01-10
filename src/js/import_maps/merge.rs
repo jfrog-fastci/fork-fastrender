@@ -2,6 +2,7 @@ use super::types::{
   code_unit_cmp, is_code_unit_prefix, ImportMap, ImportMapError, ImportMapParseResult, ImportMapState,
   ModuleIntegrityMap, ModuleSpecifierMap, SpecifierResolutionRecord,
 };
+use super::ImportMapLimits;
 
 use std::collections::{HashMap, HashSet};
 
@@ -142,8 +143,19 @@ impl<'a> ResolvedModuleSetIndex<'a> {
 ///
 /// This implements the resolved-module-set filtering rules that prevent new import maps from
 /// retroactively changing resolution for already-resolved modules.
-pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import_map: &ImportMap) {
-  let resolved_index = ResolvedModuleSetIndex::build(&state.resolved_module_set);
+pub fn merge_existing_and_new_import_maps(
+  state: &mut ImportMapState,
+  new_import_map: &ImportMap,
+) -> Result<(), ImportMapError> {
+  merge_existing_and_new_import_maps_with_limits(state, new_import_map, &ImportMapLimits::default())
+}
+
+fn merge_existing_and_new_import_maps_impl(
+  old_import_map: &mut ImportMap,
+  resolved_module_set: &[SpecifierResolutionRecord],
+  new_import_map: &ImportMap,
+) {
+  let resolved_index = ResolvedModuleSetIndex::build(resolved_module_set);
 
   // Step 1: deep copy of scopes that we will mutate when filtering out impacted rules.
   let new_scopes = new_import_map.scopes.clone();
@@ -201,8 +213,7 @@ pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import
       });
     }
 
-    if let Some((_, existing_scope_imports)) = state
-      .import_map
+    if let Some((_, existing_scope_imports)) = old_import_map
       .scopes
       .entries
       .iter_mut()
@@ -210,23 +221,18 @@ pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import
     {
       *existing_scope_imports = merge_module_specifier_maps(&scope_imports, existing_scope_imports);
     } else {
-      state
-        .import_map
-        .scopes
-        .entries
-        .push((scope_prefix, scope_imports));
+      old_import_map.scopes.entries.push((scope_prefix, scope_imports));
     }
   }
 
   // Keep scopes sorted in descending code unit order.
-  state
-    .import_map
+  old_import_map
     .scopes
     .entries
     .sort_by(|(a, _), (b, _)| code_unit_cmp(b.as_str(), a.as_str()));
 
   // Step 5: merge integrity (old wins on duplicates).
-  merge_integrity_maps(&new_import_map.integrity, &mut state.import_map.integrity);
+  merge_integrity_maps(&new_import_map.integrity, &mut old_import_map.integrity);
 
   // Step 6: filter new top-level imports that would impact already-resolved specifiers.
   new_imports.entries.retain(|(specifier, _)| {
@@ -234,7 +240,27 @@ pub fn merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import
   });
 
   // Step 7: merge top-level imports (old wins on duplicates).
-  state.import_map.imports = merge_module_specifier_maps(&new_imports, &state.import_map.imports);
+  old_import_map.imports = merge_module_specifier_maps(&new_imports, &old_import_map.imports);
+}
+
+/// Like [`merge_existing_and_new_import_maps`], but enforces deterministic [`ImportMapLimits`].
+pub fn merge_existing_and_new_import_maps_with_limits(
+  state: &mut ImportMapState,
+  new_import_map: &ImportMap,
+  limits: &ImportMapLimits,
+) -> Result<(), ImportMapError> {
+  // Validate inputs to keep behavior deterministic even if callers construct `ImportMap` directly.
+  limits.validate_import_map(&state.import_map)?;
+  limits.validate_import_map(new_import_map)?;
+
+  // Merge into a clone so we can fail without partially mutating `state`.
+  let mut merged = state.import_map.clone();
+  merge_existing_and_new_import_maps_impl(&mut merged, &state.resolved_module_set, new_import_map);
+
+  // Ensure the merged state remains within limits (prevents unbounded growth across many maps).
+  limits.validate_import_map(&merged)?;
+  state.import_map = merged;
+  Ok(())
 }
 
 /// HTML: "register an import map".
@@ -244,12 +270,21 @@ pub fn register_import_map(
   state: &mut ImportMapState,
   result: ImportMapParseResult,
 ) -> Result<(), ImportMapError> {
+  register_import_map_with_limits(state, result, &ImportMapLimits::default())
+}
+
+/// Like [`register_import_map`], but enforces deterministic [`ImportMapLimits`] during merge.
+pub fn register_import_map_with_limits(
+  state: &mut ImportMapState,
+  result: ImportMapParseResult,
+  limits: &ImportMapLimits,
+) -> Result<(), ImportMapError> {
   if let Some(err) = result.error_to_rethrow {
     return Err(err);
   }
 
   if let Some(import_map) = result.import_map {
-    merge_existing_and_new_import_maps(state, &import_map);
+    merge_existing_and_new_import_maps_with_limits(state, &import_map, limits)?;
   }
 
   Ok(())
