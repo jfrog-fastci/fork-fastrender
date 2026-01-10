@@ -18880,6 +18880,89 @@ mod tests {
   }
 
   #[test]
+  fn text_justify_distribute_counts_word_and_inter_character_gaps_across_nested_inline_boxes() {
+    // Regression: distribute should consider both inter-character and inter-word (space boundary)
+    // opportunities even when they occur between nested inline boxes.
+    let mut root_style = ComputedStyle::default();
+    root_style.font_size = 16.0;
+    root_style.text_align = TextAlign::Justify;
+    root_style.text_align_last = crate::style::types::TextAlignLast::Justify;
+    root_style.text_justify = TextJustify::Distribute;
+    root_style.width = Some(Length::px(200.0));
+    root_style.width_keyword = None;
+    let root_style = Arc::new(root_style);
+
+    let mut text_style_a = ComputedStyle::default();
+    text_style_a.font_size = 16.0;
+    text_style_a.white_space = WhiteSpace::PreWrap;
+    let text_style_a = Arc::new(text_style_a);
+
+    let mut text_style_b = ComputedStyle::default();
+    text_style_b.font_size = 16.0;
+    text_style_b.white_space = WhiteSpace::PreWrap;
+    text_style_b.color = Rgba::BLUE;
+    let text_style_b = Arc::new(text_style_b);
+
+    let mut text_style_c = ComputedStyle::default();
+    text_style_c.font_size = 16.0;
+    text_style_c.white_space = WhiteSpace::PreWrap;
+    let text_style_c = Arc::new(text_style_c);
+
+    // Outer inline box children:
+    // - "A" then "B " => inter-character boundary between A|B (no internal boundaries to count)
+    // - "B " then "C" => inter-word boundary via trailing space at the end of the middle span.
+    let inner_a = BoxNode::new_inline(
+      text_style_a.clone(),
+      vec![BoxNode::new_text(text_style_a.clone(), "A".into())],
+    );
+    let inner_b = BoxNode::new_inline(
+      text_style_b.clone(),
+      vec![BoxNode::new_text(text_style_b.clone(), "B ".into())],
+    );
+    let inner_c = BoxNode::new_inline(
+      text_style_c.clone(),
+      vec![BoxNode::new_text(text_style_c.clone(), "C".into())],
+    );
+    let outer = BoxNode::new_inline(Arc::new(ComputedStyle::default()), vec![inner_a, inner_b, inner_c]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![outer]);
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, constraints.width().unwrap(), constraints.height())
+      .expect("collect items");
+    let strut = ifc.compute_strut_metrics(&root.style);
+    let lines = ifc
+      .build_lines(
+        items,
+        constraints.width().unwrap(),
+        constraints.width().unwrap(),
+        true,
+        root.style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        root.style.direction,
+        root.style.unicode_bidi,
+        None,
+        0.0,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+    let first = lines.first().expect("first line");
+
+    let gap_count = InlineFormattingContext::count_justify_opportunities(&first.items, TextJustify::Distribute);
+    assert_eq!(
+      gap_count, 2,
+      "expected distribute to count both inter-character and word-boundary gaps across nested inline boxes"
+    );
+  }
+
+  #[test]
   fn justify_fallback_keeps_combining_clusters_intact() {
     let ctx = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
