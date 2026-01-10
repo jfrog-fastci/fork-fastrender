@@ -97,6 +97,8 @@ fn bidi_format_chars_do_not_break_fi_ligature() {
     ("LRM", "f\u{200E}i"),
     ("RLM", "f\u{200F}i"),
     ("ALM", "f\u{061C}i"),
+    ("LRM+RLM", "f\u{200E}\u{200F}i"),
+    ("LRM+ALM", "f\u{200E}\u{061C}i"),
     ("PDF", "f\u{202C}i"),
     // Embedding/override controls are also default-ignorable for shaping input.
     ("LRE/PDF", "f\u{202A}i\u{202C}"),
@@ -136,6 +138,8 @@ fn bidi_format_chars_remap_clusters_to_original_text() {
     ("LRM", "a\u{200E}b"),
     ("RLM", "a\u{200F}b"),
     ("ALM", "a\u{061C}b"),
+    ("LRM+RLM", "a\u{200E}\u{200F}b"),
+    ("LRM+ALM", "a\u{200E}\u{061C}b"),
     ("PDF", "a\u{202C}b"),
     ("LRE/PDF", "a\u{202A}b\u{202C}"),
     ("RLE/PDF", "a\u{202B}\u{202C}b"),
