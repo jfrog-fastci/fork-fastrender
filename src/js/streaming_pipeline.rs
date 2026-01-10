@@ -227,10 +227,26 @@ impl ClassicScriptPipelineState {
     // `BlockParserUntilExecuted` for external scripts, which would incorrectly stall parsing if the
     // script is disconnected.
     {
-      let dom = self.parser.document().ok_or_else(|| {
+      let mut dom = self.parser.document_mut().ok_or_else(|| {
         Error::Other("internal error: parser document unavailable at script boundary".to_string())
       })?;
       if !dom.is_connected_for_scripting(script_node_id) {
+        if let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &dom.node(script_node_id).kind
+        {
+          if tag_name.eq_ignore_ascii_case("script")
+            && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+          {
+            let parser_document = dom.node(script_node_id).script_parser_document;
+            dom.node_mut(script_node_id).script_parser_document = false;
+            if parser_document && !dom.has_attribute(script_node_id, "async").unwrap_or(false) {
+              dom.node_mut(script_node_id).script_force_async = true;
+            }
+          }
+        }
         return Ok(());
       }
     }
@@ -857,6 +873,57 @@ mod tests {
       "expected no fetch to be started for an inert <template> script"
     );
     assert_eq!(host.log, vec!["LIVE".to_string(), "mLIVE".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn disconnected_parser_inserted_script_updates_internal_slots() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<!doctype html><template><script id=s>1</script></template><div>after</div>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(p.parsing_finished(), "expected parsing to finish");
+    let doc = p
+      .finished_document()
+      .expect("expected pipeline to expose finished document");
+
+    let script = doc
+      .subtree_preorder(doc.root())
+      .find(|&node_id| {
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &doc.node(node_id).kind
+        else {
+          return false;
+        };
+        if !tag_name.eq_ignore_ascii_case("script")
+          || !(namespace.is_empty() || namespace == HTML_NAMESPACE)
+        {
+          return false;
+        }
+        doc.get_attribute(node_id, "id")
+          .ok()
+          .flatten()
+          .is_some_and(|v| v == "s")
+      })
+      .expect("expected to find <script id=s> inside <template>");
+
+    let script_node = doc.node(script);
+    assert!(
+      !script_node.script_parser_document,
+      "expected parser document to be cleared for disconnected parser-inserted scripts"
+    );
+    assert!(
+      script_node.script_force_async,
+      "expected force async to be set for disconnected parser-inserted scripts without async attr"
+    );
+    assert!(
+      !script_node.script_already_started,
+      "expected already started to remain false for disconnected parser-inserted scripts"
+    );
     Ok(())
   }
 

@@ -7,7 +7,8 @@
 //! - supports `document.write`-style input injection (`push_front_str`),
 //! - and maintains the parse-time document base URL (`<base href>`).
 
-use crate::dom2::{Document, Dom2TreeSink, NodeId};
+use crate::dom::HTML_NAMESPACE;
+use crate::dom2::{Document, Dom2TreeSink, NodeId, NodeKind};
 use crate::error::Result;
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
@@ -110,27 +111,43 @@ impl StreamingHtmlParser {
           // The HTML script preparation algorithm early-outs when the script element is not
           // connected, so these should not block parsing. Filter them out here so callers only see
           // pause points that actually require script scheduling/execution.
-          let should_yield = if let Some(mut doc) = self.document_mut() {
-            if doc.is_connected_for_scripting(script) {
-              // Ensure declarative shadow roots are attached before any connected script executes.
-              //
-              // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
-              // streaming parsing with script execution, we need scripts to observe the promoted tree
-              // shape once the relevant `<template shadowroot=...>` markup has been parsed.
-              //
-              // Only run this promotion when the yielded script is connected for scripting; scripts
-              // inside inert `<template>` contents must remain inert, and promoting while still
-              // parsing inside a template could invalidate html5ever's template state.
-              doc.attach_shadow_roots();
-              true
-            } else {
-              false
-            }
-          } else {
-            debug_assert!(
-              false,
-              "StreamingHtmlParser yielded a script without an active DOM sink"
-            );
+           let should_yield = if let Some(mut doc) = self.document_mut() {
+             if doc.is_connected_for_scripting(script) {
+               // Ensure declarative shadow roots are attached before any connected script executes.
+               //
+               // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
+               // streaming parsing with script execution, we need scripts to observe the promoted tree
+               // shape once the relevant `<template shadowroot=...>` markup has been parsed.
+               //
+               // Only run this promotion when the yielded script is connected for scripting; scripts
+               // inside inert `<template>` contents must remain inert, and promoting while still
+               // parsing inside a template could invalidate html5ever's template state.
+               doc.attach_shadow_roots();
+               true
+             } else {
+               if let NodeKind::Element {
+                 tag_name,
+                 namespace,
+                 ..
+               } = &doc.node(script).kind
+               {
+                 if tag_name.eq_ignore_ascii_case("script")
+                   && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+                 {
+                   let parser_document = doc.node(script).script_parser_document;
+                   doc.node_mut(script).script_parser_document = false;
+                   if parser_document && !doc.has_attribute(script, "async").unwrap_or(false) {
+                     doc.node_mut(script).script_force_async = true;
+                   }
+                 }
+               }
+               false
+             }
+           } else {
+             debug_assert!(
+               false,
+               "StreamingHtmlParser yielded a script without an active DOM sink"
+             );
             true
           };
 

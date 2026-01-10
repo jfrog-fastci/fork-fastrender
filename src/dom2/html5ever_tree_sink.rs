@@ -546,8 +546,6 @@ impl TreeSink for Dom2TreeSink {
 
   fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
     let namespace = Self::normalize_namespace_for_storage(name.ns.as_ref());
-    let is_html_script =
-      name.local.as_ref().eq_ignore_ascii_case("script") && Self::is_html_namespace(namespace.as_str());
     let mut attributes = Vec::with_capacity(attrs.len());
     for attr in attrs {
       attributes.push((attr.name.local.to_string(), attr.value.to_string()));
@@ -556,6 +554,8 @@ impl TreeSink for Dom2TreeSink {
     let is_html_script =
       name.local.as_ref().eq_ignore_ascii_case("script") && Self::is_html_namespace(namespace.as_str());
     let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot")
+      && Self::is_html_namespace(namespace.as_str());
+    let is_html_script = name.local.as_ref().eq_ignore_ascii_case("script")
       && Self::is_html_namespace(namespace.as_str());
 
     let inert_subtree = name.local.as_ref().eq_ignore_ascii_case("template")

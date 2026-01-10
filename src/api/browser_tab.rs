@@ -1377,6 +1377,49 @@ impl BrowserTab {
             .host
             .executor
             .on_document_base_url_updated(self.host.base_url.as_deref());
+          if !self.host.dom().is_connected_for_scripting(script) {
+            self.host.mutate_dom(|dom| {
+              if let NodeKind::Element {
+                tag_name,
+                namespace,
+                ..
+              } = &dom.node(script).kind
+              {
+                if tag_name.eq_ignore_ascii_case("script")
+                  && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+                {
+                  let parser_document = dom.node(script).script_parser_document;
+                  dom.node_mut(script).script_parser_document = false;
+                  if parser_document && !dom.has_attribute(script, "async").unwrap_or(false) {
+                    dom.node_mut(script).script_force_async = true;
+                  }
+                }
+              }
+              ((), false)
+            });
+
+            let updated = self.host.dom().clone_with_events();
+            {
+              let Some(mut doc) = parser.document_mut() else {
+                return Err(Error::Other(
+                  "StreamingHtmlParser yielded a script without an active document".to_string(),
+                ));
+              };
+              *doc = updated;
+            }
+            continue;
+          }
+
+          // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
+          // microtask checkpoint when the JS execution context stack is empty.
+          //
+          // Parsing may be driven outside the event loop (e.g. parse-time script execution) or
+          // inside event-loop tasks; use explicit JS execution depth tracking rather than
+          // `EventLoop::currently_running_task()`.
+          if self.host.js_execution_depth.get() == 0 {
+            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+          }
+
           let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
             self.host.dom(),
