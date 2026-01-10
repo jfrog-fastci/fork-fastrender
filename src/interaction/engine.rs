@@ -262,6 +262,85 @@ mod tests {
   }
 
   #[test]
+  fn clipboard_paste_cancels_ime_preedit_for_input() {
+    let mut dom = crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.ime_composition.is_some());
+    assert!(has_preedit_attr(&mut dom, input_id));
+
+    assert!(engine.clipboard_paste(&mut dom, "X"));
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert_eq!(input_value(&mut dom, input_id), "helloX");
+  }
+
+  #[test]
+  fn clipboard_cut_cancels_ime_preedit_for_input() {
+    let mut dom = crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    engine.clipboard_select_all(&mut dom);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.ime_composition.is_some());
+    assert!(has_preedit_attr(&mut dom, input_id));
+
+    let (changed, text) = engine.clipboard_cut(&mut dom);
+    assert!(changed);
+    assert_eq!(text.as_deref(), Some("hello"));
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert_eq!(input_value(&mut dom, input_id), "");
+  }
+
+  #[test]
+  fn clipboard_paste_cancels_ime_preedit_for_textarea() {
+    let mut dom = crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.ime_composition.is_some());
+    assert!(has_preedit_attr(&mut dom, textarea_id));
+
+    assert!(engine.clipboard_paste(&mut dom, "X"));
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "helloX");
+  }
+
+  #[test]
+  fn clipboard_cut_cancels_ime_preedit_for_textarea() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+    engine.clipboard_select_all(&mut dom);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.ime_composition.is_some());
+    assert!(has_preedit_attr(&mut dom, textarea_id));
+
+    let (changed, text) = engine.clipboard_cut(&mut dom);
+    assert!(changed);
+    assert_eq!(text.as_deref(), Some("hello"));
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "");
+  }
+
+  #[test]
   fn delete_removes_next_character_in_focused_input() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"aあb\"></body></html>").expect("parse");
@@ -2307,16 +2386,19 @@ impl InteractionEngine {
         return (false, selected);
       }
 
+      // Mutating the text control cancels any in-progress IME composition.
+      let preedit_changed = self.ime_cancel_with_index(&mut index);
+
       let next = format!("{}{}", &current[..start], &current[end..]);
       let Some(node_mut) = index.node_mut(focused) else {
-        return (false, selected);
+        return (preedit_changed, selected);
       };
-      let changed = set_node_attr(node_mut, "value", &next);
-      if changed {
+      let changed_value = set_node_attr(node_mut, "value", &next);
+      if changed_value {
         let _ = dom_mutation::mark_user_validity(node_mut);
         self.set_text_selection_caret(focused, start);
       }
-      return (changed, selected);
+      return (preedit_changed | changed_value, selected);
     }
 
     if index.node(focused).is_some_and(is_textarea) {
@@ -2334,15 +2416,18 @@ impl InteractionEngine {
         return (false, selected);
       }
 
+      // Mutating the text control cancels any in-progress IME composition.
+      let preedit_changed = self.ime_cancel_with_index(&mut index);
+
       let next = format!("{}{}", &current[..start], &current[end..]);
 
       let old_index = index;
       let mut index = DomIndexMut::new(dom);
       let Some(node_mut) = index.node_mut(focused) else {
-        return (false, selected);
+        return (preedit_changed, selected);
       };
-      let (changed, inserted) = set_textarea_text_children_value(node_mut, &next);
-      if changed {
+      let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
+      if changed_value {
         let _ = dom_mutation::mark_user_validity(node_mut);
         self.set_text_selection_caret(focused, start);
       }
@@ -2350,7 +2435,7 @@ impl InteractionEngine {
         let new_ids = enumerate_dom_ids(dom);
         self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
       }
-      return (changed, selected);
+      return (preedit_changed | changed_value, selected);
     }
 
     (false, None)
@@ -2378,20 +2463,27 @@ impl InteractionEngine {
         .unwrap_or("")
         .to_string();
       let (start, end) = self.text_selection_range_for(focused, current.len());
+      if start == end && text.is_empty() {
+        return false;
+      }
+
+      // Mutating the text control cancels any in-progress IME composition.
+      let preedit_changed = self.ime_cancel_with_index(&mut index);
+
       let mut next = String::new();
       next.push_str(&current[..start]);
       next.push_str(text);
       next.push_str(&current[end..]);
 
       let Some(node_mut) = index.node_mut(focused) else {
-        return false;
+        return preedit_changed;
       };
-      let changed = set_node_attr(node_mut, "value", &next);
-      if changed {
+      let changed_value = set_node_attr(node_mut, "value", &next);
+      if changed_value {
         let _ = dom_mutation::mark_user_validity(node_mut);
         self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
-      return changed;
+      return preedit_changed | changed_value;
     }
 
     if index.node(focused).is_some_and(is_textarea) {
@@ -2400,6 +2492,13 @@ impl InteractionEngine {
         .map(collect_text_children_value)
         .unwrap_or_default();
       let (start, end) = self.text_selection_range_for(focused, current.len());
+      if start == end && text.is_empty() {
+        return false;
+      }
+
+      // Mutating the text control cancels any in-progress IME composition.
+      let preedit_changed = self.ime_cancel_with_index(&mut index);
+
       let mut next = String::new();
       next.push_str(&current[..start]);
       next.push_str(text);
@@ -2408,10 +2507,10 @@ impl InteractionEngine {
       let old_index = index;
       let mut index = DomIndexMut::new(dom);
       let Some(node_mut) = index.node_mut(focused) else {
-        return false;
+        return preedit_changed;
       };
-      let (changed, inserted) = set_textarea_text_children_value(node_mut, &next);
-      if changed {
+      let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
+      if changed_value {
         let _ = dom_mutation::mark_user_validity(node_mut);
         self.set_text_selection_caret(focused, start.saturating_add(text.len()));
       }
@@ -2419,7 +2518,7 @@ impl InteractionEngine {
         let new_ids = enumerate_dom_ids(dom);
         self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
       }
-      return changed;
+      return preedit_changed | changed_value;
     }
 
     false

@@ -581,6 +581,20 @@ impl JsRuntime {
     self.exec_script_with_host(&mut host, source)
   }
 
+  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
+  /// embedder host context and host hook implementation.
+  ///
+  /// This is the string-source convenience wrapper for
+  /// [`JsRuntime::exec_script_source_with_host_and_hooks`].
+  pub fn exec_script_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.exec_script_source_with_host_and_hooks(host, hooks, Arc::new(SourceText::new("<inline>", source)))
+  }
+
   /// Parse and execute a classic script, using a custom host hook implementation.
   ///
   /// This is intended for embeddings that need Promise jobs enqueued by the script to be routed via
@@ -609,20 +623,6 @@ impl JsRuntime {
     self.exec_script_source_with_host(&mut host, source)
   }
 
-  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
-  /// embedder host context and host hook implementation.
-  pub fn exec_script_with_host_and_hooks(
-    &mut self,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    source: &str,
-  ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host_and_hooks(
-      host,
-      hooks,
-      Arc::new(SourceText::new("<inline>", source)),
-    )
-  }
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
   /// embedder host context.
   pub fn exec_script_with_host(

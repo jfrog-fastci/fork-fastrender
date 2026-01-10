@@ -218,7 +218,11 @@ impl ScriptExecutor for FixtureHost {
 }
 
 impl ScriptEventDispatcher for FixtureHost {
-  fn dispatch_script_event(&mut self, _event: ScriptElementEvent, _spec: &ScriptElementSpec) -> Result<()> {
+  fn dispatch_script_event(
+    &mut self,
+    _event: ScriptElementEvent,
+    _spec: &ScriptElementSpec,
+  ) -> Result<()> {
     // The browser integration harness doesn't currently assert `<script>` load/error events; it
     // only cares about script execution ordering and DOM side effects.
     Ok(())
