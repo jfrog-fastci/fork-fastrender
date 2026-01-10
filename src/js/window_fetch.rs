@@ -743,10 +743,6 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
             }
           };
 
-          window_realm
-            .vm_mut()
-            .set_budget(Budget::unlimited(100));
-
           if let Some(err) = hooks.finish(window_realm.heap_mut()) {
             return Err(err);
           }
@@ -3221,9 +3217,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               window_realm.heap_mut().remove_root(signal_root);
             }
 
-            window_realm
-              .vm_mut()
-              .set_budget(Budget::unlimited(100));
             if let Some(err) = hooks.finish(window_realm.heap_mut()) {
               return Err(err);
             }
@@ -3300,9 +3293,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             window_realm.heap_mut().remove_root(promise_root);
             window_realm.heap_mut().remove_root(signal_root_id);
 
-            window_realm
-              .vm_mut()
-              .set_budget(Budget::unlimited(100));
             if let Some(err) = hooks.finish(window_realm.heap_mut()) {
               return Err(err);
             }
@@ -3380,9 +3370,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                   window_realm.heap_mut().remove_root(signal_root);
                 }
 
-                window_realm
-                  .vm_mut()
-                  .set_budget(Budget::unlimited(100));
                 if let Some(err) = hooks.finish(window_realm.heap_mut()) {
                   return Err(err);
                 }
@@ -3445,9 +3432,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               window_realm.heap_mut().remove_root(signal_root);
             }
 
-            window_realm
-              .vm_mut()
-              .set_budget(Budget::unlimited(100));
             if let Some(err) = hooks.finish(window_realm.heap_mut()) {
               return Err(err);
             }
@@ -3506,9 +3490,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               window_realm.heap_mut().remove_root(signal_root);
             }
 
-            window_realm
-              .vm_mut()
-              .set_budget(Budget::unlimited(100));
             if let Some(err) = hooks.finish(window_realm.heap_mut()) {
               return Err(err);
             }
