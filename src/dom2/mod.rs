@@ -10,6 +10,7 @@ use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::parser::SelectorList;
 use selectors::OpaqueElement;
+use std::sync::Arc;
 
 mod attrs;
 mod class_list;
@@ -167,6 +168,7 @@ pub struct Document {
   scripting_enabled: bool,
   mutations: MutationLog,
   mutation_generation: u64,
+  selector_snapshot_cache: Option<SelectorSnapshotCache>,
   mutation_observers: mutation_observer::MutationObserverRegistry,
 }
 
@@ -183,6 +185,7 @@ impl Clone for Document {
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
+      selector_snapshot_cache: None,
       mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
     }
   }
@@ -276,6 +279,15 @@ impl SelectorDomMapping {
   }
 }
 
+#[derive(Debug, Clone)]
+struct SelectorSnapshotCache {
+  generation: u64,
+  nodes_len: usize,
+  scripting_enabled: bool,
+  dom: Arc<DomNode>,
+  mapping: Arc<SelectorDomMapping>,
+}
+
 pub struct RendererDomSnapshot {
   /// Immutable renderer DOM snapshot plus a `dom2` ↔ renderer preorder mapping.
   ///
@@ -331,6 +343,7 @@ impl Document {
       // Mutation logs are per-host derived state, not part of the DOM tree snapshot.
       mutations: MutationLog::default(),
       mutation_generation: self.mutation_generation,
+      selector_snapshot_cache: None,
       mutation_observers: mutation_observer::MutationObserverRegistry::new(self.nodes.len()),
     }
   }
@@ -396,6 +409,7 @@ impl Document {
       scripting_enabled,
       mutations: MutationLog::default(),
       mutation_generation: 0,
+      selector_snapshot_cache: None,
       mutation_observers: mutation_observer::MutationObserverRegistry::new(0),
     };
     let root = doc.push_node(
@@ -428,6 +442,10 @@ impl Document {
   #[inline]
   fn bump_mutation_generation(&mut self) {
     self.mutation_generation = self.mutation_generation.wrapping_add(1);
+    // Selector/query APIs build a renderer-style snapshot for matching; invalidate it eagerly on any
+    // render-affecting mutation so subsequent queries observe the updated tree and we don't retain
+    // multiple generations of large snapshots.
+    self.selector_snapshot_cache = None;
   }
 
   pub fn ready_state(&self) -> DocumentReadyState {
@@ -1168,6 +1186,38 @@ impl Document {
     })
   }
 
+  fn selector_snapshot(&mut self) -> (Arc<DomNode>, Arc<SelectorDomMapping>) {
+    let generation = self.mutation_generation;
+    let nodes_len = self.nodes.len();
+    let scripting_enabled = self.scripting_enabled;
+    let rebuild = match self.selector_snapshot_cache.as_ref() {
+      Some(cache) => {
+        cache.generation != generation
+          || cache.nodes_len != nodes_len
+          || cache.scripting_enabled != scripting_enabled
+      }
+      None => true,
+    };
+
+    if rebuild {
+      let dom = Arc::new(self.to_renderer_dom());
+      let mapping = Arc::new(self.build_selector_preorder_mapping());
+      self.selector_snapshot_cache = Some(SelectorSnapshotCache {
+        generation,
+        nodes_len,
+        scripting_enabled,
+        dom,
+        mapping,
+      });
+    }
+
+    let cache = self
+      .selector_snapshot_cache
+      .as_ref()
+      .expect("selector snapshot cache populated");
+    (Arc::clone(&cache.dom), Arc::clone(&cache.mapping))
+  }
+
   pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
     RendererDomSnapshot {
       dom: self.to_renderer_dom(),
@@ -1192,10 +1242,7 @@ impl Document {
     let use_document_snapshot =
       scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
     let (snapshot_dom, mapping) = if use_document_snapshot {
-      (
-        self.to_renderer_dom(),
-        self.build_selector_preorder_mapping(),
-      )
+      self.selector_snapshot()
     } else {
       let Some(scope_id) = scope else {
         return Ok(None);
@@ -1206,8 +1253,10 @@ impl Document {
       let Some(mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
         return Ok(None);
       };
-      (dom, mapping)
+      (Arc::new(dom), Arc::new(mapping))
     };
+    let snapshot_dom = snapshot_dom.as_ref();
+    let mapping = mapping.as_ref();
 
     // If we're searching the full document snapshot, ensure the scope is reachable inside the
     // selector snapshot mapping. Detached/inert scopes use subtree snapshots instead.
@@ -1236,7 +1285,7 @@ impl Document {
     let mut shadow_root_stack: Vec<NodeId> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot_dom,
+      node: snapshot_dom,
       exiting: false,
       node_id: None,
     });
@@ -1244,7 +1293,7 @@ impl Document {
     let mut scope_active = scope.is_none() || !use_document_snapshot;
     let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
       && snapshot_dom.is_element())
-    .then_some(OpaqueElement::new(&snapshot_dom));
+    .then_some(OpaqueElement::new(snapshot_dom));
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -1344,10 +1393,7 @@ impl Document {
     let use_document_snapshot =
       scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
     let (snapshot_dom, mapping) = if use_document_snapshot {
-      (
-        self.to_renderer_dom(),
-        self.build_selector_preorder_mapping(),
-      )
+      self.selector_snapshot()
     } else {
       let Some(scope_id) = scope else {
         return Ok(Vec::new());
@@ -1358,8 +1404,10 @@ impl Document {
       let Some(mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
         return Ok(Vec::new());
       };
-      (dom, mapping)
+      (Arc::new(dom), Arc::new(mapping))
     };
+    let snapshot_dom = snapshot_dom.as_ref();
+    let mapping = mapping.as_ref();
 
     if use_document_snapshot {
       let scope_preorder = scope.and_then(|id| mapping.preorder_for_node_id(id));
@@ -1385,7 +1433,7 @@ impl Document {
     let mut shadow_root_stack: Vec<NodeId> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot_dom,
+      node: snapshot_dom,
       exiting: false,
       node_id: None,
     });
@@ -1393,7 +1441,7 @@ impl Document {
     let mut scope_active = scope.is_none() || !use_document_snapshot;
     let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
       && snapshot_dom.is_element())
-    .then_some(OpaqueElement::new(&snapshot_dom));
+    .then_some(OpaqueElement::new(snapshot_dom));
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -1507,10 +1555,7 @@ impl Document {
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
     let (snapshot_dom, mapping) = if self.is_connected_for_scripting(element) {
-      (
-        self.to_renderer_dom(),
-        self.build_selector_preorder_mapping(),
-      )
+      self.selector_snapshot()
     } else {
       // If the element is disconnected (either detached or inside inert `<template>` contents), we
       // still want to be able to match selectors against it and its connected ancestors within that
@@ -1530,8 +1575,10 @@ impl Document {
       let Some(mapping) = self.build_selector_preorder_mapping_from(root) else {
         return false;
       };
-      (dom, mapping)
+      (Arc::new(dom), Arc::new(mapping))
     };
+    let snapshot_dom = snapshot_dom.as_ref();
+    let mapping = mapping.as_ref();
 
     let Some(target_preorder) = mapping.preorder_for_node_id(element) else {
       return false;
@@ -1545,7 +1592,7 @@ impl Document {
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot_dom,
+      node: snapshot_dom,
       exiting: false,
     });
     let mut next_preorder_id = 1usize;
