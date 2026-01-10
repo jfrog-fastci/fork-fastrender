@@ -6141,6 +6141,35 @@ fn effective_content_value(style: &ComputedStyle) -> ContentValue {
   }
 }
 
+fn replaced_image_src_from_content_property(style: &ComputedStyle) -> Option<String> {
+  let ContentValue::Items(items) = effective_content_value(style) else {
+    return None;
+  };
+
+  let mut src: Option<String> = None;
+  for item in items {
+    match item {
+      ContentItem::Url(url) => {
+        if trim_ascii_whitespace(&url).is_empty() {
+          continue;
+        }
+        if src.is_some() {
+          return None;
+        }
+        src = Some(url);
+      }
+      ContentItem::String(s) => {
+        if !trim_ascii_whitespace(&s).is_empty() {
+          return None;
+        }
+      }
+      _ => return None,
+    }
+  }
+
+  src
+}
+
 fn apply_counter_properties_from_style(
   styled: &StyledNode,
   counters: &mut CounterManager,
@@ -7230,14 +7259,14 @@ fn create_replaced_box_from_styled(
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
   svg_id_index: &SvgIdIndex<'_>,
-  picture_sources: Vec<PictureSource>,
+  mut picture_sources: Vec<PictureSource>,
   site_compat: bool,
 ) -> Option<BoxNode> {
   let tag = styled.node.tag_name().unwrap_or("img");
 
   // Determine replaced type
   let replaced_type = if tag.eq_ignore_ascii_case("img") {
-    let src = styled
+    let mut src = styled
       .node
       .get_attribute_ref("src")
       .map(trim_ascii_whitespace)
@@ -7270,16 +7299,29 @@ fn create_replaced_box_from_styled(
         }
       }
     };
-    let srcset = styled
+    let mut srcset = styled
       .node
       .get_attribute_ref("srcset")
       .map(parse_srcset)
       .unwrap_or_default();
-    let sizes = styled.node.get_attribute_ref("sizes").and_then(parse_sizes);
+    let mut sizes = styled.node.get_attribute_ref("sizes").and_then(parse_sizes);
     let referrer_policy = styled
       .node
       .get_attribute_ref("referrerpolicy")
       .and_then(ReferrerPolicy::from_attribute);
+
+    // Chrome applies `content: url(...)` to replaced elements like `<img>` as a way to override the
+    // replaced content. Real-world pages use this to set images purely from CSS (e.g. language
+    // flags, theme-based icon swaps).
+    //
+    // FastRender only supports this behavior when the `content` property is a pure URL (no mixed
+    // text/counters/etc), matching the common authoring pattern.
+    if let Some(content_src) = replaced_image_src_from_content_property(&style) {
+      src = content_src;
+      srcset.clear();
+      sizes = None;
+      picture_sources.clear();
+    }
     ReplacedType::Image {
       src,
       alt,

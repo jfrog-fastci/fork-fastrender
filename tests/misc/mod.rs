@@ -27,6 +27,7 @@ mod color_glyph_opacity;
 mod composed_dom_snapshot_test;
 mod containment_intrinsic_inline_size_test;
 mod csp_script_enforcement;
+mod css_content_url_replaced_element;
 mod data_url_svg;
 mod datalist_hidden;
 mod debug_info_semantics_guard;
