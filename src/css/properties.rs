@@ -2855,6 +2855,47 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         _ => false,
       };
     }
+    "break-before" | "break-after" => {
+      // CSS Fragmentation: supported break values between boxes.
+      return keyword_in_list(
+        parsed,
+        &[
+          "auto",
+          "avoid",
+          "avoid-page",
+          "avoid-column",
+          "always",
+          "column",
+          "page",
+          "left",
+          "right",
+          "recto",
+          "verso",
+        ],
+      );
+    }
+    "page-break-before" | "page-break-after" | "-webkit-page-break-before" | "-webkit-page-break-after" => {
+      // Legacy `page-break-*` only accepts the historical keyword set (CSS Fragmentation aliasing).
+      return keyword_in_list(parsed, &["auto", "avoid", "always", "left", "right"]);
+    }
+    "column-break-before"
+    | "column-break-after"
+    | "-webkit-column-break-before"
+    | "-webkit-column-break-after" => {
+      // Legacy `column-break-*` only accepts the historical keyword set (CSS Fragmentation aliasing).
+      return keyword_in_list(parsed, &["auto", "avoid", "always"]);
+    }
+    "break-inside" => {
+      return keyword_in_list(parsed, &["auto", "avoid", "avoid-page", "avoid-column"]);
+    }
+    "page-break-inside" | "-webkit-page-break-inside" => {
+      // Legacy `page-break-inside` only accepts `auto | avoid`.
+      return keyword_in_list(parsed, &["auto", "avoid"]);
+    }
+    "column-break-inside" | "-webkit-column-break-inside" => {
+      // Legacy `column-break-inside` only accepts `auto | avoid`.
+      return keyword_in_list(parsed, &["auto", "avoid"]);
+    }
     "overflow-clip-margin" => {
       let is_box = |kw: &str| -> bool {
         kw.eq_ignore_ascii_case("border-box")

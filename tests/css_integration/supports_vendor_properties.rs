@@ -13,11 +13,32 @@ fn supports_declaration_accepts_targeted_vendor_properties() {
   assert!(supports_declaration("-moz-appearance", "none"));
   assert!(supports_declaration("-ms-appearance", "none"));
   assert!(supports_declaration("-o-appearance", "none"));
+  assert!(supports_declaration("-webkit-column-break-before", "always"));
+  assert!(supports_declaration("-webkit-column-break-inside", "avoid"));
+  assert!(supports_declaration("-webkit-page-break-before", "always"));
+  assert!(supports_declaration("-webkit-page-break-inside", "avoid"));
+  assert!(supports_declaration("page-break-before", "always"));
   assert!(!supports_declaration("-webkit-not-a-real-prop", "none"));
   assert!(!supports_declaration("-moz-not-a-real-prop", "none"));
   assert!(!supports_declaration("-ms-not-a-real-prop", "none"));
   assert!(!supports_declaration("-o-not-a-real-prop", "none"));
   assert!(!supports_declaration("-ms-grid-row", "1"));
+  assert!(
+    !supports_declaration("page-break-before", "column"),
+    "legacy page-break properties should reject modern break keywords"
+  );
+  assert!(
+    !supports_declaration("-webkit-column-break-before", "page"),
+    "legacy column-break properties should reject page-only break keywords"
+  );
+  assert!(
+    !supports_declaration("-webkit-column-break-inside", "avoid-column"),
+    "legacy column-break-inside should reject modern break-inside keywords"
+  );
+  assert!(
+    !supports_declaration("-webkit-page-break-inside", "avoid-page"),
+    "legacy page-break-inside should reject modern break-inside keywords"
+  );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use fastrender::api::{FastRender, LayoutDocumentOptions, PageStacking, RenderOptions};
 use fastrender::style::media::MediaType;
-use fastrender::style::types::BreakInside;
+use fastrender::style::types::{BreakBetween, BreakInside};
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::Rgba;
@@ -2932,6 +2932,46 @@ fn page_break_before_forces_new_page() {
   assert!(
     find_text(second, "After").is_some(),
     "following content should flow after the forced page break"
+  );
+}
+
+#[test]
+fn page_break_before_column_keyword_is_ignored() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; }
+          body { margin: 0; }
+          #a { height: 10px; }
+          /* `page-break-before` is a legacy alias with a restricted keyword set; `column` should be
+             ignored rather than treated as a valid break value. */
+          #b { height: 10px; background: rgb(7, 8, 9); page-break-before: column; }
+        </style>
+      </head>
+      <body>
+        <div id="a"></div>
+        <div id="b"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  let b_fragment = page_roots
+    .iter()
+    .find_map(|page| find_fragment_by_background(page, Rgba::rgb(7, 8, 9)))
+    .expect("#b fragment");
+  let style = b_fragment.style.as_ref().expect("#b computed style");
+  assert_eq!(
+    style.break_before,
+    BreakBetween::Auto,
+    "invalid legacy page-break-before values must be ignored"
   );
 }
 

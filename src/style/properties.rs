@@ -13194,36 +13194,53 @@ fn apply_declaration_with_base_internal_with_order(
     "break-before" | "break-after" | "column-break-before" | "column-break-after" => {
       let from_page_break = matches!(
         decl.property.as_str(),
-        "page-break-before" | "page-break-after" | "-webkit-page-break-before" | "-webkit-page-break-after"
+        "page-break-before"
+          | "page-break-after"
+          | "-webkit-page-break-before"
+          | "-webkit-page-break-after"
       );
-      let column_alias = matches!(property, "column-break-before" | "column-break-after");
+      let from_column_break = matches!(
+        decl.property.as_str(),
+        "column-break-before"
+          | "column-break-after"
+          | "-webkit-column-break-before"
+          | "-webkit-column-break-after"
+      );
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
-        let value = match kw.as_str() {
-          "auto" => Some(BreakBetween::Auto),
-          "avoid" => Some(if from_page_break {
-            BreakBetween::AvoidPage
-          } else if column_alias {
-            BreakBetween::AvoidColumn
-          } else {
-            BreakBetween::Avoid
-          }),
-          "avoid-page" => Some(BreakBetween::AvoidPage),
-          "avoid-column" => Some(BreakBetween::AvoidColumn),
-          "always" => Some(if from_page_break {
-            BreakBetween::Page
-          } else if column_alias {
-            BreakBetween::Column
-          } else {
-            BreakBetween::Always
-          }),
-          "column" => Some(BreakBetween::Column),
-          "page" => Some(BreakBetween::Page),
-          "left" => Some(BreakBetween::Left),
-          "right" => Some(BreakBetween::Right),
-          "recto" => Some(BreakBetween::Recto),
-          "verso" => Some(BreakBetween::Verso),
-          _ => None,
+        let value = if from_page_break {
+          // Legacy `page-break-*` only accepts `auto | always | avoid | left | right`.
+          match kw.as_str() {
+            "auto" => Some(BreakBetween::Auto),
+            "avoid" => Some(BreakBetween::AvoidPage),
+            "always" => Some(BreakBetween::Page),
+            "left" => Some(BreakBetween::Left),
+            "right" => Some(BreakBetween::Right),
+            _ => None,
+          }
+        } else if from_column_break {
+          // Legacy `column-break-*` only accepts `auto | always | avoid`.
+          match kw.as_str() {
+            "auto" => Some(BreakBetween::Auto),
+            "avoid" => Some(BreakBetween::AvoidColumn),
+            "always" => Some(BreakBetween::Column),
+            _ => None,
+          }
+        } else {
+          match kw.as_str() {
+            "auto" => Some(BreakBetween::Auto),
+            "avoid" => Some(BreakBetween::Avoid),
+            "avoid-page" => Some(BreakBetween::AvoidPage),
+            "avoid-column" => Some(BreakBetween::AvoidColumn),
+            "always" => Some(BreakBetween::Always),
+            "column" => Some(BreakBetween::Column),
+            "page" => Some(BreakBetween::Page),
+            "left" => Some(BreakBetween::Left),
+            "right" => Some(BreakBetween::Right),
+            "recto" => Some(BreakBetween::Recto),
+            "verso" => Some(BreakBetween::Verso),
+            _ => None,
+          }
         };
         if let Some(value) = value {
           if matches!(property, "break-before" | "column-break-before") {
@@ -13235,29 +13252,36 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "break-inside" | "column-break-inside" => {
+      let from_page_break =
+        matches!(decl.property.as_str(), "page-break-inside" | "-webkit-page-break-inside");
+      let from_column_break = matches!(
+        decl.property.as_str(),
+        "column-break-inside" | "-webkit-column-break-inside"
+      );
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let column_alias = matches!(
-          decl.property.as_str(),
-          "column-break-inside" | "-webkit-column-break-inside"
-        );
-        let from_page_break =
-          matches!(decl.property.as_str(), "page-break-inside" | "-webkit-page-break-inside");
         let kw = kw.to_ascii_lowercase();
-        styles.break_inside = match kw.as_str() {
-          "auto" => BreakInside::Auto,
-          "avoid" => {
-            if from_page_break {
-              BreakInside::AvoidPage
-            } else if column_alias {
-              BreakInside::AvoidColumn
-            } else {
-              BreakInside::Avoid
-            }
+        styles.break_inside = if from_page_break {
+          // Legacy `page-break-inside` only accepts `auto | avoid`.
+          match kw.as_str() {
+            "auto" => BreakInside::Auto,
+            "avoid" => BreakInside::AvoidPage,
+            _ => styles.break_inside,
           }
-          "avoid-page" => BreakInside::AvoidPage,
-          "avoid-column" => BreakInside::AvoidColumn,
-          "always" if column_alias => BreakInside::AvoidColumn,
-          _ => styles.break_inside,
+        } else if from_column_break {
+          // Legacy `column-break-inside` only accepts `auto | avoid`.
+          match kw.as_str() {
+            "auto" => BreakInside::Auto,
+            "avoid" => BreakInside::AvoidColumn,
+            _ => styles.break_inside,
+          }
+        } else {
+          match kw.as_str() {
+            "auto" => BreakInside::Auto,
+            "avoid" => BreakInside::Avoid,
+            "avoid-page" => BreakInside::AvoidPage,
+            "avoid-column" => BreakInside::AvoidColumn,
+            _ => styles.break_inside,
+          }
         };
       }
     }
