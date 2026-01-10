@@ -94,6 +94,7 @@ mod flex_replaced_percentage;
 mod flex_replaced_percentage_height_indefinite;
 mod flex_replaced_percent_sizing;
 mod flex_root_used_border_box_width;
+mod flex_root_rerun_avoids_child_drift;
 mod flex_auto_height_respects_max_height;
 mod flex_wrap_auto_height;
 mod flex_wrap_alignment;

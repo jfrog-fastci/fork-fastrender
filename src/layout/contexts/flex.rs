@@ -3551,6 +3551,90 @@ impl FormattingContext for FlexFormattingContext {
         _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
       })?;
 
+      // Taffy occasionally resolves an unusable root size (e.g. collapsing to ~0px during intrinsic
+      // sizing probes). Historically we corrected the root fragment bounds in `taffy_to_fragment`,
+      // but that desynchronised child positions which were still computed against the pre-fix
+      // container size. Detect these corrections early and rerun Taffy with an explicit root size so
+      // child coordinates are computed against the final border-box dimensions.
+      let rect_eps = 0.01;
+      for _ in 0..2 {
+        let root_layout = taffy_tree
+          .layout(root_node)
+          .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+        let taffy_border_box =
+          Size::new(root_layout.size.width, root_layout.size.height);
+        let desired_border_box =
+          self.desired_flex_root_border_box_size(box_node, &constraints, taffy_border_box);
+
+        let needs_width_rerun = (!taffy_border_box.width.is_finite()
+          || (desired_border_box.width - taffy_border_box.width).abs() > rect_eps)
+          && desired_border_box.width.is_finite()
+          && desired_border_box.width >= 0.0;
+        let needs_height_rerun = (!taffy_border_box.height.is_finite()
+          || (desired_border_box.height - taffy_border_box.height).abs() > rect_eps)
+          && desired_border_box.height.is_finite()
+          && desired_border_box.height >= 0.0;
+
+        if !needs_width_rerun && !needs_height_rerun {
+          break;
+        }
+
+        if let Ok(existing) = taffy_tree.style(root_node) {
+          let mut updated = existing.clone();
+          let percentage_base = constraints
+            .inline_percentage_base
+            .or_else(|| constraints.width())
+            .unwrap_or(viewport_size.width)
+            .max(0.0);
+          if needs_width_rerun {
+            updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+              desired_border_box.width,
+              style,
+              Axis::Horizontal,
+              percentage_base,
+            ));
+            available_space.width = AvailableSpace::Definite(desired_border_box.width);
+          }
+          if needs_height_rerun {
+            updated.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+              desired_border_box.height,
+              style,
+              Axis::Vertical,
+              percentage_base,
+            ));
+            available_space.height = AvailableSpace::Definite(desired_border_box.height);
+          }
+          taffy_tree
+            .set_style(root_node, updated)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+        taffy_tree
+          .mark_dirty(root_node)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+
+        record_taffy_invocation(TaffyAdapterKind::Flex);
+        let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
+        let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
+          root_node,
+          available_space,
+          &mut measure_fn,
+          cancel.clone(),
+          TAFFY_ABORT_CHECK_STRIDE,
+        );
+        if let Some(start) = taffy_compute_start {
+          record_taffy_compute(TaffyAdapterKind::Flex, start.elapsed());
+        }
+        compute_result.map_err(|e| match e {
+          taffy::TaffyError::LayoutAborted => match active_deadline() {
+            Some(deadline) => LayoutError::Timeout {
+              elapsed: deadline.elapsed(),
+            },
+            None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
+          },
+          _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
+        })?;
+      }
+
       if auto_item_count == 0 || is_last_pass {
         break;
       }
@@ -8370,6 +8454,62 @@ impl FlexFormattingContext {
     taffy::geometry::Size { width, height }
   }
 
+  fn desired_flex_root_border_box_size(
+    &self,
+    box_node: &BoxNode,
+    constraints: &LayoutConstraints,
+    mut border_box: Size,
+  ) -> Size {
+    let rect_eps = 0.01;
+    // Flex formatting contexts can be invoked with two different constraint signals:
+    // - `available_width`: the containing block’s available inline size (for percentage bases).
+    // - `used_border_box_width`: a definite used border-box size resolved by the parent formatting
+    //   context (e.g. block width:auto resolution, including negative margins).
+    //
+    // When the used border-box size is known, it must win over the available width. Otherwise we
+    // can incorrectly clamp legitimate negative-margin "gutter" patterns (common in grid-like
+    // layouts) down to the containing block width, causing child placement to overflow.
+    let resolved_definite_width = || {
+      constraints
+        .used_border_box_width
+        .filter(|w| w.is_finite() && *w > rect_eps)
+        .or_else(|| constraints.width().filter(|w| w.is_finite() && *w > rect_eps))
+    };
+    // When Taffy collapses the flex container to ~0px (often after a bad intrinsic probe), fall
+    // back to the definite available width so children aren't clamped to a 0–1px line.
+    if !border_box.width.is_finite() || border_box.width <= rect_eps {
+      if let Some(def_w) = resolved_definite_width() {
+        border_box.width = def_w;
+      } else if box_node.children.is_empty() {
+        // A legitimately empty flex container can resolve to a 0 main size (e.g. a flex item with
+        // `width:auto` and no in-flow children). Avoid inflating such boxes to the viewport width
+        // because it will then be clamped by parent flex layout and push following items off
+        // screen.
+        border_box.width = 0.0;
+      } else if let Some(base) = constraints
+        .inline_percentage_base
+        .filter(|w| w.is_finite() && *w > rect_eps)
+      {
+        border_box.width = base;
+      } else {
+        border_box.width = self.viewport_size.width;
+      }
+    }
+    // If the flex container has `width:auto` and Taffy returns a wider size (usually due to an
+    // intrinsic sizing probe), clamp back to the definite available inline size. This keeps the
+    // re-laid out children consistent with the final container size. Do *not* clamp explicitly
+    // sized flex containers: they are allowed to overflow their containing block.
+    if physical_width_is_auto(&box_node.style) {
+      if let Some(def_w) = resolved_definite_width() {
+        if border_box.width > def_w + rect_eps {
+          border_box.width = def_w;
+        }
+      }
+    }
+
+    border_box
+  }
+
   /// Converts Taffy layout back to FragmentNode tree
   #[allow(clippy::only_used_in_recursion)]
   fn taffy_to_fragment(
@@ -8395,55 +8535,13 @@ impl FlexFormattingContext {
       Size::new(layout.size.width, layout.size.height),
     );
     if taffy_node == root_id {
-      let rect_eps = 0.01;
-      // Flex formatting contexts can be invoked with two different constraint signals:
-      // - `available_width`: the containing block’s available inline size (for percentage bases).
-      // - `used_border_box_width`: a definite used border-box size resolved by the parent
-      //   formatting context (e.g. block width:auto resolution, including negative margins).
-      //
-      // When the used border-box size is known, it must win over the available width. Otherwise we
-      // can incorrectly clamp legitimate negative-margin "gutter" patterns (common in grid-like
-      // layouts) down to the containing block width, causing child placement to overflow.
-      let resolved_definite_width = || {
-        constraints
-          .used_border_box_width
-          .filter(|w| w.is_finite() && *w > rect_eps)
-          .or_else(|| {
-            constraints
-              .width()
-              .filter(|w| w.is_finite() && *w > rect_eps)
-          })
-      };
-      // When Taffy collapses the flex container to ~0px (often after a bad intrinsic probe),
-      // fall back to the definite available width so children aren't clamped to a 0–1px line.
-      if !rect.width().is_finite() || rect.width() <= rect_eps {
-        if let Some(def_w) = resolved_definite_width() {
-          rect.size.width = def_w;
-        } else if box_node.children.is_empty() {
-          // A legitimately empty flex container can resolve to a 0 main size (e.g. a flex item with
-          // `width:auto` and no in-flow children). Avoid inflating such boxes to the viewport width
-          // because it will then be clamped by parent flex layout and push following items off
-          // screen.
-          rect.size.width = 0.0;
-        } else if let Some(base) = constraints
-          .inline_percentage_base
-          .filter(|w| w.is_finite() && *w > rect_eps)
-        {
-          rect.size.width = base;
-        } else {
-          rect.size.width = self.viewport_size.width;
-        }
+      // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
+      // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
+      if !rect.size.width.is_finite() || rect.size.width < 0.0 {
+        rect.size.width = 0.0;
       }
-      // If the flex container has `width:auto` and Taffy returns a wider size (usually due to an
-      // intrinsic sizing probe), clamp back to the definite available inline size. This keeps the
-      // re-laid out children consistent with the final container size. Do *not* clamp explicitly
-      // sized flex containers: they are allowed to overflow their containing block.
-      if physical_width_is_auto(&box_node.style) {
-        if let Some(def_w) = resolved_definite_width() {
-          if rect.size.width > def_w + rect_eps {
-            rect.size.width = def_w;
-          }
-        }
+      if !rect.size.height.is_finite() || rect.size.height < 0.0 {
+        rect.size.height = 0.0;
       }
     }
 
