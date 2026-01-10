@@ -2274,6 +2274,56 @@ fn fetch_resolves_relative_url_against_document_base_href() -> Result<()> {
 }
 
 #[test]
+fn fetch_promise_callbacks_can_mutate_dom_and_receive_real_vm_host() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> =
+    Arc::new(InMemoryFetcher::new().with_response("https://example.com/res", b"ok", 200));
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom_with_fetcher(
+    &renderer_dom,
+    "https://example.com/",
+    fetcher,
+  )?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  install_assert_non_dummy_vm_host(&mut host)?;
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+fetch("https://example.com/res").then(() => {
+  __fastrender_assert_vm_host();
+  const d = document.createElement('div');
+  d.id = 'fetch';
+  document.body.appendChild(d);
+});
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("fetch").is_none(),
+    "element should not exist before running the event loop"
+  );
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after resolving fetch() promise"
+  );
+  assert!(
+    host.dom().get_element_by_id("fetch").is_some(),
+    "expected fetch() Promise callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn fetch_base_url_updates_between_scripts() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
     InMemoryFetcher::new()
