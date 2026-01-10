@@ -1145,6 +1145,10 @@ const CONSOLE_SINK_ID_KEY: &str = "__fastrender_console_sink_id";
 
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
+const HISTORY_OBJ_SLOT: usize = 0;
+const HISTORY_LOCATION_OBJ_SLOT: usize = 1;
+const HISTORY_DOCUMENT_OBJ_SLOT: usize = 2;
+const HISTORY_REPLACE_SLOT: usize = 3;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
@@ -2112,6 +2116,159 @@ fn location_set_unimplemented_native(
   Err(VmError::TypeError(
     "Navigation via location is not implemented yet",
   ))
+}
+
+fn history_state_change_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let history_obj = match slots.get(HISTORY_OBJ_SLOT).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let location_obj = match slots
+    .get(HISTORY_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let document_obj = match slots
+    .get(HISTORY_DOCUMENT_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+  let _replace = matches!(
+    slots.get(HISTORY_REPLACE_SLOT).copied().unwrap_or(Value::Undefined),
+    Value::Bool(true)
+  );
+
+  // Store `history.state`. Browsers treat a missing/undefined state argument as `null`.
+  let state_value = match args.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => Value::Null,
+    other => other,
+  };
+
+  // The optional URL argument is resolved against the document URL (not `document.baseURI`).
+  let url_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  if !matches!(url_value, Value::Undefined) {
+    let current_document_url = {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      data.document_url.clone()
+    };
+
+    let url_value = match url_value {
+      Value::String(s) => s,
+      other => scope.heap_mut().to_string(other)?,
+    };
+    scope.push_root(Value::String(url_value))?;
+    let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
+
+    let resolved = crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url))
+      .map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+    let parsed =
+      Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+
+    match parsed.scheme() {
+      "http" | "https" | "file" | "data" | "about" => {}
+      other => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          hooks,
+          &format!("history state updates to {other}: URLs is not supported"),
+        ));
+      }
+    }
+
+    // Enforce same-origin URL updates so callers can't desync `location.origin` (currently a fixed
+    // data property computed at realm init).
+    //
+    // For opaque origins (serialized as "null") we also require the scheme to remain stable since
+    // multiple schemes share the same serialized origin.
+    let current =
+      Url::parse(&current_document_url).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+    let current_origin = match current.scheme() {
+      "http" | "https" => current.origin().ascii_serialization(),
+      _ => "null".to_string(),
+    };
+    let new_origin = match parsed.scheme() {
+      "http" | "https" => parsed.origin().ascii_serialization(),
+      _ => "null".to_string(),
+    };
+    if current_origin != new_origin || (current_origin == "null" && current.scheme() != parsed.scheme()) {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        hooks,
+        "history state updates may not change origin",
+      ));
+    }
+
+    // Keep the resolved URL on the location object so scripts observe updated components.
+    let resolved_s = scope.alloc_string(&resolved)?;
+    scope.push_root(Value::String(resolved_s))?;
+
+    {
+      // Root objects while allocating property keys: `alloc_key` can trigger GC.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(location_obj))?;
+      scope.push_root(Value::Object(document_obj))?;
+
+      let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+      scope.define_property(location_obj, location_url_key, data_desc(Value::String(resolved_s)))?;
+
+      let doc_url_key = alloc_key(&mut scope, "URL")?;
+      scope.define_property(document_obj, doc_url_key, data_desc(Value::String(resolved_s)))?;
+    }
+
+    {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      let old_doc_url = std::mem::replace(&mut data.document_url, resolved.clone());
+      let update_base = data.base_url.is_none() || data.base_url.as_deref() == Some(old_doc_url.as_str());
+      if update_base {
+        data.base_url = Some(resolved);
+      }
+    }
+  }
+
+  // Update `history.state` after URL validation so failures do not partially apply.
+  {
+    // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(history_obj))?;
+    scope.push_root(state_value)?;
+    let state_key = alloc_key(&mut scope, "state")?;
+    scope.define_property(history_obj, state_key, read_only_data_desc(state_value))?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn history_noop_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
 }
 
 fn parse_location_url(
@@ -14529,6 +14686,109 @@ fn init_window_globals(
   scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
   scope.define_property(global, top_key, data_desc(Value::Object(global)))?;
   scope.define_property(global, parent_key, data_desc(Value::Object(global)))?;
+
+  // --- History (window.history) ------------------------------------------------
+  //
+  // Many real-world sites (especially SPAs) rely on `history.pushState` / `history.replaceState`
+  // for client-side routing. Provide a minimal, non-navigating History facade that updates
+  // `location.href`/`document.URL` so URL-derived routing logic works.
+  let history_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(history_obj))?;
+  let history_key = alloc_key(&mut scope, "history")?;
+  let history_state_key = alloc_key(&mut scope, "state")?;
+  let history_length_key = alloc_key(&mut scope, "length")?;
+  scope.define_property(history_obj, history_state_key, read_only_data_desc(Value::Null))?;
+  scope.define_property(history_obj, history_length_key, read_only_data_desc(Value::Number(1.0)))?;
+
+  let history_state_call_id = vm.register_native_call(history_state_change_native)?;
+  let history_noop_call_id = vm.register_native_call(history_noop_native)?;
+
+  let push_state_key = alloc_key(&mut scope, "pushState")?;
+  let push_state_name = scope.alloc_string("pushState")?;
+  scope.push_root(Value::String(push_state_name))?;
+  let push_state_slots = [
+    Value::Object(history_obj),
+    Value::Object(location_obj),
+    Value::Object(document_obj),
+    Value::Bool(false),
+  ];
+  let push_state_func = scope.alloc_native_function_with_slots(
+    history_state_call_id,
+    None,
+    push_state_name,
+    2,
+    &push_state_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    push_state_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(push_state_func))?;
+  scope.define_property(history_obj, push_state_key, data_desc(Value::Object(push_state_func)))?;
+
+  let replace_state_key = alloc_key(&mut scope, "replaceState")?;
+  let replace_state_name = scope.alloc_string("replaceState")?;
+  scope.push_root(Value::String(replace_state_name))?;
+  let replace_state_slots = [
+    Value::Object(history_obj),
+    Value::Object(location_obj),
+    Value::Object(document_obj),
+    Value::Bool(true),
+  ];
+  let replace_state_func = scope.alloc_native_function_with_slots(
+    history_state_call_id,
+    None,
+    replace_state_name,
+    2,
+    &replace_state_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    replace_state_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(replace_state_func))?;
+  scope.define_property(
+    history_obj,
+    replace_state_key,
+    data_desc(Value::Object(replace_state_func)),
+  )?;
+
+  let back_key = alloc_key(&mut scope, "back")?;
+  let back_name = scope.alloc_string("back")?;
+  scope.push_root(Value::String(back_name))?;
+  let back_func = scope.alloc_native_function(history_noop_call_id, None, back_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(back_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(back_func))?;
+  scope.define_property(history_obj, back_key, data_desc(Value::Object(back_func)))?;
+
+  let forward_key = alloc_key(&mut scope, "forward")?;
+  let forward_name = scope.alloc_string("forward")?;
+  scope.push_root(Value::String(forward_name))?;
+  let forward_func = scope.alloc_native_function(history_noop_call_id, None, forward_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    forward_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(forward_func))?;
+  scope.define_property(
+    history_obj,
+    forward_key,
+    data_desc(Value::Object(forward_func)),
+  )?;
+
+  let go_key = alloc_key(&mut scope, "go")?;
+  let go_name = scope.alloc_string("go")?;
+  scope.push_root(Value::String(go_name))?;
+  let go_func = scope.alloc_native_function(history_noop_call_id, None, go_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(go_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(go_func))?;
+  scope.define_property(history_obj, go_key, data_desc(Value::Object(go_func)))?;
+
+  scope.define_property(global, history_key, read_only_data_desc(Value::Object(history_obj)))?;
 
   scope.define_property(
     global,

@@ -546,6 +546,26 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
 }
 
 #[test]
+fn history_push_state_updates_location_without_navigation() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("history.pushState(null, '', '/next'); location.href + '|' + document.URL + '|' + document.baseURI")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(
+    get_string(realm.heap(), value),
+    "https://example.com/next|https://example.com/next|https://example.com/next"
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState should not schedule navigation"
+  );
+  Ok(())
+}
+
+#[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
