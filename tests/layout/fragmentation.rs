@@ -156,6 +156,50 @@ fn forced_break_before_first_child_does_not_create_leading_empty_fragment() {
 }
 
 #[test]
+fn forced_break_after_last_child_propagates_to_parent_end() {
+  let mut breaker_style = ComputedStyle::default();
+  breaker_style.break_after = BreakBetween::Column;
+  let breaker_style = Arc::new(breaker_style);
+
+  // The last child ends early relative to its parent (simulating trailing padding/align-content
+  // space). A forced break-after should propagate to the parent's end edge so the parent isn't
+  // split into a padding-only continuation fragment.
+  let mut breaker =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 10.0), 1, vec![]);
+  breaker.style = Some(breaker_style);
+  let parent = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+    10,
+    vec![breaker],
+  );
+
+  let follower =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 40.0, 40.0, 10.0), 20, vec![]);
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+    vec![parent, follower],
+  );
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
+  assert_eq!(fragments.len(), 2, "expected content to fragment after the forced break");
+
+  assert_eq!(fragments_with_id(&fragments[0], 10).len(), 1);
+  assert_eq!(
+    fragments_with_id(&fragments[1], 10).len(),
+    0,
+    "parent should not be split into a trailing continuation fragment"
+  );
+
+  assert_eq!(fragments_with_id(&fragments[0], 20).len(), 0);
+  let follower_frags = fragments_with_id(&fragments[1], 20);
+  assert_eq!(follower_frags.len(), 1);
+  assert!(
+    follower_frags[0].bounds.y().abs() < 0.1,
+    "expected following content to start at the top of the next column"
+  );
+}
+
+#[test]
 fn flex_item_forced_break_does_not_force_sibling_breaks() {
   let mut breaker_style = ComputedStyle::default();
   breaker_style.break_after = BreakBetween::Page;

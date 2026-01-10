@@ -3578,6 +3578,13 @@ fn collect_break_opportunities(
         }
         boundary_pos = candidate;
       }
+      // Forced breaks after the last in-flow child propagate to the end edge of the containing
+      // block. This mirrors the `break-before` propagation logic above and prevents fragmentation
+      // from creating a trailing slice that contains only the parent's padding/align-content gaps
+      // when the last child ends early.
+      if next_child.is_none() {
+        boundary_pos = abs_end;
+      }
     }
     let include_boundary = if inside_inline > 0 {
       strength != BreakStrength::Auto
