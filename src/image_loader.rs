@@ -2538,7 +2538,9 @@ impl CachedImage {
 
     let mut ratio = self.intrinsic_ratio;
     if ratio.is_none() {
-      let (w, h) = self.oriented_dimensions(transform);
+      // The stored pixel dimensions are in the *unoriented* image space. Apply EXIF/CSS rotation
+      // by swapping the ratio when the transform rotates by 90/270 degrees.
+      let (w, h) = self.dimensions();
       if h > 0 {
         ratio = Some(w as f32 / h as f32);
       }
@@ -2693,7 +2695,7 @@ impl CachedImageMetadata {
 
     let mut ratio = self.intrinsic_ratio;
     if ratio.is_none() {
-      let (w, h) = self.oriented_dimensions(transform);
+      let (w, h) = self.dimensions();
       if h > 0 {
         ratio = Some(w as f32 / h as f32);
       }
@@ -10086,6 +10088,53 @@ mod tests {
       Some(2.0)
     );
     assert!(!img.aspect_ratio_none);
+  }
+
+  #[test]
+  fn intrinsic_ratio_fallback_respects_orientation_transform() {
+    let img = CachedImage {
+      image: Arc::new(DynamicImage::ImageRgba8(RgbaImage::new(100, 200))),
+      orientation: None,
+      resolution: None,
+      is_vector: false,
+      intrinsic_ratio: None,
+      aspect_ratio_none: false,
+      svg_content: None,
+    };
+
+    assert_eq!(img.intrinsic_ratio(OrientationTransform::IDENTITY), Some(0.5));
+    assert_eq!(
+      img.intrinsic_ratio(OrientationTransform {
+        quarter_turns: 1,
+        flip_x: false,
+      }),
+      Some(2.0)
+    );
+  }
+
+  #[test]
+  fn intrinsic_ratio_fallback_respects_orientation_transform_metadata() {
+    let meta = CachedImageMetadata {
+      width: 100,
+      height: 200,
+      orientation: None,
+      resolution: None,
+      is_vector: false,
+      intrinsic_ratio: None,
+      aspect_ratio_none: false,
+    };
+
+    assert_eq!(
+      meta.intrinsic_ratio(OrientationTransform::IDENTITY),
+      Some(0.5)
+    );
+    assert_eq!(
+      meta.intrinsic_ratio(OrientationTransform {
+        quarter_turns: 1,
+        flip_x: false,
+      }),
+      Some(2.0)
+    );
   }
 
   #[test]
