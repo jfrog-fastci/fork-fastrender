@@ -852,6 +852,18 @@ impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
+  fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
+    let pos = fastrender::Point::new(pos_points.x, pos_points.y);
+    self
+      .overlay_scrollbars
+      .vertical
+      .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+      || self
+        .overlay_scrollbars
+        .horizontal
+        .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
+  }
+
   async fn new<T: 'static>(
     window: winit::window::Window,
     event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
@@ -2047,6 +2059,21 @@ error: {err}",
       return;
     }
 
+    // Overlay scrollbars behave like UI chrome (not page content). If the cursor is currently over
+    // a scrollbar track, send a sentinel pointer-move so the worker clears hover/cursor state
+    // instead of hit-testing against the rendered page.
+    if self.cursor_over_overlay_scrollbars(pos_points) {
+      self.cursor_in_page = false;
+      self.pending_pointer_move = Some(UiToWorker::PointerMove {
+        tab_id,
+        pos_css: (-1.0, -1.0),
+        button: PointerButton::None,
+        modifiers: map_modifiers(self.modifiers),
+      });
+      self.hover_sync_pending = false;
+      return;
+    }
+
     if let Some(pos_css) = mapping.pos_points_to_pos_css_if_inside(pos_points) {
       self.cursor_in_page = true;
       self.pending_pointer_move = Some(UiToWorker::PointerMove {
@@ -2236,19 +2263,11 @@ error: {err}",
           return;
         };
         let mut now_in_page = rect.contains(pos_points);
-        if now_in_page {
-          let pos = fastrender::Point::new(pos_points.x, pos_points.y);
-          if self
-            .overlay_scrollbars
-            .vertical
-            .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
-            || self
-              .overlay_scrollbars
-              .horizontal
-              .is_some_and(|sb| sb.track_rect_points.contains_point(pos))
-          {
-            now_in_page = false;
-          }
+        if now_in_page
+          && !self.pointer_captured
+          && self.cursor_over_overlay_scrollbars(pos_points)
+        {
+          now_in_page = false;
         }
 
         // `page_input_mapping`/`page_input_tab` are populated during the most recent paint. When
