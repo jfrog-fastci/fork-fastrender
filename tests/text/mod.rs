@@ -52,6 +52,7 @@ mod shaper_test;
 mod svg_color_font_test;
 mod svg_glyph_safety_test;
 mod synthetic_small_caps_mapping_test;
+mod vertical_alternates_test;
 mod variable_font_metrics_mvar;
 mod web_font_cors;
 mod web_font_display;
