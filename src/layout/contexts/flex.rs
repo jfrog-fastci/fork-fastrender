@@ -9374,6 +9374,16 @@ impl FlexFormattingContext {
       let fragmentainer_size_hint = fragmentainer_block_size_hint();
       let fragmentainer_axes = fragmentainer_axes_hint();
       let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
+      let flex_container_fragmentation_block_size = match fragmentainer_axes_resolved.block_axis() {
+        PhysicalAxis::X => rect_w,
+        PhysicalAxis::Y => rect_h,
+      };
+      let flex_container_fragmentation_block_size =
+        if flex_container_fragmentation_block_size.is_finite() {
+          flex_container_fragmentation_block_size
+        } else {
+          0.0
+        };
       let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
       let deadline = active_deadline();
       let run_layout = |deadline_counter: &mut usize,
@@ -9416,60 +9426,6 @@ impl FlexFormattingContext {
 
         let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
         let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-        let _fragmentainer_offset_guard = {
-          let parent_block_size = match fragmentainer_axes_resolved.block_axis() {
-            PhysicalAxis::X => rect_w,
-            PhysicalAxis::Y => rect_h,
-          };
-          if !(parent_fragmentainer_offset.is_finite()
-            && parent_fragmentainer_offset >= 0.0
-            && parent_block_size.is_finite()
-            && parent_block_size >= 0.0
-            && work.origin.x.is_finite()
-            && work.origin.y.is_finite()
-            && work.layout_width.is_finite()
-            && work.layout_width >= 0.0
-            && work.layout_height.is_finite()
-            && work.layout_height >= 0.0)
-          {
-            None
-          } else {
-            let child_bounds = Rect::from_xywh(
-              work.origin.x,
-              work.origin.y,
-              work.layout_width,
-              work.layout_height,
-            );
-            let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
-              PhysicalAxis::Y => child_bounds.y(),
-              PhysicalAxis::X => child_bounds.x(),
-            };
-            let child_block_size = match fragmentainer_axes_resolved.block_axis() {
-              PhysicalAxis::Y => child_bounds.height(),
-              PhysicalAxis::X => child_bounds.width(),
-            };
-            if !(child_block_start_phys.is_finite()
-              && child_block_start_phys >= 0.0
-              && child_block_size.is_finite()
-              && child_block_size >= 0.0)
-            {
-              None
-            } else {
-              let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
-                child_block_start_phys
-              } else {
-                parent_block_size - child_block_start_phys - child_block_size
-              };
-              if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
-                None
-              } else {
-                let child_abs_flow_start = parent_fragmentainer_offset + child_rel_flow_start;
-                (child_abs_flow_start.is_finite() && child_abs_flow_start >= 0.0)
-                  .then(|| set_fragmentainer_block_offset_hint(child_abs_flow_start))
-              }
-            }
-          }
-        };
 
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
@@ -9488,6 +9444,34 @@ impl FlexFormattingContext {
           }
           Arc::new(override_style)
         });
+        let child_rect = Rect::from_xywh(
+          work.origin.x,
+          work.origin.y,
+          if work.layout_width.is_finite() {
+            work.layout_width
+          } else {
+            0.0
+          },
+          if work.layout_height.is_finite() {
+            work.layout_height
+          } else {
+            0.0
+          },
+        );
+        let _fragmentainer_offset_guard = fragmentainer_size_hint
+          .is_some_and(|size| size.is_finite() && size > 0.0)
+          .then(|| {
+            let child_block_start = fragmentainer_axes_resolved.block_start(
+              &child_rect,
+              flex_container_fragmentation_block_size,
+            );
+            let child_block_start = if child_block_start.is_finite() {
+              child_block_start
+            } else {
+              0.0
+            };
+            set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + child_block_start)
+          });
         let layout_with_override =
           |constraints: &LayoutConstraints| -> Result<FragmentNode, LayoutError> {
             if let Some(style) = override_style.clone() {
@@ -9508,9 +9492,10 @@ impl FlexFormattingContext {
         let selector_for_profile = node_timer
           .as_ref()
           .and_then(|_| work.child_box.debug_info.as_ref().map(|d| d.to_selector()));
-        let child_fragment = FormattingContextFactory::with_viewport_scroll_override(child_scroll, || {
-          layout_with_override(&work.constraints)
-        })?;
+        let child_fragment = FormattingContextFactory::with_viewport_scroll_override(
+          child_scroll,
+          || layout_with_override(&work.constraints),
+        )?;
         flex_profile::record_node_layout(
           work.child_box.id,
           selector_for_profile.as_deref(),

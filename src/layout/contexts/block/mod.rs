@@ -633,6 +633,17 @@ impl BlockFormattingContext {
     paint_viewport: Rect,
   ) -> Result<FragmentNode, LayoutError> {
     if crate::layout::auto_scrollbars::should_bypass(child) {
+    let parent_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
+    let parent_offset = if parent_offset.is_finite() { parent_offset } else { 0.0 };
+    let child_offset = if box_y.is_finite() { box_y } else { 0.0 };
+    let _fragmentainer_offset_guard =
+      crate::layout::formatting_context::fragmentainer_block_size_hint()
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .map(|_| {
+          crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+            parent_offset + child_offset,
+          )
+        });
     let toggles = crate::debug::runtime::runtime_toggles();
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
@@ -1839,27 +1850,6 @@ impl BlockFormattingContext {
           }
           .with_inline_percentage_base(Some(containing_width))
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
-
-          let _fragmentainer_offset_guard = if matches!(
-            fc_type,
-            FormattingContextType::Flex | FormattingContextType::Grid
-          ) {
-            let origin = child_border_origin.y;
-            if origin.is_finite() && origin >= 0.0 {
-              let parent_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
-              if parent_offset.is_finite() && parent_offset >= 0.0 {
-                Some(crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
-                  parent_offset + origin,
-                ))
-              } else {
-                None
-              }
-            } else {
-              None
-            }
-          } else {
-            None
-          };
 
           let mut fragment = FormattingContextFactory::with_viewport_scroll_override(
             child_scroll,
@@ -3275,6 +3265,9 @@ impl BlockFormattingContext {
     paint_viewport: Rect,
   ) -> Option<Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError>> {
     if !float_ctx_empty || Self::is_multicol_container(&parent.style) {
+      return None;
+    }
+    if crate::layout::formatting_context::fragmentainer_block_size_hint().is_some() {
       return None;
     }
     // Most HTML documents include ignorable whitespace-only text nodes between block elements.

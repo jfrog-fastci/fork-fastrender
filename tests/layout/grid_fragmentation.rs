@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AlignItems, BreakBetween, GridTrack};
+use fastrender::style::types::{AlignItems, BreakBetween, GridTrack, IntrinsicSizeKeyword};
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
@@ -553,4 +553,98 @@ fn grid_pagination_forced_break_inside_single_track_item_does_not_force_siblings
       .sum();
     assert_eq!(count, 1, "expected box id {id} to appear exactly once total");
   }
+}
+
+#[test]
+fn grid_pagination_continuation_available_accounts_for_container_offset() {
+  const EPSILON: f32 = 0.1;
+
+  let mut spacer_style = ComputedStyle::default();
+  spacer_style.display = Display::Block;
+  spacer_style.height = Some(Length::px(30.0));
+  let spacer = BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(220.0));
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(70.0)),
+    GridTrack::Length(Length::px(150.0)),
+  ];
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.align_items = AlignItems::Stretch;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_row1_style = ComputedStyle::default();
+  item_row1_style.display = Display::Block;
+  item_row1_style.grid_row_start = 1;
+  item_row1_style.grid_row_end = 2;
+  let item_row1 = BoxNode::new_block(
+    Arc::new(item_row1_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut fill_style = ComputedStyle::default();
+  fill_style.display = Display::Block;
+  fill_style.height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+  let fill = BoxNode::new_block(Arc::new(fill_style), FormattingContextType::Block, vec![]);
+
+  let mut item_row2_style = ComputedStyle::default();
+  item_row2_style.display = Display::Block;
+  item_row2_style.grid_row_start = 2;
+  item_row2_style.grid_row_end = 3;
+  let item_row2 = BoxNode::new_block(
+    Arc::new(item_row2_style),
+    FormattingContextType::Block,
+    vec![fill],
+  );
+
+  let grid = BoxNode::new_block(
+    grid_style,
+    FormattingContextType::Grid,
+    vec![item_row1, item_row2],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![spacer, grid],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let fill_id = box_tree.root.children[1].children[1].children[0].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+  assert!(
+    tree.additional_fragments.len() >= 2,
+    "expected the 220px grid (starting after a 30px sibling on a 100px page) to span 3 pages"
+  );
+
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+  let third_page = &tree.additional_fragments[1];
+
+  assert!(
+    fragments_with_id(first_page, fill_id).is_empty(),
+    "expected fill-available child to start on the second page"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, fill_id).len(),
+    1,
+    "expected fill-available child to be fully contained on the second page"
+  );
+  assert!(
+    fragments_with_id(third_page, fill_id).is_empty(),
+    "expected fill-available child to not spill into a third page when the grid container starts mid-page"
+  );
+
+  let fill_fragment = fragments_with_id(second_page, fill_id)[0];
+  assert!(
+    (fill_fragment.bounds.height() - 100.0).abs() < EPSILON,
+    "expected fill-available child to resolve against a full page (100px) in the continuation fragment; got {}",
+    fill_fragment.bounds.height()
+  );
 }

@@ -951,19 +951,16 @@ impl GridFormattingContext {
     let fragment_axes = fragmentainer_axes_hint()?;
     let fragmentainer_block_size =
       fragmentainer_block_size_hint().filter(|size| size.is_finite() && *size > 0.0)?;
-    let mut first_fragment_block_size = match match fragment_axes.block_axis() {
+    let available_block = match fragment_axes.block_axis() {
       PhysicalAxis::X => constraints.available_width,
       PhysicalAxis::Y => constraints.available_height,
-    } {
-      CrateAvailableSpace::Definite(h) if h.is_finite() && h > 0.0 => {
-        h.min(fragmentainer_block_size)
+    };
+    let base_first_fragment_block_size = match available_block {
+      CrateAvailableSpace::Definite(value) if value.is_finite() && value > 0.0 => {
+        value.min(fragmentainer_block_size)
       }
       _ => fragmentainer_block_size,
     };
-
-    // Grid item bounds are local to the grid container origin. In paged media, the container can
-    // begin mid-fragmentainer; adjust the first fragment size so continuation detection uses the
-    // container's absolute block offset within the fragmentainer slice.
     let container_abs_block_start = fragmentainer_block_offset_hint();
     if !container_abs_block_start.is_finite() {
       return None;
@@ -972,29 +969,15 @@ impl GridFormattingContext {
     if !offset_in_fragment.is_finite() {
       return None;
     }
-    let remaining_in_fragment = (fragmentainer_block_size - offset_in_fragment).max(0.0);
-    if remaining_in_fragment.is_finite() {
-      first_fragment_block_size = first_fragment_block_size.min(remaining_in_fragment);
-    }
-
-    let physical_block_start = match fragment_axes.block_axis() {
-      PhysicalAxis::X => bounds.x(),
-      PhysicalAxis::Y => bounds.y(),
-    };
-    let item_block_size = match fragment_axes.block_axis() {
-      PhysicalAxis::X => bounds.width(),
-      PhysicalAxis::Y => bounds.height(),
-    };
-    if !(physical_block_start.is_finite() && item_block_size.is_finite()) {
-      return None;
-    }
-
-    let block_start = if fragment_axes.block_positive() {
-      physical_block_start
+    let first_fragment_remaining = if offset_in_fragment <= 0.01 {
+      fragmentainer_block_size
     } else {
-      container_block_size - physical_block_start - item_block_size
+      (fragmentainer_block_size - offset_in_fragment).max(0.0)
     };
-    if !(block_start.is_finite() && block_start >= 0.0) {
+    let first_fragment_block_size = base_first_fragment_block_size.min(first_fragment_remaining);
+
+    let block_start = fragment_axes.block_start(&bounds, container_block_size);
+    if !block_start.is_finite() {
       return None;
     }
 
@@ -1006,30 +989,14 @@ impl GridFormattingContext {
       return None;
     }
 
-    let relative = block_start - first_fragment_block_size;
-    if !relative.is_finite() {
-      return None;
-    }
-    let fragment_idx = (relative / fragmentainer_block_size).floor();
-    if !(fragment_idx.is_finite() && fragment_idx >= 0.0) {
-      return None;
-    }
-
-    let fragment_start = first_fragment_block_size + fragment_idx * fragmentainer_block_size;
-    if !fragment_start.is_finite() {
-      return None;
-    }
-
-    let offset_in_fragment = block_start - fragment_start;
-    if !offset_in_fragment.is_finite() {
-      return None;
-    }
-
-    let remaining = fragmentainer_block_size - offset_in_fragment;
-    if !remaining.is_finite() {
-      return None;
-    }
-    Some(remaining.clamp(0.0, fragmentainer_block_size))
+    let relative = (block_start - first_fragment_block_size).max(0.0);
+    let offset_in_fragment = relative.rem_euclid(fragmentainer_block_size);
+    let remaining = if offset_in_fragment <= 0.01 {
+      fragmentainer_block_size
+    } else {
+      (fragmentainer_block_size - offset_in_fragment).max(0.0)
+    };
+    remaining.is_finite().then_some(remaining)
   }
 
   fn is_simple_grid(
@@ -4943,6 +4910,7 @@ impl GridFormattingContext {
       PhysicalAxis::X => root_layout.size.width,
       PhysicalAxis::Y => root_layout.size.height,
     };
+    let root_axis_style = GridAxisStyle::from_style(box_node.style.as_ref());
 
     let mut child_bounds: Vec<Rect> = Vec::with_capacity(child_ids.len());
     let mut reused_fragments: Vec<Option<FragmentNode>> = vec![None; child_ids.len()];
@@ -5149,6 +5117,11 @@ impl GridFormattingContext {
                   (bounds.width(), available_height, true, force_height)
                 }
               };
+            let inline_percentage_base = if root_axis_style.inline_is_horizontal() {
+              bounds.width()
+            } else {
+              bounds.height()
+            };
             let child_constraints = LayoutConstraints::new(
               CrateAvailableSpace::Definite(available_width),
               CrateAvailableSpace::Definite(available_height),
@@ -5157,7 +5130,7 @@ impl GridFormattingContext {
             // the grid area's definite inline size. Inheriting the parent `inline_percentage_base`
             // can be wrong when the grid container itself is a flex item (where the container's
             // percentage base is the flex container's width).
-            .with_inline_percentage_base(Some(bounds.width().max(0.0)));
+            .with_inline_percentage_base(Some(inline_percentage_base.max(0.0)));
 
             let supports_used_border_box = matches!(
               fc_type,
@@ -5167,14 +5140,18 @@ impl GridFormattingContext {
                 | FormattingContextType::Inline
                 | FormattingContextType::Table
             );
+            let used_border_box_width =
+              Some(if force_width { bounds.width() } else { available_width });
+            let used_border_box_height =
+              Some(if force_height { bounds.height() } else { available_height });
 
             let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
               child_scroll,
               || {
                 if supports_used_border_box {
                   let child_constraints = child_constraints.with_used_border_box_size(
-                    force_width.then_some(bounds.width()),
-                    force_height.then_some(bounds.height()),
+                    used_border_box_width,
+                    used_border_box_height,
                   );
                   if continuation_available.is_some() {
                     crate::layout::style_override::with_style_override(
@@ -5295,6 +5272,11 @@ impl GridFormattingContext {
                   (bounds.width(), available_height, true, force_height)
                 }
               };
+            let inline_percentage_base = if root_axis_style.inline_is_horizontal() {
+              bounds.width()
+            } else {
+              bounds.height()
+            };
             let child_constraints = LayoutConstraints::new(
               CrateAvailableSpace::Definite(available_width),
               CrateAvailableSpace::Definite(available_height),
@@ -5303,7 +5285,7 @@ impl GridFormattingContext {
             // the grid area's definite inline size. Inheriting the parent `inline_percentage_base`
             // can be wrong when the grid container itself is a flex item (where the container's
             // percentage base is the flex container's width).
-            .with_inline_percentage_base(Some(bounds.width().max(0.0)));
+            .with_inline_percentage_base(Some(inline_percentage_base.max(0.0)));
 
             let supports_used_border_box = matches!(
               fc_type,
@@ -5315,16 +5297,18 @@ impl GridFormattingContext {
             );
 
             let mut laid_out = if supports_used_border_box {
+              let used_border_box_width =
+                Some(if force_width { bounds.width() } else { available_width });
+              let used_border_box_height =
+                Some(if force_height { bounds.height() } else { available_height });
               let child_constraints = child_constraints.with_used_border_box_size(
-                force_width.then_some(bounds.width()),
-                force_height.then_some(bounds.height()),
+                used_border_box_width,
+                used_border_box_height,
               );
               if continuation_available.is_some() {
-                crate::layout::style_override::with_style_override(
-                  child.id,
-                  child.style.clone(),
-                  || fc.layout(child, &child_constraints),
-                )?
+                crate::layout::style_override::with_style_override(child.id, child.style.clone(), || {
+                  fc.layout(child, &child_constraints)
+                })?
               } else {
                 fc.layout(child, &child_constraints)?
               }
@@ -5761,42 +5745,26 @@ impl GridFormattingContext {
       let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
       let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
       let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-      let _fragmentainer_offset_guard = container_block_size
-        .and_then(|container_block_size| {
-          if !(parent_fragmentainer_offset.is_finite() && parent_fragmentainer_offset >= 0.0) {
-            return None;
-          }
-          if !(container_block_size.is_finite() && container_block_size >= 0.0) {
-            return None;
-          }
-          let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
-            PhysicalAxis::Y => bounds.y(),
-            PhysicalAxis::X => bounds.x(),
-          };
-          let child_block_size = match fragmentainer_axes_resolved.block_axis() {
-            PhysicalAxis::Y => bounds.height(),
-            PhysicalAxis::X => bounds.width(),
-          };
-          if !(child_block_start_phys.is_finite()
-            && child_block_start_phys >= 0.0
-            && child_block_size.is_finite()
-            && child_block_size >= 0.0)
-          {
-            return None;
-          }
-          let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
-            child_block_start_phys
+      let _fragmentainer_offset_guard = fragmentainer_size_hint
+        .is_some_and(|size| size.is_finite() && size > 0.0)
+        .then(|| {
+          let parent_block_size = taffy
+            .parent(node_id)
+            .and_then(|parent| taffy.layout(parent).ok())
+            .map(|layout| match fragmentainer_axes_resolved.block_axis() {
+              PhysicalAxis::X => layout.size.width,
+              PhysicalAxis::Y => layout.size.height,
+            })
+            .filter(|size| size.is_finite())
+            .unwrap_or(0.0);
+          let child_block_start = fragmentainer_axes_resolved.block_start(&bounds, parent_block_size);
+          let child_block_start = if child_block_start.is_finite() {
+            child_block_start
           } else {
-            container_block_size - child_block_start_phys - child_block_size
+            0.0
           };
-          if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
-            return None;
-          }
-          let child_abs_flow_start = parent_fragmentainer_offset + child_rel_flow_start;
-          (child_abs_flow_start.is_finite() && child_abs_flow_start >= 0.0)
-            .then_some(child_abs_flow_start)
-        })
-        .map(set_fragmentainer_block_offset_hint);
+          set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + child_block_start)
+        });
 
       let child_factory = self.factory.translated_for_child(origin);
       let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
@@ -5807,8 +5775,15 @@ impl GridFormattingContext {
         child_factory.get(fc_type)
       };
 
-      let (available_width, available_height, force_width, force_height) = match fragment_block_axis
-      {
+      let axis_style =
+        containing_grid_axis.unwrap_or_else(|| GridAxisStyle::from_style(box_node.style.as_ref()));
+      let inline_is_horizontal = axis_style.inline_is_horizontal();
+      let inline_percentage_base = if inline_is_horizontal {
+        bounds.width()
+      } else {
+        bounds.height()
+      };
+      let (available_width, available_height, force_width, force_height) = match fragment_block_axis {
         PhysicalAxis::X => {
           let available_width = continuation_available.unwrap_or(bounds.width());
           let force_width = continuation_available
@@ -5828,10 +5803,9 @@ impl GridFormattingContext {
         CrateAvailableSpace::Definite(available_width),
         CrateAvailableSpace::Definite(available_height),
       )
-      // Keep percentage resolution anchored to the grid area width for the laid-out item. See
-      // comment in the parallel in-flow path.
-      .with_inline_percentage_base(Some(bounds.width().max(0.0)));
-
+      // Keep percentage resolution anchored to the grid area's inline size for the laid-out item.
+      // See comment in the parallel in-flow path.
+      .with_inline_percentage_base(Some(inline_percentage_base.max(0.0)));
       let supports_used_border_box = matches!(
         fc_type,
         FormattingContextType::Block
@@ -5841,13 +5815,17 @@ impl GridFormattingContext {
           | FormattingContextType::Table
       );
 
+      let used_border_box_width = Some(if force_width { bounds.width() } else { available_width });
+      let used_border_box_height =
+        Some(if force_height { bounds.height() } else { available_height });
+
       let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
         child_scroll,
         || {
           if supports_used_border_box {
             let child_constraints = child_constraints.with_used_border_box_size(
-              force_width.then_some(bounds.width()),
-              force_height.then_some(bounds.height()),
+              used_border_box_width,
+              used_border_box_height,
             );
             if continuation_available.is_some() {
               // Grid intrinsic sizing keywords are resolved against the initial fragmentainer size when

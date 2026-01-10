@@ -1503,7 +1503,9 @@ pub(crate) fn fragmentainer_axes_hint() -> Option<FragmentAxes> {
   FRAGMENTAINER_AXES_HINT.with(|hint| hint.get())
 }
 
-pub(crate) fn set_fragmentainer_axes_hint(hint: Option<FragmentAxes>) -> FragmentainerAxesHintGuard {
+pub(crate) fn set_fragmentainer_axes_hint(
+  hint: Option<FragmentAxes>,
+) -> FragmentainerAxesHintGuard {
   let previous = FRAGMENTAINER_AXES_HINT.with(|cell| {
     let previous = cell.get();
     cell.set(hint);

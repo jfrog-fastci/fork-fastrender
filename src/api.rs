@@ -119,7 +119,9 @@ use crate::layout::flex_profile::reset_flex_profile;
 use crate::layout::formatting_context::intrinsic_cache_clear;
 use crate::layout::formatting_context::intrinsic_cache_reset_counters;
 use crate::layout::formatting_context::intrinsic_cache_stats;
-use crate::layout::formatting_context::{set_fragmentainer_axes_hint, set_fragmentainer_block_size_hint};
+use crate::layout::formatting_context::{
+  set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
+};
 use crate::layout::formatting_context::LayoutError as FormattingLayoutError;
 use crate::layout::fragment_clone_profile::{
   fragment_clone_profile_enabled, log_fragment_clone_profile, reset_fragment_clone_profile,
@@ -11850,6 +11852,8 @@ impl FastRender {
         Some(set_fragmentainer_axes_hint(Some(page_axes))),
       )
     };
+    let _fragmentainer_offset_hint =
+      (!page_rules.is_empty()).then(|| set_fragmentainer_block_offset_hint(0.0));
     let layout_timer = stats.as_deref().and_then(|rec| rec.timer());
     let _layout_span = trace.span("layout_tree", "layout");
     let mut fragment_tree = self
@@ -12136,6 +12140,8 @@ impl FastRender {
               Some(set_fragmentainer_axes_hint(Some(page_axes))),
             )
           };
+          let _fragmentainer_offset_hint =
+            (!page_rules.is_empty()).then(|| set_fragmentainer_block_offset_hint(0.0));
 
           layout_start = timings_enabled.then(Instant::now);
           let relayout_timer = stats.as_deref().and_then(|rec| rec.timer());
