@@ -204,12 +204,17 @@ pub mod window {
         js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
-          if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
-          } else if rt.is_object(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
+          let v = v2;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_null(v) || rt.is_undefined(v) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_object(v) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_boolean(v) {
+            BindingValue::Bool(rt.to_boolean(v)?)
           } else {
-            BindingValue::Bool(rt.to_boolean(v2)?)
+            BindingValue::Bool(rt.to_boolean(v)?)
           }
         }
       });
@@ -297,12 +302,17 @@ pub mod window {
         js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
-          if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
-          } else if rt.is_object(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
+          let v = v2;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_null(v) || rt.is_undefined(v) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_object(v) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_boolean(v) {
+            BindingValue::Bool(rt.to_boolean(v)?)
           } else {
-            BindingValue::Bool(rt.to_boolean(v2)?)
+            BindingValue::Bool(rt.to_boolean(v)?)
           }
         }
       });
@@ -899,7 +909,90 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v0) {
         BindingValue::String("".to_string())
       } else {
-        BindingValue::Object(v0)
+        {
+          let v = v0;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_object(v) {
+            let has_iter = {
+              let iterator_key = rt.symbol_iterator()?;
+              rt.get_method(v, iterator_key)?.is_some()
+            };
+            if has_iter {
+              {
+                if !rt.is_object(v) {
+                  return Err(rt.throw_type_error("expected object for sequence"));
+                }
+                rt.with_stack_roots(&[v], |rt| {
+                  let mut iterator_record = rt.get_iterator(host, v)?;
+                  rt.with_stack_roots(
+                    &[iterator_record.iterator, iterator_record.next_method],
+                    |rt| {
+                      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+                        if values.len() >= rt.limits().max_sequence_length {
+                          return Err(rt.throw_range_error("sequence exceeds maximum length"));
+                        }
+                        let converted = rt.with_stack_roots(&[next], |rt| {
+                          Ok({
+                            if !rt.is_object(next) {
+                              return Err(rt.throw_type_error("expected object for sequence"));
+                            }
+                            rt.with_stack_roots(&[next], |rt| {
+                              let mut iterator_record = rt.get_iterator(host, next)?;
+                              rt.with_stack_roots(
+                                &[iterator_record.iterator, iterator_record.next_method],
+                                |rt| {
+                                  let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                                  while let Some(next) =
+                                    rt.iterator_step_value(host, &mut iterator_record)?
+                                  {
+                                    if values.len() >= rt.limits().max_sequence_length {
+                                      return Err(
+                                        rt.throw_range_error("sequence exceeds maximum length"),
+                                      );
+                                    }
+                                    let converted = rt.with_stack_roots(&[next], |rt| {
+                                      Ok({
+                                        let s = rt.to_string(next)?;
+                                        BindingValue::String(rt.js_string_to_rust_string(s)?)
+                                      })
+                                    })?;
+                                    values.push(converted);
+                                  }
+                                  Ok(BindingValue::Sequence(values))
+                                },
+                              )
+                            })?
+                          })
+                        })?;
+                        values.push(converted);
+                      }
+                      Ok(BindingValue::Sequence(values))
+                    },
+                  )
+                })?
+              }
+            } else {
+              conversions::to_record(rt, host, v, |rt, host, v| {
+                Ok({
+                  let s = rt.to_string(v)?;
+                  BindingValue::String(rt.js_string_to_rust_string(s)?)
+                })
+              })?
+            }
+          } else if rt.is_string(v) || rt.is_string_object(v) {
+            {
+              let s = rt.to_string(v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }
+          } else {
+            {
+              let s = rt.to_string(v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }
+          }
+        }
       });
       let result = host.call_operation(
         rt,
@@ -1055,7 +1148,24 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(BindingValue::Object(v0));
+      converted_args.push({
+        let v = v0;
+        if false {
+          BindingValue::Undefined
+        } else if rt.is_object(v) {
+          return Err(rt.throw_type_error("Value is not a valid union type"));
+        } else if rt.is_string(v) || rt.is_string_object(v) {
+          {
+            let s = rt.to_string(v)?;
+            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          }
+        } else {
+          {
+            let s = rt.to_string(v)?;
+            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          }
+        }
+      });
       let v1 = if args.len() > 1 {
         args[1]
       } else {
@@ -1098,7 +1208,24 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(BindingValue::Object(v0));
+      converted_args.push({
+        let v = v0;
+        if false {
+          BindingValue::Undefined
+        } else if rt.is_object(v) {
+          return Err(rt.throw_type_error("Value is not a valid union type"));
+        } else if rt.is_string(v) || rt.is_string_object(v) {
+          {
+            let s = rt.to_string(v)?;
+            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          }
+        } else {
+          {
+            let s = rt.to_string(v)?;
+            BindingValue::String(rt.js_string_to_rust_string(s)?)
+          }
+        }
+      });
       let v1 = if args.len() > 1 {
         args[1]
       } else {
@@ -1324,6 +1451,7 @@ pub mod worker {
 
   use super::{BindingValue, WebHostBindings};
 
+  use crate::js::webidl::conversions;
   use crate::js::webidl::DataPropertyAttributes;
 
   fn binding_value_to_js<Host, R>(
@@ -1516,12 +1644,17 @@ pub mod worker {
         js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
-          if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
-          } else if rt.is_object(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
+          let v = v2;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_null(v) || rt.is_undefined(v) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_object(v) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_boolean(v) {
+            BindingValue::Bool(rt.to_boolean(v)?)
           } else {
-            BindingValue::Bool(rt.to_boolean(v2)?)
+            BindingValue::Bool(rt.to_boolean(v)?)
           }
         }
       });
@@ -1609,12 +1742,17 @@ pub mod worker {
         js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
-          if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
-          } else if rt.is_object(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
+          let v = v2;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_null(v) || rt.is_undefined(v) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_object(v) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v)?
+          } else if rt.is_boolean(v) {
+            BindingValue::Bool(rt.to_boolean(v)?)
           } else {
-            BindingValue::Bool(rt.to_boolean(v2)?)
+            BindingValue::Bool(rt.to_boolean(v)?)
           }
         }
       });
@@ -2211,7 +2349,90 @@ pub mod worker {
       converted_args.push(if rt.is_undefined(v0) {
         BindingValue::String("".to_string())
       } else {
-        BindingValue::Object(v0)
+        {
+          let v = v0;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_object(v) {
+            let has_iter = {
+              let iterator_key = rt.symbol_iterator()?;
+              rt.get_method(v, iterator_key)?.is_some()
+            };
+            if has_iter {
+              {
+                if !rt.is_object(v) {
+                  return Err(rt.throw_type_error("expected object for sequence"));
+                }
+                rt.with_stack_roots(&[v], |rt| {
+                  let mut iterator_record = rt.get_iterator(host, v)?;
+                  rt.with_stack_roots(
+                    &[iterator_record.iterator, iterator_record.next_method],
+                    |rt| {
+                      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
+                        if values.len() >= rt.limits().max_sequence_length {
+                          return Err(rt.throw_range_error("sequence exceeds maximum length"));
+                        }
+                        let converted = rt.with_stack_roots(&[next], |rt| {
+                          Ok({
+                            if !rt.is_object(next) {
+                              return Err(rt.throw_type_error("expected object for sequence"));
+                            }
+                            rt.with_stack_roots(&[next], |rt| {
+                              let mut iterator_record = rt.get_iterator(host, next)?;
+                              rt.with_stack_roots(
+                                &[iterator_record.iterator, iterator_record.next_method],
+                                |rt| {
+                                  let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+                                  while let Some(next) =
+                                    rt.iterator_step_value(host, &mut iterator_record)?
+                                  {
+                                    if values.len() >= rt.limits().max_sequence_length {
+                                      return Err(
+                                        rt.throw_range_error("sequence exceeds maximum length"),
+                                      );
+                                    }
+                                    let converted = rt.with_stack_roots(&[next], |rt| {
+                                      Ok({
+                                        let s = rt.to_string(next)?;
+                                        BindingValue::String(rt.js_string_to_rust_string(s)?)
+                                      })
+                                    })?;
+                                    values.push(converted);
+                                  }
+                                  Ok(BindingValue::Sequence(values))
+                                },
+                              )
+                            })?
+                          })
+                        })?;
+                        values.push(converted);
+                      }
+                      Ok(BindingValue::Sequence(values))
+                    },
+                  )
+                })?
+              }
+            } else {
+              conversions::to_record(rt, host, v, |rt, host, v| {
+                Ok({
+                  let s = rt.to_string(v)?;
+                  BindingValue::String(rt.js_string_to_rust_string(s)?)
+                })
+              })?
+            }
+          } else if rt.is_string(v) || rt.is_string_object(v) {
+            {
+              let s = rt.to_string(v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }
+          } else {
+            {
+              let s = rt.to_string(v)?;
+              BindingValue::String(rt.js_string_to_rust_string(s)?)
+            }
+          }
+        }
       });
       let result = host.call_operation(
         rt,

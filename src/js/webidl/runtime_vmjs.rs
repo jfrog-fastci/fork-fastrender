@@ -9,6 +9,11 @@ use webidl::WebIdlHooks;
 use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
 
+#[derive(Debug, Clone, Copy)]
+pub struct JsOwnPropertyDescriptor {
+  pub enumerable: bool,
+}
+
 /// Iterator state used by WebIDL `sequence<T>` / `FrozenArray<T>` conversions.
 ///
 /// This mirrors the ECMAScript `IteratorRecord` shape: iterator object + cached `next` method +
@@ -114,6 +119,24 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
+
+  /// Returns the receiver's own property keys (both String and Symbol keys).
+  fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error>;
+
+  /// Returns an own property descriptor for `key` if present.
+  fn get_own_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<JsOwnPropertyDescriptor>, Self::Error>;
+
+  /// Converts a property key into a JS string value.
+  ///
+  /// Per ECMAScript `ToString`, this must throw a TypeError if `key` is a Symbol.
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error>;
 
   /// ECMAScript abstract operation `GetMethod ( V, P )`.
   fn get_method(
@@ -748,8 +771,28 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     matches!(value, Value::String(_))
   }
 
-  fn is_string_object(&self, _value: Self::JsValue) -> bool {
-    // `vm-js` does not yet model boxed String objects.
+  fn is_string_object(&self, value: Self::JsValue) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(_) => return false,
+    };
+    let string_proto = intr.string_prototype();
+    let mut current = match self.cx.scope.heap().object_prototype(obj) {
+      Ok(v) => v,
+      Err(_) => return false,
+    };
+    while let Some(proto) = current {
+      if proto == string_proto {
+        return true;
+      }
+      current = match self.cx.scope.heap().object_prototype(proto) {
+        Ok(v) => v,
+        Err(_) => return false,
+      };
+    }
     false
   }
 
@@ -890,6 +933,45 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     let value = self.cx.vm.get(&mut self.cx.scope, obj, key)?;
     self.cx.scope.push_root(value)?;
     Ok(value)
+  }
+
+  fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("own_property_keys: expected object receiver"));
+    };
+    // Root `obj` across the `[[OwnPropertyKeys]]` operation: string objects/typed arrays may
+    // allocate new index-key strings while building the key list.
+    self.with_stack_roots(&[Value::Object(obj)], |rt| rt.cx.scope.ordinary_own_property_keys(obj))
+  }
+
+  fn get_own_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<JsOwnPropertyDescriptor>, Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("get_own_property: expected object receiver"));
+    };
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    self.with_stack_roots(&[Value::Object(obj), key_root], |rt| {
+      let desc = rt.cx.scope.ordinary_get_own_property(obj, key)?;
+      Ok(desc.map(|d| JsOwnPropertyDescriptor {
+        enumerable: d.enumerable,
+      }))
+    })
+  }
+
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
+    match key {
+      PropertyKey::String(s) => Ok(Value::String(s)),
+      PropertyKey::Symbol(_) => Err(self.throw_type_error("Cannot convert a Symbol value to a string")),
+    }
   }
 
   fn get_method(
@@ -1513,6 +1595,32 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(self, obj, key)
+  }
+
+  fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::own_property_keys(self, obj)
+  }
+
+  fn get_own_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Option<JsOwnPropertyDescriptor>, Self::Error> {
+    let desc = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_own_property(
+      self, obj, key,
+    )?;
+    Ok(desc.map(|d| JsOwnPropertyDescriptor {
+      enumerable: d.enumerable,
+    }))
+  }
+
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_to_js_string(
+      self, key,
+    )
   }
 
   fn get_method(

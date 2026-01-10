@@ -157,14 +157,20 @@ pub mod window {
           converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
           let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
           converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
-          if rt.is_null(v1) || rt.is_undefined(v1) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v1)?
-          } else if rt.is_object(v1) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v1)?
+          let v = v1;
+          if false {
+            BindingValue::Undefined
+          } else if rt.is_null(v) || rt.is_undefined(v) {
+            js_to_dict_foo_options::<Host, R>(rt, host, v)?
+          } else if rt.is_object(v) {
+            js_to_dict_foo_options::<Host, R>(rt, host, v)?
+          } else if rt.is_boolean(v) {
+            BindingValue::Bool(rt.to_boolean(v)?)
           } else {
-            BindingValue::Bool(rt.to_boolean(v1)?)
+            BindingValue::Bool(rt.to_boolean(v)?)
           }
-        } });
+        }
+         });
           let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
           binding_value_to_js::<Host, R>(rt, result)
         }
@@ -178,14 +184,20 @@ pub mod window {
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
-            if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
-            } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
+            let v = v1;
+            if false {
+              BindingValue::Undefined
+            } else if rt.is_null(v) || rt.is_undefined(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_object(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_boolean(v) {
+              BindingValue::Bool(rt.to_boolean(v)?)
             } else {
-              BindingValue::Bool(rt.to_boolean(v1)?)
+              BindingValue::Bool(rt.to_boolean(v)?)
             }
-          } });
+          }
+           });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -196,14 +208,20 @@ pub mod window {
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
-            if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
-            } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
+            let v = v1;
+            if false {
+              BindingValue::Undefined
+            } else if rt.is_null(v) || rt.is_undefined(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_object(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_boolean(v) {
+              BindingValue::Bool(rt.to_boolean(v)?)
             } else {
-              BindingValue::Bool(rt.to_boolean(v1)?)
+              BindingValue::Bool(rt.to_boolean(v)?)
             }
-          } });
+          }
+           });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -255,14 +273,20 @@ pub mod window {
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
-            if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
-            } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
+            let v = v1;
+            if false {
+              BindingValue::Undefined
+            } else if rt.is_null(v) || rt.is_undefined(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_object(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_boolean(v) {
+              BindingValue::Bool(rt.to_boolean(v)?)
             } else {
-              BindingValue::Bool(rt.to_boolean(v1)?)
+              BindingValue::Bool(rt.to_boolean(v)?)
             }
-          } });
+          }
+           });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -273,14 +297,20 @@ pub mod window {
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
-            if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
-            } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
+            let v = v1;
+            if false {
+              BindingValue::Undefined
+            } else if rt.is_null(v) || rt.is_undefined(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_object(v) {
+              js_to_dict_foo_options::<Host, R>(rt, host, v)?
+            } else if rt.is_boolean(v) {
+              BindingValue::Bool(rt.to_boolean(v)?)
             } else {
-              BindingValue::Bool(rt.to_boolean(v1)?)
+              BindingValue::Bool(rt.to_boolean(v)?)
             }
-          } });
+          }
+           });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }

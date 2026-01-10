@@ -1,15 +1,96 @@
-//! WebIDL numeric conversions used by generated bindings.
+//! WebIDL conversions used by generated bindings.
 //!
 //! This module intentionally depends only on [`super::WebIdlBindingsRuntime`] so the generated
 //! bindings can share conversion logic across the real `vm-js` realm runtime and the legacy
 //! heap-only runtime.
 
+use std::collections::BTreeMap;
+
+use crate::js::bindings::BindingValue;
 use super::WebIdlBindingsRuntime;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IntegerConversionAttrs {
   pub clamp: bool,
   pub enforce_range: bool,
+}
+
+/// Convert an ECMAScript value to a WebIDL enum value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#js-to-enumeration>
+pub fn to_enum<Host, R>(
+  rt: &mut R,
+  value: R::JsValue,
+  enum_name: &str,
+  allowed_values: &[&str],
+) -> Result<String, R::Error>
+where
+  R: WebIdlBindingsRuntime<Host>,
+{
+  // Avoid nested mutable borrows of `rt` by splitting `ToString` + `js_string_to_rust_string`
+  // into two distinct steps.
+  let s = rt.to_string(value)?;
+  let s = rt.js_string_to_rust_string(s)?;
+  if !allowed_values.iter().any(|v| *v == s) {
+    return Err(rt.throw_type_error(&format!(
+      "Value is not a valid member of the `{enum_name}` enum"
+    )));
+  }
+  Ok(s)
+}
+
+/// Convert an ECMAScript value to a WebIDL `record<K, V>`.
+///
+/// This returns the binding-layer representation:
+/// `BindingValue::Dictionary(BTreeMap<_, _>)`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#js-to-record>
+pub fn to_record<Host, R, F>(
+  rt: &mut R,
+  host: &mut Host,
+  value: R::JsValue,
+  mut convert_value: F,
+) -> Result<BindingValue<R::JsValue>, R::Error>
+where
+  R: WebIdlBindingsRuntime<Host>,
+  F: FnMut(&mut R, &mut Host, R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>,
+{
+  if !rt.is_object(value) {
+    return Err(rt.throw_type_error("expected object for record"));
+  }
+
+  rt.with_stack_roots(&[value], |rt| {
+    let keys = rt.own_property_keys(value)?;
+    let mut out: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
+
+    for key in keys {
+      let Some(desc) = rt.get_own_property(value, key)? else {
+        continue;
+      };
+      if !desc.enumerable {
+        continue;
+      }
+
+      let js_key = rt.property_key_to_js_string(key)?;
+      let typed_key = rt.js_string_to_rust_string(js_key)?;
+
+      // Enforce the record entry count limit on *new* keys.
+      if !out.contains_key(&typed_key) && out.len() >= rt.limits().max_record_entries {
+        return Err(rt.throw_range_error("record exceeds maximum entry count"));
+      }
+
+      // Root the key while fetching and converting the property value. `own_property_keys` can
+      // synthesize index keys (e.g. for String objects), which are not reachable from `value` and
+      // must be treated as stack roots during the conversion.
+      let typed_value = rt.with_stack_roots(&[js_key], |rt| {
+        let prop_value = rt.get(value, key)?;
+        rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
+      })?;
+      out.insert(typed_key, typed_value);
+    }
+
+    Ok(BindingValue::Dictionary(out))
+  })
 }
 
 /// Convert an ECMAScript value to an IDL `byte`.
@@ -424,6 +505,61 @@ mod tests {
       msg.starts_with("RangeError:"),
       "expected RangeError, got {msg:?}"
     );
+  }
+
+  #[test]
+  fn enum_conversion_accepts_known_values_and_rejects_invalid() {
+    let mut rt = VmJsRuntime::new();
+
+    let value = rt.alloc_string_value("a").unwrap();
+    let s = to_enum::<(), _>(&mut rt, value, "E", &["a", "b"]).unwrap();
+    assert_eq!(s, "a");
+
+    let invalid = rt.alloc_string_value("c").unwrap();
+    let err = to_enum::<(), _>(&mut rt, invalid, "E", &["a", "b"]).unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
+    };
+    let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, thrown).unwrap();
+    let msg = as_utf8_lossy(&rt, s);
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn record_conversion_collects_own_enumerable_properties() {
+    let mut rt = VmJsRuntime::new();
+    let mut host = ();
+
+    let obj = rt.alloc_object_value().unwrap();
+    let a_key = rt.property_key_from_str("a").unwrap();
+    let hidden_key = rt.property_key_from_str("hidden").unwrap();
+
+    let a_val = rt.alloc_string_value("1").unwrap();
+    let hidden_val = rt.alloc_string_value("2").unwrap();
+
+    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, a_key, a_val, true).unwrap();
+    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, hidden_key, hidden_val, false)
+      .unwrap();
+
+    let record = to_record::<(), _, _>(&mut rt, &mut host, obj, |rt, _host, v| {
+      let s = webidl_js_runtime::JsRuntime::to_string(rt, v)?;
+      Ok(BindingValue::String(rt.string_to_utf8_lossy(s)?))
+    })
+    .unwrap();
+
+    let BindingValue::Dictionary(map) = record else {
+      panic!("expected dictionary record, got: {record:?}");
+    };
+
+    assert_eq!(map.len(), 1);
+    match map.get("a") {
+      Some(BindingValue::String(v)) => assert_eq!(v, "1", "record must include enumerable properties"),
+      other => panic!("expected record['a'] to be a string, got {other:?}"),
+    }
+    assert!(!map.contains_key("hidden"), "record must skip non-enumerable keys");
   }
 
   #[test]

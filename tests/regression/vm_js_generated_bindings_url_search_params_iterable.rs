@@ -141,6 +141,33 @@ impl UrlSearchParamsHost {
     rt.heap_mut().remove_root(iterator_root);
     Ok(iterator)
   }
+
+  fn make_indexed_iterable(rt: &mut VmJsRuntime, iterable: Value, len: usize) -> Result<(), VmError> {
+    let idx = Rc::new(Cell::new(0usize));
+
+    let next_key = rt.property_key_from_str("next")?;
+    let next_func = rt.alloc_function_value({
+      let idx = idx.clone();
+      move |rt, this, _args| {
+        let i = idx.get();
+        if i >= len {
+          return Self::make_iterator_result(rt, true, Value::Undefined);
+        }
+        idx.set(i + 1);
+        let key = rt.property_key_from_u32(i as u32)?;
+        let value = rt.get(this, key)?;
+        Self::make_iterator_result(rt, false, value)
+      }
+    })?;
+
+    rt.define_data_property(iterable, next_key, next_func, false)?;
+
+    // Iterator objects should be iterable: %Symbol.iterator% returns the iterator itself.
+    let iter_func = rt.alloc_function_value(|_rt, this, _args| Ok(this))?;
+    let sym_iter = rt.symbol_iterator()?;
+    rt.define_data_property(iterable, sym_iter, iter_func, false)?;
+    Ok(())
+  }
 }
 
 impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
@@ -155,19 +182,87 @@ impl WebHostBindings<VmJsRuntime> for UrlSearchParamsHost {
   ) -> Result<BindingValue<Value>, VmError> {
     match (interface, operation) {
       ("URLSearchParams", "constructor") => {
-        let init = match args.get(0) {
-          None => String::new(),
-          Some(BindingValue::String(s)) => s.clone(),
-          Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
-          Some(_) => String::new(),
-        };
+        let params = match args.get(0) {
+          None => UrlSearchParams::new(&self.limits),
 
-        let params = if init.is_empty() {
-          UrlSearchParams::new(&self.limits)
-        } else {
-          UrlSearchParams::parse(&init, &self.limits).map_err(|e| {
-            rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
-          })?
+          // URLSearchParamsInit string.
+          Some(BindingValue::String(s)) => {
+            if s.is_empty() {
+              UrlSearchParams::new(&self.limits)
+            } else {
+              UrlSearchParams::parse(s, &self.limits).map_err(|e| {
+                rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
+              })?
+            }
+          }
+
+          // record<USVString, USVString>.
+          Some(BindingValue::Dictionary(map)) => {
+            let params = UrlSearchParams::new(&self.limits);
+            for (k, v) in map {
+              let BindingValue::String(v) = v else {
+                return Err(rt.throw_type_error(
+                  "URLSearchParams constructor failed: record value is not a string",
+                ));
+              };
+              params.append(k, v).map_err(|e| {
+                rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
+              })?;
+            }
+            params
+          }
+
+          // sequence<sequence<USVString>>.
+          Some(BindingValue::Sequence(pairs)) => {
+            let params = UrlSearchParams::new(&self.limits);
+            for pair in pairs {
+              let pair = match pair {
+                BindingValue::Sequence(pair) | BindingValue::FrozenArray(pair) => pair,
+                _ => {
+                  return Err(rt.throw_type_error(
+                    "URLSearchParams constructor failed: expected pair sequence",
+                  ))
+                }
+              };
+              if pair.len() != 2 {
+                return Err(rt.throw_type_error(
+                  "URLSearchParams constructor failed: expected [name, value] pair",
+                ));
+              }
+              let BindingValue::String(k) = &pair[0] else {
+                return Err(rt.throw_type_error(
+                  "URLSearchParams constructor failed: pair key is not a string",
+                ));
+              };
+              let BindingValue::String(v) = &pair[1] else {
+                return Err(rt.throw_type_error(
+                  "URLSearchParams constructor failed: pair value is not a string",
+                ));
+              };
+              params.append(k, v).map_err(|e| {
+                rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
+              })?;
+            }
+            params
+          }
+
+          // Legacy escape hatch used by older bindings: attempt `ToString` on opaque JS values.
+          Some(BindingValue::Object(v)) => {
+            let init = Self::value_to_rust_string(rt, *v)?;
+            if init.is_empty() {
+              UrlSearchParams::new(&self.limits)
+            } else {
+              UrlSearchParams::parse(&init, &self.limits).map_err(|e| {
+                rt.throw_type_error(&format!("URLSearchParams constructor failed: {e}"))
+              })?
+            }
+          }
+
+          Some(_) => {
+            return Err(rt.throw_type_error(
+              "URLSearchParams constructor failed: unsupported init type",
+            ))
+          }
         };
 
         let obj = rt.alloc_object_value()?;
@@ -303,6 +398,15 @@ fn collect_pairs_iterable(
   Ok(out)
 }
 
+fn assert_type_error(rt: &mut VmJsRuntime, err: VmError) {
+  let Some(thrown) = err.thrown_value() else {
+    panic!("expected thrown error, got {err:?}");
+  };
+  let s = rt.to_string(thrown).unwrap();
+  let msg = rt.string_to_utf8_lossy(s).unwrap();
+  assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+}
+
 #[test]
 fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), VmError> {
   let mut rt = VmJsRuntime::new();
@@ -340,6 +444,63 @@ fn generated_webidl_bindings_install_iterable_url_search_params() -> Result<(), 
     vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
   );
 
+  // `new URLSearchParams({ a: "1", b: "2" })` (record init).
+  let init_record = rt.alloc_object_value()?;
+  let record_root = rt.heap_mut().add_root(init_record)?;
+  let a_key = rt.property_key_from_str("a")?;
+  let b_key = rt.property_key_from_str("b")?;
+  let a_val = rt.alloc_string_value("1")?;
+  let b_val = rt.alloc_string_value("2")?;
+  rt.define_data_property(init_record, a_key, a_val, true)?;
+  rt.define_data_property(init_record, b_key, b_val, true)?;
+  let params_record =
+    rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[init_record]))?;
+  rt.heap_mut().remove_root(record_root);
+  let pairs = collect_pairs_iterable(&mut rt, &mut host, params_record)?;
+  assert_eq!(
+    pairs,
+    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
+  );
+
+  // `new URLSearchParams([ ["a","1"], ["b","2"] ])` (sequence-of-sequence init).
+  let outer = rt.alloc_array()?;
+  let outer_root = rt.heap_mut().add_root(outer)?;
+  for (idx, (k, v)) in [("a", "1"), ("b", "2")].into_iter().enumerate() {
+    let inner = rt.alloc_array()?;
+    let inner_root = rt.heap_mut().add_root(inner)?;
+    let k0 = rt.property_key_from_u32(0)?;
+    let k1 = rt.property_key_from_u32(1)?;
+    let key = rt.alloc_string_value(k)?;
+    let value = rt.alloc_string_value(v)?;
+    rt.define_data_property(inner, k0, key, true)?;
+    rt.define_data_property(inner, k1, value, true)?;
+    UrlSearchParamsHost::make_indexed_iterable(&mut rt, inner, 2)?;
+    rt.heap_mut().remove_root(inner_root);
+    let outer_key = rt.property_key_from_u32(idx as u32)?;
+    rt.define_data_property(outer, outer_key, inner, true)?;
+  }
+  UrlSearchParamsHost::make_indexed_iterable(&mut rt, outer, 2)?;
+  let params_seq =
+    rt.with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[outer]))?;
+  rt.heap_mut().remove_root(outer_root);
+  let pairs = collect_pairs_iterable(&mut rt, &mut host, params_seq)?;
+  assert_eq!(
+    pairs,
+    vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
+  );
+
+  // Invalid init should throw TypeError: `new URLSearchParams([{}])`.
+  let bad_outer = rt.alloc_array()?;
+  let bad_outer_root = rt.heap_mut().add_root(bad_outer)?;
+  let bad_elem = rt.alloc_object_value()?;
+  let key0 = rt.property_key_from_u32(0)?;
+  rt.define_data_property(bad_outer, key0, bad_elem, true)?;
+  UrlSearchParamsHost::make_indexed_iterable(&mut rt, bad_outer, 1)?;
+  let err = rt
+    .with_host_context(&mut host, |rt| rt.call(ctor, Value::Undefined, &[bad_outer]))
+    .unwrap_err();
+  rt.heap_mut().remove_root(bad_outer_root);
+  assert_type_error(&mut rt, err);
+
   Ok(())
 }
-

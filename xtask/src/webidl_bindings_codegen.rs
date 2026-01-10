@@ -2517,6 +2517,7 @@ struct IrConversionState {
   clamp: bool,
   enforce_range: bool,
   legacy_null_to_empty_string: bool,
+  legacy_treat_non_object_as_null: bool,
 }
 fn write_dictionary_converter_vmjs(
   out: &mut String,
@@ -2601,15 +2602,16 @@ fn parse_dictionary_member_type(raw: &str) -> Option<(IdlType, String)> {
 }
 
 fn emit_conversion_expr_ir(
-  _resolved: &ResolvedWebIdlWorld,
+  resolved: &ResolvedWebIdlWorld,
   type_ctx: &TypeContext,
   ty: &IrIdlType,
   value_ident: &str,
 ) -> Result<String> {
-  emit_conversion_expr_ir_inner(type_ctx, ty, value_ident, IrConversionState::default())
+  emit_conversion_expr_ir_inner(resolved, type_ctx, ty, value_ident, IrConversionState::default())
 }
 
 fn emit_conversion_expr_ir_inner(
+  resolved: &ResolvedWebIdlWorld,
   type_ctx: &TypeContext,
   ty: &IrIdlType,
   value_ident: &str,
@@ -2618,19 +2620,20 @@ fn emit_conversion_expr_ir_inner(
   match ty {
     IrIdlType::Annotated { annotations, inner } => {
       let mut next = state;
-      for a in annotations {
-        match a {
-          IrTypeAnnotation::Clamp => next.clamp = true,
-          IrTypeAnnotation::EnforceRange => next.enforce_range = true,
-          IrTypeAnnotation::LegacyNullToEmptyString => next.legacy_null_to_empty_string = true,
-          _ => {}
+        for a in annotations {
+          match a {
+            IrTypeAnnotation::Clamp => next.clamp = true,
+            IrTypeAnnotation::EnforceRange => next.enforce_range = true,
+            IrTypeAnnotation::LegacyNullToEmptyString => next.legacy_null_to_empty_string = true,
+            IrTypeAnnotation::LegacyTreatNonObjectAsNull => next.legacy_treat_non_object_as_null = true,
+            _ => {}
+          }
         }
+        if next.clamp && next.enforce_range {
+          bail!("[Clamp] and [EnforceRange] cannot both apply to the same type");
+        }
+        emit_conversion_expr_ir_inner(resolved, type_ctx, inner, value_ident, next)
       }
-      if next.clamp && next.enforce_range {
-        bail!("[Clamp] and [EnforceRange] cannot both apply to the same type");
-      }
-      emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, next)
-    }
 
     IrIdlType::Undefined => Ok("BindingValue::Undefined".to_string()),
     IrIdlType::Any => {
@@ -2774,17 +2777,48 @@ fn emit_conversion_expr_ir_inner(
           to_snake_ident(&named.name),
           value_ident = value_ident
         )),
-        NamedTypeKind::Enum => Ok(format!(
-          "{{ let s = rt.to_string({value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
-          value_ident = value_ident
-        )),
+        NamedTypeKind::Enum => {
+          let allowed = resolved
+            .enums
+            .get(&named.name)
+            .map(|e| e.values.as_slice())
+            .unwrap_or_default();
+          let allowed_lit = allowed
+            .iter()
+            .map(|v| rust_string_literal(v))
+            .collect::<Vec<_>>()
+            .join(", ");
+          Ok(format!(
+            "BindingValue::String(conversions::to_enum::<Host, R>(rt, {value_ident}, {enum_name}, &[{allowed_lit}])?)",
+            value_ident = value_ident,
+            enum_name = rust_string_literal(&named.name),
+            allowed_lit = allowed_lit,
+          ))
+        }
         NamedTypeKind::Typedef => {
           if let Some(inner) = type_ctx.typedefs.get(&named.name) {
-            emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, state)
+            emit_conversion_expr_ir_inner(resolved, type_ctx, inner, value_ident, state)
           } else {
             Ok(format!("BindingValue::Object({value_ident})"))
           }
         }
+        NamedTypeKind::CallbackFunction => {
+          if state.legacy_treat_non_object_as_null {
+            Ok(format!(
+              "if !rt.is_object({value_ident}) {{ BindingValue::Null }} else {{ BindingValue::Callback(rt.root_callback_function({value_ident})?) }}",
+              value_ident = value_ident
+            ))
+          } else {
+            Ok(format!(
+              "BindingValue::Callback(rt.root_callback_function({value_ident})?)",
+              value_ident = value_ident
+            ))
+          }
+        }
+        NamedTypeKind::CallbackInterface => Ok(format!(
+          "BindingValue::Callback(rt.root_callback_interface({value_ident})?)",
+          value_ident = value_ident
+        )),
         _ => Ok(format!("BindingValue::Object({value_ident})")),
       }
     }
@@ -2792,20 +2826,21 @@ fn emit_conversion_expr_ir_inner(
     IrIdlType::Nullable(inner) => Ok(format!(
       "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {inner_expr} }}",
       value_ident = value_ident,
-      inner_expr = emit_conversion_expr_ir_inner(type_ctx, inner, value_ident, state)?,
+      inner_expr = emit_conversion_expr_ir_inner(resolved, type_ctx, inner, value_ident, state)?,
     )),
 
     IrIdlType::Sequence(elem) => {
       if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
         bail!("unexpected type annotations on `sequence`");
       }
-      emit_iterable_list_conversion_expr_ir(type_ctx, elem, value_ident, "sequence", "Sequence")
+      emit_iterable_list_conversion_expr_ir(resolved, type_ctx, elem, value_ident, "sequence", "Sequence")
     }
     IrIdlType::FrozenArray(elem) => {
       if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
         bail!("unexpected type annotations on `FrozenArray`");
       }
       emit_iterable_list_conversion_expr_ir(
+        resolved,
         type_ctx,
         elem,
         value_ident,
@@ -2814,10 +2849,30 @@ fn emit_conversion_expr_ir_inner(
       )
     }
 
-    IrIdlType::Union(_)
-    | IrIdlType::AsyncSequence(_)
-    | IrIdlType::Record(_, _)
-    | IrIdlType::Promise(_) => {
+    IrIdlType::Union(members) => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on union type");
+      }
+      emit_union_conversion_expr_ir(resolved, type_ctx, members, value_ident)
+    }
+    IrIdlType::Record(_key, value) => {
+      if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
+        bail!("unexpected type annotations on record type");
+      }
+      let value_expr = emit_conversion_expr_ir_inner(
+        resolved,
+        type_ctx,
+        value,
+        "v",
+        IrConversionState::default(),
+      )?;
+      Ok(format!(
+        "conversions::to_record(rt, host, {value_ident}, |rt, host, v| Ok({value_expr}))?",
+        value_ident = value_ident,
+        value_expr = value_expr
+      ))
+    }
+    IrIdlType::AsyncSequence(_) | IrIdlType::Promise(_) => {
       if state.clamp || state.enforce_range || state.legacy_null_to_empty_string {
         bail!("unexpected type annotations on non-primitive type");
       }
@@ -2826,7 +2881,332 @@ fn emit_conversion_expr_ir_inner(
   }
 }
 
+fn emit_union_conversion_expr_ir(
+  resolved: &ResolvedWebIdlWorld,
+  type_ctx: &TypeContext,
+  members: &[IrIdlType],
+  value_ident: &str,
+) -> Result<String> {
+  let mut expanded_members: Vec<IrIdlType> = Vec::with_capacity(members.len());
+  for m in members {
+    expanded_members.push(expand_typedefs_in_type(type_ctx, m)?);
+  }
+
+  let mut has_undefined = false;
+  let mut has_nullable = false;
+  let mut has_any = false;
+  let mut has_object = false;
+
+  let mut sequence_member: Option<&IrIdlType> = None;
+  let mut dict_member: Option<&String> = None;
+  let mut record_member: Option<&IrIdlType> = None;
+  let mut callback_function_member: Option<&IrIdlType> = None;
+  let mut callback_interface_member: Option<&IrIdlType> = None;
+  let mut interface_like: Vec<&String> = Vec::new();
+  let mut boolean_member: Option<&IrIdlType> = None;
+  let mut numeric_member: Option<&IrIdlType> = None;
+  let mut string_member: Option<&IrIdlType> = None;
+  let mut bigint_member: Option<&IrIdlType> = None;
+  let mut symbol_member: Option<&IrIdlType> = None;
+
+  fn strip<'a>(ty: &'a IrIdlType, has_nullable: &mut bool) -> &'a IrIdlType {
+    let mut t = ty;
+    loop {
+      match t {
+        IrIdlType::Annotated { inner, .. } => t = inner,
+        IrIdlType::Nullable(inner) => {
+          *has_nullable = true;
+          t = inner;
+        }
+        _ => return t,
+      }
+    }
+  }
+
+  for member in &expanded_members {
+    let inner = strip(member, &mut has_nullable);
+    match inner {
+      IrIdlType::Undefined => has_undefined = true,
+      IrIdlType::Any => has_any = true,
+      IrIdlType::Object => has_object = true,
+      IrIdlType::Boolean => {
+        if boolean_member.is_none() {
+          boolean_member = Some(member);
+        }
+      }
+      IrIdlType::Numeric(_) => {
+        if numeric_member.is_none() {
+          numeric_member = Some(member);
+        }
+      }
+      IrIdlType::BigInt => {
+        if bigint_member.is_none() {
+          bigint_member = Some(member);
+        }
+      }
+      IrIdlType::String(_) => {
+        if string_member.is_none() {
+          string_member = Some(member);
+        }
+      }
+      IrIdlType::Symbol => {
+        if symbol_member.is_none() {
+          symbol_member = Some(member);
+        }
+      }
+      IrIdlType::Sequence(_) | IrIdlType::FrozenArray(_) => {
+        if sequence_member.is_none() {
+          sequence_member = Some(member);
+        }
+      }
+      IrIdlType::Record(_, _) => {
+        if record_member.is_none() {
+          record_member = Some(member);
+        }
+      }
+      IrIdlType::Named(named) => match named.kind {
+        NamedTypeKind::Dictionary => {
+          if dict_member.is_none() {
+            dict_member = Some(&named.name);
+          }
+        }
+        NamedTypeKind::Enum => {
+          if string_member.is_none() {
+            string_member = Some(member);
+          }
+        }
+        NamedTypeKind::CallbackFunction => {
+          if callback_function_member.is_none() {
+            callback_function_member = Some(member);
+          }
+        }
+        NamedTypeKind::CallbackInterface => {
+          if callback_interface_member.is_none() {
+            callback_interface_member = Some(member);
+          }
+        }
+        NamedTypeKind::Interface => {
+          interface_like.push(&named.name);
+        }
+        NamedTypeKind::Typedef | NamedTypeKind::Unresolved => {}
+      },
+      IrIdlType::Promise(_) | IrIdlType::AsyncSequence(_) | IrIdlType::Union(_) => {}
+      IrIdlType::Nullable(_) | IrIdlType::Annotated { .. } => {}
+    }
+  }
+
+  let dict_expr = dict_member.map(|dict| {
+    format!(
+      "js_to_dict_{}::<Host, R>(rt, host, v)?",
+      to_snake_ident(dict)
+    )
+  });
+  let seq_expr = if let Some(ty) = sequence_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let record_expr = if let Some(ty) = record_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let callback_expr = if let Some(ty) = callback_function_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let callback_iface_expr = if let Some(ty) = callback_interface_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let boolean_expr = if let Some(ty) = boolean_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let numeric_expr = if let Some(ty) = numeric_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let string_expr = if let Some(ty) = string_member {
+    Some(emit_conversion_expr_ir_inner(
+      resolved,
+      type_ctx,
+      ty,
+      "v",
+      IrConversionState::default(),
+    )?)
+  } else {
+    None
+  };
+  let bigint_expr = bigint_member.map(|_| "BindingValue::Object(v)".to_string());
+  let symbol_expr = symbol_member.map(|_| "BindingValue::Object(v)".to_string());
+
+  let mut out = String::new();
+  out.push_str("{\n");
+  out.push_str(&format!("  let v = {value_ident};\n", value_ident = value_ident));
+
+  if has_undefined {
+    out.push_str("  if rt.is_undefined(v) {\n    BindingValue::Undefined\n  }");
+  } else {
+    out.push_str("  if false {\n    BindingValue::Undefined\n  }");
+  }
+
+  if let Some(dict_expr) = &dict_expr {
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  }
+
+  if has_nullable {
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    BindingValue::Null\n  }");
+  }
+
+  for iface in &interface_like {
+    out.push_str(&format!(
+      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    BindingValue::Object(v)\n  }}",
+      iface_lit = rust_string_literal(iface)
+    ));
+  }
+
+  if let Some(callback_expr) = &callback_expr {
+    out.push_str(" else if rt.is_callable(v) {\n    ");
+    out.push_str(callback_expr);
+    out.push_str("\n  }");
+  }
+
+  out.push_str(" else if rt.is_object(v) {\n");
+  if let Some(seq_expr) = &seq_expr {
+    out.push_str(
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some()\n    };\n",
+    );
+    out.push_str("    if has_iter {\n      ");
+    out.push_str(seq_expr);
+    out.push_str("\n    }");
+
+    if let Some(dict_expr) = &dict_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(dict_expr);
+      out.push_str("\n    }");
+    } else if let Some(record_expr) = &record_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(record_expr);
+      out.push_str("\n    }");
+    } else if let Some(callback_iface_expr) = &callback_iface_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(callback_iface_expr);
+      out.push_str("\n    }");
+    } else if has_object || has_any {
+      out.push_str(" else {\n      BindingValue::Object(v)\n    }");
+    } else {
+      out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
+    }
+    out.push_str("\n  }");
+  } else if let Some(dict_expr) = &dict_expr {
+    out.push_str("    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  } else if let Some(record_expr) = &record_expr {
+    out.push_str("    ");
+    out.push_str(record_expr);
+    out.push_str("\n  }");
+  } else if let Some(callback_iface_expr) = &callback_iface_expr {
+    out.push_str("    ");
+    out.push_str(callback_iface_expr);
+    out.push_str("\n  }");
+  } else if has_object || has_any {
+    out.push_str("    BindingValue::Object(v)\n  }");
+  } else {
+    out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
+  }
+
+  if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(" else if rt.is_boolean(v) {\n    ");
+    out.push_str(boolean_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(" else if rt.is_number(v) {\n    ");
+    out.push_str(numeric_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(string_expr) = &string_expr {
+    out.push_str(" else if rt.is_string(v) || rt.is_string_object(v) {\n    ");
+    out.push_str(string_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(bigint_expr) = &bigint_expr {
+    out.push_str(" else if rt.is_bigint(v) {\n    ");
+    out.push_str(bigint_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(symbol_expr) = &symbol_expr {
+    out.push_str(" else if rt.is_symbol(v) {\n    ");
+    out.push_str(symbol_expr);
+    out.push_str("\n  }");
+  }
+
+  out.push_str(" else {\n    ");
+  if let Some(string_expr) = &string_expr {
+    out.push_str(string_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(numeric_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(boolean_expr);
+    out.push_str("\n  }\n");
+  } else if has_any {
+    out.push_str("BindingValue::Object(v)\n  }\n");
+  } else {
+    out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }\n");
+  }
+
+  out.push_str("}\n");
+  Ok(out)
+}
+
 fn emit_iterable_list_conversion_expr_ir(
+  resolved: &ResolvedWebIdlWorld,
   type_ctx: &TypeContext,
   elem_ty: &IrIdlType,
   value_ident: &str,
@@ -2834,7 +3214,7 @@ fn emit_iterable_list_conversion_expr_ir(
   out_variant: &str,
 ) -> Result<String> {
   let elem_expr =
-    emit_conversion_expr_ir_inner(type_ctx, elem_ty, "next", IrConversionState::default())?;
+    emit_conversion_expr_ir_inner(resolved, type_ctx, elem_ty, "next", IrConversionState::default())?;
   Ok(format!(
     r#"{{
   if !rt.is_object({value_ident}) {{
@@ -4108,6 +4488,24 @@ fn emit_conversion_expr(
           "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
           to_snake_ident(name)
         )
+      } else if let Some(en) = resolved.enums.get(name) {
+        let allowed = en
+          .values
+          .iter()
+          .map(|v| rust_string_literal(v))
+          .collect::<Vec<_>>()
+          .join(", ");
+        format!(
+          "BindingValue::String(conversions::to_enum::<Host, R>(rt, {value_ident}, {enum_name}, &[{allowed}])?)",
+          value_ident = value_ident,
+          enum_name = rust_string_literal(name),
+          allowed = allowed,
+        )
+      } else if resolved.typedefs.contains_key(name) {
+        match resolved.resolve_typedef(name) {
+          Ok(expanded) => emit_conversion_expr(resolved, &expanded, ext_attrs, value_ident),
+          Err(_) => format!("BindingValue::Object({value_ident})"),
+        }
       } else if let Some(cb) = resolved.callbacks.get(name) {
         let legacy =
           cb.ext_attrs.iter().any(|a| a.name.as_str() == "LegacyTreatNonObjectAsNull");
@@ -4130,35 +4528,7 @@ fn emit_conversion_expr(
       "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {} }}",
       emit_conversion_expr(resolved, inner, ext_attrs, value_ident)
     ),
-    IdlType::Union(_members) => {
-      // Only support the common `({Dictionary} or boolean)` pattern for now (e.g.
-      // `AddEventListenerOptions or boolean`).
-      //
-      // Spec: https://webidl.spec.whatwg.org/#es-union
-      if let IdlType::Union(members) = ty {
-        if members.len() == 2 {
-          let mut dict: Option<&String> = None;
-          let mut has_boolean = false;
-          for m in members {
-            match m {
-              IdlType::Named(name) if resolved.dictionaries.contains_key(name) => dict = Some(name),
-              IdlType::Builtin(BuiltinType::Boolean) => has_boolean = true,
-              _ => {}
-            }
-          }
-          if let (Some(dict_name), true) = (dict, has_boolean) {
-            return format!(
-              "{{\n  if rt.is_null({v}) || rt.is_undefined({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v})?\n  }} else if rt.is_object({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v})?\n  }} else {{\n    BindingValue::Bool(rt.to_boolean({v})?)\n  }}\n}}",
-              v = value_ident,
-              dict = to_snake_ident(dict_name),
-            );
-          }
-        }
-      }
-
-      // Fallback: treat as opaque.
-      format!("BindingValue::Object({value_ident})")
-    }
+    IdlType::Union(members) => emit_union_conversion_expr(resolved, members, value_ident),
     IdlType::Sequence(elem) => emit_iterable_list_conversion_expr(
       resolved,
       elem,
@@ -4175,8 +4545,232 @@ fn emit_conversion_expr(
       "FrozenArray",
       "FrozenArray",
     ),
-    IdlType::Promise(_) | IdlType::Record { .. } => format!("BindingValue::Object({value_ident})"),
+    IdlType::Promise(_) => format!("BindingValue::Object({value_ident})"),
+    IdlType::Record { key: _key, value } => {
+      let value_expr = emit_conversion_expr(resolved, value, &[], "v");
+      format!(
+        "conversions::to_record(rt, host, {value_ident}, |rt, host, v| Ok({value_expr}))?",
+        value_ident = value_ident,
+        value_expr = value_expr,
+      )
+    }
   }
+}
+
+fn emit_union_conversion_expr(
+  resolved: &ResolvedWebIdlWorld,
+  members: &[IdlType],
+  value_ident: &str,
+) -> String {
+  let mut has_undefined = false;
+  let mut has_nullable = false;
+  let mut has_any = false;
+  let mut has_object = false;
+
+  let mut sequence_member: Option<&IdlType> = None;
+  let mut dict_member: Option<&String> = None;
+  let mut record_member: Option<&IdlType> = None;
+  let mut callback_function_member: Option<&String> = None;
+  let mut callback_interface_member: Option<&String> = None;
+  let mut interface_like: Vec<&String> = Vec::new();
+  let mut boolean_member: Option<&IdlType> = None;
+  let mut numeric_member: Option<&IdlType> = None;
+  let mut string_member: Option<&IdlType> = None;
+
+  for member in members {
+    let mut inner = member;
+    if let IdlType::Nullable(t) = member {
+      has_nullable = true;
+      inner = t;
+    }
+
+    match inner {
+      IdlType::Builtin(BuiltinType::Undefined) => has_undefined = true,
+      IdlType::Builtin(BuiltinType::Any) => has_any = true,
+      IdlType::Builtin(BuiltinType::Object) => has_object = true,
+      IdlType::Builtin(BuiltinType::Boolean) => {
+        let _ = boolean_member.get_or_insert(member);
+      }
+      IdlType::Builtin(
+        BuiltinType::Byte
+        | BuiltinType::Octet
+        | BuiltinType::Short
+        | BuiltinType::UnsignedShort
+        | BuiltinType::Long
+        | BuiltinType::UnsignedLong
+        | BuiltinType::LongLong
+        | BuiltinType::UnsignedLongLong
+        | BuiltinType::Float
+        | BuiltinType::UnrestrictedFloat
+        | BuiltinType::Double
+        | BuiltinType::UnrestrictedDouble,
+      ) => {
+        let _ = numeric_member.get_or_insert(member);
+      }
+      IdlType::Builtin(BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString) => {
+        let _ = string_member.get_or_insert(member);
+      }
+      IdlType::Named(name) => {
+        if resolved.callbacks.contains_key(name) {
+          let _ = callback_function_member.get_or_insert(name);
+        } else if resolved.interfaces.get(name).is_some_and(|i| i.callback) {
+          let _ = callback_interface_member.get_or_insert(name);
+        } else if resolved.dictionaries.contains_key(name) {
+          let _ = dict_member.get_or_insert(name);
+        } else if resolved.enums.contains_key(name) {
+          // Enum conversion uses ToString + validation; treat it as a string-like member.
+          let _ = string_member.get_or_insert(member);
+        } else if resolved.interfaces.contains_key(name) {
+          interface_like.push(name);
+        }
+      }
+      IdlType::Sequence(_) | IdlType::FrozenArray(_) => {
+        let _ = sequence_member.get_or_insert(member);
+      }
+      IdlType::Record { .. } => {
+        let _ = record_member.get_or_insert(member);
+      }
+      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) => {}
+    }
+  }
+
+  let dict_expr = dict_member.map(|dict| {
+    format!(
+      "js_to_dict_{}::<Host, R>(rt, host, v)?",
+      to_snake_ident(dict)
+    )
+  });
+  let seq_expr = sequence_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let record_expr = record_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let callback_expr = callback_function_member.map(|name| {
+    emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v")
+  });
+  let callback_iface_expr = callback_interface_member
+    .map(|name| emit_conversion_expr(resolved, &IdlType::Named(name.clone()), &[], "v"));
+  let boolean_expr = boolean_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let numeric_expr = numeric_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+  let string_expr = string_member.map(|ty| emit_conversion_expr(resolved, ty, &[], "v"));
+
+  let mut out = String::new();
+  out.push_str("{\n");
+  out.push_str(&format!("  let v = {value_ident};\n", value_ident = value_ident));
+
+  // Undefined member special-case.
+  if has_undefined {
+    out.push_str("  if rt.is_undefined(v) {\n    BindingValue::Undefined\n  }");
+  } else {
+    out.push_str("  if false {\n    BindingValue::Undefined\n  }");
+  }
+
+  // `null`/`undefined` dictionary special-case (dictionary converters treat them as "missing").
+  if let Some(dict_expr) = &dict_expr {
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  }
+
+  // Nullable special-case.
+  if has_nullable {
+    out.push_str(" else if rt.is_null(v) || rt.is_undefined(v) {\n    BindingValue::Null\n  }");
+  }
+
+  // Platform object / interface-like members.
+  for iface in &interface_like {
+    out.push_str(&format!(
+      " else if rt.is_platform_object(v) && rt.implements_interface(v, crate::js::webidl::interface_id_from_name({iface_lit})) {{\n    BindingValue::Object(v)\n  }}",
+      iface_lit = rust_string_literal(iface)
+    ));
+  }
+
+  // Callback function members win over dictionary/record conversions for callable objects.
+  if let Some(callback_expr) = &callback_expr {
+    out.push_str(" else if rt.is_callable(v) {\n    ");
+    out.push_str(callback_expr);
+    out.push_str("\n  }");
+  }
+
+  // Object branch: sequence/record/dictionary/callback-interface/object.
+  out.push_str(" else if rt.is_object(v) {\n");
+  if let Some(seq_expr) = &seq_expr {
+    out.push_str(
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some()\n    };\n",
+    );
+    out.push_str("    if has_iter {\n      ");
+    out.push_str(seq_expr);
+    out.push_str("\n    }");
+
+    // Dictionary/record should only be considered when the object is not iterable.
+    if let Some(dict_expr) = &dict_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(dict_expr);
+      out.push_str("\n    }");
+    } else if let Some(record_expr) = &record_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(record_expr);
+      out.push_str("\n    }");
+    } else if let Some(callback_iface_expr) = &callback_iface_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(callback_iface_expr);
+      out.push_str("\n    }");
+    } else if has_object || has_any {
+      out.push_str(" else {\n      BindingValue::Object(v)\n    }");
+    } else {
+      out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
+    }
+    out.push_str("\n  }");
+  } else if let Some(dict_expr) = &dict_expr {
+    out.push_str("    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  } else if let Some(record_expr) = &record_expr {
+    out.push_str("    ");
+    out.push_str(record_expr);
+    out.push_str("\n  }");
+  } else if let Some(callback_iface_expr) = &callback_iface_expr {
+    out.push_str("    ");
+    out.push_str(callback_iface_expr);
+    out.push_str("\n  }");
+  } else if has_object || has_any {
+    out.push_str("    BindingValue::Object(v)\n  }");
+  } else {
+    out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
+  }
+
+  // Primitive fast paths and fallthrough conversions.
+  if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(" else if rt.is_boolean(v) {\n    ");
+    out.push_str(boolean_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(" else if rt.is_number(v) {\n    ");
+    out.push_str(numeric_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(string_expr) = &string_expr {
+    out.push_str(" else if rt.is_string(v) || rt.is_string_object(v) {\n    ");
+    out.push_str(string_expr);
+    out.push_str("\n  }");
+  }
+
+  out.push_str(" else {\n    ");
+  if let Some(string_expr) = &string_expr {
+    out.push_str(string_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(numeric_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(boolean_expr);
+    out.push_str("\n  }\n");
+  } else if has_any {
+    out.push_str("BindingValue::Object(v)\n  }\n");
+  } else {
+    out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }\n");
+  }
+
+  out.push_str("}\n");
+  out
 }
 
 fn emit_iterable_list_conversion_expr(
