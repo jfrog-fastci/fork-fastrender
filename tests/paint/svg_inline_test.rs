@@ -555,16 +555,45 @@ fn inline_svg_use_href_resolves_symbol_from_hidden_sprite_svg_when_injection_dis
         </symbol>
       </svg>
       <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
-        <use href="#icon" width="10" height="10"/>
+        <use href="#icon"></use>
       </svg>
       <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10" viewBox="0 0 10 10">
-        <use xlink:href="#icon" width="10" height="10"/>
+        <use xlink:href="#icon"></use>
       </svg>
       "##;
 
       let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
       assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
       assert_eq!(pixel(&pixmap, 5, 15), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_use_symbol_inherits_fill_from_instance_svg_when_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; font-size: 0; }
+        svg { display: block; }
+      </style>
+      <svg xmlns="http://www.w3.org/2000/svg" style="display:none" id="iconsMap">
+        <symbol id="icon" viewBox="0 0 10 10">
+          <circle cx="5" cy="5" r="5"></circle>
+        </symbol>
+      </svg>
+      <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="fill: rgb(255,0,0)" width="10" height="10" viewBox="0 0 10 10">
+        <use xlink:href="#icon" width="10" height="10"/>
+      </svg>
+      "##;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
+      assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
     })
     .unwrap()
     .join()
@@ -1492,6 +1521,41 @@ fn inline_svg_renders_use_xlink_href_without_explicit_xmlns_xlink() {
         <defs>
           <rect id="shape" width="20" height="20" fill="rgb(0, 128, 0)" />
         </defs>
+        <use xlink:href="#shape"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_use_xlink_href_resolves_document_symbol_defs() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+      let mut renderer = FastRender::with_config(config).expect("renderer");
+
+      // The `<use>` element references a `<symbol>` defined elsewhere in the document. FastRender
+      // serializes inline `<svg>` subtrees in isolation, so it must inject document-global defs for
+      // the reference to resolve.
+      let html = r##"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg id="sprite" xmlns="http://www.w3.org/2000/svg" style="display:none">
+        <symbol id="shape" viewBox="0 0 20 20">
+          <rect width="20" height="20" fill="rgb(0, 128, 0)" />
+        </symbol>
+      </svg>
+      <svg width="20" height="20" viewBox="0 0 20 20">
         <use xlink:href="#shape"></use>
       </svg>
       "##;

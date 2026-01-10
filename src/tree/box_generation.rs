@@ -2804,6 +2804,28 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
   }
 
   fn collect_requested_svg_id_defs(styled: &StyledNode, out: &mut HashSet<String>) {
+    // Inline SVG elements (most commonly `<use href="#id">`) can reference document-global SVG
+    // sprites (e.g. a hidden `<svg><symbol id="...">` map). When we serialize each inline `<svg>`
+    // element into an isolated document for resvg, those fragment-only references would otherwise
+    // become unresolvable. Collect the referenced IDs so we can serialize their definitions into
+    // `svg_id_defs` for later injection during paint.
+    if let crate::dom::DomNodeType::Element {
+      namespace,
+      attributes,
+      ..
+    } = &styled.node.node_type
+    {
+      if namespace == SVG_NAMESPACE {
+        for (name, value) in attributes {
+          if is_href_attr(name) {
+            let trimmed = trim_ascii_whitespace(value);
+            if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+              out.insert(id.to_string());
+            }
+          }
+        }
+      }
+    }
     for layer in styled.styles.mask_layers.iter() {
       let Some(image) = layer.image.as_ref() else {
         continue;
@@ -2824,25 +2846,6 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         .filter(|id| !id.is_empty())
       {
         out.insert(id.to_string());
-      }
-    }
-    if let crate::dom::DomNodeType::Element {
-      tag_name,
-      namespace,
-      attributes,
-      ..
-    } = &styled.node.node_type
-    {
-      if namespace == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("use") {
-        for (name, value) in attributes {
-          if !is_href_attr(name) {
-            continue;
-          }
-          let trimmed = trim_ascii_whitespace(value);
-          if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
-            out.insert(id.to_string());
-          }
-        }
       }
     }
     for child in &styled.children {
@@ -3033,14 +3036,22 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       continue;
     };
     let mut serialized = String::new();
-    serialize_svg_mask_subtree_with_namespaces(
-      entry.node,
-      &entry.namespaces,
-      None,
-      None,
-      true,
-      &mut serialized,
+    let is_symbol = matches!(
+      &entry.node.node.node_type,
+      crate::dom::DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("symbol")
     );
+    if is_symbol {
+      serialize_node_with_namespaces(entry.node, &entry.namespaces, &mut serialized);
+    } else {
+      serialize_svg_mask_subtree_with_namespaces(
+        entry.node,
+        &entry.namespaces,
+        None,
+        None,
+        true,
+        &mut serialized,
+      );
+    }
     defs.insert(id, serialized);
   }
 
