@@ -33,6 +33,9 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
+// Legacy DOM mutation integration helpers used by the JS test harness and some pipeline tests.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
