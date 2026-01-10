@@ -3874,313 +3874,6 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
     }
-    // Post-pass for cross-axis mirroring.
-    //
-    // We run Taffy with `FlexWrap::Wrap` for both `wrap` and `wrap-reverse` because Taffy's
-    // `WrapReverse` support is still incomplete for multi-line + `align-content`. Mirror the
-    // in-flow flex item positions along the cross axis whenever the effective cross axis points in
-    // the negative physical direction so line order and cross-axis alignment match CSS.
-    if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
-      && !fragment.children.is_empty()
-    {
-      let mut deadline_counter = 0usize;
-
-      // Flex line stacking depends on the *effective* cross-axis direction. In vertical writing
-      // modes (or RTL inline axes) the cross-start edge can be the physical right/bottom edges, and
-      // `flex-wrap: wrap-reverse` swaps cross-start/cross-end again.
-      //
-      // We run Taffy with `FlexWrap::Wrap` for both `wrap` and `wrap-reverse` (Taffy's
-      // `WrapReverse` is still incomplete for multi-line + `align-content`). Mirror the in-flow
-      // flex item positions along the cross axis whenever the effective cross axis points in the
-      // negative physical direction so line order and cross-axis alignment match CSS.
-      if matches!(
-        box_node.style.flex_wrap,
-        FlexWrap::Wrap | FlexWrap::WrapReverse
-      ) {
-        let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
-        let block_is_horizontal = !inline_is_horizontal;
-        let main_is_inline = matches!(
-          box_node.style.flex_direction,
-          FlexDirection::Row | FlexDirection::RowReverse
-        );
-        let inline_positive = self.inline_axis_positive(&box_node.style);
-        let block_positive = self.block_axis_positive(&box_node.style);
-        let base_cross_positive = if main_is_inline {
-          block_positive
-        } else {
-          inline_positive
-        };
-        let wrap_reverse = matches!(box_node.style.flex_wrap, FlexWrap::WrapReverse);
-        let should_mirror_cross = base_cross_positive == wrap_reverse;
-        let cross_is_horizontal = if main_is_inline {
-          block_is_horizontal
-        } else {
-          inline_is_horizontal
-        };
-        let cross_size = if cross_is_horizontal {
-          fragment.bounds.width()
-        } else {
-          fragment.bounds.height()
-        };
-
-        if should_mirror_cross && cross_size.is_finite() && cross_size > 0.0 {
-          let cb_width = fragment.bounds.width();
-          let border_left = self.resolve_length_for_width(
-            box_node.style.used_border_left_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_right = self.resolve_length_for_width(
-            box_node.style.used_border_right_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_top = self.resolve_length_for_width(
-            box_node.style.used_border_top_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_bottom = self.resolve_length_for_width(
-            box_node.style.used_border_bottom_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let padding_left =
-            self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
-          let padding_right =
-            self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
-          let padding_top =
-            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-          let padding_bottom =
-            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
-
-          let (cross_content_start, cross_content_end) = if cross_is_horizontal {
-            (border_left + padding_left, border_right + padding_right)
-          } else {
-            (border_top + padding_top, border_bottom + padding_bottom)
-          };
-          let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-
-          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
-            for child in fragment.children_mut() {
-              check_layout_deadline(&mut deadline_counter)?;
-              let Some(style) = child.style.as_deref() else {
-                continue;
-              };
-              if style.running_position.is_some()
-                || matches!(style.position, Position::Absolute | Position::Fixed)
-              {
-                continue;
-              }
-              let (cross_pos, child_cross) = if cross_is_horizontal {
-                (child.bounds.x(), child.bounds.width())
-              } else {
-                (child.bounds.y(), child.bounds.height())
-              };
-              if !cross_pos.is_finite() || !child_cross.is_finite() {
-                continue;
-              }
-              let rel = cross_pos - cross_content_start;
-              let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
-              let delta = new_pos - cross_pos;
-              if delta.abs() <= 1e-6 {
-                continue;
-              }
-              if cross_is_horizontal {
-                translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
-              } else {
-                translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
-              }
-            }
-
-            // Taffy's distributed `align-content` keywords fall back to "safe" alignment when there
-            // is no free space in the cross axis. In overflow, those safe variants resolve to
-            // physical `start` alignment.
-            //
-            // When we emulate `flex-wrap: wrap-reverse` by mirroring cross positions, we must not
-            // lose that "safe start" behaviour: mirroring converts a start-aligned layout into an
-            // end-aligned one. Detect the overflow case and shift the mirrored line stack back to
-            // the physical start edge.
-            if wrap_reverse
-              && matches!(
-                box_node.style.align_content,
-                AlignContent::Stretch
-                  | AlignContent::SpaceBetween
-                  | AlignContent::SpaceAround
-                  | AlignContent::SpaceEvenly
-              )
-            {
-              let mut min_rel = f32::INFINITY;
-              for child in fragment.children.iter() {
-                check_layout_deadline(&mut deadline_counter)?;
-                let Some(style) = child.style.as_deref() else {
-                  continue;
-                };
-                if style.running_position.is_some()
-                  || matches!(style.position, Position::Absolute | Position::Fixed)
-                {
-                  continue;
-                }
-                let cross_pos = if cross_is_horizontal {
-                  child.bounds.x()
-                } else {
-                  child.bounds.y()
-                };
-                if cross_pos.is_finite() {
-                  min_rel = min_rel.min(cross_pos - cross_content_start);
-                }
-              }
-              if min_rel.is_finite() && min_rel < -1e-6 {
-                let shift = -min_rel;
-                for child in fragment.children_mut() {
-                  check_layout_deadline(&mut deadline_counter)?;
-                  let Some(style) = child.style.as_deref() else {
-                    continue;
-                  };
-                  if style.running_position.is_some()
-                    || matches!(style.position, Position::Absolute | Position::Fixed)
-                  {
-                    continue;
-                  }
-                  if cross_is_horizontal {
-                    translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
-                  } else {
-                    translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // Distributed `align-content` values fall back to "safe start" when there is no free space.
-        // That safe start alignment is defined in terms of the *physical* start edge, which can be
-        // the right/bottom edges in vertical writing modes or RTL.
-        //
-        // When `flex-wrap: wrap-reverse` cancels a negative cross axis (so we don't perform the
-        // mirror pass above), Taffy's internal fallback still start-aligns in its positive-axis
-        // coordinate space. Correct by shifting the in-flow items so the overflow is biased toward
-        // the physical end edge instead.
-        if wrap_reverse
-          && !should_mirror_cross
-          && !base_cross_positive
-          && matches!(
-            box_node.style.align_content,
-            AlignContent::Stretch
-              | AlignContent::SpaceBetween
-              | AlignContent::SpaceAround
-              | AlignContent::SpaceEvenly
-          )
-          && cross_size.is_finite()
-          && cross_size > 0.0
-        {
-          let cb_width = fragment.bounds.width();
-          let border_left = self.resolve_length_for_width(
-            box_node.style.used_border_left_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_right = self.resolve_length_for_width(
-            box_node.style.used_border_right_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_top = self.resolve_length_for_width(
-            box_node.style.used_border_top_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let border_bottom = self.resolve_length_for_width(
-            box_node.style.used_border_bottom_width(),
-            cb_width,
-            &box_node.style,
-          );
-          let padding_left =
-            self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
-          let padding_right =
-            self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
-          let padding_top =
-            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-          let padding_bottom =
-            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
-
-          let (cross_content_start, cross_content_end) = if cross_is_horizontal {
-            (border_left + padding_left, border_right + padding_right)
-          } else {
-            (border_top + padding_top, border_bottom + padding_bottom)
-          };
-          let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
-            let mut max_rel = f32::NEG_INFINITY;
-            for child in fragment.children.iter() {
-              check_layout_deadline(&mut deadline_counter)?;
-              let Some(style) = child.style.as_deref() else {
-                continue;
-              };
-              if style.running_position.is_some()
-                || matches!(style.position, Position::Absolute | Position::Fixed)
-              {
-                continue;
-              }
-              let (cross_pos, child_cross) = if cross_is_horizontal {
-                (child.bounds.x(), child.bounds.width())
-              } else {
-                (child.bounds.y(), child.bounds.height())
-              };
-              if !cross_pos.is_finite() || !child_cross.is_finite() {
-                continue;
-              }
-              max_rel = max_rel.max((cross_pos - cross_content_start) + child_cross);
-            }
-
-            if max_rel.is_finite() && max_rel > cross_inner_size + 1e-6 {
-              let shift = cross_inner_size - max_rel;
-              if shift.is_finite() && shift.abs() > 1e-6 {
-                for child in fragment.children_mut() {
-                  check_layout_deadline(&mut deadline_counter)?;
-                  let Some(style) = child.style.as_deref() else {
-                    continue;
-                  };
-                  if style.running_position.is_some()
-                    || matches!(style.position, Position::Absolute | Position::Fixed)
-                  {
-                    continue;
-                  }
-                  if cross_is_horizontal {
-                    translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
-                  } else {
-                    translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Baseline alignment is handled by Taffy once the measure callback provides the leaf node's
-      // first baselines.
-      if toggles.truthy("FASTR_DEBUG_FLEX_CHILD") {
-        eprintln!(
-          "[flex-container] bounds=({:.2},{:.2},{:.2},{:.2})",
-          fragment.bounds.x(),
-          fragment.bounds.y(),
-          fragment.bounds.width(),
-          fragment.bounds.height()
-        );
-        for (idx, child) in fragment.children.iter().enumerate() {
-          check_layout_deadline(&mut deadline_counter)?;
-          eprintln!(
-            "[flex-child-after-align] idx={} bounds=({:.2},{:.2},{:.2},{:.2})",
-            idx,
-            child.bounds.x(),
-            child.bounds.y(),
-            child.bounds.width(),
-            child.bounds.height()
-          );
-        }
-      }
-    }
     // Block-level flex containers with `width:auto` fill the available inline space. Enforce that
     // here (without clamping to the viewport) so explicitly-sized or shrink-to-fit flex containers
     // can still overflow horizontally.
@@ -6153,28 +5846,20 @@ impl FlexFormattingContext {
     } else {
       inline_positive_container
     };
-    // When flex containers wrap, Taffy's `WrapReverse` handling can be inconsistent. We instead
-    // always run Taffy with `FlexWrap::Wrap` and mirror the fragment positions when the effective
-    // cross-axis direction is reversed (either via `flex-wrap: wrap-reverse` or a negative
-    // cross-start edge in vertical/RTL writing modes).
+    // For wrapping flex containers, encode the *effective* physical cross-axis direction into
+    // Taffy's `FlexWrap` mode (see `flex_wrap_to_taffy()`).
     //
-    // To keep `flex-start`/`flex-end` (which resolve against the flex cross-start/cross-end edges)
-    // consistent with this mirroring step, wrapped containers are converted assuming a positive
-    // cross axis and rely on the mirror post-pass when needed.
-    let cross_positive_container = if matches!(style.display, Display::Flex | Display::InlineFlex)
-      && !matches!(style.flex_wrap, FlexWrap::NoWrap)
-    {
+    // For `flex-start`/`flex-end` alignment keywords, Taffy can only represent a negative physical
+    // cross axis when wrapping is enabled (via `WrapReverse`). For `nowrap`, we still need to swap
+    // `flex-start`/`flex-end` based on axis polarity.
+    let container_is_wrapping =
+      matches!(style.display, Display::Flex | Display::InlineFlex)
+        && !matches!(style.flex_wrap, FlexWrap::NoWrap);
+    let cross_positive_container_for_flex_start_end = if container_is_wrapping {
       true
     } else {
       cross_positive_container_base
     };
-    let mirror_cross_axis_container = matches!(style.display, Display::Flex | Display::InlineFlex)
-      && matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
-      && (cross_positive_container_base == matches!(style.flex_wrap, FlexWrap::WrapReverse));
-    // `start`/`end` resolve against the physical start/end edges and must *not* mirror with the
-    // flex cross-start/cross-end edges. Pre-adjust the axis sense for start/end so that after the
-    // cross-axis mirror post-pass, they still resolve to the physical start/end edges.
-    let cross_positive_for_start_end = cross_positive_container_base ^ mirror_cross_axis_container;
 
     // Flex items align to the parent flex container's axes, not their own writing-mode/direction.
     let axis_source = containing_flex.unwrap_or(style);
@@ -6189,15 +5874,9 @@ impl FlexFormattingContext {
     } else {
       inline_positive_item
     };
-    let mirror_cross_axis = matches!(axis_source.display, Display::Flex | Display::InlineFlex)
-      && matches!(
-        axis_source.flex_wrap,
-        FlexWrap::Wrap | FlexWrap::WrapReverse
-      )
-      && (cross_positive_item_base == matches!(axis_source.flex_wrap, FlexWrap::WrapReverse));
-    let cross_positive_item = if matches!(axis_source.display, Display::Flex | Display::InlineFlex)
-      && !matches!(axis_source.flex_wrap, FlexWrap::NoWrap)
-    {
+    let item_container_is_wrapping = matches!(axis_source.display, Display::Flex | Display::InlineFlex)
+      && !matches!(axis_source.flex_wrap, FlexWrap::NoWrap);
+    let cross_positive_item_for_flex_start_end = if item_container_is_wrapping {
       true
     } else {
       cross_positive_item_base
@@ -6238,15 +5917,9 @@ impl FlexFormattingContext {
         .align_self
         .or_else(|| containing_flex.map(|flex| flex.align_items))
     };
-    let align_self_axis_positive = match effective_align_self {
-      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self ^ mirror_cross_axis,
-      // `start`/`end` resolve against the flex container's physical axis and must *not* mirror with
-      // the flex line's cross-start/cross-end (e.g. `flex-wrap: wrap-reverse`). We run wrapping
-      // flex layout through Taffy with a forced-positive cross axis, then mirror the resulting
-      // positions to match the spec cross-start direction. Pre-adjust the axis sense for `start`
-      // and `end` so that after mirroring, they still resolve to the physical start/end edges.
-      Some(AlignItems::Start | AlignItems::End) => cross_positive_item_base ^ mirror_cross_axis,
-      _ => cross_positive_item,
+    let align_self_start_end_axis_positive = match effective_align_self {
+      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self,
+      _ => cross_positive_item_base,
     };
     let reserve_scroll_x = style.scrollbar_gutter.stable
       && matches!(
@@ -6302,11 +5975,19 @@ impl FlexFormattingContext {
         inline_positive_container,
         block_positive_container,
       ),
-      flex_wrap: self.flex_wrap_to_taffy(style.flex_wrap),
+      flex_wrap: self.flex_wrap_to_taffy(style.flex_wrap, cross_positive_container_base),
       justify_content: self.justify_content_to_taffy(justify_content),
-      align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
-      align_content: self.align_content_to_taffy(style.align_content, cross_positive_for_start_end),
-      align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
+      align_items: self.align_items_to_taffy(
+        style.align_items,
+        cross_positive_container_base,
+        cross_positive_container_for_flex_start_end,
+      ),
+      align_content: self.align_content_to_taffy(style.align_content, cross_positive_container_base),
+      align_self: self.align_self_to_taffy(
+        effective_align_self,
+        align_self_start_end_axis_positive,
+        cross_positive_item_for_flex_start_end,
+      ),
       justify_self: None,
       justify_items: None,
 
@@ -11395,105 +11076,6 @@ impl FlexFormattingContext {
       height: AvailableSpace::Definite(container_height),
     };
 
-    // Our Taffy adapter runs wrapping flex containers with a positive-physical cross axis and
-    // mirrors in-flow items after layout to emulate `flex-wrap: wrap-reverse` (and negative cross
-    // axes in vertical writing modes). Abspos children are laid out after that mirroring pass, so
-    // we must apply the same mirroring to the static-position probe results here.
-    let cross_mirror: Option<(bool, f32, f32)> = {
-      let is_wrapping = matches!(
-        container_style.flex_wrap,
-        FlexWrap::Wrap | FlexWrap::WrapReverse
-      );
-      if !is_wrapping {
-        None
-      } else {
-        let inline_is_horizontal =
-          matches!(container_style.writing_mode, WritingMode::HorizontalTb);
-        let block_is_horizontal = !inline_is_horizontal;
-        let main_is_inline = matches!(
-          container_style.flex_direction,
-          FlexDirection::Row | FlexDirection::RowReverse
-        );
-        let inline_positive = self.inline_axis_positive(container_style);
-        let block_positive = self.block_axis_positive(container_style);
-        let base_cross_positive = if main_is_inline {
-          block_positive
-        } else {
-          inline_positive
-        };
-        let wrap_reverse = matches!(container_style.flex_wrap, FlexWrap::WrapReverse);
-        let should_mirror_cross = base_cross_positive == wrap_reverse;
-        if !should_mirror_cross {
-          None
-        } else {
-          let cross_is_horizontal = if main_is_inline {
-            block_is_horizontal
-          } else {
-            inline_is_horizontal
-          };
-          let cross_size = if cross_is_horizontal {
-            container_width
-          } else {
-            container_height
-          };
-          if !cross_size.is_finite() || cross_size <= 0.0 {
-            None
-          } else {
-            let cb_width = container_width;
-            let border_left = self.resolve_length_for_width(
-              container_style.used_border_left_width(),
-              cb_width,
-              container_style,
-            );
-            let border_right = self.resolve_length_for_width(
-              container_style.used_border_right_width(),
-              cb_width,
-              container_style,
-            );
-            let border_top = self.resolve_length_for_width(
-              container_style.used_border_top_width(),
-              cb_width,
-              container_style,
-            );
-            let border_bottom = self.resolve_length_for_width(
-              container_style.used_border_bottom_width(),
-              cb_width,
-              container_style,
-            );
-            let padding_left = self.resolve_length_for_width(
-              container_style.padding_left,
-              cb_width,
-              container_style,
-            );
-            let padding_right = self.resolve_length_for_width(
-              container_style.padding_right,
-              cb_width,
-              container_style,
-            );
-            let padding_top =
-              self.resolve_length_for_width(container_style.padding_top, cb_width, container_style);
-            let padding_bottom = self.resolve_length_for_width(
-              container_style.padding_bottom,
-              cb_width,
-              container_style,
-            );
-
-            let (cross_content_start, cross_content_end) = if cross_is_horizontal {
-              (border_left + padding_left, border_right + padding_right)
-            } else {
-              (border_top + padding_top, border_bottom + padding_bottom)
-            };
-            let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-            (cross_inner_size.is_finite() && cross_inner_size > 0.0).then_some((
-              cross_is_horizontal,
-              cross_content_start,
-              cross_inner_size,
-            ))
-          }
-        }
-      }
-    };
-
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
       .filter(|deadline| deadline.is_enabled())
       .map(|_| Arc::new(|| check_active(RenderStage::Layout).is_err()) as _);
@@ -11628,32 +11210,8 @@ impl FlexFormattingContext {
         })?;
 
       if let Ok(layout) = taffy.layout(node) {
-        let mut margin_edge_x = layout.location.x - layout.margin.left;
-        let mut margin_edge_y = layout.location.y - layout.margin.top;
-        if let Some((cross_is_horizontal, cross_content_start, cross_inner_size)) = cross_mirror {
-          let (cross_edge, cross_span) = if cross_is_horizontal {
-            (
-              margin_edge_x,
-              layout.size.width + layout.margin.left + layout.margin.right,
-            )
-          } else {
-            (
-              margin_edge_y,
-              layout.size.height + layout.margin.top + layout.margin.bottom,
-            )
-          };
-          if cross_edge.is_finite() && cross_span.is_finite() {
-            let rel = cross_edge - cross_content_start;
-            let new_edge = cross_content_start + (cross_inner_size - cross_span - rel);
-            if new_edge.is_finite() {
-              if cross_is_horizontal {
-                margin_edge_x = new_edge;
-              } else {
-                margin_edge_y = new_edge;
-              }
-            }
-          }
-        }
+        let margin_edge_x = layout.location.x - layout.margin.left;
+        let margin_edge_y = layout.location.y - layout.margin.top;
         positions.insert(
           candidate.child_id,
           Point::new(
@@ -11753,14 +11311,20 @@ impl FlexFormattingContext {
     }
   }
 
-  fn flex_wrap_to_taffy(&self, wrap: FlexWrap) -> taffy::style::FlexWrap {
+  fn flex_wrap_to_taffy(&self, wrap: FlexWrap, base_cross_positive: bool) -> taffy::style::FlexWrap {
     match wrap {
       FlexWrap::NoWrap => taffy::style::FlexWrap::NoWrap,
-      FlexWrap::Wrap => taffy::style::FlexWrap::Wrap,
-      // Taffy's wrap-reverse behavior is incomplete for multi-line containers (line stacking and
-      // `align-content`). We emulate wrap-reverse by running Taffy with normal wrapping and then
-      // mirroring item positions along the cross axis.
-      FlexWrap::WrapReverse => taffy::style::FlexWrap::Wrap,
+      FlexWrap::Wrap | FlexWrap::WrapReverse => {
+        let css_wrap_reverse = matches!(wrap, FlexWrap::WrapReverse);
+        // Encode the effective physical cross-axis reversal into Taffy's wrap mode. This matches
+        // the `should_mirror_cross` condition from the old mirroring post-pass.
+        let effective_cross_reversed = base_cross_positive == css_wrap_reverse;
+        if effective_cross_reversed {
+          taffy::style::FlexWrap::WrapReverse
+        } else {
+          taffy::style::FlexWrap::Wrap
+        }
+      }
     }
   }
 
@@ -11792,32 +11356,33 @@ impl FlexFormattingContext {
   fn align_items_to_taffy(
     &self,
     align: AlignItems,
-    axis_positive: bool,
+    start_end_axis_positive: bool,
+    flex_start_end_axis_positive: bool,
   ) -> Option<taffy::style::AlignItems> {
     Some(match align {
       AlignItems::Start | AlignItems::SelfStart => {
-        if axis_positive {
+        if start_end_axis_positive {
           taffy::style::AlignItems::Start
         } else {
           taffy::style::AlignItems::End
         }
       }
       AlignItems::End | AlignItems::SelfEnd => {
-        if axis_positive {
+        if start_end_axis_positive {
           taffy::style::AlignItems::End
         } else {
           taffy::style::AlignItems::Start
         }
       }
       AlignItems::FlexStart => {
-        if axis_positive {
+        if flex_start_end_axis_positive {
           taffy::style::AlignItems::FlexStart
         } else {
           taffy::style::AlignItems::FlexEnd
         }
       }
       AlignItems::FlexEnd => {
-        if axis_positive {
+        if flex_start_end_axis_positive {
           taffy::style::AlignItems::FlexEnd
         } else {
           taffy::style::AlignItems::FlexStart
@@ -11832,9 +11397,10 @@ impl FlexFormattingContext {
   fn align_self_to_taffy(
     &self,
     align: Option<AlignItems>,
-    axis_positive: bool,
+    start_end_axis_positive: bool,
+    flex_start_end_axis_positive: bool,
   ) -> Option<taffy::style::AlignItems> {
-    align.and_then(|a| self.align_items_to_taffy(a, axis_positive))
+    align.and_then(|a| self.align_items_to_taffy(a, start_end_axis_positive, flex_start_end_axis_positive))
   }
 
   fn align_content_to_taffy(
@@ -16697,15 +16263,27 @@ mod tests {
     let fc = FlexFormattingContext::new();
 
     assert_eq!(
-      fc.flex_wrap_to_taffy(FlexWrap::NoWrap),
+      fc.flex_wrap_to_taffy(FlexWrap::NoWrap, true),
       taffy::style::FlexWrap::NoWrap
     );
     assert_eq!(
-      fc.flex_wrap_to_taffy(FlexWrap::Wrap),
+      fc.flex_wrap_to_taffy(FlexWrap::NoWrap, false),
+      taffy::style::FlexWrap::NoWrap
+    );
+    assert_eq!(
+      fc.flex_wrap_to_taffy(FlexWrap::Wrap, true),
       taffy::style::FlexWrap::Wrap
     );
     assert_eq!(
-      fc.flex_wrap_to_taffy(FlexWrap::WrapReverse),
+      fc.flex_wrap_to_taffy(FlexWrap::Wrap, false),
+      taffy::style::FlexWrap::WrapReverse
+    );
+    assert_eq!(
+      fc.flex_wrap_to_taffy(FlexWrap::WrapReverse, true),
+      taffy::style::FlexWrap::WrapReverse
+    );
+    assert_eq!(
+      fc.flex_wrap_to_taffy(FlexWrap::WrapReverse, false),
       taffy::style::FlexWrap::Wrap
     );
   }
