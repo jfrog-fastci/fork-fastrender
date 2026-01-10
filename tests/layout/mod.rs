@@ -57,6 +57,7 @@ mod flex_auto_min_and_intrinsics;
 mod flex_auto_min_height_definite_cross_size;
 mod flex_auto_min_height_percent_width_definite_cross_size;
 mod flex_auto_min_size_aspect_ratio_transferred;
+mod flex_column_flex_grow_auto_height;
 mod flex_auto_min_size_column_single_line;
 mod flex_column_cross_fit_content_width;
 mod flex_auto_min_size_form_controls;
