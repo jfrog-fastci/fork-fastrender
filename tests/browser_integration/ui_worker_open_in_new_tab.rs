@@ -8,6 +8,7 @@ use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use tempfile::tempdir;
+use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
@@ -65,8 +66,14 @@ fn link_activation_can_request_open_in_new_tab() {
   std::fs::write(&page1_path, page1).expect("write page1");
   std::fs::write(&page2_path, page2).expect("write page2");
 
-  let page1_url = format!("file://{}", page1_path.display());
-  let page2_url = format!("file://{}", page2_path.display());
+  // Use `Url::from_file_path` so the test works on Windows (drive letters/backslashes) and properly
+  // percent-encodes paths when needed.
+  let page1_url = Url::from_file_path(&page1_path)
+    .unwrap_or_else(|()| panic!("failed to build file:// url for {}", page1_path.display()))
+    .to_string();
+  let page2_url = Url::from_file_path(&page2_path)
+    .unwrap_or_else(|()| panic!("failed to build file:// url for {}", page2_path.display()))
+    .to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-open-in-new-tab").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
@@ -199,4 +206,3 @@ fn link_activation_can_request_open_in_new_tab() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-
