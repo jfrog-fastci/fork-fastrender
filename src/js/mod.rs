@@ -33,11 +33,11 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
-// Legacy DOM script integration helpers (dynamic `<script>` preparation for DOM mutations).
+// Legacy DOM script integration helpers (dynamic `<script>` preparation for dom2 mutations).
 //
 // This is not part of the canonical vm-js WindowRealm pipeline, but is still referenced by some
-// integration tests (e.g. streaming pipeline tests) while the newer vm-js/WebIDL plumbing is being
-// rolled out.
+// integration tests (e.g. the JS harness and streaming pipeline tests) while the newer
+// vm-js/WebIDL plumbing is being rolled out.
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 pub mod dom_host;
