@@ -8,10 +8,13 @@ In the HTML platform, import maps influence **module specifier → URL** resolut
 * `import()` (dynamic import)
 
 This module is deliberately scoped to **import map parsing + normalization**, plus the spec-mapped
-utilities needed to wire import maps into HTML/script and module loading:
+state + algorithms needed to wire import maps into HTML/script and module loading:
 
+* `ImportMapState` (host-side global state: merged import map + resolved module set)
 * `create_import_map_parse_result(...)` (HTML “import map parse result”)
-* `resolve_imports_match(...)` (HTML “resolve an imports match” helper)
+* `register_import_map(...)` / `merge_existing_and_new_import_maps(...)` (HTML “register/merge import maps”)
+* `resolve_module_specifier(...)` (HTML “resolve a module specifier” entry point)
+* `resolve_imports_match(...)` (HTML “resolve an imports match” helper; non-throwing wrapper for tests)
 
 Module script fetching/execution is separate, but module loading must call into the import map APIs
 described here.
@@ -24,23 +27,31 @@ Code lives in:
 
 * `src/js/import_maps/`
   * `mod.rs`: module entry point + re-exports
+  * `merge.rs`: `register an import map` + merging implementation
   * `parse.rs`: parsing + normalization implementation
-  * `resolve.rs`: `resolve an imports match` helper (prefix/exact matching)
-  * `types.rs`: `ImportMap` data model, warnings/errors
+  * `resolve.rs`: `resolve a module specifier` + resolved module set plumbing
+  * `types.rs`: `ImportMap` + `ImportMapState` data model, warnings/errors
   * `parse_tests.rs`: focused unit tests
+  * `tests.rs`: merge/register/resolve unit tests
 
 What exists today:
 
 * **Implemented:** parsing + normalization (`parse_import_map_string`) and the normalized data
   structures (`ImportMap`, `ModuleSpecifierMap`, `ScopesMap`, `ModuleIntegrityMap`).
 * **Implemented:** import map parse results (`create_import_map_parse_result`).
+* **Implemented:** host-side global state (`ImportMapState`) including the **resolved module set**
+  record types (`SpecifierResolutionRecord`, `SpecifierAsUrlKind`).
+* **Implemented:** registration + merging:
+  * `merge_existing_and_new_import_maps`
+  * `register_import_map`
+* **Implemented:** full module specifier resolution (`resolve_module_specifier`) and resolved-module-set
+  updates (`add_module_to_resolved_module_set`).
 * **Implemented:** the core matching helper (`resolve_imports_match`) for "resolve an imports match"
-  (prefix/exact matching only; not full module specifier resolution).
-* **Not implemented yet:** registration (`register an import map`), merging (`merge existing and new
-  import maps`), and full module specifier resolution (`resolve a module specifier`).
+  (non-throwing wrapper used by tests/debugging; full resolution uses the throwing implementation).
 
-Those “not implemented yet” items are still documented below, because they are the intended
-integration surface for `<script type="importmap">` and module loading.
+What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline and
+the module graph loader. This document describes the intended integration surface for those
+subsystems (also see [`docs/html_script_processing.md`](html_script_processing.md)).
 
 ### How to run tests
 
@@ -77,7 +88,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `normalize a module integrity map`:
   * `rg -n 'normalize a module integrity map' specs/whatwg-html/source`
 
-### Script integration (parse result implemented; registration not implemented yet)
+### Script integration (parse result + registration implemented)
 
 * `<script type="importmap">` preparation (creates parse result):
   * `rg -n 'creating an import map parse result' specs/whatwg-html/source`
@@ -90,14 +101,14 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `register an import map`:
   * `rg -n 'register an import map' specs/whatwg-html/source`
 
-### Merging (not implemented yet)
+### Merging (implemented)
 
 * `merge existing and new import maps`:
   * `rg -n 'merge existing and new import maps' specs/whatwg-html/source`
 * `merge module specifier maps`:
   * `rg -n 'merge module specifier maps' specs/whatwg-html/source`
 
-### Resolution (imports-match helper implemented; full resolution not implemented yet)
+### Resolution (implemented)
 
 * `resolve a module specifier`:
   * `rg -n '<dfn>resolve a module specifier' specs/whatwg-html/source`
@@ -177,17 +188,37 @@ Rust type: `ImportMapParseResult`:
 This is the spec-mapped "import map parse result" struct that HTML stores in the script element’s
 `result` slot during `<script type="importmap">` preparation.
 
-### `ImportMapState` + resolved module set (spec concept; not implemented yet)
+### `ImportMapState` + resolved module set (implemented)
 
-For merging and resolution, HTML defines mutable per-global state:
+Rust types:
 
-* a current merged import map (on the `Window` global object), and
+* `ImportMapState { import_map, resolved_module_set }`
+* `SpecifierResolutionRecord`
+* `SpecifierAsUrlKind`
+
+HTML defines mutable per-global state that must be shared between `<script type="importmap">`
+registration and module loading:
+
+* a current **merged import map**, and
 * a **resolved module set** (specifier resolution records), which prevents later import maps from
   changing the meaning of already-resolved specifiers.
 
-FastRender does not yet have a concrete `ImportMapState` type in `src/js/import_maps/`, but future
-work should introduce it there (or in a closely-related module) so both the HTML `<script>` pipeline
-and the module loader share the same state and algorithms.
+FastRender models this directly with `ImportMapState`:
+
+* `import_map: ImportMap` — the current merged import map.
+* `resolved_module_set: Vec<SpecifierResolutionRecord>` — records created during
+  `resolve_module_specifier(...)` (and consulted during `merge_existing_and_new_import_maps(...)`).
+
+`SpecifierResolutionRecord` is the stored “specifier resolution record”:
+
+* `serialized_base_url: Option<String>` — the base URL serialization used for resolution. This is
+  used to decide which scoped rules would have applied.
+* `specifier: String` — the **normalized specifier** (URL serialization if URL-like, otherwise the
+  original bare specifier string).
+* `as_url_kind: SpecifierAsUrlKind` — whether `asURL` was null / special / non-special. This is used
+  by merge filtering to match the spec rule that prefix matches only apply when `asURL` is null OR a
+  special URL (non-special URL-like specifiers such as `blob:` should not be affected by new prefix
+  rules).
 
 ---
 
@@ -244,7 +275,7 @@ Behavior summary:
   * Repeated keys inside `"imports"`/`"scopes"` are resolved after normalization; the last occurrence
     wins.
 
-### 2) Create/register parse result (partially implemented)
+### 2) `create_import_map_parse_result` (implemented)
 
 HTML stores an **import map parse result** in the `<script>` element’s `result` slot during
 preparation, then registers it during execution:
@@ -257,16 +288,14 @@ Rust API:
 Spec mapping:
 
 * “create an import map parse result” (**implemented as** `create_import_map_parse_result`)
-* “register an import map”
+* “register an import map” (implemented as `register_import_map`, see below)
 
-FastRender does not yet implement registration/merge, but the expected flow is:
+Typical HTML-shaped flow:
 
-1. At `</script>` boundary for `<script type="importmap">`:
-   * run parsing (by calling `create_import_map_parse_result(...)`) which captures any thrown error
-     into `error_to_rethrow` instead of failing immediately.
-2. When the script element executes (HTML “execute the script element”):
-   * if `error_to_rethrow` exists, report it and do not mutate import map state
-   * otherwise, merge the parsed import map into the global import map state
+1. At `</script>` boundary for `<script type="importmap">`: call
+   `create_import_map_parse_result(...)` and store the `ImportMapParseResult` on the script element.
+2. When the script element executes: call `register_import_map(...)` with the stored parse result and
+   the per-global `ImportMapState`.
 
 Example:
 
@@ -302,6 +331,37 @@ assert!(
 );
 ```
 
+### 3) `register_import_map` (implemented)
+
+Rust API:
+
+* `fastrender::js::import_maps::register_import_map(state: &mut ImportMapState, result: ImportMapParseResult)
+  -> Result<(), ImportMapError>`
+
+Spec mapping: “register an import map”.
+
+Behavior summary:
+
+* If `result.error_to_rethrow` is present, `register_import_map` returns `Err(...)` and **does not**
+  mutate state.
+* Otherwise, if `result.import_map` is present, it merges it into `state` using
+  `merge_existing_and_new_import_maps(...)`.
+* Warnings are produced during parse (`create_import_map_parse_result`) and should be surfaced by
+  the caller as console warnings; registration does not look at or re-emit them.
+
+Example:
+
+```rust
+use fastrender::js::import_maps::{create_import_map_parse_result, register_import_map, ImportMapState};
+use url::Url;
+
+let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+let mut state = ImportMapState::default();
+
+let result = create_import_map_parse_result(r#"{ "imports": { "x": "/x.js" } }"#, &base_url);
+register_import_map(&mut state, result).unwrap();
+```
+
 ### Supporting helper: `resolve_imports_match` (implemented)
 
 Rust API:
@@ -311,7 +371,14 @@ Rust API:
 
 Spec mapping: “resolve an imports match”.
 
-This is a low-level helper used by the full “resolve a module specifier” algorithm. It implements:
+This is a low-level helper used by the full “resolve a module specifier” algorithm.
+
+It is intentionally **non-throwing** for tests/debugging: if a match is found but would have thrown
+(null entry, backtracking, etc.), this returns `Some(None)` rather than returning an error.
+
+The full `resolve_module_specifier(...)` API uses the throwing implementation.
+
+It implements:
 
 * exact-key matches and trailing-slash prefix matches (most-specific-first due to map sorting),
 * the “special URL” gate for allowing prefix matches, and
@@ -344,14 +411,21 @@ assert!(
 );
 ```
 
-### 3) `merge` (spec concept; not implemented yet)
+### 4) `merge_existing_and_new_import_maps` (implemented)
+
+Rust API:
+
+* `fastrender::js::import_maps::merge_existing_and_new_import_maps(state: &mut ImportMapState, new_import_map: &ImportMap)`
 
 Spec mapping: “merge existing and new import maps”.
 
 This is required for multiple `<script type="importmap">` elements in one document and must consult
 the resolved module set to drop rules that would affect already-resolved specifiers.
 
-### 4) `resolve_module_specifier` (spec concept; not implemented yet)
+In practice, most callers should use `register_import_map(...)` instead; this lower-level API is
+useful if the host wants to parse import maps separately or merge pre-parsed import maps.
+
+### 5) `resolve_module_specifier` (implemented)
 
 Spec mapping:
 
@@ -361,6 +435,35 @@ Spec mapping:
 
 This is the API module graph code should call to turn a specifier string into a URL, using the
 current import map state.
+
+Rust API:
+
+* `fastrender::js::import_maps::resolve_module_specifier(state: &mut ImportMapState, specifier: &str, base_url: &url::Url)
+  -> Result<url::Url, ImportMapError>`
+
+Important notes for callers:
+
+* This API is **stateful**: on successful resolution, it updates `state.resolved_module_set` so that
+  later import maps cannot change already-resolved meanings.
+* Errors are surfaced as `ImportMapError::TypeError(...)` (e.g. blocked by a null entry, prefix
+  backtracking, or bare specifier not mapped by the import map).
+
+### 6) `add_module_to_resolved_module_set` (implemented)
+
+Rust API:
+
+* `fastrender::js::import_maps::add_module_to_resolved_module_set(
+    state: &mut ImportMapState,
+    serialized_base_url: String,
+    normalized_specifier: String,
+    as_url: Option<&url::Url>,
+  )`
+
+Spec mapping: “add module to resolved module set”.
+
+Most callers should never need this directly: `resolve_module_specifier(...)` calls it automatically.
+It is exposed for hosts that perform module resolution in multiple steps but still need to update
+the resolved module set for correct future import map merging.
 
 ---
 
@@ -504,14 +607,14 @@ it should:
    console warnings.
 3. Store the `ImportMapParseResult` in a script-element result slot (HTML does this; FastRender will
    need an equivalent representation for import map scripts).
-4. During “execute the script element”, register/merge into global import map state (not yet wired;
-   will use `result.error_to_rethrow` and/or `result.import_map`).
+4. During “execute the script element”, register/merge into global import map state by calling
+   `register_import_map(&mut state, result)` and reporting any returned error.
 
 ### Module loader (module scripts integration is separate)
 
 Module script graph loading is separate from import maps, but must:
 
 * use the global import map state, and
-* resolve every module specifier through the import map resolution algorithm (once implemented here)
+* resolve every module specifier through `resolve_module_specifier(&mut state, specifier, base_url)`
 
 In other words: module graph code should not “roll its own” import map parsing/normalization.
