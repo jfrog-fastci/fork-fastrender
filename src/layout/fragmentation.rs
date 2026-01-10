@@ -2194,7 +2194,7 @@ fn clip_grid_item_parallel_for_page(
   }
 
   // `FragmentNode` implements a custom `Drop` to avoid recursive destruction, so we must not move
-  // fields out directly. Take the children list out and leave an empty placeholder instead.
+  // fields out directly (E0509). Take the children list out and leave an empty placeholder instead.
   let mut iter = std::mem::take(&mut clipped_root.children).into_iter();
   let Some(mut item_fragment) = iter.next() else {
     return Ok(None);
