@@ -25,6 +25,7 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
 
 fn assert_flex_root_max_width_case(
   mut style: ComputedStyle,
+  max_width: Length,
   expected_root_border_box_width: f32,
   expected_child_x: f32,
 ) {
@@ -32,7 +33,8 @@ fn assert_flex_root_max_width_case(
 
   style.display = Display::Flex;
   style.justify_content = JustifyContent::FlexEnd;
-  style.max_width = Some(Length::px(150.0));
+  style.max_width = Some(max_width);
+  style.max_width_keyword = None;
 
   let mut child_style = ComputedStyle::default();
   child_style.display = Display::Block;
@@ -86,7 +88,12 @@ fn assert_flex_root_max_width_case(
 #[test]
 fn flex_root_auto_width_fill_available_respects_max_width() {
   let style = ComputedStyle::default();
-  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 150.0, /* expected_child_x */ 130.0);
+  assert_flex_root_max_width_case(
+    style,
+    Length::px(150.0),
+    /* expected_root_border_box_width */ 150.0,
+    /* expected_child_x */ 130.0,
+  );
 }
 
 #[test]
@@ -96,7 +103,12 @@ fn flex_root_auto_width_fill_available_respects_max_width_with_padding_content_b
   style.padding_left = Length::px(10.0);
   style.padding_right = Length::px(10.0);
   // max-width: 150px constrains the *content* width, so the border-box width must include padding.
-  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 170.0, /* expected_child_x */ 140.0);
+  assert_flex_root_max_width_case(
+    style,
+    Length::px(150.0),
+    /* expected_root_border_box_width */ 170.0,
+    /* expected_child_x */ 140.0,
+  );
 }
 
 #[test]
@@ -106,5 +118,51 @@ fn flex_root_auto_width_fill_available_respects_max_width_with_padding_border_bo
   style.padding_left = Length::px(10.0);
   style.padding_right = Length::px(10.0);
   // max-width: 150px constrains the border box, so the content box shrinks by padding.
-  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 150.0, /* expected_child_x */ 120.0);
+  assert_flex_root_max_width_case(
+    style,
+    Length::px(150.0),
+    /* expected_root_border_box_width */ 150.0,
+    /* expected_child_x */ 120.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width_percent() {
+  let style = ComputedStyle::default();
+  assert_flex_root_max_width_case(
+    style,
+    Length::percent(50.0),
+    /* expected_root_border_box_width */ 150.0,
+    /* expected_child_x */ 130.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width_percent_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  // Default is `box-sizing: content-box`.
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 50% constrains the *content* width (50% of 300px), so padding expands the border-box width.
+  assert_flex_root_max_width_case(
+    style,
+    Length::percent(50.0),
+    /* expected_root_border_box_width */ 170.0,
+    /* expected_child_x */ 140.0,
+  );
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width_percent_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 50% constrains the border box, so the content box shrinks by padding.
+  assert_flex_root_max_width_case(
+    style,
+    Length::percent(50.0),
+    /* expected_root_border_box_width */ 150.0,
+    /* expected_child_x */ 120.0,
+  );
 }
