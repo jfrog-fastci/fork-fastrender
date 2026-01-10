@@ -3173,8 +3173,21 @@ impl MediaContext {
       LengthUnit::Pc => Some(length.value * 16.0),
       LengthUnit::Ex => Some(length.value * (base_font * 0.5)), // Approximate: half of em
       LengthUnit::Ch => Some(length.value * (base_font * 0.5)), // Approximate: width of '0'
+      // Font-relative units that depend on font metrics. Media query evaluation does not have
+      // access to the document's actual font tables, so approximate them in terms of `em`:
+      // - cap ≈ 0.7em (cap-height)
+      // - ic ≈ 1.0em (ideograph advance)
+      // - rex/rch/rcap/ric/rlh use the root metrics, which we likewise approximate from the
+      //   query context's base font size.
+      LengthUnit::Cap => Some(length.value * (base_font * 0.7)),
+      LengthUnit::Ic => Some(length.value * base_font),
+      LengthUnit::Rex => Some(length.value * (base_font * 0.5)),
+      LengthUnit::Rch => Some(length.value * (base_font * 0.5)),
+      LengthUnit::Rcap => Some(length.value * (base_font * 0.7)),
+      LengthUnit::Ric => Some(length.value * base_font),
       // Media queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).
       LengthUnit::Lh => Some(length.value * (base_font * 1.2)),
+      LengthUnit::Rlh => Some(length.value * (base_font * 1.2)),
       // Container query units depend on the nearest query container's content-box size, which is
       // not available in the media query evaluation context. Treat them as unresolved.
       LengthUnit::Cqw
