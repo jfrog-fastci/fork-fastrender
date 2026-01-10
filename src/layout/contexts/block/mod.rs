@@ -1595,6 +1595,8 @@ impl BlockFormattingContext {
             child_scroll,
             || fc.layout(child, &fc_constraints),
           )?;
+          let physical_width = fragment.bounds.width();
+          let physical_height = fragment.bounds.height();
           // Non-block formatting contexts (grid/flex/table) return fragments in physical
           // coordinates. The block formatting context keeps fragments in logical coordinates
           // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
@@ -1608,7 +1610,13 @@ impl BlockFormattingContext {
           if offset != Point::ZERO {
             fragment.translate_root_in_place(offset);
           }
-          let remembered_block = (fragment.bounds.height() - vertical_edges).max(0.0);
+          let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+          let border_box_block = if child_block_is_horizontal {
+            physical_width
+          } else {
+            physical_height
+          };
+          let remembered_block = (border_box_block - vertical_edges).max(0.0);
           let remembered_inline = computed_width.content_width;
           let remembered = if block_axis_is_horizontal(style.writing_mode) {
             Size::new(remembered_block, remembered_inline)
@@ -1616,6 +1624,18 @@ impl BlockFormattingContext {
             Size::new(remembered_inline, remembered_block)
           };
           remembered_size_cache_store(child, remembered);
+          let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
+          let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
+            (physical_height, physical_width)
+          } else {
+            (physical_width, physical_height)
+          };
+          fragment.bounds = Rect::from_xywh(
+            fragment.bounds.x(),
+            fragment.bounds.y(),
+            inline_size_in_parent,
+            block_size_in_parent,
+          );
           fragment.block_metadata = Some(BlockFragmentMetadata {
             margin_top,
             margin_bottom,
@@ -5551,53 +5571,6 @@ impl BlockFormattingContext {
       writing_mode,
       direction,
     );
-
-    // Children that override writing-mode can end up with their physical block-size represented
-    // along a different logical axis, which causes the initial single-column flow layout to stack
-    // them without advancing in the fragmentation axis. Once in physical coordinates we can detect
-    // severe overlap (total block-size far exceeding the observed extent) and reflow the top-level
-    // children so fragmentation boundaries are computed from the intended physical flow order.
-    if physical_flow_root.children.len() > 1 {
-      let root_block_size = axes.block_size(&physical_flow_root.bounds);
-      let mut sum_block_sizes = 0.0f32;
-      let mut max_block_end = 0.0f32;
-      for child in physical_flow_root.children.iter() {
-        let size = axes.block_size(&child.bounds).max(0.0);
-        if !size.is_finite() {
-          continue;
-        }
-        sum_block_sizes += size;
-        let start = axes.abs_block_start(&child.bounds, 0.0, root_block_size);
-        if start.is_finite() {
-          max_block_end = max_block_end.max(start + size);
-        }
-      }
-
-      if sum_block_sizes.is_finite()
-        && max_block_end.is_finite()
-        && sum_block_sizes > 0.0
-        && max_block_end > 0.0
-        && max_block_end + 0.5 < sum_block_sizes * 0.75
-      {
-        let parent_block_for_start = if axes.block_positive() {
-          root_block_size
-        } else {
-          root_block_size.max(sum_block_sizes)
-        };
-        let mut cursor = 0.0f32;
-        for child in physical_flow_root.children_mut().iter_mut() {
-          let start = axes.abs_block_start(&child.bounds, 0.0, parent_block_for_start);
-          let delta = cursor - start;
-          if delta.is_finite() && delta.abs() > 0.01 {
-            child.translate_root_in_place(axes.block_offset(delta));
-          }
-          let size = axes.block_size(&child.bounds).max(0.0);
-          if size.is_finite() {
-            cursor += size;
-          }
-        }
-      }
-    }
 
     let mut analyzer = FragmentationAnalyzer::new(
       &physical_flow_root,

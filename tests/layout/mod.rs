@@ -169,6 +169,7 @@ mod list_marker_outside_whitespace;
 mod inline_block_writing_mode;
 mod manual_multicol_breaks;
 mod multicol;
+mod multicol_writing_modes;
 mod bundled_serif_default_line_metrics;
 mod vertical_align_baseline_relative_sign;
 mod vertical_align_middle_inline_replaced;
