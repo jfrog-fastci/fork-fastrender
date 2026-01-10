@@ -1034,7 +1034,7 @@ pub mod window {
   fn window_alert<Host, R>(
     rt: &mut R,
     host: &mut Host,
-    this: R::JsValue,
+    _this: R::JsValue,
     args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where

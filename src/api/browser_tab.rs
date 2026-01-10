@@ -2244,15 +2244,23 @@ impl BrowserTabHost {
 
     use crate::resource::FetchedResource;
     use std::collections::HashMap;
+    use std::sync::Mutex;
 
     struct OverlayFetcher {
       base: Arc<dyn ResourceFetcher>,
-      sources: HashMap<String, String>,
+      sources: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl ResourceFetcher for OverlayFetcher {
       fn fetch(&self, url: &str) -> Result<FetchedResource> {
-        if let Some(source) = self.sources.get(url) {
+        let source = {
+          let sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+          sources.get(url).cloned()
+        };
+        if let Some(source) = source {
           return Ok(FetchedResource::with_final_url(
             source.as_bytes().to_vec(),
             Some("application/javascript".to_string()),
@@ -2263,7 +2271,14 @@ impl BrowserTabHost {
       }
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-        if let Some(source) = self.sources.get(req.url) {
+        let source = {
+          let sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+          sources.get(req.url).cloned()
+        };
+        if let Some(source) = source {
           return Ok(FetchedResource::with_final_url(
             source.as_bytes().to_vec(),
             Some("application/javascript".to_string()),
@@ -2274,7 +2289,12 @@ impl BrowserTabHost {
       }
 
       fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
-        if self.sources.contains_key(req.url) {
+        let has_source = self
+          .sources
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .contains_key(req.url);
+        if has_source {
           // In-memory script sources are synthetic and do not have a stable header profile. Treat
           // them as unknown so caching wrappers conservatively avoid Vary-dependent caching.
           return None;
