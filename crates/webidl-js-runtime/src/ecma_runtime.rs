@@ -242,7 +242,7 @@ impl VmJsRuntime {
     // Allocate the temporary root list fallibly so hostile input cannot abort the host process on
     // allocator OOM.
     let mut roots_vec: Vec<Value> = Vec::new();
-    let mut iter = roots.into_iter();
+    let iter = roots.into_iter();
     let (lower, upper) = iter.size_hint();
     let reserve = upper.unwrap_or(lower);
     if reserve != 0 {

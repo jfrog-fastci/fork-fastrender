@@ -3242,7 +3242,7 @@ fn write_operation_wrapper(
       }
     }
 
-    let mut emit_call = |overload_idx: usize| -> String {
+    let emit_call = |overload_idx: usize| -> String {
       emit_overload_call(
         resolved,
         interface,
@@ -4058,7 +4058,7 @@ fn write_constructor_wrapper(
       }
     }
 
-    let mut emit_call = |overload_idx: usize| -> String {
+    let emit_call = |overload_idx: usize| -> String {
       emit_ctor_overload_call(
         resolved,
         interface,
