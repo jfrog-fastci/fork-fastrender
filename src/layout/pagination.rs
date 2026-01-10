@@ -11,7 +11,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::engine::{LayoutConfig, LayoutEngine};
 use crate::layout::formatting_context::{
-  layout_style_fingerprint, set_fragmentainer_block_size_hint, IntrinsicSizingMode, LayoutError,
+  layout_style_fingerprint, set_fragmentainer_axes_hint, set_fragmentainer_block_size_hint,
+  IntrinsicSizingMode, LayoutError,
 };
 use crate::layout::fragmentation::{
   apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
@@ -2650,6 +2651,7 @@ fn layout_for_style<'a>(
       style.content_size.height
     };
     let _hint = set_fragmentainer_block_size_hint(Some(block_size_hint));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(root_axes));
     let layout_tree = engine.layout_tree(box_tree)?;
     let layout = CachedLayout::from_root(
       layout_tree.root,

@@ -34,6 +34,7 @@
 use crate::debug::runtime;
 use crate::geometry::Point;
 use crate::geometry::Size;
+use crate::layout::axis::FragmentAxes;
 use crate::layout::constraints::AvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::fragment_clone_profile::{self, CloneSite};
@@ -228,6 +229,10 @@ thread_local! {
 
 thread_local! {
   static FRAGMENTAINER_BLOCK_SIZE_HINT: Cell<Option<f32>> = Cell::new(None);
+}
+
+thread_local! {
+  static FRAGMENTAINER_AXES_HINT: Cell<Option<FragmentAxes>> = Cell::new(None);
 }
 
 thread_local! {
@@ -1439,6 +1444,31 @@ pub(crate) fn set_fragmentainer_block_size_hint(
     previous
   });
   FragmentainerBlockSizeHintGuard { previous }
+}
+
+pub(crate) struct FragmentainerAxesHintGuard {
+  previous: Option<FragmentAxes>,
+}
+
+impl Drop for FragmentainerAxesHintGuard {
+  fn drop(&mut self) {
+    FRAGMENTAINER_AXES_HINT.with(|hint| {
+      hint.set(self.previous);
+    });
+  }
+}
+
+pub(crate) fn fragmentainer_axes_hint() -> Option<FragmentAxes> {
+  FRAGMENTAINER_AXES_HINT.with(|hint| hint.get())
+}
+
+pub(crate) fn set_fragmentainer_axes_hint(hint: Option<FragmentAxes>) -> FragmentainerAxesHintGuard {
+  let previous = FRAGMENTAINER_AXES_HINT.with(|cell| {
+    let previous = cell.get();
+    cell.set(hint);
+    previous
+  });
+  FragmentainerAxesHintGuard { previous }
 }
 
 /// Common trait for all formatting contexts

@@ -119,7 +119,7 @@ use crate::layout::flex_profile::reset_flex_profile;
 use crate::layout::formatting_context::intrinsic_cache_clear;
 use crate::layout::formatting_context::intrinsic_cache_reset_counters;
 use crate::layout::formatting_context::intrinsic_cache_stats;
-use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
+use crate::layout::formatting_context::{set_fragmentainer_axes_hint, set_fragmentainer_block_size_hint};
 use crate::layout::formatting_context::LayoutError as FormattingLayoutError;
 use crate::layout::fragment_clone_profile::{
   fragment_clone_profile_enabled, log_fragment_clone_profile, reset_fragment_clone_profile,
@@ -11584,8 +11584,8 @@ impl FastRender {
 
     // Perform initial layout
     record_stage(StageHeartbeat::Layout);
-    let _fragmentainer_hint = if page_rules.is_empty() {
-      None
+    let (_fragmentainer_hint, _fragmentainer_axes_hint) = if page_rules.is_empty() {
+      (None, None)
     } else {
       let page_axes = FragmentAxes::from_writing_mode_and_direction(
         page_base_style
@@ -11602,7 +11602,10 @@ impl FastRender {
       } else {
         layout_viewport.height
       };
-      Some(set_fragmentainer_block_size_hint(Some(block_size_hint)))
+      (
+        Some(set_fragmentainer_block_size_hint(Some(block_size_hint))),
+        Some(set_fragmentainer_axes_hint(Some(page_axes))),
+      )
     };
     let layout_timer = stats.as_deref().and_then(|rec| rec.timer());
     let _layout_span = trace.span("layout_tree", "layout");
@@ -11860,8 +11863,8 @@ impl FastRender {
             reset_fragment_clone_profile();
           }
 
-          let _fragmentainer_hint = if page_rules.is_empty() {
-            None
+          let (_fragmentainer_hint, _fragmentainer_axes_hint) = if page_rules.is_empty() {
+            (None, None)
           } else {
             let page_axes = FragmentAxes::from_writing_mode_and_direction(
               page_base_style
@@ -11878,7 +11881,10 @@ impl FastRender {
             } else {
               layout_viewport.height
             };
-            Some(set_fragmentainer_block_size_hint(Some(block_size_hint)))
+            (
+              Some(set_fragmentainer_block_size_hint(Some(block_size_hint))),
+              Some(set_fragmentainer_axes_hint(Some(page_axes))),
+            )
           };
 
           layout_start = timings_enabled.then(Instant::now);

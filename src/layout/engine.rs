@@ -21,6 +21,7 @@ use crate::error::{RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::geometry::Size;
 use crate::image_loader::ImageCache;
+use crate::layout::axis::FragmentAxes;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::positioned::ContainingBlock;
@@ -28,6 +29,7 @@ use crate::layout::formatting_context::intrinsic_cache_use_epoch;
 use crate::layout::formatting_context::layout_cache_entry_limit_for_box_tree;
 use crate::layout::formatting_context::layout_cache_stats;
 use crate::layout::formatting_context::layout_cache_use_epoch;
+use crate::layout::formatting_context::set_fragmentainer_axes_hint;
 use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -1061,12 +1063,15 @@ impl LayoutEngine {
     // fragmentainer size when pagination is enabled.
     let icb = &self.config.initial_containing_block;
     let mut fragmentainer_block_hint: Option<f32> = None;
+    let mut fragmentainer_axes_hint: Option<FragmentAxes> = None;
     let (base_width, base_height) = if let Some(options) = &self.config.fragmentation {
       let root_style = &box_tree.root.style;
       let wm = root_style.writing_mode;
-      let _dir = root_style.direction;
+      let dir = root_style.direction;
       let inline_is_horizontal = inline_axis_is_horizontal(wm);
       let block_is_horizontal = block_axis_is_horizontal(wm);
+
+      fragmentainer_axes_hint = Some(FragmentAxes::from_writing_mode_and_direction(wm, dir));
 
       let mut available_width = icb.width;
       let mut available_height = icb.height;
@@ -1106,6 +1111,8 @@ impl LayoutEngine {
     };
     let _fragmentainer_hint_guard =
       fragmentainer_block_hint.map(|hint| set_fragmentainer_block_size_hint(Some(hint)));
+    let _fragmentainer_axes_hint_guard =
+      fragmentainer_axes_hint.map(|hint| set_fragmentainer_axes_hint(Some(hint)));
 
     let constraints = LayoutConstraints::definite(base_width, base_height);
     let root_fragment = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
