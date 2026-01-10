@@ -6,6 +6,7 @@
 //! backend could be swapped in later.
 
 use crate::render_control::RenderDeadline;
+use super::vm_error_format;
 use parse_js::ast::expr::lit::{LitBigIntExpr, LitNumExpr, LitStrExpr};
 use parse_js::ast::expr::{BinaryExpr, CallExpr, Expr, IdExpr};
 use parse_js::ast::node::{literal_string_code_units, Node};
@@ -16,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vm_js::{
-  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope, SourceText,
-  StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
+  Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope, SourceText, StackFrame,
+  TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
 };
 
 const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -349,7 +350,7 @@ impl ScriptRealm for VmJsScriptRealm {
       .map_err(|err| match err {
         VmError::Termination(t) => ScriptError::Termination {
           reason: t.reason.into(),
-          stack_trace: format_stack_trace(&t.stack),
+          stack_trace: vm_error_format::format_stack_trace_limited(&t.stack),
         },
         other => ScriptError::Runtime {
           message: other.to_string(),
@@ -407,7 +408,7 @@ fn vm_error_to_runtime(err: VmError) -> ScriptError {
   match err {
     VmError::Termination(term) => ScriptError::Termination {
       reason: term.reason.into(),
-      stack_trace: format_stack_trace(&term.stack),
+      stack_trace: vm_error_format::format_stack_trace_limited(&term.stack),
     },
     VmError::OutOfMemory => ScriptError::Termination {
       reason: ScriptTerminationReason::OutOfMemory,
@@ -442,11 +443,11 @@ impl Evaluator<'_> {
       Ok(()) => Ok(()),
       Err(VmError::Termination(term)) => Err(ScriptError::Termination {
         reason: term.reason.into(),
-        stack_trace: format_stack_trace(&term.stack),
+        stack_trace: vm_error_format::format_stack_trace_limited(&term.stack),
       }),
       Err(other) => Err(ScriptError::Runtime {
         message: other.to_string(),
-        stack_trace: format_stack_trace(&self.vm.capture_stack()),
+        stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
       }),
     }
   }
@@ -465,14 +466,14 @@ impl Evaluator<'_> {
   fn stack_trace_at_loc(&self, loc: parse_js::loc::Loc) -> String {
     let mut frames = self.vm.capture_stack();
     frames.push(self.frame_at_loc(loc, None));
-    format_stack_trace(&frames)
+    vm_error_format::format_stack_trace_limited(&frames)
   }
 
   fn vm_error_at_loc(&self, loc: parse_js::loc::Loc, err: VmError) -> ScriptError {
     match err {
       VmError::Termination(term) => ScriptError::Termination {
         reason: term.reason.into(),
-        stack_trace: format_stack_trace(&term.stack),
+        stack_trace: vm_error_format::format_stack_trace_limited(&term.stack),
       },
       other => ScriptError::Runtime {
         message: other.to_string(),
@@ -519,7 +520,7 @@ impl Evaluator<'_> {
                 "String value exceeded max length (len_code_units={}, limit={MAX_SCRIPT_VALUE_STRING_CODE_UNITS})",
                 js.len_code_units()
               ),
-              stack_trace: format_stack_trace(&self.vm.capture_stack()),
+              stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
             });
           }
           js.to_utf8_lossy()
@@ -548,12 +549,12 @@ impl Evaluator<'_> {
         if mag_str.is_empty() {
           return Err(ScriptError::Runtime {
             message: "invalid BigInt string".to_string(),
-            stack_trace: format_stack_trace(&self.vm.capture_stack()),
+            stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
           });
         }
         let magnitude: u128 = mag_str.parse().map_err(|_| ScriptError::Runtime {
           message: "invalid BigInt string".to_string(),
-          stack_trace: format_stack_trace(&self.vm.capture_stack()),
+          stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
         })?;
         let mut b = vm_js::JsBigInt::from_u128(magnitude);
         if negative {
@@ -568,7 +569,7 @@ impl Evaluator<'_> {
       ScriptValue::Object | ScriptValue::Symbol => {
         return Err(ScriptError::Runtime {
           message: "cannot marshal non-primitive ScriptValue back into vm-js Value".to_string(),
-          stack_trace: format_stack_trace(&self.vm.capture_stack()),
+          stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
         });
       }
     })
@@ -909,11 +910,11 @@ impl Evaluator<'_> {
     self.vm.push_frame(frame).map_err(|err| match err {
       VmError::Termination(term) => ScriptError::Termination {
         reason: term.reason.into(),
-        stack_trace: format_stack_trace(&term.stack),
+        stack_trace: vm_error_format::format_stack_trace_limited(&term.stack),
       },
       other => ScriptError::Runtime {
         message: other.to_string(),
-        stack_trace: format_stack_trace(&self.vm.capture_stack()),
+        stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
       },
     })?;
 
@@ -924,7 +925,7 @@ impl Evaluator<'_> {
         Some(entry) => (entry.func)(&args),
         None => Err(ScriptError::Runtime {
           message: "missing host function".to_string(),
-          stack_trace: format_stack_trace(&self.vm.capture_stack()),
+          stack_trace: vm_error_format::format_stack_trace_limited(&self.vm.capture_stack()),
         }),
       }
     };
@@ -1124,7 +1125,7 @@ mod tests {
       .map_err(|err| match err {
         VmError::Termination(t) => ScriptError::Termination {
           reason: t.reason.into(),
-          stack_trace: format_stack_trace(&t.stack),
+          stack_trace: vm_error_format::format_stack_trace_limited(&t.stack),
         },
         other => ScriptError::Runtime {
           message: other.to_string(),
@@ -1378,6 +1379,36 @@ mod tests {
         assert!(stack_trace.contains("boom.js:1:1"));
       }
       other => panic!("expected ScriptError::Exception, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn termination_stack_trace_is_truncated() {
+    let function_name: Arc<str> = Arc::from("f");
+    let frames: Vec<StackFrame> = (0..100)
+      .map(|idx| StackFrame {
+        function: Some(function_name.clone()),
+        source: Arc::<str>::from(format!("<frame{idx}>")),
+        line: 1,
+        col: 1,
+      })
+      .collect();
+    let err = vm_error_to_runtime(VmError::Termination(vm_js::Termination::new(
+      vm_js::TerminationReason::OutOfFuel,
+      frames,
+    )));
+    match err {
+      ScriptError::Termination { stack_trace, .. } => {
+        assert!(
+          stack_trace.ends_with("\n..."),
+          "expected truncated stack trace to end with marker, got {stack_trace:?}"
+        );
+        assert!(
+          !stack_trace.contains("<frame99>"),
+          "expected truncated stack trace to omit deep frames, got {stack_trace:?}"
+        );
+      }
+      other => panic!("expected ScriptError::Termination, got {other:?}"),
     }
   }
 

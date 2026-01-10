@@ -44,7 +44,7 @@ fn format_stack_frame(frame: &StackFrame) -> String {
   }
 }
 
-fn format_stack_trace_limited(frames: &[StackFrame]) -> String {
+pub(crate) fn format_stack_trace_limited(frames: &[StackFrame]) -> String {
   if frames.is_empty() {
     return String::new();
   }
