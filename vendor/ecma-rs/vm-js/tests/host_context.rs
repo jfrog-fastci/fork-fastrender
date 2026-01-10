@@ -241,6 +241,38 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_into_host_ho
   Ok(())
 }
 
+#[test]
+fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_even_on_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let counter = Arc::new(AtomicUsize::new(0));
+  rt.vm.set_user_data(counter.clone());
+  rt.register_global_native_function("enqueue", enqueue_vm_microtask_job, 0)?;
+
+  let mut host = ();
+  let mut hooks = RecordingHooks::default();
+
+  let err = rt
+    .exec_script_source_with_host_and_hooks(
+      &mut host,
+      &mut hooks,
+      Arc::new(SourceText::new("<inline>", "enqueue(); throw 1;")),
+    )
+    .expect_err("script should throw");
+  assert!(matches!(err, VmError::ThrowWithStack { .. }));
+
+  assert_eq!(hooks.jobs.len(), 1, "expected VM microtask to be forwarded to hooks");
+
+  let mut noop_hooks = NoopHooks::default();
+  let (_realm, job) = hooks.jobs.pop().unwrap();
+  job.run(&mut rt, &mut noop_hooks)?;
+
+  assert_eq!(counter.load(Ordering::SeqCst), 1);
+  Ok(())
+}
+
 struct HostJobContext<'a> {
   rt: &'a mut JsRuntime,
   host: &'a mut Host,
