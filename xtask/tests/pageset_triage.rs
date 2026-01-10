@@ -125,7 +125,7 @@ Pages: 2
 ### Commands
 
 ```bash
-bash scripts/cargo_agent.sh xtask page-loop --fixture example.com --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --write-snapshot
+bash scripts/cargo_agent.sh xtask page-loop --fixture example.com --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --inspect-dump-json --write-snapshot
 ```
 
 ### Brokenness inventory
@@ -152,7 +152,7 @@ bash scripts/cargo_agent.sh xtask page-loop --fixture example.com --viewport 120
 ### Commands
 
 ```bash
-bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.org/ --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --write-snapshot
+bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.org/ --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --inspect-dump-json --write-snapshot
 ```
 
 Capture fixture:

@@ -502,7 +502,7 @@ fn render_page_section(repo_root: &Path, page: &PageTriageRow, diff: Option<&Dif
     out.push_str(&format!(" --pageset {}", selector));
   }
   out.push_str(&format!(
-    " --viewport {} --dpr {} --media {} --chrome --overlay --write-snapshot\n",
+    " --viewport {} --dpr {} --media {} --chrome --overlay --inspect-dump-json --write-snapshot\n",
     DEFAULT_PAGE_LOOP_VIEWPORT, DEFAULT_PAGE_LOOP_DPR, DEFAULT_PAGE_LOOP_MEDIA
   ));
   out.push_str("```\n");

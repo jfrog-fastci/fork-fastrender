@@ -320,6 +320,10 @@ fn page_loop_help_mentions_flags() {
       && stdout.contains("--out-dir")
       && stdout.contains("--write-snapshot")
       && stdout.contains("--overlay")
+      && stdout.contains("--inspect-dump-json")
+      && stdout.contains("--inspect-filter-selector")
+      && stdout.contains("--inspect-filter-id")
+      && stdout.contains("--inspect-dump-custom-properties")
       && stdout.contains("--chrome")
       && stdout.contains("--no-chrome")
       && stdout.contains("--dry-run"),
