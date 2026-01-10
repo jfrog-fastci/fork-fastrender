@@ -128,6 +128,28 @@ fn string_position_from_value(
   }
 }
 
+fn is_trim_whitespace_unit(unit: u16) -> bool {
+  matches!(
+    unit,
+    // WhiteSpace (ECMA-262)
+    0x0009
+      | 0x000B
+      | 0x000C
+      | 0x0020
+      | 0x00A0
+      | 0x1680
+      | 0x202F
+      | 0x205F
+      | 0x3000
+      | 0xFEFF
+      // LineTerminator (ECMA-262)
+      | 0x000A
+      | 0x000D
+      | 0x2028
+      | 0x2029
+  ) || matches!(unit, 0x2000..=0x200A)
+}
+
 fn slice_range_from_args(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4927,6 +4949,62 @@ pub fn string_prototype_ends_with(
   }
   let start = end - needle.len();
   Ok(Value::Bool(&haystack[start..end] == needle))
+}
+
+/// `String.prototype.trim` (ECMA-262) (minimal).
+pub fn string_prototype_trim(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let (len, start, end) = {
+    let js = scope.heap().get_string(s)?;
+    let units = js.as_code_units();
+    let len = units.len();
+
+    let mut start = 0usize;
+    while start < len {
+      if start % 1024 == 0 {
+        vm.tick()?;
+      }
+      if !is_trim_whitespace_unit(units[start]) {
+        break;
+      }
+      start += 1;
+    }
+
+    let mut end = len;
+    while end > start {
+      if end % 1024 == 0 {
+        vm.tick()?;
+      }
+      if !is_trim_whitespace_unit(units[end - 1]) {
+        break;
+      }
+      end -= 1;
+    }
+
+    (len, start, end)
+  };
+
+  if start == 0 && end == len {
+    return Ok(Value::String(s));
+  }
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[start..end].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
 }
 
 /// `%String.prototype%[@@iterator]` (ECMA-262).

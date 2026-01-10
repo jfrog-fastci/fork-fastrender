@@ -458,3 +458,14 @@ fn string_prototype_ends_with_works() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn string_prototype_trim_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"(" \n\t\u2000abc\u2000 \r").trim() === "abc" && String.prototype.trim.call({toString:function(){return "\u3000x\u3000";}}) === "x""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
