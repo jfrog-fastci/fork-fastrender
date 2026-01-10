@@ -7343,6 +7343,52 @@ mod tests {
   }
 
   #[test]
+  fn parses_property_initial_value_with_parens_group() {
+    let css = r#"@property --foo {
+      syntax: "*";
+      inherits: false;
+      initial-value: (bar);
+    }"#;
+    let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(stylesheet.rules.len(), 1);
+    let CssRule::Property(rule) = &stylesheet.rules[0] else {
+      panic!("expected @property rule, got {:?}", stylesheet.rules[0]);
+    };
+    assert_eq!(rule.name, "--foo");
+    assert!(rule.syntax.is_universal(), "expected universal syntax");
+    assert_eq!(rule.inherits, false);
+    let initial = rule
+      .initial_value
+      .as_ref()
+      .expect("expected initial-value");
+    assert_eq!(initial.value, "(bar)");
+    assert!(initial.typed.is_none());
+  }
+
+  #[test]
+  fn parses_property_initial_value_with_semicolon_inside_parens() {
+    let css = r#"@property --foo {
+      syntax: "*";
+      inherits: false;
+      initial-value: (bar; baz);
+    }"#;
+    let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(
+      stylesheet.rules.len(),
+      1,
+      "expected @property rule to parse even with semicolon inside initial-value, got {stylesheet:?}"
+    );
+    let CssRule::Property(rule) = &stylesheet.rules[0] else {
+      panic!("expected @property rule, got {:?}", stylesheet.rules[0]);
+    };
+    let initial = rule
+      .initial_value
+      .as_ref()
+      .expect("expected initial-value");
+    assert_eq!(initial.value, "(bar; baz)");
+  }
+
+  #[test]
   fn important_with_whitespace_is_recognized() {
     let decls = parse_declarations("color: red ! important;");
     assert_eq!(decls.len(), 1);
