@@ -103,6 +103,7 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
         if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
           return Some(js.to_utf8_lossy());
         }
+        return Some("[exception string exceeded limit]".to_string());
       }
       return None;
     }
@@ -181,5 +182,45 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
   match err {
     VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
     other => other.to_string(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::Arc;
+  use vm_js::HeapLimits;
+
+  #[test]
+  fn thrown_long_string_is_replaced_with_marker_and_includes_stack_trace() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+    let units = vec![0x0061u16; MAX_THROWN_STRING_CODE_UNITS + 1];
+    let long_s = scope
+      .alloc_string_from_code_units(&units)
+      .expect("alloc long thrown string");
+    scope
+      .push_root(Value::String(long_s))
+      .expect("root long thrown string");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::String(long_s),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("[exception string exceeded limit]"),
+      "expected over-limit thrown string to be replaced with marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
   }
 }
