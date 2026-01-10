@@ -18352,22 +18352,24 @@ fn build_container_query_context(
     }
 
     let viewport = fragments.viewport_size();
+    let viewport_for_units = viewport;
     collect_scroll_bounds(
       &fragments.root,
       Point::new(fragments.root.bounds.x(), fragments.root.bounds.y()),
       viewport,
-      viewport,
+      viewport_for_units,
       true,
       false,
       &mut scroll_bounds_by_box_id,
     );
     for extra in &fragments.additional_fragments {
       let viewport = Size::new(extra.bounds.width(), extra.bounds.height());
+      let viewport_for_units = viewport;
       collect_scroll_bounds(
         extra,
         Point::new(extra.bounds.x(), extra.bounds.y()),
         viewport,
-        viewport,
+        viewport_for_units,
         false,
         false,
         &mut scroll_bounds_by_box_id,
