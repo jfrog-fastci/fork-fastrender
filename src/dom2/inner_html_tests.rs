@@ -469,6 +469,26 @@ fn inner_html_sets_script_force_async_false() {
 }
 
 #[test]
+fn create_element_sets_script_force_async_true() {
+  // HTML: scripts created via `document.createElement('script')` have their "force async" flag set.
+  // (Parser-inserted scripts clear the flag.)
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let script = doc.create_element("script", HTML_NAMESPACE);
+  assert!(
+    doc.node(script).script_force_async,
+    "expected DOM-created scripts to have force_async=true"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "DOM-created scripts must not be treated as parser-inserted"
+  );
+  assert!(
+    !doc.node(script).script_already_started,
+    "freshly created scripts must not be marked already started"
+  );
+}
+
+#[test]
 fn insert_adjacent_html_inserts_beforebegin_and_afterend() {
   let root = parse_html(
     "<!doctype html><html><body><div id=root><span id=target>hi</span></div></body></html>",
