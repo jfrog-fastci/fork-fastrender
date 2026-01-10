@@ -2618,6 +2618,11 @@ impl<'a> Evaluator<'a> {
     let mut visited: Vec<PropertyKey> = Vec::new();
 
     let mut key_count: usize = 0;
+    // De-duplication uses a linear scan over the keys collected so far, which can be `O(N^2)` in
+    // the worst case. Tick periodically while scanning to ensure this work stays interruptible even
+    // for very large objects/prototype chains.
+    const VISITED_SCAN_TICK_EVERY: usize = 4096;
+    let mut visited_scan_count: usize = 0;
     let mut current: Option<GcObject> = Some(object);
     while let Some(obj) = current {
       // Budget/interrupt check while walking the prototype chain and collecting enumerable keys.
@@ -2641,10 +2646,18 @@ impl<'a> Evaluator<'a> {
           continue;
         }
 
-        if visited
-          .iter()
-          .any(|seen| iter_scope.heap().property_key_eq(seen, &key))
-        {
+        let mut already_visited = false;
+        for seen in &visited {
+          visited_scan_count = visited_scan_count.wrapping_add(1);
+          if (visited_scan_count & (VISITED_SCAN_TICK_EVERY - 1)) == 0 {
+            self.tick()?;
+          }
+          if iter_scope.heap().property_key_eq(seen, &key) {
+            already_visited = true;
+            break;
+          }
+        }
+        if already_visited {
           continue;
         }
 
