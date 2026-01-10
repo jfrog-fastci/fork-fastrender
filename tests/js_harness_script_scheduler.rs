@@ -21,7 +21,6 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
     integrity: None,
     referrer_policy: None,
     parser_inserted: true,
-    force_async: false,
     node_id: None,
     script_type: ScriptType::Classic,
   }
