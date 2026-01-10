@@ -148,7 +148,12 @@ impl CanvasState {
     let mut paint = Paint::default();
     // Apply opacity to alpha (color.a is already 0.0-1.0)
     let alpha = color.a * self.opacity;
-    paint.set_color_rgba8(color.r, color.g, color.b, (alpha * 255.0) as u8);
+    // Match Chrome/Skia: map float alpha to an 8-bit channel using rounding.
+    //
+    // This is important for half-alpha values like 0.5, which should map to 128 (not 127).
+    // The exact rounding behavior affects many pixels in pageset comparisons.
+    let alpha_u8 = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    paint.set_color_rgba8(color.r, color.g, color.b, alpha_u8);
     paint.anti_alias = true;
     paint.blend_mode = blend_mode;
     paint
@@ -1823,9 +1828,144 @@ impl Canvas {
     Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
   }
 
+  /// Fast path for axis-aligned `source-over` rectangle fills.
+  ///
+  /// tiny-skia's compositing differs subtly from Chrome/Skia for semi-transparent fills (often by
+  /// ±1 in each channel). For pageset comparisons this can account for hundreds of thousands of
+  /// differing pixels on large translucent panels.
+  ///
+  /// When the rectangle maps to integer device pixels and there is no complex clip, we can
+  /// composite directly into the destination premultiplied buffer using the same truncating
+  /// `mul/255` arithmetic as Chrome's Skia backend.
+  fn try_fill_rect_source_over_trunc(&mut self, rect: Rect, color: Rgba) -> bool {
+    if self.current_state.blend_mode != SkiaBlendMode::SourceOver {
+      return false;
+    }
+    if self.current_state.clip_mask.is_some() {
+      return false;
+    }
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return true;
+    }
+    if !rect.x().is_finite() || !rect.y().is_finite() || !rect.width().is_finite() || !rect.height().is_finite()
+    {
+      return false;
+    }
+
+    let transform = self.current_state.transform;
+    // Only support translation-only transforms (common case for pageset rendering and tiling).
+    if (transform.sx - 1.0).abs() > 1e-6
+      || (transform.sy - 1.0).abs() > 1e-6
+      || transform.kx.abs() > 1e-6
+      || transform.ky.abs() > 1e-6
+      || !transform.tx.is_finite()
+      || !transform.ty.is_finite()
+    {
+      return false;
+    }
+
+    let tx = transform.tx.round();
+    let ty = transform.ty.round();
+    if (transform.tx - tx).abs() > 1e-6 || (transform.ty - ty).abs() > 1e-6 {
+      return false;
+    }
+
+    let combined_alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
+    let sa = (combined_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    if sa == 0 {
+      return true;
+    }
+    // Keep existing code paths for opaque fills (they include snapping to avoid seams).
+    if sa == 255 {
+      return false;
+    }
+
+    let mut dev_rect = Rect::from_xywh(rect.x() + tx, rect.y() + ty, rect.width(), rect.height());
+
+    if let Some(clip) = self.current_state.clip_rect {
+      dev_rect = match dev_rect.intersection(clip) {
+        Some(r) => r,
+        None => return true,
+      };
+    }
+
+    let bounds = Rect::from_xywh(0.0, 0.0, self.width() as f32, self.height() as f32);
+    dev_rect = match dev_rect.intersection(bounds) {
+      Some(r) => r,
+      None => return true,
+    };
+
+    let x0 = dev_rect.min_x();
+    let y0 = dev_rect.min_y();
+    let x1 = dev_rect.max_x();
+    let y1 = dev_rect.max_y();
+
+    // Require integer device bounds; otherwise we'd need anti-aliasing.
+    let x0i = x0.round();
+    let y0i = y0.round();
+    let x1i = x1.round();
+    let y1i = y1.round();
+    if (x0 - x0i).abs() > 1e-6
+      || (y0 - y0i).abs() > 1e-6
+      || (x1 - x1i).abs() > 1e-6
+      || (y1 - y1i).abs() > 1e-6
+    {
+      return false;
+    }
+
+    let x0i = x0i as i32;
+    let y0i = y0i as i32;
+    let x1i = x1i as i32;
+    let y1i = y1i as i32;
+    if x0i >= x1i || y0i >= y1i {
+      return true;
+    }
+
+    let sa = sa as u16;
+    let inv_sa = 255u16 - sa;
+    let sr = (color.r as u16 * sa) / 255u16;
+    let sg = (color.g as u16 * sa) / 255u16;
+    let sb = (color.b as u16 * sa) / 255u16;
+
+    let stride = self.pixmap.width() as usize * 4;
+    let data = self.pixmap.data_mut();
+    let w = (x1i - x0i) as usize;
+
+    for y in y0i..y1i {
+      let mut idx = y as usize * stride + x0i as usize * 4;
+      for _ in 0..w {
+        let dr = data[idx] as u16;
+        let dg = data[idx + 1] as u16;
+        let db = data[idx + 2] as u16;
+        let da = data[idx + 3] as u16;
+
+        let out_a = sa + (da * inv_sa) / 255u16;
+        let out_r = sr + (dr * inv_sa) / 255u16;
+        let out_g = sg + (dg * inv_sa) / 255u16;
+        let out_b = sb + (db * inv_sa) / 255u16;
+
+        // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+        let out_a_u8 = out_a.min(255) as u8;
+        data[idx + 3] = out_a_u8;
+        let clamp = out_a_u8 as u16;
+        data[idx] = out_r.min(clamp).min(255) as u8;
+        data[idx + 1] = out_g.min(clamp).min(255) as u8;
+        data[idx + 2] = out_b.min(clamp).min(255) as u8;
+
+        idx += 4;
+      }
+    }
+
+    true
+  }
+
   fn draw_rect_impl(&mut self, rect: Rect, color: Rgba) {
     // Skip fully transparent colors
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
+      return;
+    }
+
+    if self.try_fill_rect_source_over_trunc(rect, color) {
       return;
     }
 

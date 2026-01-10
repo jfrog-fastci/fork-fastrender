@@ -300,6 +300,102 @@ pub fn fill_rect(
     return false;
   }
 
+  // Fast path for source-over compositing of axis-aligned integer rectangles.
+  //
+  // tiny-skia's blending math differs subtly from Chrome/Skia for semi-transparent fills (often by
+  // ±1 in each channel). For large translucent backgrounds this can produce huge pageset diffs.
+  //
+  // When the rect aligns to integer device pixels we can composite directly into the destination
+  // premultiplied buffer using the same truncating `mul/255` arithmetic as Chrome.
+  let sa_f = (color.a * 255.0).round().clamp(0.0, 255.0);
+  let sa = sa_f as u8;
+  if sa == 0 {
+    return true;
+  }
+  if sa != 255
+    && x.is_finite()
+    && y.is_finite()
+    && width.is_finite()
+    && height.is_finite()
+    && {
+      let x1 = x + width;
+      let y1 = y + height;
+      x1.is_finite() && y1.is_finite()
+    }
+  {
+    let x0 = x;
+    let y0 = y;
+    let x1 = x + width;
+    let y1 = y + height;
+
+    let x0i = x0.round();
+    let y0i = y0.round();
+    let x1i = x1.round();
+    let y1i = y1.round();
+
+    if (x0 - x0i).abs() <= 1e-6
+      && (y0 - y0i).abs() <= 1e-6
+      && (x1 - x1i).abs() <= 1e-6
+      && (y1 - y1i).abs() <= 1e-6
+      && x0i >= i32::MIN as f32
+      && y0i >= i32::MIN as f32
+      && x1i <= i32::MAX as f32
+      && y1i <= i32::MAX as f32
+    {
+      let mut x0i = x0i as i32;
+      let mut y0i = y0i as i32;
+      let mut x1i = x1i as i32;
+      let mut y1i = y1i as i32;
+
+      let pix_w = pixmap.width() as i32;
+      let pix_h = pixmap.height() as i32;
+      x0i = x0i.clamp(0, pix_w);
+      x1i = x1i.clamp(0, pix_w);
+      y0i = y0i.clamp(0, pix_h);
+      y1i = y1i.clamp(0, pix_h);
+
+      if x0i >= x1i || y0i >= y1i {
+        return true;
+      }
+
+      let sa = sa as u16;
+      let inv_sa = 255u16 - sa;
+      let sr = (color.r as u16 * sa) / 255u16;
+      let sg = (color.g as u16 * sa) / 255u16;
+      let sb = (color.b as u16 * sa) / 255u16;
+
+      let stride = pixmap.width() as usize * 4;
+      let data = pixmap.data_mut();
+      let w = (x1i - x0i) as usize;
+      for yy in y0i..y1i {
+        let mut idx = yy as usize * stride + x0i as usize * 4;
+        for _ in 0..w {
+          let dr = data[idx] as u16;
+          let dg = data[idx + 1] as u16;
+          let db = data[idx + 2] as u16;
+          let da = data[idx + 3] as u16;
+
+          let out_a = sa + (da * inv_sa) / 255u16;
+          let out_r = sr + (dr * inv_sa) / 255u16;
+          let out_g = sg + (dg * inv_sa) / 255u16;
+          let out_b = sb + (db * inv_sa) / 255u16;
+
+          // Clamp channels to the resulting alpha to preserve premultiplied invariants.
+          let out_a_u8 = out_a.min(255) as u8;
+          data[idx + 3] = out_a_u8;
+          let clamp = out_a_u8 as u16;
+          data[idx] = out_r.min(clamp).min(255) as u8;
+          data[idx + 1] = out_g.min(clamp).min(255) as u8;
+          data[idx + 2] = out_b.min(clamp).min(255) as u8;
+
+          idx += 4;
+        }
+      }
+
+      return true;
+    }
+  }
+
   // Create rectangle path
   let rect = match tiny_skia::Rect::from_xywh(x, y, width, height) {
     Some(r) => r,

@@ -56,7 +56,9 @@ fn contrast_filter_on_half_alpha_pixel_matches_spec() {
   let legacy = render_with_backend(html, 1, 1, background, PaintBackend::Legacy);
   let display = render_with_backend(html, 1, 1, background, PaintBackend::DisplayList);
 
-  let expected = (129, 128, 128, 255);
+  // Chrome/Skia applies contrast in unpremultiplied space, then composites using truncating
+  // `mul/255` arithmetic, resulting in a fully gray pixel.
+  let expected = (127, 127, 127, 255);
   for (label, pixmap) in [("legacy", &legacy), ("display list", &display)] {
     let px = pixmap.pixels()[0];
     assert_eq!(
@@ -92,7 +94,9 @@ fn baseline_semitransparent_fill_matches_between_backends() {
   let legacy = render_with_backend(html, 1, 1, background, PaintBackend::Legacy);
   let display = render_with_backend(html, 1, 1, background, PaintBackend::DisplayList);
 
-  let expected = (160, 128, 128, 255);
+  // Match Chrome/Skia's `source-over` compositing: premultiplied src-over using truncating
+  // `mul/255` math (no rounding).
+  let expected = (159, 127, 127, 255);
   for (label, pixmap) in [("legacy", &legacy), ("display list", &display)] {
     let px = pixmap.pixels()[0];
     assert_eq!(
