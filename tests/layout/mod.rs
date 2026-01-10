@@ -207,6 +207,7 @@ mod inline_max_content_accumulates;
 mod inline_float_after_inline_content;
 mod inline_float_min_width;
 mod inline_float_in_inline_box;
+mod inline_float_only_does_not_advance_block_height;
 mod inline_intrinsic_max_content_text_items;
 mod inline_intrinsic_max_content;
 mod inline_replaced_in_block;

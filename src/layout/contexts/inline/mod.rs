@@ -12322,7 +12322,8 @@ impl InlineFormattingContext {
     let mut lines = self.apply_text_overflow(lines, style, &strut_metrics, inline_vertical)?;
     lines = self.apply_line_clamp_ellipsis(lines, style, &strut_metrics, line_clamp_truncated)?;
 
-    // Calculate total height
+    // Calculate total height. Floats are out-of-flow; when an external float context is provided
+    // the owning BFC decides whether floats contribute to auto height.
     let total_height_lines: f32 = lines
       .iter()
       .map(|l| l.y_offset + l.height)
@@ -12331,7 +12332,12 @@ impl InlineFormattingContext {
       .iter()
       .map(|f| f.bounds.max_y())
       .fold(0.0, f32::max);
-    let total_height = total_height_lines.max(max_float_bottom).max(blocks_bottom);
+    let flow_height = total_height_lines.max(blocks_bottom);
+    let total_height = if float_ctx.is_none() {
+      flow_height.max(max_float_bottom)
+    } else {
+      flow_height
+    };
     let line_max_inline = lines
       .iter()
       .map(|l| (l.left_offset + l.box_width).max(l.left_offset + l.width + l.indent.abs()))
