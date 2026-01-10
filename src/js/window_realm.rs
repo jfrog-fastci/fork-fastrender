@@ -5207,6 +5207,26 @@ fn init_window_globals(
     data_desc(Value::Object(location_obj)),
   )?;
 
+  // `Document.referrer`.
+  //
+  // Many real-world scripts assume this is a string (even if empty) and call string methods on it.
+  // Default to the empty string because FastRender does not currently track navigation history.
+  let referrer_key = alloc_key(&mut scope, "referrer")?;
+  let referrer_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(referrer_s))?;
+  scope.define_property(
+    document_obj,
+    referrer_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(referrer_s),
+        writable: false,
+      },
+    },
+  )?;
+
   // Document state shims.
   //
   // These are frequently read by real-world scripts (e.g. to decide whether to run animations) and
@@ -6608,6 +6628,16 @@ mod tests {
     assert_eq!(get_string(realm.heap(), visibility), "visible");
 
     assert_eq!(realm.exec_script("document.hidden")?, Value::Bool(false));
+
+    Ok(())
+  }
+
+  #[test]
+  fn document_referrer_exists_and_defaults_to_empty_string() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let referrer = realm.exec_script("document.referrer")?;
+    assert_eq!(get_string(realm.heap(), referrer), "");
 
     Ok(())
   }
