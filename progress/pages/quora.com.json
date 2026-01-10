@@ -15,6 +15,15 @@
     "paint": 66.37081000148022
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 0,
+    "diff_percent": 0.0,
+    "perceptual": 0.0,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "acfe410db3e7f0776527ea2bc68106f6e6429880"
+  },
   "hotspot": "box_tree",
   "failure_stage": null,
   "timeout_stage": null,
