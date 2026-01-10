@@ -1343,26 +1343,12 @@ impl GridFormattingContext {
 
   fn definite_physical_available_size(
     &self,
-    style: &ComputedStyle,
     constraints: &LayoutConstraints,
     axis: Axis,
   ) -> Option<f32> {
-    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
     let space = match axis {
-      Axis::Horizontal => {
-        if inline_is_horizontal {
-          constraints.available_width
-        } else {
-          constraints.available_height
-        }
-      }
-      Axis::Vertical => {
-        if inline_is_horizontal {
-          constraints.available_height
-        } else {
-          constraints.available_width
-        }
-      }
+      Axis::Horizontal => constraints.available_width,
+      Axis::Vertical => constraints.available_height,
     };
     match space {
       CrateAvailableSpace::Definite(value) if value.is_finite() && value >= 0.0 => Some(value),
@@ -1685,14 +1671,10 @@ impl GridFormattingContext {
     constraints: &LayoutConstraints,
     resolve_root: bool,
   ) -> Result<StyleOverrideStack, LayoutError> {
-    let style_override = style_override_for(box_node.id);
-    let style: &ComputedStyle = style_override
-      .as_deref()
-      .unwrap_or_else(|| box_node.style.as_ref());
     let available_width =
-      self.definite_physical_available_size(style, constraints, Axis::Horizontal);
+      self.definite_physical_available_size(constraints, Axis::Horizontal);
     let available_height =
-      self.definite_physical_available_size(style, constraints, Axis::Vertical);
+      self.definite_physical_available_size(constraints, Axis::Vertical);
 
     let mut stack = StyleOverrideStack::new();
     let mut deadline_counter = 0usize;
