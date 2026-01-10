@@ -373,6 +373,18 @@ impl BrowserTabHost {
     })
   }
 
+  fn with_installed_document_write_state<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> Result<R>,
+  ) -> Result<R> {
+    // Avoid double-borrowing `self` by temporarily moving the state out of the host, then installing
+    // it in TLS for the duration of the call.
+    let mut state = std::mem::take(&mut self.document_write_state);
+    let result = crate::js::with_document_write_state(&mut state, || f(self));
+    self.document_write_state = state;
+    result
+  }
+
   fn register_html_source(&mut self, url: String, html: String) {
     self.html_sources.insert(url, html);
   }
@@ -923,7 +935,9 @@ impl BrowserTabHost {
             }
 
             let microtask_err = if self.js_execution_depth.get() == 0 {
-              event_loop.perform_microtask_checkpoint(self).err()
+              self
+                .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+                .err()
             } else {
               None
             };
@@ -1032,7 +1046,7 @@ impl BrowserTabHost {
             // the final `ScriptElementSpec`.
             if self.js_execution_depth.get() == 0 {
               with_active_streaming_parser(&state.parser, || {
-                event_loop.perform_microtask_checkpoint(self)
+                self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
               })?;
             }
             if self.pending_navigation.is_some() {
@@ -1848,7 +1862,9 @@ impl BrowserTabHost {
           }
 
           let microtask_err = if should_checkpoint && self.js_execution_depth.get() == 0 {
-            event_loop.perform_microtask_checkpoint(self).err()
+            self
+              .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+              .err()
           } else {
             None
           };
@@ -1945,7 +1961,9 @@ impl BrowserTabHost {
             }
 
             let microtask_err = if host.js_execution_depth.get() == 0 {
-              event_loop.perform_microtask_checkpoint(host).err()
+              host
+                .with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))
+                .err()
             } else {
               None
             };
