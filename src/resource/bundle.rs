@@ -202,6 +202,8 @@ pub struct BundledDocument {
   /// Stored `Referrer-Policy` response header value, when present.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub response_referrer_policy: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub response_headers: Option<Vec<(String, String)>>,
   #[serde(default)]
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
@@ -224,6 +226,8 @@ pub struct BundledResourceInfo {
   /// Stored `Referrer-Policy` response header value, when present.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub response_referrer_policy: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub response_headers: Option<Vec<(String, String)>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub vary: Option<String>,
   #[serde(default)]
@@ -280,6 +284,7 @@ impl BundledResource {
       .response_referrer_policy
       .as_deref()
       .and_then(ReferrerPolicy::parse_value_list);
+    res.response_headers = self.info.response_headers.clone();
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     Ok(res)
   }
@@ -669,6 +674,7 @@ impl ResourceFetcher for BundledFetcher {
         .response_referrer_policy
         .as_deref()
         .and_then(ReferrerPolicy::parse_value_list);
+      res.response_headers = doc_meta.response_headers.clone();
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
           || (!super::allow_unhandled_vary_env()
@@ -1009,6 +1015,7 @@ impl ResourceFetcher for BundledFetcher {
 mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use crate::html::content_security_policy::CspPolicy;
   use crate::resource::FetchDestination;
   use std::io::Cursor;
 
@@ -1030,6 +1037,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1089,6 +1097,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1115,6 +1124,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          response_headers: None,
           vary: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
@@ -1191,6 +1201,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: Some("*".to_string()),
         timing_allow_origin: Some("https://timing.example".to_string()),
         vary: Some("accept-encoding".to_string()),
@@ -1217,6 +1228,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          response_headers: None,
           vary: Some("origin".to_string()),
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
@@ -1275,6 +1287,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: Some("origin".to_string()),
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1301,6 +1314,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: Some("no-referrer".to_string()),
+          response_headers: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
           vary: None,
@@ -1330,6 +1344,65 @@ mod tests {
   }
 
   #[test]
+  fn bundled_fetcher_roundtrips_response_headers_for_csp_policy() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let csp_value = "default-src 'self'";
+    let original_url = "https://example.com/".to_string();
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: original_url.clone(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: original_url.clone(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: Some(vec![(
+          "Content-Security-Policy".to_string(),
+          csp_value.to_string(),
+        )]),
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::new(),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let res = fetcher.fetch(original_url.as_str()).expect("fetch doc");
+    assert_eq!(res.header_values("Content-Security-Policy"), vec![csp_value]);
+    assert!(CspPolicy::from_response_headers(&res).is_some());
+  }
+
+  #[test]
   fn bundled_fetcher_roundtrips_nosniff_stylesheet_metadata() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -1352,6 +1425,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1378,6 +1452,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          response_headers: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
           vary: None,
@@ -1523,6 +1598,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1550,6 +1626,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
@@ -1567,6 +1644,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
@@ -1584,6 +1662,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: None,
             access_control_allow_origin: Some("https://b.test".to_string()),
             timing_allow_origin: None,
@@ -1666,6 +1745,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
       vary: None,
@@ -1689,6 +1769,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1781,6 +1862,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       access_control_allow_origin: Some("https://cdn.example".to_string()),
       timing_allow_origin: None,
       vary: None,
@@ -1799,6 +1881,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -1900,6 +1983,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
       vary: Some("x-foo".to_string()),
@@ -1918,6 +2002,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2011,6 +2096,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: None,
       access_control_allow_origin: Some(allow_origin.to_string()),
       timing_allow_origin: None,
@@ -2029,6 +2115,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2120,6 +2207,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2146,6 +2234,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          response_headers: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
           vary: Some("x-foo".to_string()),
@@ -2196,6 +2285,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: Some("origin".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
@@ -2214,6 +2304,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2299,6 +2390,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: Some(" Origin ".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
@@ -2314,6 +2406,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: Some("Origin".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
@@ -2332,6 +2425,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2394,6 +2488,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: Some("origin".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
@@ -2409,6 +2504,7 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      response_headers: None,
       vary: Some("origin".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
@@ -2427,6 +2523,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2524,6 +2621,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2551,6 +2649,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: Some("origin".to_string()),
             access_control_allow_origin: None,
             timing_allow_origin: None,
@@ -2568,6 +2667,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: Some("origin".to_string()),
             access_control_allow_origin: None,
             timing_allow_origin: None,
@@ -2631,6 +2731,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -2657,6 +2758,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          response_headers: None,
           vary: Some("Accept-Language, Origin".to_string()),
           access_control_allow_origin: None,
           timing_allow_origin: None,

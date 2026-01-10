@@ -1248,6 +1248,7 @@ fn build_manifest(
     response_referrer_policy: document_resource
       .response_referrer_policy
       .map(|policy| policy.as_str().to_string()),
+    response_headers: document_resource.response_headers.clone(),
     access_control_allow_origin: document_resource.access_control_allow_origin.clone(),
     timing_allow_origin: document_resource.timing_allow_origin.clone(),
     vary: canonicalize_vary_header_value(document_resource.vary.as_deref()),
@@ -1290,6 +1291,7 @@ fn build_manifest(
       response_referrer_policy: res
         .response_referrer_policy
         .map(|policy| policy.as_str().to_string()),
+      response_headers: res.response_headers.clone(),
       vary: canonicalize_vary_header_value(res.vary.as_deref()),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
