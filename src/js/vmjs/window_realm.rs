@@ -5980,7 +5980,7 @@ fn mutation_observer_take_records_native(
 fn mutation_observer_notify_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -6050,7 +6050,8 @@ fn mutation_observer_notify_native(
     ];
     // Per web platform behavior, exceptions from mutation observer callbacks should not abort the
     // checkpoint.
-    let _ = vm.call_with_host(scope, hooks, callback, Value::Object(observer_obj), &args);
+    let _ =
+      vm.call_with_host_and_hooks(host, scope, hooks, callback, Value::Object(observer_obj), &args);
   }
 
   Ok(Value::Undefined)

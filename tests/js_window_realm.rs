@@ -753,6 +753,44 @@ queueMicrotask(() => {
 }
 
 #[test]
+fn mutation_observer_callbacks_can_mutate_dom_and_receive_real_vm_host() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body><div id=target></div></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
+
+  assert!(host.dom().get_element_by_id("mo").is_none());
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+const target = document.getElementById('target');
+const obs = new MutationObserver((_records, observer) => {
+  observer.disconnect();
+  __fastrender_assert_vm_host();
+  const d = document.createElement('div');
+  d.id = 'mo';
+  document.body.appendChild(d);
+});
+obs.observe(target, { attributes: true });
+target.setAttribute('data-x', '1');
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("mo").is_none(),
+    "element should not exist before the microtask checkpoint"
+  );
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert!(
+    host.dom().get_element_by_id("mo").is_some(),
+    "expected MutationObserver callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn set_timeout_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
@@ -1862,7 +1900,7 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
   // The default per-spin JS wall-time budget is intentionally conservative for hostile scripts,
   // so relax it here to focus on correctness of selector APIs.
   let mut opts = fastrender::js::JsExecutionOptions::default();
-  opts.event_loop_run_limits.max_wall_time = Some(std::time::Duration::from_millis(500));
+  opts.event_loop_run_limits.max_wall_time = Some(std::time::Duration::from_secs(2));
   let mut host = WindowHostState::new_with_fetcher_and_options(
     Dom2Document::from_renderer_dom(&renderer_dom),
     "https://example.com/",
