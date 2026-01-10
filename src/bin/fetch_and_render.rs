@@ -30,9 +30,9 @@ use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYie
 use fastrender::image_output::encode_image;
 use fastrender::js::{
   CurrentScriptHost, DomHost, EventLoop, MicrotaskCheckpointLimitedOutcome, ModuleGraphLoader,
-  JsExecutionOptions, RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
-  ScriptType, TaskSource, WindowHostState,
+  DocumentWriteState, JsExecutionOptions, RunLimits, RunNextTaskLimitedOutcome, RunState,
+  RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptId, ScriptOrchestrator, ScriptScheduler,
+  ScriptSchedulerAction, ScriptType, TaskSource, WindowHostState, with_document_write_state,
 };
 use fastrender::js::import_maps::{
   create_import_map_parse_result, register_import_map, ImportMapState,
@@ -463,6 +463,10 @@ fn render_page(
       }
     }
 
+    let mut document_write_state = DocumentWriteState::default();
+    document_write_state.update_limits(js.options);
+    document_write_state.set_parsing_active(true);
+
     let mut parser = StreamingHtmlParser::new(Some(&base_hint));
 
     // Feed decoded HTML incrementally (mirrors BrowserTab's navigation path). This keeps parsing
@@ -480,6 +484,10 @@ fn render_page(
       offset = end;
 
       loop {
+        let pending = document_write_state.take_pending_html();
+        if !pending.is_empty() {
+          parser.push_front_str(&pending);
+        }
         match parser.pump() {
           Ok(StreamingParserYield::Script {
             script,
@@ -514,7 +522,8 @@ fn render_page(
 
             // Install the streaming parser so `document.write()` can inject while we execute scripts
             // and/or run event loop turns during parsing.
-            parser.with_active_document_write(|| {
+            with_document_write_state(&mut document_write_state, || {
+              parser.with_active_document_write(|| {
               // HTML: before preparing a parser-inserted script at a script end-tag boundary, perform
               // a microtask checkpoint when the JS execution context stack is empty.
               if js_execution_depth.get() == 0 {
@@ -1106,6 +1115,7 @@ fn render_page(
 
                 break;
               }
+              })
             });
 
             if let Some(err) = fatal_error {
@@ -1150,12 +1160,14 @@ fn render_page(
             // parsed before yielding to tasks.
             if js_active && !executed_sync_script && !event_loop.is_idle() {
               match parser.with_active_document_write(|| {
-                run_event_loop_until_idle_limited_handling_errors(
-                  &mut event_loop,
-                  &mut host,
-                  &mut run_state,
-                  &mut log,
-                )
+                with_document_write_state(&mut document_write_state, || {
+                  run_event_loop_until_idle_limited_handling_errors(
+                    &mut event_loop,
+                    &mut host,
+                    &mut run_state,
+                    &mut log,
+                  )
+                })
               }) {
                 Ok(RunUntilIdleOutcome::Idle) => {}
                 Ok(RunUntilIdleOutcome::Stopped(reason)) => {
@@ -1228,12 +1240,14 @@ fn render_page(
         });
 
         match parser.with_active_document_write(|| {
-          run_event_loop_until_idle_limited_handling_errors(
-            &mut event_loop,
-            &mut host,
-            &mut run_state,
-            &mut log,
-          )
+          with_document_write_state(&mut document_write_state, || {
+            run_event_loop_until_idle_limited_handling_errors(
+              &mut event_loop,
+              &mut host,
+              &mut run_state,
+              &mut log,
+            )
+          })
         }) {
           Ok(RunUntilIdleOutcome::Idle) => {}
           Ok(RunUntilIdleOutcome::Stopped(reason)) => {
@@ -1276,6 +1290,10 @@ fn render_page(
     parser.set_eof();
 
     loop {
+      let pending = document_write_state.take_pending_html();
+      if !pending.is_empty() {
+        parser.push_front_str(&pending);
+      }
       match parser.pump() {
         Ok(StreamingParserYield::Script { .. }) if !js_active => {
           // JS execution is disabled (limits/error); keep parsing.
@@ -1307,7 +1325,8 @@ fn render_page(
           let mut stop_reason: Option<RunUntilIdleStopReason> = None;
           let mut fatal_error: Option<fastrender::Error> = None;
 
-          parser.with_active_document_write(|| {
+          with_document_write_state(&mut document_write_state, || {
+            parser.with_active_document_write(|| {
             // HTML: before preparing a parser-inserted script at a script end-tag boundary, perform
             // a microtask checkpoint when the JS execution context stack is empty.
             if js_execution_depth.get() == 0 {
@@ -1836,6 +1855,7 @@ fn render_page(
 
               break;
             }
+            })
           });
 
           if let Some(err) = fatal_error {
@@ -1873,12 +1893,14 @@ fn render_page(
 
           if js_active && !executed_sync_script && !event_loop.is_idle() {
             match parser.with_active_document_write(|| {
-              run_event_loop_until_idle_limited_handling_errors(
-                &mut event_loop,
-                &mut host,
-                &mut run_state,
-                &mut log,
-              )
+              with_document_write_state(&mut document_write_state, || {
+                run_event_loop_until_idle_limited_handling_errors(
+                  &mut event_loop,
+                  &mut host,
+                  &mut run_state,
+                  &mut log,
+                )
+              })
             }) {
               Ok(RunUntilIdleOutcome::Idle) => {}
               Ok(RunUntilIdleOutcome::Stopped(reason)) => {
@@ -1931,6 +1953,7 @@ fn render_page(
             *dom = document;
             ((), true)
           });
+          document_write_state.set_parsing_active(false);
           break;
         }
         Err(err) => {
