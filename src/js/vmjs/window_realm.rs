@@ -8326,10 +8326,18 @@ fn queue_dynamic_script_task_external(
         })?;
       }
 
+      let fallback_encoding = host
+        .dom()
+        .get_attribute(script, "charset")
+        .ok()
+        .flatten()
+        .map(crate::js::trim_ascii_whitespace)
+        .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
       let source_text = crate::js::script_encoding::decode_classic_script_bytes(
         &res.bytes,
         res.content_type.as_deref(),
-        encoding_rs::UTF_8,
+        fallback_encoding,
       );
       host.js_execution_options().check_script_source(&source_text, &context)?;
 

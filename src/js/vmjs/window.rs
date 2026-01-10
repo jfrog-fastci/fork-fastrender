@@ -2438,6 +2438,53 @@ mod tests {
     assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
     Ok(())
   }
+
+  #[test]
+  fn dynamic_external_script_charset_attribute_controls_decoding() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom.append_child(dom.root(), container).expect("append container");
+
+    // Return SHIFT_JIS-encoded bytes to ensure the dynamic script loader honors the `<script charset>`
+    // fallback encoding.
+    let fetcher = Arc::new(ScriptMapFetcher::default());
+    let encoded = encoding_rs::SHIFT_JIS
+      .encode("globalThis.__log += 'デ';")
+      .0
+      .into_owned();
+    fetcher.insert("https://example.invalid/a.js", encoded);
+
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__log = "";
+      const container = document.getElementById("c");
+      const s = document.createElement("script");
+      container.appendChild(s);
+      s.charset = "shift_jis";
+      s.src = "https://example.invalid/a.js";
+      globalThis.__log += "A";
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__log").as_deref(),
+      Some("Aデ")
+    );
+    Ok(())
+  }
 }
 
 #[cfg(test)]
