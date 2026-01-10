@@ -1448,7 +1448,7 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
     Some("d")
   );
 
-  // Invalid tokens (ASCII whitespace) throw SyntaxError.
+  // Invalid tokens containing ASCII whitespace throw InvalidCharacterError (DOMTokenList).
   let bad = Value::String(scope.alloc_string("bad token")?);
   let thrown = match vm.call_without_host(&mut scope, add, list1, &[bad]) {
     Ok(_) => panic!("expected classList.add to throw for invalid token"),
@@ -1468,7 +1468,7 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
     Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
     _ => panic!(".name should be a string"),
   };
-  assert_eq!(name_str, "SyntaxError");
+  assert_eq!(name_str, "InvalidCharacterError");
 
   drop(scope);
   realm.teardown(&mut heap);

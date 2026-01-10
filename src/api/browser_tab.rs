@@ -1159,50 +1159,10 @@ impl BrowserTabHost {
             // DOM before resuming parsing.
             self.sync_host_dom_to_streaming_parser(&mut state)?;
 
-            // Allow pending async/defer networking tasks (including async script loads) to run
-            // between parser yield points when parsing is initiated outside the event loop.
-            //
-            // This mirrors browsers where parsing yields back to the event loop, letting async
-            // scripts execute before later parser-blocking inline scripts when their fetch completes
-            // quickly.
-            if self.document_url.is_some()
-              && event_loop.currently_running_task().is_none()
-              && !event_loop.is_idle()
-            {
-              with_active_streaming_parser(&state.parser, || {
-                // Treat task errors as uncaught exceptions (browser-like) while keeping the overall
-                // parse bounded by the active render deadline + JS run limits.
-                event_loop.run_until_idle_handling_errors_with_hook(
-                  self,
-                  self.js_execution_options.event_loop_run_limits,
-                  |_err| {},
-                  |host, event_loop| -> Result<()> {
-                    if host.pending_navigation.is_some() {
-                      // Abort task processing immediately; the embedding will commit the navigation
-                      // synchronously (clearing all outstanding work for the old document).
-                      event_loop.clear_all_pending_work();
-                      return Ok(());
-                    }
-                    host.discover_dynamic_scripts(event_loop)?;
-                    Ok(())
-                  },
-                )
-              })?;
-
-              if self.pending_navigation.is_some() {
-                // Abort the current parse/execution; the caller will commit the navigation.
-                return Ok(Outcome::AbortedForNavigation);
-              }
-
-              // Flush any `document.write` output produced by async tasks before continuing parsing.
-              let pending = self.document_write_state.take_pending_html();
-              if !pending.is_empty() {
-                state.parser.push_front_str(&pending);
-              }
-
-              // Sync any DOM mutations from tasks back into the streaming parser's live DOM.
-              self.sync_host_dom_to_streaming_parser(&mut state)?;
-            }
+            // Note: when parsing is initiated outside the event loop (e.g. HTML-string entry points),
+            // we intentionally avoid running pending networking tasks here. This keeps construction
+            // deterministic and ensures embeddings can attach listeners (e.g. `<script>` error/load)
+            // before async fetch tasks are serviced.
           }
           StreamingParserYield::Finished { document } => {
             // Parsing has completed; any subsequent scripts (deferred/async) should treat
