@@ -84,6 +84,7 @@ struct BrowserCliArgs {
   /// Restrict the wgpu backend set used for instance/adapter creation (comma-separated)
   ///
   /// Examples:
+  ///   --wgpu-backends all
   ///   --wgpu-backends vulkan
   ///   --wgpu-backends vulkan,gl
   ///
@@ -128,6 +129,9 @@ impl CliPowerPreference {
 #[cfg(feature = "browser_ui")]
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 enum CliWgpuBackend {
+  /// Enable all supported wgpu backends (useful for overriding `FASTR_BROWSER_WGPU_BACKENDS`).
+  #[value(name = "all")]
+  All,
   Vulkan,
   Metal,
   Dx12,
@@ -142,6 +146,7 @@ enum CliWgpuBackend {
 impl CliWgpuBackend {
   fn to_wgpu(self) -> wgpu::Backends {
     match self {
+      Self::All => wgpu::Backends::all(),
       Self::Vulkan => wgpu::Backends::VULKAN,
       Self::Metal => wgpu::Backends::METAL,
       Self::Dx12 => wgpu::Backends::DX12,

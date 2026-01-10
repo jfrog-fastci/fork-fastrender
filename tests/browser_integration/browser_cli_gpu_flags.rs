@@ -52,7 +52,7 @@ fn browser_accepts_gpu_flag_values() {
   ]);
   assert_browser_ok(&output);
 
-  for backends in ["vulkan", "gl", "vulkan,gl"] {
+  for backends in ["all", "vulkan", "gl", "vulkan,gl"] {
     let output = run_browser(&["--exit-immediately", "--wgpu-backends", backends]);
     assert_browser_ok(&output);
   }
