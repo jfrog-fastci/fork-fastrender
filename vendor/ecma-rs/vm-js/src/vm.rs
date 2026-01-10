@@ -1618,6 +1618,35 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    // Promise jobs / host callbacks can call back into the VM when there is no active
+    // `ExecutionContext` on the stack. Some spec operations (notably dynamic `import()`) require an
+    // active Realm, so establish a minimal context from the callee's captured `[[JobRealm]]` when
+    // needed.
+    if self.current_realm().is_none() {
+      if let Value::Object(obj) = callee {
+        if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+          let ctx = ExecutionContext {
+            realm,
+            script_or_module: None,
+          };
+          let mut vm_ctx = self.execution_context_guard(ctx);
+          return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args);
+        }
+      }
+    }
+
+    self.call_impl_inner(host, scope, hooks, callee, this, args)
+  }
+
+  fn call_impl_inner(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     let mut scope = scope.reborrow();
     let callee_obj = match callee {
       Value::Object(obj) => obj,
@@ -1919,6 +1948,34 @@ impl Vm {
   }
 
   fn construct_impl(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    // Like `Vm::call_impl`, construct operations can be invoked from Promise jobs / host callbacks
+    // without an active execution context. Use the constructor's `[[JobRealm]]` as a best-effort
+    // Realm for spec operations that require one.
+    if self.current_realm().is_none() {
+      if let Value::Object(obj) = callee {
+        if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+          let ctx = ExecutionContext {
+            realm,
+            script_or_module: None,
+          };
+          let mut vm_ctx = self.execution_context_guard(ctx);
+          return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target);
+        }
+      }
+    }
+
+    self.construct_impl_inner(host, scope, hooks, callee, args, new_target)
+  }
+
+  fn construct_impl_inner(
     &mut self,
     host: &mut dyn VmHost,
     scope: &mut Scope<'_>,

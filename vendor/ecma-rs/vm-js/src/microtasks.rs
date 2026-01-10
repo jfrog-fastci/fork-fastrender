@@ -45,7 +45,14 @@ impl MicrotaskQueue {
     self.queue.is_empty()
   }
 
-  pub(crate) fn begin_checkpoint(&mut self) -> bool {
+  /// Begin a microtask checkpoint.
+  ///
+  /// This is a low-level API for embeddings that need to run queued jobs with a host hook
+  /// implementation *other than* `MicrotaskQueue` itself (for example, a host that also implements
+  /// module loading for dynamic `import()`).
+  ///
+  /// Returns `false` if a checkpoint is already in progress (reentrancy guard).
+  pub fn begin_checkpoint(&mut self) -> bool {
     if self.performing_microtask_checkpoint {
       return false;
     }
@@ -53,11 +60,15 @@ impl MicrotaskQueue {
     true
   }
 
-  pub(crate) fn end_checkpoint(&mut self) {
+  /// Ends a microtask checkpoint started by [`MicrotaskQueue::begin_checkpoint`].
+  pub fn end_checkpoint(&mut self) {
     self.performing_microtask_checkpoint = false;
   }
 
-  pub(crate) fn pop_front(&mut self) -> Option<(Option<RealmId>, Job)> {
+  /// Pops the next queued job in FIFO order.
+  ///
+  /// This is intended for embeddings that are implementing their own microtask checkpoint loop.
+  pub fn pop_front(&mut self) -> Option<(Option<RealmId>, Job)> {
     self.queue.pop_front()
   }
 

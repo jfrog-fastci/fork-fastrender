@@ -204,7 +204,7 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
   let p_value = scope
     .heap()
     .get_root(promise_root)
-    .ok_or(VmError::InvalidHandle)?;
+    .ok_or_else(|| VmError::invalid_handle())?;
   let Value::Object(promise_obj) = p_value else {
     return Err(VmError::InvariantViolation(
       "promise root should reference an object",

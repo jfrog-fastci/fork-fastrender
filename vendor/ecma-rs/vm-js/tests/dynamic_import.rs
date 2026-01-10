@@ -71,6 +71,32 @@ impl TestHostHooks {
   fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
     self.microtasks.teardown(rt);
   }
+
+  fn perform_microtask_checkpoint(&mut self, rt: &mut JsRuntime) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    let mut errors = Vec::new();
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      if let Err(err) = job.run(rt, self) {
+        let is_termination = matches!(err, VmError::Termination(_));
+        errors.push(err);
+        if is_termination {
+          // Termination is a hard stop; discard remaining queued jobs so we don't leak persistent
+          // roots.
+          self.microtasks.teardown(rt);
+          break;
+        }
+      }
+    }
+    self.microtasks.end_checkpoint();
+
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+    Ok(())
+  }
 }
 
 impl VmHostHooks for TestHostHooks {
@@ -262,7 +288,7 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
   let promise_value = rt
     .heap
     .get_root(promise_root)
-    .ok_or(VmError::InvalidHandle)?;
+    .ok_or_else(|| VmError::invalid_handle())?;
   let Value::Object(promise_obj) = promise_value else {
     return Err(VmError::InvariantViolation(
       "promise root should reference an object",
@@ -292,6 +318,63 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
 
   drop(scope);
   rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let dep = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("export const y = 1;")?);
+  let m = rt.modules_mut().add_module(SourceTextModuleRecord::parse(
+    "export { y } from './dep.js'; export const x = 1;",
+  )?);
+
+  let mut host = TestHostHooks::new();
+  host.register_module("./m.js", m);
+  host.register_module("./dep.js", dep);
+
+  // `import()` should work from Promise callbacks (microtasks). This exercises VM execution paths
+  // that call back into the evaluator via `VmJobContext::call`.
+  rt.exec_script_with_hooks(
+    &mut host,
+    "var result; Promise.resolve().then(function(){ return import('./m.js'); }).then(function(ns){ result = ns; });",
+  )?;
+
+  // No microtask checkpoint yet → no dynamic import started.
+  assert_eq!(host.pending_count(), 0);
+
+  host.perform_microtask_checkpoint(&mut rt)?;
+  assert_eq!(host.pending_count(), 1);
+
+  host.complete_load_for(&mut rt, "./m.js");
+  host.complete_load_for(&mut rt, "./dep.js");
+
+  // Run the `.then(ns => result = ns)` callback.
+  host.perform_microtask_checkpoint(&mut rt)?;
+
+  let result_value = rt.exec_script_with_hooks(&mut host, "result")?;
+  let Value::Object(ns_obj) = result_value else {
+    return Err(VmError::InvariantViolation(
+      "result should be set to a namespace object",
+    ));
+  };
+
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let x_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+  let y_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+  assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
   host.teardown_jobs(&mut rt);
   Ok(())
 }
