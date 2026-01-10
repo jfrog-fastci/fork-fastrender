@@ -1384,6 +1384,36 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn parse_cancellation_is_mapped_to_vm_error() -> Result<()> {
+    // Exercise the `SyntaxErrorType::Cancelled` → stored `VmError` mapping.
+    //
+    // Use `fuel=1` so the pre-parse tick succeeds (consuming the only fuel), then force a long
+    // parse so the cancellable parse callback ticks again and runs out of fuel during parsing.
+    let mut host = EcmaVmRuntime::new(
+      TestState::default(),
+      EcmaVmRuntimeConfig {
+        fuel: Some(1),
+        deadline: None,
+        check_time_every: 1,
+        ..EcmaVmRuntimeConfig::default()
+      },
+    )?;
+
+    let source = ";".repeat(2048);
+    let err = host.execute_script_text(&source).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("out of fuel"),
+      "expected out-of-fuel error, got: {msg}"
+    );
+    assert!(
+      !msg.contains("JS parse error"),
+      "expected parse cancellation to surface as VM error (not syntax), got: {msg}"
+    );
+    Ok(())
+  }
+
   fn log_downcast_via_hooks(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
