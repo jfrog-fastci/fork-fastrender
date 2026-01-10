@@ -1025,35 +1025,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn window_alert<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    // WebIDL overloads:
-    // - `undefined alert();`
-    // - `undefined alert(DOMString message);`
-    //
-    // Extra arguments are ignored per the WebIDL operation invocation algorithm.
-    let overload = if args.is_empty() { 0 } else { 1 };
-    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-    if overload == 1 {
-      let v0 = args[0];
-      converted_args.push({
-        let s = rt.to_string(v0)?;
-        BindingValue::String(rt.js_string_to_rust_string(s)?)
-      });
-    }
-    let result = host.call_operation(rt, None, "Window", "alert", overload, converted_args)?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn window_clear_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
