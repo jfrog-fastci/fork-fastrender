@@ -720,6 +720,45 @@ setTimeout(() => {
 }
 
 #[test]
+fn clear_timeout_prevents_callback_execution() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+const id = setTimeout(() => {
+  const d = document.createElement('div');
+  d.id = 'ct';
+  document.body.appendChild(d);
+}, 0);
+clearTimeout(id);
+"#,
+  )?;
+
+  assert!(host.dom().get_element_by_id("ct").is_none());
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after clearing the timeout"
+  );
+  assert!(
+    host.dom().get_element_by_id("ct").is_none(),
+    "expected clearTimeout to prevent callback execution"
+  );
+  Ok(())
+}
+
+#[test]
 fn set_timeout_callbacks_can_schedule_microtasks_that_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
