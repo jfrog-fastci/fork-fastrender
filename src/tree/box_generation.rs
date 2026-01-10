@@ -7195,6 +7195,41 @@ fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
   media_src_from_source_children(styled, kind).unwrap_or_default()
 }
 
+fn parse_html_dimension_attr(raw: Option<&str>) -> Option<f32> {
+  // HTML "dimension" content attributes (e.g. `<img width>`, `<iframe height>`) are defined as
+  // non-negative integers in *CSS pixels*.
+  //
+  // Real-world markup commonly includes a `px` suffix (e.g. `width="50px"`). Browsers parse the
+  // leading integer and ignore the rest, so do the same here.
+  let raw = raw?;
+  let bytes = raw.as_bytes();
+  let mut i = 0usize;
+  while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+    i += 1;
+  }
+  if i >= bytes.len() {
+    return None;
+  }
+
+  let mut value: u32 = 0;
+  let mut saw_digit = false;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if !b.is_ascii_digit() {
+      break;
+    }
+    saw_digit = true;
+    value = value.saturating_mul(10).saturating_add((b - b'0') as u32);
+    i += 1;
+  }
+
+  if !saw_digit || value == 0 {
+    return None;
+  }
+
+  Some(value as f32)
+}
+
 /// Creates a BoxNode for a replaced element from a StyledNode
 fn create_replaced_box_from_styled(
   styled: &StyledNode,
@@ -7392,8 +7427,7 @@ fn create_replaced_box_from_styled(
       )
     }
     _ => {
-      let intrinsic_width = width_attr
-        .and_then(|w| w.parse::<f32>().ok())
+      let intrinsic_width = parse_html_dimension_attr(width_attr)
         // HTML width/height content attributes are non-negative integers, but we treat 0 and
         // non-finite values as "missing" so they don't get recorded as an intrinsic size and
         // suppress later intrinsic sizing fallbacks (e.g. alt-text sizing when the image cannot be
@@ -7401,9 +7435,8 @@ fn create_replaced_box_from_styled(
         // considered known when it is a finite, positive number.)
         .filter(|w| w.is_finite() && *w > 0.0);
 
-      let intrinsic_height = height_attr
-        .and_then(|h| h.parse::<f32>().ok())
-        .filter(|h| h.is_finite() && *h > 0.0);
+      let intrinsic_height =
+        parse_html_dimension_attr(height_attr).filter(|h| h.is_finite() && *h > 0.0);
 
       let intrinsic_size = match (intrinsic_width, intrinsic_height) {
         (Some(w), Some(h)) => Some(Size::new(w, h)),
@@ -7698,6 +7731,50 @@ mod tests {
     match &height_box.box_type {
       BoxType::Replaced(replaced) => {
         assert_eq!(replaced.intrinsic_size, Some(Size::new(0.0, 80.0)));
+      }
+      other => panic!("expected replaced box, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn img_intrinsic_size_parses_dimension_attributes_with_px_suffix() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut img_width = styled_element("img");
+    img_width.node_id = 1;
+    set_attr(&mut img_width, "src", "test.png");
+    set_attr(&mut img_width, "width", "50px");
+
+    let mut img_height = styled_element("img");
+    img_height.node_id = 2;
+    set_attr(&mut img_height, "src", "test.png");
+    set_attr(&mut img_height, "height", " 75px");
+
+    let mut root = styled_element("div");
+    root.children = vec![img_width, img_height];
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(tree.root.children.len(), 2);
+
+    let width_box = &tree.root.children[0];
+    match &width_box.box_type {
+      BoxType::Replaced(replaced) => {
+        assert_eq!(replaced.intrinsic_size, Some(Size::new(50.0, 0.0)));
+      }
+      other => panic!("expected replaced box, got {other:?}"),
+    }
+
+    let height_box = &tree.root.children[1];
+    match &height_box.box_type {
+      BoxType::Replaced(replaced) => {
+        assert_eq!(replaced.intrinsic_size, Some(Size::new(0.0, 75.0)));
       }
       other => panic!("expected replaced box, got {other:?}"),
     }
