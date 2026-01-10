@@ -1087,24 +1087,6 @@ pub mod worker {
         }
         Ok(obj)
       }
-      BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
       BindingValue::Dictionary(map) => {
         let obj = rt.create_object()?;
         for (key, item) in map {
