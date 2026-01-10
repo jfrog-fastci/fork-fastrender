@@ -1,5 +1,6 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime, MicrotaskQueue, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmOptions,
 };
 
 #[derive(Debug, Default)]
@@ -36,11 +37,12 @@ fn host_context_is_preserved_when_builtins_invoke_user_code() -> Result<(), VmEr
   rt.register_global_native_function("inc", inc_host_counter, 0)?;
 
   let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
   assert_eq!(host.counter, 0);
 
   // The Promise constructor invokes its executor synchronously, which in turn calls into the host
   // through the `inc()` native handler.
-  rt.exec_script_with_host(&mut host, "new Promise(() => { inc(); });")?;
+  rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "new Promise(() => { inc(); });")?;
 
   assert_eq!(host.counter, 1);
   Ok(())
