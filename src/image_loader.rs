@@ -7414,7 +7414,30 @@ impl ImageCache {
     check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     // Convert pixmap to image
-    let rgba_data = pixmap.take();
+    // `tiny_skia::Pixmap` stores premultiplied-alpha RGBA, while `image::RgbaImage` expects
+    // straight/unpremultiplied RGBA. Unpremultiply here so downstream code (which premultiplies
+    // `DynamicImage` buffers when converting back into a pixmap for painting) doesn't accidentally
+    // double-premultiply SVG pixels, which visibly darkens semi-transparent edges.
+    let mut rgba_data = pixmap.take();
+    debug_assert_eq!(rgba_data.len() % 4, 0);
+    for px in rgba_data.chunks_exact_mut(4) {
+      let a = px[3];
+      if a == 0 {
+        px[0] = 0;
+        px[1] = 0;
+        px[2] = 0;
+        continue;
+      }
+
+      // Match `image_output`'s unpremultiplication semantics exactly:
+      // - compute alpha as f32
+      // - divide each channel by alpha
+      // - clamp to 255 and truncate toward zero.
+      let alpha = a as f32 / 255.0;
+      px[0] = ((px[0] as f32 / alpha).min(255.0)) as u8;
+      px[1] = ((px[1] as f32 / alpha).min(255.0)) as u8;
+      px[2] = ((px[2] as f32 / alpha).min(255.0)) as u8;
+    }
     let img =
       image::RgbaImage::from_raw(render_width, render_height, rgba_data).ok_or_else(|| {
         Error::Image(ImageError::DecodeFailed {
@@ -10470,6 +10493,26 @@ mod tests {
       rgba.get_pixel(290, 75).0[3],
       0,
       "right padding should be transparent"
+    );
+  }
+
+  #[test]
+  fn render_svg_to_image_unpremultiplies_alpha() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>\
+      <rect width='10' height='10' fill='red' fill-opacity='0.5'/>\
+    </svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg");
+
+    let rgba = image.to_rgba8();
+    let px = rgba.get_pixel(5, 5).0;
+    assert!(
+      (1..=254).contains(&px[3]),
+      "expected a semi-transparent alpha channel, got {px:?}"
+    );
+    assert!(
+      px[0] >= 250 && px[1] <= 5 && px[2] <= 5,
+      "expected straight/unpremultiplied red channel, got {px:?}"
     );
   }
 
