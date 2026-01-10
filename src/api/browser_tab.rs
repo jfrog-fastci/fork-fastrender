@@ -1062,8 +1062,10 @@ impl BrowserTabHost {
 
             if should_spin_for_async {
               // Stop spinning if the script has executed or a navigation request was issued.
-              let _ = event_loop.spin_until(self, self.js_execution_options.event_loop_run_limits, |host| {
-                host.pending_navigation.is_none() && !host.executed.contains(&script_id)
+              let _ = with_active_streaming_parser(&state.parser, || {
+                event_loop.spin_until(self, self.js_execution_options.event_loop_run_limits, |host| {
+                  host.pending_navigation.is_none() && !host.executed.contains(&script_id)
+                })
               })?;
             }
 
