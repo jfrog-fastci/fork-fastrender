@@ -12719,8 +12719,140 @@ impl DisplayListBuilder {
     let baseline = rect.y() + metrics.baseline_offset;
     let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
     let start_x = Self::aligned_text_start_x(style, rect, advance_width);
-
     let shadows = Self::text_shadows_from_style(Some(style), self.viewport);
+
+    // Text emitted via this helper (alt-text fallback, placeholder labels, etc.) needs to be
+    // wrapped within its destination rect; otherwise long `<img alt>` strings end up rendered as a
+    // single clipped line (a large source of fixture diffs for pages with missing images).
+    //
+    // We implement a lightweight greedy line-breaking pass over the shaped glyphs so we can wrap
+    // without re-running the shaping pipeline for every line.
+    let max_width = rect.width();
+    let max_height = rect.height();
+    let can_wrap = crate::style::inline_axis_is_horizontal(style.writing_mode)
+      && max_width.is_finite()
+      && max_width > 0.0
+      && max_height.is_finite()
+      && max_height > 0.0
+      && advance_width > max_width;
+
+    if can_wrap {
+      let baseline0 = baseline;
+      let max_lines = if line_height.is_finite() && line_height > 0.0 {
+        (max_height / line_height).floor().max(1.0) as usize
+      } else {
+        1
+      };
+
+      // Flatten glyph advances into a single slice for the line breaker, converting HarfBuzz's
+      // per-run cluster offsets into offsets relative to the full string.
+      let mut glyphs: Vec<crate::text::pipeline::GlyphPosition> = Vec::new();
+      let mut run_glyph_starts: Vec<usize> = Vec::with_capacity(runs.len());
+      for run in &runs {
+        run_glyph_starts.push(glyphs.len());
+        let run_start = run.start;
+        for glyph in &run.glyphs {
+          let mut g = *glyph;
+          g.cluster = (run_start + glyph.cluster as usize) as u32;
+          glyphs.push(g);
+        }
+      }
+
+      let breaks = crate::text::line_break::find_break_opportunities(text);
+      let lines = crate::text::line_break::break_lines(&glyphs, max_width, &breaks);
+
+      // Prefix sums for quickly turning glyph index ranges into widths.
+      let mut prefix_adv: Vec<f32> = Vec::with_capacity(glyphs.len() + 1);
+      prefix_adv.push(0.0);
+      for glyph in &glyphs {
+        let prev = prefix_adv.last().copied().unwrap_or(0.0);
+        let next = prev + glyph.x_advance;
+        prefix_adv.push(next);
+      }
+
+      for (line_idx, line) in lines.iter().enumerate() {
+        if line_idx >= max_lines {
+          break;
+        }
+        let Some(segment) = line.segments.first() else {
+          continue;
+        };
+        if segment.glyph_count == 0 {
+          continue;
+        }
+
+        let glyph_start = segment.glyph_start;
+        let glyph_end = segment.glyph_end().min(glyphs.len());
+        if glyph_start >= glyph_end {
+          continue;
+        }
+
+        let baseline = baseline0 + line_idx as f32 * line_height;
+        if !baseline.is_finite() {
+          break;
+        }
+        if baseline + metrics.descent > rect.max_y() + 0.01 {
+          break;
+        }
+
+        let line_width = (prefix_adv[glyph_end] - prefix_adv[glyph_start]).max(0.0);
+        let start_x = Self::aligned_text_start_x(style, rect, line_width);
+
+        let mut line_runs: Vec<ShapedRun> = Vec::new();
+        for (run_idx, run) in runs.iter().enumerate() {
+          let run_start = *run_glyph_starts.get(run_idx).unwrap_or(&0);
+          let run_end = run_start + run.glyphs.len();
+          let seg_start = glyph_start.max(run_start);
+          let seg_end = glyph_end.min(run_end);
+          if seg_start >= seg_end {
+            continue;
+          }
+          let local_start = seg_start - run_start;
+          let local_end = seg_end - run_start;
+          let slice = run.glyphs[local_start..local_end].to_vec();
+          if slice.is_empty() {
+            continue;
+          }
+          let advance: f32 = slice.iter().map(|g| g.x_advance).sum();
+          line_runs.push(ShapedRun {
+            text: String::new(),
+            start: 0,
+            end: 0,
+            glyphs: slice,
+            direction: run.direction,
+            level: run.level,
+            advance,
+            font: Arc::clone(&run.font),
+            font_size: run.font_size,
+            baseline_shift: run.baseline_shift,
+            language: run.language.clone(),
+            features: Arc::clone(&run.features),
+            synthetic_bold: run.synthetic_bold,
+            synthetic_oblique: run.synthetic_oblique,
+            rotation: run.rotation,
+            palette_index: run.palette_index,
+            palette_overrides: Arc::clone(&run.palette_overrides),
+            palette_override_hash: run.palette_override_hash,
+            variations: run.variations.clone(),
+            scale: run.scale,
+          });
+        }
+
+        if !line_runs.is_empty() {
+          self.emit_shaped_runs(
+            &line_runs,
+            style.color,
+            baseline,
+            start_x,
+            &shadows,
+            Some(style),
+            false,
+            TextEmphasisOffset::default(),
+          );
+        }
+      }
+      return true;
+    }
     self.emit_shaped_runs(
       &runs,
       style.color,
@@ -17761,6 +17893,56 @@ mod tests {
       "expected missing-image alt text to start at x≈{}, got x={}",
       expected_x,
       text.origin.x
+    );
+  }
+
+  #[test]
+  fn alt_text_wraps_into_multiple_lines_within_replaced_rect() {
+    let mut style = ComputedStyle::default();
+    style.color = Rgba::BLACK;
+    style.font_size = 12.0;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 20.0, 40.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: String::new(),
+          alt: Some("A A A A A A A A A A".to_string()),
+          loading: Default::default(),
+          decoding: ImageDecodingAttribute::Auto,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    let mut baselines: Vec<f32> = list
+      .items()
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::Text(text) => Some(text.origin.y),
+        _ => None,
+      })
+      .collect();
+    baselines.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    baselines.dedup_by(|a, b| (*a - *b).abs() < 0.1);
+
+    assert!(
+      baselines.len() >= 2,
+      "expected wrapped alt text to emit multiple baselines; got {baselines:?}"
+    );
+    assert!(
+      baselines.last().unwrap_or(&0.0) - baselines.first().unwrap_or(&0.0) > 6.0,
+      "expected baseline separation to be > ~half a line; got {baselines:?}"
     );
   }
 
