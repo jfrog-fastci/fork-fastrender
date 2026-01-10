@@ -10998,8 +10998,159 @@ impl DisplayListRenderer {
         parent_transform,
         warp_enabled,
       ),
-      ClipShape::AlphaMask { .. } => Ok(false),
+      ClipShape::AlphaMask { image, rect } => self.fill_projected_preserve_3d_alpha_mask_clip_mask(
+        dest,
+        image.as_ref(),
+        *rect,
+        transform,
+        parent_transform,
+        warp_enabled,
+      ),
     }
+  }
+
+  fn fill_projected_preserve_3d_alpha_mask_clip_mask(
+    &self,
+    dest: &mut Mask,
+    image: &ImageData,
+    rect: Rect,
+    transform: &Transform3D,
+    parent_transform: Transform,
+    warp_enabled: bool,
+  ) -> RenderResult<bool> {
+    // Keep alpha-mask rasterization away from the source pixmap boundaries to avoid unstable edge
+    // coverage when the mask is later warped/clipped (similar to `Canvas::set_clip_path`).
+    const ALPHA_MASK_PADDING_PX: u32 = 32;
+
+    if rect.width() <= 0.0
+      || rect.height() <= 0.0
+      || !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return Ok(false);
+    }
+    if !self.scale.is_finite() || self.scale <= 0.0 {
+      return Ok(false);
+    }
+
+    let Some(image_pixmap) = image_data_to_pixmap_inner(image)? else {
+      return Ok(false);
+    };
+    if image_pixmap.width() == 0 || image_pixmap.height() == 0 {
+      return Ok(false);
+    }
+
+    // Rasterize the alpha mask into an offscreen alpha surface in the clip's plane coordinates.
+    let pad = ALPHA_MASK_PADDING_PX as i32;
+    let min_x = (rect.min_x() * self.scale).floor();
+    let min_y = (rect.min_y() * self.scale).floor();
+    let max_x = (rect.max_x() * self.scale).ceil();
+    let max_y = (rect.max_y() * self.scale).ceil();
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+      return Ok(false);
+    }
+
+    let origin_x = (min_x as i32).saturating_sub(pad);
+    let origin_y = (min_y as i32).saturating_sub(pad);
+    let end_x = (max_x as i32).saturating_add(pad);
+    let end_y = (max_y as i32).saturating_add(pad);
+    let width = end_x.saturating_sub(origin_x) as u32;
+    let height = end_y.saturating_sub(origin_y) as u32;
+    if width == 0 || height == 0 {
+      return Ok(false);
+    }
+
+    let Some(mut src_pixmap) = new_pixmap(width, height) else {
+      return Ok(false);
+    };
+    src_pixmap.data_mut().fill(0);
+
+    let scale_x = rect.width() * self.scale / image_pixmap.width() as f32;
+    let scale_y = rect.height() * self.scale / image_pixmap.height() as f32;
+    if !scale_x.is_finite() || !scale_y.is_finite() || scale_x <= 0.0 || scale_y <= 0.0 {
+      return Ok(false);
+    }
+
+    let tx = rect.x() * self.scale - origin_x as f32;
+    let ty = rect.y() * self.scale - origin_y as f32;
+    if !tx.is_finite() || !ty.is_finite() {
+      return Ok(false);
+    }
+
+    let local_transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty);
+    let paint = PixmapPaint {
+      opacity: 1.0,
+      blend_mode: SkiaBlendMode::SourceOver,
+      quality: FilterQuality::Bilinear,
+    };
+    src_pixmap.draw_pixmap(0, 0, image_pixmap.as_ref(), &paint, local_transform, None);
+
+    // Projectively warp the alpha surface into canvas space.
+    let left_css = origin_x as f32 / self.scale;
+    let top_css = origin_y as f32 / self.scale;
+    let right_css = (origin_x as f32 + width as f32) / self.scale;
+    let bottom_css = (origin_y as f32 + height as f32) / self.scale;
+    if !left_css.is_finite()
+      || !top_css.is_finite()
+      || !right_css.is_finite()
+      || !bottom_css.is_finite()
+    {
+      return Ok(false);
+    }
+
+    let corners = [
+      (left_css, top_css),
+      (right_css, top_css),
+      (right_css, bottom_css),
+      (left_css, bottom_css),
+    ];
+
+    let mut dst_quad_points = [Point::ZERO; 4];
+    let mut dst_quad = [(0.0f32, 0.0f32); 4];
+    for (i, (x, y)) in corners.iter().enumerate() {
+      let Some((dx, dy)) =
+        self.project_preserve_3d_clip_point(transform, *x, *y, parent_transform, warp_enabled)
+      else {
+        return Ok(false);
+      };
+      dst_quad[i] = (dx, dy);
+      dst_quad_points[i] = Point::new(dx, dy);
+    }
+
+    let projected_bounds = crate::paint::homography::quad_bounds(&dst_quad_points);
+    let dest_bounds = Rect::from_xywh(0.0, 0.0, dest.width() as f32, dest.height() as f32);
+    if projected_bounds.intersection(dest_bounds).is_none() {
+      return Ok(true);
+    }
+
+    let src_w = width as f32;
+    let src_h = height as f32;
+    let src_quad = [
+      Point::new(0.0, 0.0),
+      Point::new(src_w, 0.0),
+      Point::new(src_w, src_h),
+      Point::new(0.0, src_h),
+    ];
+    let Some(homography) = Homography::from_quad_to_quad(src_quad, dst_quad_points) else {
+      return Ok(false);
+    };
+
+    let target_size = (dest.width(), dest.height());
+    let Some(warped) = crate::paint::projective_warp::warp_pixmap(
+      &src_pixmap,
+      &homography,
+      &dst_quad,
+      target_size,
+      None,
+    )?
+    else {
+      return Ok(false);
+    };
+
+    copy_pixmap_alpha_into_mask(dest, &warped.pixmap, warped.offset)?;
+    Ok(true)
   }
 
   fn fill_projective_preserve_3d_clip_path_mask(
