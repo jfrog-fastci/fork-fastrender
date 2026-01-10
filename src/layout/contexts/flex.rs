@@ -1614,29 +1614,14 @@ impl FormattingContext for FlexFormattingContext {
                         }
 
                         // When a flex item is not stretched in the cross axis and its cross size is
-                        // `auto`, the used cross size is content-based. Taffy can still propagate
-                        // the container's definite cross size as the available space for the
-                        // measurement callback; treat that definite available space as max-content
-                        // so nested formatting contexts (notably `flex-wrap` containers with `gap`)
-                        // report their intrinsic size instead of incorrectly expanding and then
-                        // centering their contents.
-                        let effective_align_self =
-                          box_node.style.align_self.unwrap_or(style.align_items);
-                        if effective_align_self != AlignItems::Stretch {
-                          if container_main_axis_is_horizontal {
-                            if known_dimensions.height.is_none()
-                              && matches!(avail.height, AvailableSpace::Definite(_))
-                              && physical_height_is_auto(box_node.style.as_ref())
-                            {
-                              avail.height = AvailableSpace::MaxContent;
-                            }
-                          } else if known_dimensions.width.is_none()
-                            && matches!(avail.width, AvailableSpace::Definite(_))
-                            && physical_width_is_auto(box_node.style.as_ref())
-                          {
-                            avail.width = AvailableSpace::MaxContent;
-                          }
-                        }
+                        // `auto`, the used cross size is content-based (effectively the
+                        // `fit-content` size clamped against the available cross size).
+                        //
+                        // Do not rewrite a definite available cross size to `MaxContent` here:
+                        // measuring only under max-content prevents text from wrapping and breaks
+                        // fit-content clamping. The measure path below resolves this by computing a
+                        // fit-content size from the item's intrinsic min/max contributions and
+                        // re-laying out under that clamped size.
 
                         // Taffy sometimes propagates a "known" cross size for nested flex containers
                         // even when the child’s physical cross-size is `auto`. Treat that as a soft
@@ -1662,13 +1647,6 @@ impl FormattingContext for FlexFormattingContext {
                             // Cross axis is width.
                             if physical_width_is_auto(box_node.style.as_ref()) {
                               known_dimensions.width = None;
-                              // A definite available width would cause nested flex containers with
-                              // `width:auto` to behave like block-level flex containers and fill the
-                              // available space, diverging from the flex item shrink-to-fit behavior
-                              // needed for `align-items/align-self: center` in column flex layouts.
-                              if matches!(avail.width, AvailableSpace::Definite(_)) {
-                                avail.width = AvailableSpace::MaxContent;
-                              }
                             }
                           }
                         }
@@ -2404,6 +2382,149 @@ impl FormattingContext for FlexFormattingContext {
                     let horizontal_edges = padding_left + padding_right + border_left + border_right;
                     let vertical_edges = padding_top + padding_bottom + border_top + border_bottom;
 
+                    // Replaced elements don't establish a formatting context; compute their
+                    // intrinsic/used size directly to avoid block layout inflating widths.
+                    if let crate::tree::box_tree::BoxType::Replaced(replaced_box) = &measure_box.box_type {
+                        let base_width = container_content_width_for_children.filter(|w| *w > 0.0);
+                        let base_height = container_content_height_for_children.filter(|h| *h > 0.0);
+                        let percentage_base = match (base_width, base_height) {
+                          (None, None) => None,
+                          _ => Some(Size::new(
+                            base_width.unwrap_or(f32::NAN),
+                            base_height.unwrap_or(f32::NAN),
+                          )),
+                        };
+                        let size = crate::layout::utils::compute_replaced_size(
+                          measure_style,
+                          replaced_box,
+                          percentage_base,
+                          this.viewport_size,
+                        );
+                        let outer_w = (size.width + horizontal_edges).max(0.0);
+                        let outer_h = (size.height + vertical_edges).max(0.0);
+                        measured_baseline_y = Some(outer_h);
+                        if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                          let block_positive = crate::style::block_axis_positive(measure_style.writing_mode);
+                          measured_baseline_x = Some(if block_positive { outer_w } else { 0.0 });
+                        }
+                        flex_profile::record_measure_time(measure_timer);
+                        return taffy::geometry::Size {
+                            width: size.width,
+                            height: size.height,
+                        };
+                    }
+
+                    let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
+                        flex_item_block_fc.clone()
+                    } else {
+                        factory.get(fc_type)
+                    };
+
+                    // When a flex item is not stretched in the cross axis and its cross size is
+                    // `auto`, its used cross size is content-based: the `fit-content` size (CSS
+                    // Sizing) clamped against the available cross size (CSS Flexbox §9.4).
+                    //
+                    // Taffy supplies the available cross size as a definite available content-box
+                    // size, but most formatting contexts treat a definite available inline size as
+                    // a "fill" constraint. Resolve `fit-content` here so we can lay out nested
+                    // formatting contexts under the clamped cross size, enabling text wrapping and
+                    // preventing max-content overflow in column flex containers with
+                    // `align-items/align-self: center`.
+                    let effective_align_self = measure_style.align_self.unwrap_or(style.align_items);
+                    let cross_physical_axis = if container_main_axis_is_horizontal {
+                      PhysicalAxis::Y
+                    } else {
+                      PhysicalAxis::X
+                    };
+                    let cross_axis_is_horizontal = matches!(cross_physical_axis, PhysicalAxis::X);
+                    let inline_is_horizontal =
+                      crate::style::inline_axis_is_horizontal(measure_style.writing_mode);
+                    let cross_axis_is_inline = match cross_physical_axis {
+                      PhysicalAxis::X => inline_is_horizontal,
+                      PhysicalAxis::Y => !inline_is_horizontal,
+                    };
+                    let inline_size_is_auto = if inline_is_horizontal {
+                      physical_width_is_auto(measure_style)
+                    } else {
+                      physical_height_is_auto(measure_style)
+                    };
+                    let cross_known_is_none = match cross_physical_axis {
+                      PhysicalAxis::X => known_dimensions.width.is_none(),
+                      PhysicalAxis::Y => known_dimensions.height.is_none(),
+                    };
+                    if effective_align_self != AlignItems::Stretch
+                      && cross_axis_is_inline
+                      && inline_size_is_auto
+                      && cross_known_is_none
+                    {
+                      let available_cross_content = match cross_physical_axis {
+                        PhysicalAxis::X => constraints.width(),
+                        PhysicalAxis::Y => constraints.height(),
+                      };
+
+                      if let Some(available_cross_content) = available_cross_content {
+                        let available_cross_content = available_cross_content.max(0.0);
+                        let cross_inset = if cross_axis_is_horizontal {
+                          horizontal_edges
+                        } else {
+                          vertical_edges
+                        };
+
+                        let intrinsic_result = if let Some(style) = override_style.clone() {
+                          if measure_box.id != 0 {
+                            crate::layout::style_override::with_style_override(
+                              measure_box.id,
+                              style,
+                              || {
+                                crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                                  fc.as_ref(),
+                                  measure_box,
+                                  cross_physical_axis,
+                                )
+                              },
+                            )
+                          } else {
+                            let mut cloned = measure_box.clone();
+                            cloned.style = style;
+                            crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                              fc.as_ref(),
+                              &cloned,
+                              cross_physical_axis,
+                            )
+                          }
+                        } else {
+                          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                            fc.as_ref(),
+                            measure_box,
+                            cross_physical_axis,
+                          )
+                        };
+
+                        match intrinsic_result {
+                          Ok((min_border, max_border)) => {
+                            let min_content = (min_border - cross_inset).max(0.0);
+                            let max_content = (max_border - cross_inset).max(0.0);
+                            let fit_content =
+                              crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+                                Some(available_cross_content),
+                                None,
+                                min_content,
+                                max_content,
+                              );
+                            if fit_content.is_finite() && fit_content >= 0.0 {
+                              if cross_axis_is_horizontal {
+                                constraints.available_width = CrateAvailableSpace::Definite(fit_content);
+                              } else {
+                                constraints.available_height = CrateAvailableSpace::Definite(fit_content);
+                              }
+                            }
+                          }
+                          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                          Err(_) => {}
+                        }
+                      }
+                    }
+
                     // When Taffy provides a definite available content-box size (width/height),
                     // also expose the corresponding used border-box size to block layout. Block
                     // formatting contexts treat `height:auto` + a definite used border-box height
@@ -2496,43 +2617,6 @@ impl FormattingContext for FlexFormattingContext {
                         }
                     }
 
-                    // Replaced elements don't establish a formatting context; compute their
-                    // intrinsic/used size directly to avoid block layout inflating widths.
-                    if let crate::tree::box_tree::BoxType::Replaced(replaced_box) = &measure_box.box_type {
-                        let base_width = container_content_width_for_children.filter(|w| *w > 0.0);
-                        let base_height = container_content_height_for_children.filter(|h| *h > 0.0);
-                        let percentage_base = match (base_width, base_height) {
-                          (None, None) => None,
-                          _ => Some(Size::new(
-                            base_width.unwrap_or(f32::NAN),
-                            base_height.unwrap_or(f32::NAN),
-                          )),
-                        };
-                        let size = crate::layout::utils::compute_replaced_size(
-                          measure_style,
-                          replaced_box,
-                          percentage_base,
-                          this.viewport_size,
-                        );
-                        let outer_w = (size.width + horizontal_edges).max(0.0);
-                        let outer_h = (size.height + vertical_edges).max(0.0);
-                        measured_baseline_y = Some(outer_h);
-                        if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
-                          let block_positive = crate::style::block_axis_positive(measure_style.writing_mode);
-                          measured_baseline_x = Some(if block_positive { outer_w } else { 0.0 });
-                        }
-                        flex_profile::record_measure_time(measure_timer);
-                        return taffy::geometry::Size {
-                            width: size.width,
-                            height: size.height,
-                        };
-                    }
-
-                    let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
-                        flex_item_block_fc.clone()
-                    } else {
-                        factory.get(fc_type)
-                    };
                     // Fit-content depends on the available space passed by Taffy. Resolve it here (per
                     // measure call) instead of during style conversion so cached templates remain valid.
                     let mut fit_border_box_width: Option<f32> = None;
