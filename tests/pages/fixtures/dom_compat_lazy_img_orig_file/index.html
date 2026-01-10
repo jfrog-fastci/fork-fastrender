@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: rgb(0, 255, 0);
+      }
+
+      img {
+        display: block;
+        width: 64px;
+        height: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Some WordPress themes expose the original image URL via `data-orig-file`. Dom compatibility
+      mode treats it as a last-resort `src` candidate when `src` is missing or placeholder.
+    -->
+    <img
+      id="orig-file"
+      width="64"
+      height="32"
+      src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+      data-orig-file="red.svg"
+      alt=""
+    />
+  </body>
+</html>

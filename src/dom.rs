@@ -3272,7 +3272,7 @@ pub fn compute_part_export_map_with_ids(
   Ok(map)
 }
 
-pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 13] = [
+pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 14] = [
   "data-gl-src",
   "data-src",
   "data-lazy-src",
@@ -3286,6 +3286,7 @@ pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 13] = [
   "data-hires",
   "data-src-retina",
   "data-default-src",
+  "data-orig-file",
 ];
 
 pub(crate) const COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES: [&str; 6] = [

@@ -281,6 +281,33 @@ fn compatibility_mode_lifts_data_default_src_images() {
 }
 
 #[test]
+fn compatibility_mode_lifts_data_orig_file_images() {
+  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("tests/pages/fixtures/dom_compat_lazy_img_orig_file");
+  let html_path = fixture_dir.join("index.html");
+  let html = fs::read_to_string(&html_path).expect("read fixture HTML");
+
+  let standard_dom = parse_html(&html).expect("parse standard DOM");
+  let compat_dom =
+    parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse compat DOM");
+
+  let standard_src = find_by_id(&standard_dom, "orig-file")
+    .expect("standard img#orig-file")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert!(
+    standard_src.starts_with("data:image/gif"),
+    "expected standard img#orig-file to keep placeholder; got {standard_src:?}"
+  );
+
+  let compat_src = find_by_id(&compat_dom, "orig-file")
+    .expect("compat img#orig-file")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert_eq!(compat_src, "red.svg");
+}
+
+#[test]
 fn compatibility_mode_lifts_svg_placeholder_img_src_from_data_src() {
   let fixture_dir =
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/dom_compat_svg_placeholder");
