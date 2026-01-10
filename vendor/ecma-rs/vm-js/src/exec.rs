@@ -709,6 +709,13 @@ impl JsRuntime {
     // Pop any host hooks override before restoring `hooks` back into the VM to avoid leaving the VM
     // with a dangling pointer (the override stores a raw pointer to `hooks`).
     vm_ctx.pop_active_host_hooks(prev_hooks);
+
+    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+    // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
+    // out) into `hooks` before restoring it.
+    while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
+      hooks.enqueue_promise_job(job, realm);
+    }
     // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
     *vm_ctx.microtask_queue_mut() = hooks;
 

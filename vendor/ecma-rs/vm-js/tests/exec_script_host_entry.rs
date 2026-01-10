@@ -1,5 +1,9 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmOptions,
 };
 
 fn current_realm_is_set(
@@ -25,6 +29,34 @@ fn call_callback_via_vm_call(
 ) -> Result<Value, VmError> {
   let func = args.first().copied().unwrap_or(Value::Undefined);
   vm.call(host, scope, func, Value::Undefined, &[])?;
+  Ok(Value::Undefined)
+}
+
+fn enqueue_vm_microtask_job(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let counter = vm
+    .user_data::<Arc<AtomicUsize>>()
+    .cloned()
+    .ok_or(VmError::Unimplemented("missing Arc<AtomicUsize> user_data"))?;
+
+  // Intentionally enqueue onto the VM-owned microtask queue (instead of the supplied host hooks).
+  // Script execution should preserve this even though it temporarily moves the queue out of the VM
+  // to satisfy Rust borrow constraints.
+  vm.microtask_queue_mut().enqueue_promise_job(
+    Job::new(JobKind::Promise, move |_ctx, _host| {
+      counter.fetch_add(1, Ordering::SeqCst);
+      Ok(())
+    }),
+    None,
+  );
+
   Ok(Value::Undefined)
 }
 
@@ -141,5 +173,27 @@ fn exec_script_restores_microtask_queue_even_on_throw() -> Result<(), VmError> {
   let value = rt.exec_script("ran")?;
   assert_eq!(value, Value::Bool(true));
 
+  Ok(())
+}
+
+#[test]
+fn exec_script_preserves_jobs_enqueued_directly_on_vm_microtask_queue() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let counter = Arc::new(AtomicUsize::new(0));
+  rt.vm.set_user_data(counter.clone());
+  rt.register_global_native_function("enqueueVmJob", enqueue_vm_microtask_job, 0)?;
+
+  rt.exec_script("enqueueVmJob();")?;
+
+  // The job should not have run yet.
+  assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+  let mut queue = std::mem::take(rt.vm.microtask_queue_mut());
+  let errors = queue.perform_microtask_checkpoint(&mut rt);
+  *rt.vm.microtask_queue_mut() = queue;
+  assert!(errors.is_empty());
+
+  assert_eq!(counter.load(Ordering::SeqCst), 1);
   Ok(())
 }
