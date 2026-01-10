@@ -402,7 +402,7 @@ fn render_page(
       std::rc::Rc::new(std::cell::Cell::new(0));
     let orchestrator = std::rc::Rc::new(std::cell::RefCell::new(ScriptOrchestrator::new()));
     let scheduler = std::rc::Rc::new(std::cell::RefCell::new(
-      ScriptScheduler::<fastrender::dom2::NodeId>::new(),
+      ScriptScheduler::<fastrender::dom2::NodeId>::with_options(js.options),
     ));
     let import_map_state =
       std::rc::Rc::new(std::cell::RefCell::new(ImportMapState::default()));
@@ -692,6 +692,12 @@ fn render_page(
                     }
                   }
                 }
+              }
+
+              // `fetch_and_render --js` only uses `ScriptScheduler` for classic scripts. Module
+              // scripts and import maps are handled separately above.
+              if spec.script_type != ScriptType::Classic {
+                return;
               }
               let base_url_at_discovery = spec.base_url.clone();
 
@@ -1477,6 +1483,12 @@ fn render_page(
                   }
                 }
               }
+            }
+
+            // `fetch_and_render --js` only uses `ScriptScheduler` for classic scripts. Module
+            // scripts and import maps are handled separately above.
+            if spec.script_type != ScriptType::Classic {
+              return;
             }
             let base_url_at_discovery = spec.base_url.clone();
             let discovered = match scheduler
@@ -2294,6 +2306,11 @@ fn try_main(args: Args) -> Result<()> {
   // Treat `--js-max-script-bytes 0` as "unbounded" (disables the script size limit).
   if js_options.max_script_bytes == 0 {
     js_options.max_script_bytes = usize::MAX;
+  }
+  // `fetch_and_render --js` supports `<script type="module">` execution; enable `nomodule`
+  // suppression and other "modules supported" behaviors in shared `<script>` plumbing.
+  if args.js_enabled {
+    js_options.supports_module_scripts = true;
   }
 
   let js = JsCliConfig {

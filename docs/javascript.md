@@ -56,9 +56,9 @@ The most important early behaviors to preserve:
 - **Module scripts**: supported (`type="module"`) with static import graphs when
   `JsExecutionOptions.supports_module_scripts` is enabled. Dynamic `import()` is not implemented yet.
 - **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`.
-  `fetch_and_render --js` supports inline import maps and applies them during module loading via
-  `VmJsModuleLoader`, but `BrowserTab` does not yet register `<script type="importmap">` or apply
-  import maps during module resolution; see [`docs/import_maps.md`](import_maps.md).
+  Inline `<script type="importmap">` is supported in both `BrowserTab` and `fetch_and_render --js`,
+  and module specifier resolution goes through the active `ImportMapState`; see
+  [`docs/import_maps.md`](import_maps.md).
 
 Correctness requirements that fall out of this:
 

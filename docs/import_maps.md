@@ -53,17 +53,16 @@ What exists today:
 * **Implemented:** the core matching helper (`resolve_imports_match`) for "resolve an imports match"
   (returns `Err(ImportMapError::TypeError(...))` for blocked cases like null entries/backtracking).
 
-What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline
-(discovering/executing `<script type="importmap">` and `<script type="module">` at parse time).
+Import maps are integrated end-to-end for:
 
-FastRender’s `fetch_and_render --js` tooling entry point supports **inline** `<script type="importmap">`
-and resolves module specifiers through an active `ImportMapState` when executing module scripts
-via real `vm-js` modules (`VmJsModuleLoader` in `src/js/vmjs/module_loader.rs`).
+* `BrowserTab`: inline `<script type="importmap">` scripts are executed by the script scheduler and
+  registered into per-document state via `BrowserTabJsExecutor::execute_import_map_script` (for the
+  `vm-js` executor: `VmJsBrowserTabExecutor`). Module specifier resolution for module scripts goes
+  through the active `ImportMapState`.
+* Tooling (`fetch_and_render --js`): supports **inline** `<script type="importmap">` and applies the
+  active import map during module loading via `VmJsModuleLoader` (`src/js/vmjs/module_loader.rs`).
 
-However, import maps are not yet wired into `BrowserTab`’s streaming `<script>` execution pipeline,
-so real page execution does not apply import maps yet. This document describes the intended
-integration surface for the HTML/script subsystems (also see
-[`docs/html_script_processing.md`](html_script_processing.md)).
+Remaining gaps include dynamic `import()` / asynchronous module loading and evaluation.
 
 ### How to run tests
 
@@ -695,6 +694,6 @@ specifier resolution goes through `resolve_module_specifier(&mut state, ...)`. W
 provided, `VmJsModuleLoader` only supports relative/absolute URL specifiers and rejects bare
 specifiers.
 
-When import maps are wired into a module loader, ensure *every* module specifier is resolved via
+Ensure *every* module specifier is resolved via
 `resolve_module_specifier(&mut state, specifier, base_url)` so that the import map rules (including
 resolved-module-set updates) are applied consistently.

@@ -46,7 +46,7 @@ What exists today (in-tree):
   - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
   - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
     moment a `<script>` finishes parsing.
-- **Import maps algorithms (not yet integrated into the streaming `<script>` pipeline):**
+- **Import maps algorithms + integration:**
   - `src/js/import_maps/`: spec-mapped import map parsing + state + merging + resolution:
     - parsing/normalization: `parse_import_map_string(...)` + `create_import_map_parse_result(...)` (`parse.rs`)
     - host-side state: `ImportMapState` + resolved-module-set record types (`types.rs`)
@@ -54,9 +54,11 @@ What exists today (in-tree):
     - full module specifier resolution: `resolve_module_specifier(...)` + `add_module_to_resolved_module_set(...)` (`resolve.rs`)
     - helper: `resolve_imports_match(...)` (`resolve.rs`) — implements the spec’s "resolve an imports match"
       algorithm and throws `ImportMapError` for blocked cases
-    - (Tooling) module execution uses real `vm-js` modules via `VmJsModuleLoader`
-      (`src/js/vmjs/module_loader.rs`). `fetch_and_render --js` can apply inline import maps during
-      module loading, but `BrowserTab` does not yet.
+    - Import maps are integrated into:
+      - `BrowserTab`'s streaming `<script>` pipeline (via `ScriptScheduler` +
+        `BrowserTabJsExecutor::execute_import_map_script`), and
+      - tooling module execution (`fetch_and_render --js`, `VmJsModuleLoader` in
+        `src/js/vmjs/module_loader.rs`).
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: `<script>` ordering (parser-blocking vs `async` vs `defer`),
@@ -167,12 +169,7 @@ This requires tracking the base URL while parsing (see `BaseUrlTracker` below).
 These features exist in the HTML spec and matter for web-compat, but are intentionally deferred so
 we can land a correct classic-script core first:
 
-- **Import maps** (`type="importmap"`) end-to-end integration:
-  - Import map parsing + merge/register/resolve algorithms exist in `src/js/import_maps/` and are documented in
-    [`docs/import_maps.md`](import_maps.md). Import map scripts are not yet executed/registered by
-    `BrowserTab`’s streaming `<script>` pipeline, so import maps are not applied during module
-    resolution there.
-- **Dynamic `import()`** and asynchronous module evaluation (e.g. top-level `await`).
+ - **Dynamic `import()`** and asynchronous module evaluation (e.g. top-level `await`).
 - **Content Security Policy (CSP)**: partially implemented for classic scripts in `api::BrowserTab`
   - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
