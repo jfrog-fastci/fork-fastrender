@@ -334,6 +334,45 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
       "vm-js intrinsics not installed; expected an initialized Realm",
     ))
   }
+
+  fn dom_exception_class_from_global(
+    &mut self,
+  ) -> Result<Option<crate::js::bindings::DomExceptionClassVmJs>, VmError> {
+    let mut scope = self.cx.scope.reborrow();
+    let global = self.state.global_object;
+    scope.push_root(Value::Object(global))?;
+
+    // `DOMException` should be installed on the global object for window/worker realms. Bindings
+    // runtime tests may not install it, so treat absence as "not available" and fall back to an
+    // `Error`-shaped object.
+    let key_dom_exception_s = scope.alloc_string("DOMException")?;
+    scope.push_root(Value::String(key_dom_exception_s))?;
+    let key_dom_exception = PropertyKey::from_string(key_dom_exception_s);
+    let Some(Value::Object(constructor)) =
+      scope
+        .heap()
+        .object_get_own_data_property_value(global, &key_dom_exception)?
+    else {
+      return Ok(None);
+    };
+    scope.push_root(Value::Object(constructor))?;
+
+    let key_prototype_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(key_prototype_s))?;
+    let key_prototype = PropertyKey::from_string(key_prototype_s);
+    let Some(Value::Object(prototype)) =
+      scope
+        .heap()
+        .object_get_own_data_property_value(constructor, &key_prototype)?
+    else {
+      return Ok(None);
+    };
+
+    Ok(Some(crate::js::bindings::DomExceptionClassVmJs {
+      constructor,
+      prototype,
+    }))
+  }
 }
 
 fn make_data_descriptor(value: Value, enumerable: bool) -> PropertyDescriptor {
@@ -509,57 +548,19 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     // object (as `WindowRealm` does). If it is missing or has been clobbered by user code, fall
     // back to an `Error`-like object with a matching `.name` so bindings still surface something
     // spec-shaped.
-    let global = self.state.global_object;
-    let dom_exception = (|| -> Result<Option<crate::js::bindings::DomExceptionClassVmJs>, VmError> {
-      let mut scope = self.cx.scope.reborrow();
-      scope.push_root(Value::Object(global))?;
-
-      let key_ctor_s = scope.alloc_string("DOMException")?;
-      scope.push_root(Value::String(key_ctor_s))?;
-      let key_ctor = PropertyKey::from_string(key_ctor_s);
-      let Some(Value::Object(ctor)) = scope
-        .heap()
-        .object_get_own_data_property_value(global, &key_ctor)?
-      else {
-        return Ok(None);
-      };
-      scope.push_root(Value::Object(ctor))?;
-
-      let key_proto_s = scope.alloc_string("prototype")?;
-      scope.push_root(Value::String(key_proto_s))?;
-      let key_proto = PropertyKey::from_string(key_proto_s);
-      let Some(Value::Object(proto)) = scope
-        .heap()
-        .object_get_own_data_property_value(ctor, &key_proto)?
-      else {
-        return Ok(None);
-      };
-      scope.push_root(Value::Object(proto))?;
-
-      Ok(Some(crate::js::bindings::DomExceptionClassVmJs {
-        constructor: ctor,
-        prototype: proto,
-      }))
-    })();
-
-    match dom_exception {
+    match self.dom_exception_class_from_global() {
       Ok(Some(dom_exception)) => {
-        crate::js::bindings::throw_dom_exception(&mut self.cx.scope, dom_exception, name, message)
+        return crate::js::bindings::throw_dom_exception(&mut self.cx.scope, dom_exception, name, message);
       }
-      Ok(None) => {
-        let intr = match self.intrinsics() {
-          Ok(intr) => intr,
-          Err(err) => return err,
-        };
-        crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
-          &mut self.cx.scope,
-          intr,
-          name,
-          message,
-        )
-      }
-      Err(err) => err,
+      Ok(None) => {}
+      Err(err) => return err,
     }
+
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(err) => return err,
+    };
+    crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(&mut self.cx.scope, intr, name, message)
   }
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
@@ -1281,38 +1282,90 @@ mod tests {
       Box::new(NoHooks),
     ));
 
-    let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
-    let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+    let (vm, heap, realm) = webidl_vm_js::split_js_runtime(&mut runtime);
 
-    let err = cx.throw_dom_exception("SyntaxError", "m");
-    let VmError::Throw(thrown) = err else {
-      return Err(VmError::TypeError("expected VmError::Throw"));
+    // Before `DOMException` is installed, the bindings runtime should still throw an Error-shaped
+    // object with the requested name/message.
+    {
+      let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+
+      let err = cx.throw_dom_exception("SyntaxError", "m");
+      let VmError::Throw(thrown) = err else {
+        return Err(VmError::TypeError("expected VmError::Throw"));
+      };
+      let Value::Object(obj) = thrown else {
+        return Err(VmError::TypeError("expected thrown value to be an object"));
+      };
+
+      let proto = cx.cx.scope.heap().object_prototype(obj)?;
+      assert_eq!(proto, Some(realm.intrinsics().error_prototype()));
+
+      let name_key_s = cx.cx.scope.alloc_string("name")?;
+      cx.cx.scope.push_root(Value::String(name_key_s))?;
+      let name_key = PropertyKey::from_string(name_key_s);
+      let name_value = cx
+        .cx
+        .scope
+        .heap()
+        .object_get_own_data_property_value(obj, &name_key)?
+        .unwrap_or(Value::Undefined);
+      assert_eq!(cx.js_string_to_rust_string(name_value)?, "SyntaxError");
+
+      let message_key_s = cx.cx.scope.alloc_string("message")?;
+      cx.cx.scope.push_root(Value::String(message_key_s))?;
+      let message_key = PropertyKey::from_string(message_key_s);
+      let message_value = cx
+        .cx
+        .scope
+        .heap()
+        .object_get_own_data_property_value(obj, &message_key)?
+        .unwrap_or(Value::Undefined);
+      assert_eq!(cx.js_string_to_rust_string(message_value)?, "m");
+    }
+
+    // Once `DOMException` is installed on the global object, `throw_dom_exception` should create a
+    // real DOMException instance (with `.prototype` on its prototype chain).
+    let dom_exception = {
+      let mut scope = heap.scope();
+      crate::js::bindings::DomExceptionClassVmJs::install(vm, &mut scope, realm)?
     };
-    let Value::Object(obj) = thrown else {
-      return Err(VmError::TypeError("expected thrown value to be an object"));
-    };
 
-    let name_key_s = cx.cx.scope.alloc_string("name")?;
-    cx.cx.scope.push_root(Value::String(name_key_s))?;
-    let name_key = PropertyKey::from_string(name_key_s);
-    let name_value = cx
-      .cx
-      .scope
-      .heap()
-      .object_get_own_data_property_value(obj, &name_key)?
-      .unwrap_or(Value::Undefined);
-    assert_eq!(cx.js_string_to_rust_string(name_value)?, "SyntaxError");
+    {
+      let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
 
-    let message_key_s = cx.cx.scope.alloc_string("message")?;
-    cx.cx.scope.push_root(Value::String(message_key_s))?;
-    let message_key = PropertyKey::from_string(message_key_s);
-    let message_value = cx
-      .cx
-      .scope
-      .heap()
-      .object_get_own_data_property_value(obj, &message_key)?
-      .unwrap_or(Value::Undefined);
-    assert_eq!(cx.js_string_to_rust_string(message_value)?, "m");
+      let err = cx.throw_dom_exception("SyntaxError", "m");
+      let VmError::Throw(thrown) = err else {
+        return Err(VmError::TypeError("expected VmError::Throw"));
+      };
+      let Value::Object(obj) = thrown else {
+        return Err(VmError::TypeError("expected thrown value to be an object"));
+      };
+
+      let proto = cx.cx.scope.heap().object_prototype(obj)?;
+      assert_eq!(proto, Some(dom_exception.prototype));
+
+      let name_key_s = cx.cx.scope.alloc_string("name")?;
+      cx.cx.scope.push_root(Value::String(name_key_s))?;
+      let name_key = PropertyKey::from_string(name_key_s);
+      let name_value = cx
+        .cx
+        .scope
+        .heap()
+        .object_get_own_data_property_value(obj, &name_key)?
+        .unwrap_or(Value::Undefined);
+      assert_eq!(cx.js_string_to_rust_string(name_value)?, "SyntaxError");
+
+      let message_key_s = cx.cx.scope.alloc_string("message")?;
+      cx.cx.scope.push_root(Value::String(message_key_s))?;
+      let message_key = PropertyKey::from_string(message_key_s);
+      let message_value = cx
+        .cx
+        .scope
+        .heap()
+        .object_get_own_data_property_value(obj, &message_key)?
+        .unwrap_or(Value::Undefined);
+      assert_eq!(cx.js_string_to_rust_string(message_value)?, "m");
+    }
 
     Ok(())
   }
