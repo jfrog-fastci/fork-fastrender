@@ -1377,16 +1377,7 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str(
     "    BindingValue::Callback(_) => Err(rt.throw_type_error(\"cannot return callback handles to JavaScript\")),\n",
   );
-  out.push_str("    BindingValue::Sequence(values) => {\n");
-  out.push_str("      let obj = rt.create_object()?;\n");
-  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
-  out.push_str("        let key = idx.to_string();\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, true)?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("    BindingValue::FrozenArray(values) => {\n");
+  out.push_str("    BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {\n");
   out.push_str("      let obj = rt.create_object()?;\n");
   out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
   out.push_str("        let key = idx.to_string();\n");

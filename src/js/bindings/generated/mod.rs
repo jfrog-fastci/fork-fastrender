@@ -983,13 +983,19 @@ pub mod window {
     let proto_event_target = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
-    let func =
-      rt.create_function("addEventListener", 2, event_target_add_event_listener::<Host, R>)?;
+    let func = rt.create_function(
+      "addEventListener",
+      2,
+      event_target_add_event_listener::<Host, R>,
+    )?;
     rt.define_method(proto_event_target, "addEventListener", func)?;
     let func = rt.create_function("dispatchEvent", 1, event_target_dispatch_event::<Host, R>)?;
     rt.define_method(proto_event_target, "dispatchEvent", func)?;
-    let func =
-      rt.create_function("removeEventListener", 2, event_target_remove_event_listener::<Host, R>)?;
+    let func = rt.create_function(
+      "removeEventListener",
+      2,
+      event_target_remove_event_listener::<Host, R>,
+    )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
     let ctor_event_target =
       rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
@@ -1024,8 +1030,11 @@ pub mod window {
     rt.define_method(proto_u_r_l_search_params, "set", func)?;
     let func = rt.create_function("values", 0, u_r_l_search_params_values::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "values", func)?;
-    let ctor_u_r_l_search_params =
-      rt.create_function("URLSearchParams", 0, u_r_l_search_params_constructor::<Host, R>)?;
+    let ctor_u_r_l_search_params = rt.create_function(
+      "URLSearchParams",
+      0,
+      u_r_l_search_params_constructor::<Host, R>,
+    )?;
     rt.define_constructor(
       global,
       "URLSearchParams",
@@ -1070,33 +1079,6 @@ pub mod worker {
         Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
       }
       BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
@@ -1876,13 +1858,19 @@ pub mod worker {
     let proto_event_target = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
-    let func =
-      rt.create_function("addEventListener", 2, event_target_add_event_listener::<Host, R>)?;
+    let func = rt.create_function(
+      "addEventListener",
+      2,
+      event_target_add_event_listener::<Host, R>,
+    )?;
     rt.define_method(proto_event_target, "addEventListener", func)?;
     let func = rt.create_function("dispatchEvent", 1, event_target_dispatch_event::<Host, R>)?;
     rt.define_method(proto_event_target, "dispatchEvent", func)?;
-    let func =
-      rt.create_function("removeEventListener", 2, event_target_remove_event_listener::<Host, R>)?;
+    let func = rt.create_function(
+      "removeEventListener",
+      2,
+      event_target_remove_event_listener::<Host, R>,
+    )?;
     rt.define_method(proto_event_target, "removeEventListener", func)?;
     let ctor_event_target =
       rt.create_function("EventTarget", 0, event_target_constructor::<Host, R>)?;
@@ -1917,8 +1905,11 @@ pub mod worker {
     rt.define_method(proto_u_r_l_search_params, "set", func)?;
     let func = rt.create_function("values", 0, u_r_l_search_params_values::<Host, R>)?;
     rt.define_method(proto_u_r_l_search_params, "values", func)?;
-    let ctor_u_r_l_search_params =
-      rt.create_function("URLSearchParams", 0, u_r_l_search_params_constructor::<Host, R>)?;
+    let ctor_u_r_l_search_params = rt.create_function(
+      "URLSearchParams",
+      0,
+      u_r_l_search_params_constructor::<Host, R>,
+    )?;
     rt.define_constructor(
       global,
       "URLSearchParams",
