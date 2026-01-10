@@ -8778,6 +8778,191 @@ impl FlexFormattingContext {
       if !rect.size.height.is_finite() || rect.size.height < 0.0 {
         rect.size.height = 0.0;
       }
+
+      let width_base_for_vertical_edges = constraints
+        .width()
+        .or(constraints.inline_percentage_base)
+        .unwrap_or_else(|| {
+          if rect.width().is_finite() {
+            rect.width()
+          } else {
+            self.viewport_size.width
+          }
+        })
+        .max(0.0);
+      let resolved_definite_height = || {
+        // If the parent layout mode provided an explicit used border-box height override, that's
+        // the authoritative border-box height for this formatting context (including `0px`).
+        if let Some(h) = constraints
+          .used_border_box_height
+          .filter(|h| h.is_finite() && *h >= 0.0)
+        {
+          return Some(h);
+        }
+
+        // Otherwise, attempt to resolve the authored `height` to a border-box size.
+        let Some(height) = box_node.style.height.as_ref() else {
+          return None;
+        };
+        let percentage_base = height.has_percentage().then(|| constraints.height()).flatten();
+        let resolved = resolve_length_with_percentage_metrics(
+          *height,
+          percentage_base,
+          self.viewport_size,
+          box_node.style.font_size,
+          box_node.style.root_font_size,
+          Some(box_node.style.as_ref()),
+          Some(&self.font_context),
+        )?;
+
+        if !resolved.is_finite() {
+          return None;
+        }
+        let resolved = resolved.max(0.0);
+
+        // Padding percentages resolve against the containing block *width*, even for vertical edges.
+        let padding_top = self.resolve_length_for_width(
+          box_node.style.padding_top,
+          width_base_for_vertical_edges,
+          &box_node.style,
+        );
+        let padding_bottom = self.resolve_length_for_width(
+          box_node.style.padding_bottom,
+          width_base_for_vertical_edges,
+          &box_node.style,
+        );
+        let border_top = self.resolve_length_for_width(
+          box_node.style.used_border_top_width(),
+          width_base_for_vertical_edges,
+          &box_node.style,
+        );
+        let border_bottom = self.resolve_length_for_width(
+          box_node.style.used_border_bottom_width(),
+          width_base_for_vertical_edges,
+          &box_node.style,
+        );
+
+        let vertical_edges = padding_top + padding_bottom + border_top + border_bottom;
+        let border_box = match box_node.style.box_sizing {
+          BoxSizing::ContentBox => (resolved + vertical_edges).max(0.0),
+          BoxSizing::BorderBox => resolved,
+        };
+
+        (border_box.is_finite() && border_box > rect_eps).then_some(border_box)
+      };
+      // Similar to width, allow parents to force a definite used block-size on the root flex
+      // container (via `used_border_box_height`). This is especially important when positioning
+      // absolutely positioned descendants with `bottom` insets: if the container height collapses
+      // to 0px here, descendant containing blocks will also have a 0px block-size and `bottom:0`
+      // will behave like `top:0`.
+      if !rect.height().is_finite() || rect.height() <= rect_eps {
+        if let Some(def_h) = resolved_definite_height() {
+          rect.size.height = def_h;
+        } else if !rect.height().is_finite() || box_node.children.is_empty() {
+          // Clamp NaNs (or legitimately empty flex containers) down to a safe 0px block-size.
+          rect.size.height = 0.0;
+        }
+      }
+
+      // Taffy can under-report the root height of `height:auto` flex containers (often collapsing
+      // to 0px even when in-flow children overflow). We later grow the *final* fragment to enclose
+      // those children (Phase 3 post-processing), but nested formatting contexts need the correct
+      // containing block size *now* so absolute/fixed positioned descendants resolve `bottom` and
+      // percentage sizes against the final used height.
+      //
+      // Compute the same "grow-to-fit in-flow children" height up-front using the Taffy layout
+      // results so the propagated `nearest_positioned_cb` reflects the corrected size during child
+      // layout.
+      if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
+        let mut max_child_bottom = 0.0f32;
+        let mut deadline_counter = 0usize;
+        for child in box_node.children.iter() {
+          check_layout_deadline(&mut deadline_counter)?;
+          if child.style.running_position.is_some()
+            || matches!(child.style.position, Position::Absolute | Position::Fixed)
+          {
+            continue;
+          }
+          let Some(child_node) = node_map.get(&(child as *const BoxNode)).copied() else {
+            continue;
+          };
+          let child_layout = taffy_tree.layout(child_node).map_err(|e| {
+            LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
+          })?;
+          let child_bottom =
+            (child_layout.location.y - rect.origin.y) + child_layout.size.height;
+          if child_bottom.is_finite() {
+            max_child_bottom = max_child_bottom.max(child_bottom);
+          }
+        }
+
+        if max_child_bottom.is_finite() {
+          let cb_width = rect.width().max(0.0);
+          let containing_block_height =
+            constraints.height().filter(|h| h.is_finite()).map(|h| h.max(0.0));
+
+          // Padding percentages resolve against the physical width, even for vertical edges.
+          let padding_top =
+            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+          let padding_bottom =
+            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+          let border_top = self.resolve_length_for_width(
+            box_node.style.used_border_top_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_bottom = self.resolve_length_for_width(
+            box_node.style.used_border_bottom_width(),
+            cb_width,
+            &box_node.style,
+          );
+
+          let mut required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+          let vertical_edges = (padding_top + padding_bottom + border_top + border_bottom).max(0.0);
+
+          let resolve_block_size_len = |len: Length| -> Option<f32> {
+            resolve_length_with_percentage_metrics(
+              len,
+              containing_block_height,
+              self.viewport_size,
+              box_node.style.font_size,
+              box_node.style.root_font_size,
+              Some(&box_node.style),
+              Some(&self.font_context),
+            )
+            .filter(|v| v.is_finite())
+            .map(|v| v.max(0.0))
+          };
+
+          let mut min_height = box_node
+            .style
+            .min_height
+            .as_ref()
+            .and_then(|l| resolve_block_size_len(*l))
+            .unwrap_or(0.0);
+          let mut max_height = box_node
+            .style
+            .max_height
+            .as_ref()
+            .and_then(|l| resolve_block_size_len(*l))
+            .unwrap_or(f32::INFINITY);
+
+          if box_node.style.box_sizing == BoxSizing::ContentBox {
+            min_height = (min_height + vertical_edges).max(0.0);
+            if max_height.is_finite() {
+              max_height = (max_height + vertical_edges).max(0.0);
+            }
+          }
+          if max_height.is_finite() && max_height < min_height {
+            max_height = min_height;
+          }
+          required = crate::layout::utils::clamp_with_order(required, min_height, max_height);
+
+          if required > rect.size.height + 0.01 {
+            rect.size.height = required;
+          }
+        }
+      }
     }
 
     // Convert children by re-running layout with the definite sizes Taffy resolved.
@@ -9217,10 +9402,73 @@ impl FlexFormattingContext {
       let child_ptr = child_box as *const BoxNode;
       let is_scroll_sensitive = scroll_sensitive.contains(&child_ptr);
       let is_positioned_sensitive = positioned_sensitive.contains(&child_ptr);
+      let child_cross_align = child_box
+        .style
+        .align_self
+        .map(normalize_cross_align)
+        .unwrap_or(container_cross_align);
+
+      // The origin used to translate viewport/containing-block state into this child's coordinate
+      // space must match the origin we eventually assign to the child's fragment bounds.
+      //
+      // When Taffy reports a 0px cross size, later code will often "inflate" the child's used size
+      // to match the container (or an intrinsic fallback). In those cases, the raw Taffy location
+      // represents the aligned edge for a 0px box, so we must adjust the origin by the resolved
+      // size (mirroring the placement adjustment logic below). If we keep translating using the
+      // unadjusted Taffy origin while placing the fragment at the adjusted origin, absolutely
+      // positioned descendants can be displaced by the full container cross size (e.g.
+      // imdb.com's hero caption jumping above its container).
+      let mut translated_origin_x = child_loc_x;
+      let mut translated_origin_y = child_loc_y;
+      let raw_main_size = if main_axis_is_horizontal {
+        raw_layout_width
+      } else {
+        raw_layout_height
+      };
+      let resolved_main_size = if main_axis_is_horizontal {
+        layout_width
+      } else {
+        layout_height
+      };
+      let raw_cross_size = if main_axis_is_horizontal {
+        raw_layout_height
+      } else {
+        raw_layout_width
+      };
+      let resolved_cross_size = if main_axis_is_horizontal {
+        layout_height
+      } else {
+        layout_width
+      };
+      if raw_main_size <= eps && resolved_main_size > eps {
+        if main_axis_is_horizontal {
+          translated_origin_x = adjust_zero_main_axis_location(translated_origin_x, layout_width);
+        } else {
+          translated_origin_y = adjust_zero_main_axis_location(translated_origin_y, layout_height);
+        }
+      }
+      if raw_cross_size <= eps && resolved_cross_size > eps {
+        if main_axis_is_horizontal {
+          translated_origin_y = adjust_zero_cross_axis_location(
+            translated_origin_y,
+            layout_height,
+            child_cross_align,
+          );
+        } else {
+          translated_origin_x = adjust_zero_cross_axis_location(
+            translated_origin_x,
+            layout_width,
+            child_cross_align,
+          );
+        }
+      }
 
       if !needs_intrinsic_main {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
-        let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
+        let child_scroll = Point::new(
+          parent_scroll.x - translated_origin_x,
+          parent_scroll.y - translated_origin_y,
+        );
         let cache_key = if is_scroll_sensitive || is_positioned_sensitive {
           flex_cache_key_with_scroll(child_box, child_scroll)
         } else {
@@ -9368,7 +9616,7 @@ impl FlexFormattingContext {
         child_box,
         fc_type,
         needs_translated_factory,
-        origin: Point::new(child_loc_x, child_loc_y),
+        origin: Point::new(translated_origin_x, translated_origin_y),
         scroll_sensitive: is_scroll_sensitive,
         positioned_sensitive: is_positioned_sensitive,
         constraints,
@@ -12037,6 +12285,223 @@ mod tests {
       }
     }
     None
+  }
+
+  #[test]
+  fn abspos_bottom_inset_uses_corrected_root_flex_height() {
+    // Regression test: `taffy_to_fragment` can receive a root Taffy layout with a collapsed
+    // height (0px) for a `height:auto` flex container even when in-flow children have non-zero
+    // block-size (Taffy underestimation bug).
+    //
+    // The flex layout post-processing code grows the final fragment to enclose in-flow children,
+    // but nested formatting contexts need the corrected height during layout so absolutely
+    // positioned descendants resolve `bottom: 0` against the final used height instead of 0px.
+    //
+    // Pages like imdb.com position hero-caption overlays this way; when the containing block
+    // height collapses to 0, `bottom: 0` behaves like `top: 0` and the caption jumps above the
+    // hero area.
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let abs_id = 10usize;
+    let item_id = 20usize;
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    abs_style.width = Some(Length::px(10.0));
+    abs_style.height = Some(Length::px(10.0));
+    abs_style.bottom = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+
+    let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = abs_id;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    item_style.height = Some(Length::px(80.0));
+    item_style.height_keyword = None;
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![abs_child],
+    );
+    item.id = item_id;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+
+    // Build a minimal Taffy tree where the root node reports a 0px height even though the
+    // in-flow child is 80px tall. `taffy_to_fragment` should grow the root fragment height, and
+    // that corrected size must be used for abspos containing blocks.
+    let child_ptr = &container.children[0] as *const BoxNode;
+    let mut taffy_tree: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let mut child_style = taffy::style::Style::default();
+    child_style.size.height = Dimension::length(80.0);
+    let child_node = taffy_tree
+      .new_leaf_with_context(child_style, child_ptr)
+      .expect("taffy child");
+    let mut root_style = taffy::style::Style::default();
+    root_style.display = taffy::style::Display::Flex;
+    root_style.size.width = Dimension::length(100.0);
+    root_style.size.height = Dimension::length(0.0);
+    let root_node = taffy_tree
+      .new_with_children(root_style, &[child_node])
+      .expect("taffy root");
+    taffy_tree
+      .compute_layout(
+        root_node,
+        taffy::geometry::Size {
+          width: taffy::prelude::AvailableSpace::Definite(100.0),
+          height: taffy::prelude::AvailableSpace::Definite(80.0),
+        },
+      )
+      .expect("compute layout");
+
+    let mut node_map: FxHashMap<*const BoxNode, NodeId> = FxHashMap::default();
+    node_map.insert(&container as *const BoxNode, root_node);
+    node_map.insert(child_ptr, child_node);
+
+    let constraints = LayoutConstraints::definite(100.0, 80.0);
+    let scroll_sensitive: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let mut positioned_sensitive: FxHashSet<*const BoxNode> = FxHashSet::default();
+    positioned_sensitive.insert(child_ptr);
+
+    let fragment = fc
+      .taffy_to_fragment(
+        &taffy_tree,
+        root_node,
+        root_node,
+        &container,
+        &node_map,
+        &constraints,
+        None,
+        &scroll_sensitive,
+        &positioned_sensitive,
+      )
+      .expect("taffy_to_fragment");
+    let abs_fragment = find_fragment_by_box_id(&fragment, abs_id).expect("abs fragment");
+
+    assert!(
+      (abs_fragment.bounds.y() - 70.0).abs() < 0.1,
+      "expected abspos child to sit at the bottom of an 80px CB (y≈70), got y={}",
+      abs_fragment.bounds.y()
+    );
+  }
+
+  #[test]
+  fn abspos_descendant_uses_adjusted_flex_item_translation_origin() {
+    // Regression test: when a flex item is aligned using a 0px cross size (e.g. `align-items:
+    // flex-end` with an empty item), Taffy reports the aligned edge as the item's location. Our
+    // conversion code may then "inflate" the item's resolved cross size to the container cross size
+    // so nested formatting contexts have a non-zero percentage base.
+    //
+    // In that case, we must translate viewport/containing-block state into the child's coordinate
+    // space using the *adjusted* origin (mirroring fragment placement). If we translate using the
+    // raw Taffy location, absolutely positioned descendants that resolve against the flex
+    // container's containing block can be displaced by the full container size (imdb.com's hero
+    // caption jumped above its container by ~813px).
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let abs_id = 10usize;
+    let item_id = 20usize;
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    abs_style.width = Some(Length::px(10.0));
+    abs_style.height = Some(Length::px(10.0));
+    abs_style.bottom = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = abs_id;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let mut item =
+      BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![abs_child]);
+    item.id = item_id;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.align_items = AlignItems::FlexEnd;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.width_keyword = None;
+    container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+
+    // Build a minimal Taffy tree where the flex item has a 0px height but is aligned to the
+    // container's bottom edge.
+    let child_ptr = &container.children[0] as *const BoxNode;
+    let mut taffy_tree: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let child_node = taffy_tree
+      .new_leaf_with_context(taffy::style::Style::default(), child_ptr)
+      .expect("taffy child");
+    let mut root_style = taffy::style::Style::default();
+    root_style.display = taffy::style::Display::Flex;
+    root_style.flex_direction = taffy::style::FlexDirection::Row;
+    root_style.align_items = Some(taffy::style::AlignItems::FlexEnd);
+    root_style.size.width = Dimension::length(100.0);
+    root_style.size.height = Dimension::length(100.0);
+    let root_node = taffy_tree
+      .new_with_children(root_style, &[child_node])
+      .expect("taffy root");
+    taffy_tree
+      .compute_layout(
+        root_node,
+        taffy::geometry::Size {
+          width: taffy::prelude::AvailableSpace::Definite(100.0),
+          height: taffy::prelude::AvailableSpace::Definite(100.0),
+        },
+      )
+      .expect("compute layout");
+
+    let mut node_map: FxHashMap<*const BoxNode, NodeId> = FxHashMap::default();
+    node_map.insert(&container as *const BoxNode, root_node);
+    node_map.insert(child_ptr, child_node);
+
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+    let scroll_sensitive: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let mut positioned_sensitive: FxHashSet<*const BoxNode> = FxHashSet::default();
+    positioned_sensitive.insert(child_ptr);
+
+    let fragment = fc
+      .taffy_to_fragment(
+        &taffy_tree,
+        root_node,
+        root_node,
+        &container,
+        &node_map,
+        &constraints,
+        None,
+        &scroll_sensitive,
+        &positioned_sensitive,
+      )
+      .expect("taffy_to_fragment");
+    let abs_fragment = find_fragment_by_box_id(&fragment, abs_id).expect("abs fragment");
+
+    assert!(
+      (abs_fragment.bounds.y() - 90.0).abs() < 0.1,
+      "expected abspos descendant to sit at the bottom of the flex container (y≈90), got y={}",
+      abs_fragment.bounds.y()
+    );
   }
 
   fn content_visibility_test_guard() -> crate::debug::runtime::ThreadRuntimeTogglesGuard {

@@ -689,6 +689,53 @@ fn filter_fragment_subtree(
   Some(filtered)
 }
 
+fn overlay_rect_for_fragment(
+  abs: Rect,
+  dpr: f32,
+  offset_x: f32,
+  offset_y: f32,
+  pixmap_w: u32,
+  pixmap_h: u32,
+) -> Option<tiny_skia::Rect> {
+  let x = (abs.x() + offset_x) * dpr;
+  let y = (abs.y() + offset_y) * dpr;
+  let w = abs.width() * dpr;
+  let h = abs.height() * dpr;
+
+  if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+    return None;
+  }
+  if w <= 0.0 || h <= 0.0 {
+    return None;
+  }
+
+  // `tiny_skia::Pixmap::stroke_path` can be very slow when asked to rasterize paths with huge
+  // coordinates/bounds even if the result is fully clipped away. Real-world pages (including
+  // imdb.com) often place visually-hidden fragments thousands of pixels off-screen, which can
+  // lead to enormous fragment bounds. Since the overlay is rendered onto a viewport-sized pixmap,
+  // clamp each overlay rect to the pixmap bounds to keep raster work bounded.
+  let pixmap_w = pixmap_w as f32;
+  let pixmap_h = pixmap_h as f32;
+
+  let x1 = x + w;
+  let y1 = y + h;
+  if !(x1.is_finite() && y1.is_finite()) {
+    return None;
+  }
+
+  let cx0 = x.max(0.0);
+  let cy0 = y.max(0.0);
+  let cx1 = x1.min(pixmap_w);
+  let cy1 = y1.min(pixmap_h);
+  let cw = cx1 - cx0;
+  let ch = cy1 - cy0;
+  if cw <= 0.0 || ch <= 0.0 {
+    return None;
+  }
+
+  tiny_skia::Rect::from_xywh(cx0, cy0, cw, ch)
+}
+
 fn draw_fragment_overlays(
   pixmap: &mut tiny_skia::Pixmap,
   tree: &FragmentTree,
@@ -710,6 +757,8 @@ fn draw_fragment_overlays(
 
   let offset_x = -scroll_x;
   let offset_y = -scroll_y;
+  let pixmap_w = pixmap.width();
+  let pixmap_h = pixmap.height();
 
   let mut stack: Vec<(Point, &FragmentNode)> = Vec::new();
   for root in tree.additional_fragments.iter().rev() {
@@ -730,19 +779,14 @@ fn draw_fragment_overlays(
       rect.width(),
       rect.height(),
     );
-    let x = (abs.x() + offset_x) * dpr;
-    let y = (abs.y() + offset_y) * dpr;
-    let w = abs.width() * dpr;
-    let h = abs.height() * dpr;
-    if w > 0.0 && h > 0.0 {
-      if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) {
-        let mut pb = PathBuilder::new();
-        pb.push_rect(rect);
-        if let Some(path) = pb.finish() {
-          let mut paint = Paint::default();
-          paint.set_color(color_for(fragment));
-          pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-        }
+    if let Some(rect) = overlay_rect_for_fragment(abs, dpr, offset_x, offset_y, pixmap_w, pixmap_h)
+    {
+      let mut pb = PathBuilder::new();
+      pb.push_rect(rect);
+      if let Some(path) = pb.finish() {
+        let mut paint = Paint::default();
+        paint.set_color(color_for(fragment));
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
       }
     }
 
@@ -2027,5 +2071,19 @@ mod tests {
     let config = inspect_frag_font_config(&args);
     assert!(config.use_bundled_fonts);
     assert!(config.use_system_fonts);
+  }
+
+  #[test]
+  fn fragment_overlay_rect_is_clipped_to_pixmap_bounds() {
+    // A fragment that is entirely off-screen should be skipped.
+    let abs = Rect::from_xywh(-5000.0, 0.0, 10.0, 10.0);
+    assert!(overlay_rect_for_fragment(abs, 1.0, 0.0, 0.0, 100, 100).is_none());
+
+    // A fragment that partially overlaps the pixmap should be clipped to the pixmap bounds, so we
+    // never attempt to stroke a path spanning the full 100k CSS-px offscreen extent.
+    let abs = Rect::from_xywh(-5000.0, 0.0, 6000.0, 10.0);
+    let rect = overlay_rect_for_fragment(abs, 1.0, 0.0, 0.0, 100, 100).expect("clipped rect");
+    assert!(rect.x() >= 0.0);
+    assert!(rect.width() <= 100.0);
   }
 }
