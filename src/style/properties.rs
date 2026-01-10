@@ -4128,6 +4128,26 @@ fn sanitize_max_length(value: Option<Length>) -> Option<Length> {
   })
 }
 
+fn sizing_value_has_invalid_negative_length(value: &crate::style::LogicalSizingValue) -> bool {
+  let Some(len) = value.length else {
+    return false;
+  };
+  // CSS 2.1: Negative values for `width`/`height` are illegal. Per CSS parsing rules, invalid
+  // declarations must be ignored rather than clamped (so they do not override earlier valid
+  // declarations in the cascade). Some sites emit sentinel negative sizes (e.g. `height:-1px`)
+  // before JS adjusts them; browsers ignore those declarations, so we must too.
+  //
+  // We only reject values that are definitely negative without requiring layout context. For
+  // `calc()`, this means expressions consisting solely of absolute units.
+  if len
+    .calc
+    .is_some_and(|calc| calc.absolute_sum().is_some_and(|v| v < 0.0))
+  {
+    return true;
+  }
+  len.calc.is_none() && len.value < 0.0
+}
+
 fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKeyword> {
   let PropertyValue::Keyword(raw) = value else {
     return None;
@@ -10101,6 +10121,19 @@ fn apply_declaration_with_base_internal_with_order(
             order,
           );
         } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          if !sizing_value_has_invalid_negative_length(&value) {
+            set_size_property_with_order(
+              &mut styles.width,
+              &mut styles.width_keyword,
+              &mut styles.width_anchor_size,
+              &mut styles.logical.width_order,
+              value,
+              order,
+            );
+          }
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+        if !sizing_value_has_invalid_negative_length(&value) {
           set_size_property_with_order(
             &mut styles.width,
             &mut styles.width_keyword,
@@ -10110,15 +10143,6 @@ fn apply_declaration_with_base_internal_with_order(
             order,
           );
         }
-      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
-        set_size_property_with_order(
-          &mut styles.width,
-          &mut styles.width_keyword,
-          &mut styles.width_anchor_size,
-          &mut styles.logical.width_order,
-          value,
-          order,
-        );
       }
     }
     "height" => {
@@ -10133,6 +10157,19 @@ fn apply_declaration_with_base_internal_with_order(
             order,
           );
         } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          if !sizing_value_has_invalid_negative_length(&value) {
+            set_size_property_with_order(
+              &mut styles.height,
+              &mut styles.height_keyword,
+              &mut styles.height_anchor_size,
+              &mut styles.logical.height_order,
+              value,
+              order,
+            );
+          }
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+        if !sizing_value_has_invalid_negative_length(&value) {
           set_size_property_with_order(
             &mut styles.height,
             &mut styles.height_keyword,
@@ -10142,15 +10179,6 @@ fn apply_declaration_with_base_internal_with_order(
             order,
           );
         }
-      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
-        set_size_property_with_order(
-          &mut styles.height,
-          &mut styles.height_keyword,
-          &mut styles.height_anchor_size,
-          &mut styles.logical.height_order,
-          value,
-          order,
-        );
       }
     }
     "min-width" => {
@@ -10311,20 +10339,24 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "inline-size" => {
       if let Some(value) = extract_sizing_value(resolved_value, false) {
-        push_logical(
-          styles,
-          crate::style::LogicalProperty::InlineSize { value: Some(value) },
-          order,
-        );
+        if !sizing_value_has_invalid_negative_length(&value) {
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::InlineSize { value: Some(value) },
+            order,
+          );
+        }
       }
     }
     "block-size" => {
       if let Some(value) = extract_sizing_value(resolved_value, false) {
-        push_logical(
-          styles,
-          crate::style::LogicalProperty::BlockSize { value: Some(value) },
-          order,
-        );
+        if !sizing_value_has_invalid_negative_length(&value) {
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::BlockSize { value: Some(value) },
+            order,
+          );
+        }
       }
     }
     "min-inline-size" => {

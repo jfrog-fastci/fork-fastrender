@@ -74,6 +74,7 @@ mod media_test;
 mod forced_colors_test;
 mod mix_blend_mode_case_insensitive_test;
 mod motion_path_case_insensitive_test;
+mod negative_size_values_ignored_test;
 mod namespace_pruning_order_test;
 mod namespace_rule_test;
 mod namespace_selectors_test;
