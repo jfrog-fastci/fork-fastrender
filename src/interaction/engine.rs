@@ -1957,6 +1957,55 @@ impl InteractionEngine {
     (changed, action)
   }
 
+  pub fn set_text_selection_caret(&mut self, node_id: usize, caret: usize) {
+    if self.focused != Some(node_id) {
+      return;
+    }
+    self.text_drag = None;
+    match self.text_edit.as_mut() {
+      Some(edit) if edit.node_id == node_id => {
+        edit.caret = caret;
+        edit.selection_anchor = None;
+        edit.preferred_column = None;
+      }
+      _ => {
+        self.text_edit = Some(TextEditState {
+          node_id,
+          caret,
+          selection_anchor: None,
+          preferred_column: None,
+        });
+      }
+    }
+  }
+
+  pub fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
+    if self.focused != Some(node_id) {
+      return;
+    }
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    if start == end {
+      self.set_text_selection_caret(node_id, start);
+      return;
+    }
+    self.text_drag = None;
+    match self.text_edit.as_mut() {
+      Some(edit) if edit.node_id == node_id => {
+        edit.caret = end;
+        edit.selection_anchor = Some(start);
+        edit.preferred_column = None;
+      }
+      _ => {
+        self.text_edit = Some(TextEditState {
+          node_id,
+          caret: end,
+          selection_anchor: Some(start),
+          preferred_column: None,
+        });
+      }
+    }
+  }
+
   pub fn clear_pointer_state(&mut self, dom: &mut DomNode) -> bool {
     let mut index = DomIndexMut::new(dom);
     let hover_changed =
