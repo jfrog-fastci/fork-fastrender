@@ -1,6 +1,6 @@
 use super::{
   create_import_map_parse_result, merge_existing_and_new_import_maps, register_import_map, resolve_module_specifier,
-  ImportMap, ImportMapError, ImportMapState, SpecifierAsUrlKind,
+  resolve_module_integrity_metadata, ImportMap, ImportMapError, ImportMapState, SpecifierAsUrlKind,
 };
 
 use url::Url;
@@ -19,6 +19,31 @@ fn parse_map(json: &str, base: &str) -> ImportMap {
 fn register_json(state: &mut ImportMapState, json: &str, base: &Url) {
   let result = create_import_map_parse_result(json, base);
   register_import_map(state, result).unwrap();
+}
+
+#[test]
+fn resolve_module_integrity_metadata_returns_entry_or_empty() {
+  let base = Url::parse("https://example.com/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "integrity": {
+        "/a-1.mjs": "sha384-deadbeef"
+      }
+    }"#,
+    &base,
+  );
+
+  let url = Url::parse("https://example.com/a-1.mjs").unwrap();
+  assert_eq!(
+    resolve_module_integrity_metadata(&state, &url),
+    "sha384-deadbeef"
+  );
+
+  let missing = Url::parse("https://example.com/missing.mjs").unwrap();
+  assert_eq!(resolve_module_integrity_metadata(&state, &missing), "");
 }
 
 #[test]
@@ -308,22 +333,10 @@ fn integrity_merge_ignores_duplicates() {
     &base,
   );
 
-  assert_eq!(
-    state
-      .import_map
-      .integrity
-      .get("https://example.com/a.js")
-      .unwrap(),
-    "sha256-old"
-  );
-  assert_eq!(
-    state
-      .import_map
-      .integrity
-      .get("https://example.com/b.js")
-      .unwrap(),
-    "sha256-b"
-  );
+  let a = Url::parse("https://example.com/a.js").unwrap();
+  let b = Url::parse("https://example.com/b.js").unwrap();
+  assert_eq!(resolve_module_integrity_metadata(&state, &a), "sha256-old");
+  assert_eq!(resolve_module_integrity_metadata(&state, &b), "sha256-b");
 }
 
 #[test]

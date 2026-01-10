@@ -24,11 +24,13 @@
 //! See `docs/import_maps.md` for a spec-mapped developer guide and integration notes.
 
 mod merge;
+mod integrity;
 mod parse;
 mod resolve;
 mod types;
 
 pub use merge::{merge_existing_and_new_import_maps, merge_module_specifier_maps, register_import_map};
+pub use integrity::resolve_module_integrity_metadata;
 pub use parse::{create_import_map_parse_result, parse_import_map_string};
 pub use resolve::{add_module_to_resolved_module_set, resolve_imports_match, resolve_module_specifier};
 pub use types::{
