@@ -550,15 +550,16 @@ pub fn object_get_prototype_of(
 }
 
 pub fn object_set_prototype_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let obj = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
   let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let proto = match proto_val {
     Value::Object(o) => Some(o),

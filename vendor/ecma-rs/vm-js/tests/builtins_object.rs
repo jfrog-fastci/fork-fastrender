@@ -287,6 +287,32 @@ fn object_get_prototype_of_boxes_primitives() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_set_prototype_of_boxes_primitives() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let object_proto = rt.realm.intrinsics().object_prototype();
+
+  let mut scope = rt.heap.scope();
+
+  let set_proto =
+    get_own_data_property(&mut scope, object, "setPrototypeOf")?.expect("Object.setPrototypeOf exists");
+  let Value::Object(set_proto) = set_proto else {
+    panic!("Object.setPrototypeOf should be a function object");
+  };
+
+  let args = [Value::Number(1.0), Value::Object(object_proto)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(set_proto), Value::Object(object), &args)?;
+  let Value::Object(out_obj) = out else {
+    panic!("Object.setPrototypeOf should return an object");
+  };
+
+  assert_eq!(scope.heap().object_prototype(out_obj)?, Some(object_proto));
+  Ok(())
+}
+
+#[test]
 fn object_assign_copies_enumerable_properties_and_invokes_getters() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();

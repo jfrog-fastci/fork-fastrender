@@ -1608,18 +1608,58 @@ impl Vm {
   /// ECMAScript `GetMethod(V, P)` (partial).
   ///
   /// Note: `GetMethod` uses `GetV`, which in turn uses `ToObject`. Full `ToObject` boxing semantics
-  /// are not implemented yet for `vm-js`; for now this returns
-  /// `VmError::Unimplemented(\"GetMethod on non-object\")` when `value` is not an object.
+  /// are implemented by boxing primitives via the intrinsic `Object` constructor.
   pub fn get_method(
     &mut self,
     scope: &mut Scope<'_>,
     value: Value,
     key: PropertyKey,
   ) -> Result<Option<Value>, VmError> {
-    let Value::Object(obj) = value else {
-      return Err(VmError::Unimplemented("GetMethod on non-object"));
+    // Root inputs for the duration of the operation: `GetV` can allocate when boxing primitives
+    // (ToObject) and when invoking accessor getters.
+    let mut scope = scope.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
     };
-    self.get_method_from_object(scope, obj, key)
+    scope.push_roots(&[value, key_root])?;
+
+    // GetV(V, P): ToObject(V) then Get(O, P) with receiver = V.
+    let receiver = value;
+    let obj = match value {
+      Value::Object(obj) => obj,
+      Value::Undefined | Value::Null => {
+        return Err(VmError::TypeError(
+          "GetMethod: cannot convert null/undefined to object",
+        ))
+      }
+      other => {
+        let intr = self
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let object_ctor = Value::Object(intr.object_constructor());
+        scope.push_root(object_ctor)?;
+
+        let boxed = self.call_without_host(&mut scope, object_ctor, Value::Undefined, &[other])?;
+        let Value::Object(boxed_obj) = boxed else {
+          return Err(VmError::InvariantViolation(
+            "Object(..) conversion returned non-object",
+          ));
+        };
+        scope.push_root(boxed)?;
+        boxed_obj
+      }
+    };
+
+    // GetMethod: callability checks and `null`/`undefined` normalization.
+    let func = scope.ordinary_get(self, obj, key, receiver)?;
+    if matches!(func, Value::Undefined | Value::Null) {
+      return Ok(None);
+    }
+    if !scope.heap().is_callable(func)? {
+      return Err(VmError::TypeError("GetMethod: target is not callable"));
+    }
+    Ok(Some(func))
   }
 
   /// Constructs `callee` with the provided arguments and `new_target`.

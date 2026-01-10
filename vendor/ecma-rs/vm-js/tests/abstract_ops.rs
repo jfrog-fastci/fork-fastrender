@@ -1,7 +1,7 @@
 use vm_js::{
   create_data_property_or_throw, define_property_or_throw, delete_property_or_throw, get_method,
-  Heap, HeapLimits, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Value,
-  Vm, VmError, VmOptions,
+  Heap, HeapLimits, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
+  Value, Vm, VmError, VmOptions,
 };
 
 #[test]
@@ -121,16 +121,28 @@ fn get_method_throws_type_error_for_non_callable() -> Result<(), VmError> {
 }
 
 #[test]
-fn get_method_on_non_object_is_unimplemented_for_now() -> Result<(), VmError> {
+fn get_method_on_number_boxes_and_returns_none_when_missing() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let mut scope = heap.scope();
+
+  let key = PropertyKey::from_string(scope.alloc_string("m")?);
+  let got = get_method(&mut vm, &mut scope, Value::Number(1.0), key)?;
+  assert_eq!(got, None);
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn get_method_on_null_throws_type_error() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut scope = heap.scope();
 
   let key = PropertyKey::from_string(scope.alloc_string("m")?);
-  let err = get_method(&mut vm, &mut scope, Value::Number(1.0), key).unwrap_err();
-  assert!(matches!(
-    err,
-    VmError::Unimplemented("GetMethod on non-object")
-  ));
+  let err = get_method(&mut vm, &mut scope, Value::Null, key).unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)));
   Ok(())
 }
