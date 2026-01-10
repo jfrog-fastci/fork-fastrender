@@ -8,7 +8,7 @@ use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -141,6 +141,71 @@ fn sri_sha256_allows_matching_digest() -> Result<()> {
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert_eq!(executor.take_log(), vec![script_body.to_string()]);
+  Ok(())
+}
+
+#[test]
+fn sri_sha384_allows_matching_digest() -> Result<()> {
+  let script_url = "https://example.com/a.js";
+  let script_body = "console.log('ok');";
+  let digest = Sha384::digest(script_body.as_bytes());
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let html = format!(
+    r#"<!doctype html><script async src="{script_url}" integrity="sha384-{b64}"></script>"#
+  );
+
+  let executor = LogExecutor::default();
+  let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
+  tab.register_script_source(script_url, script_body);
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(executor.take_log(), vec![script_body.to_string()]);
+  Ok(())
+}
+
+#[test]
+fn sri_sha512_allows_matching_digest() -> Result<()> {
+  let script_url = "https://example.com/a.js";
+  let script_body = "console.log('ok');";
+  let digest = Sha512::digest(script_body.as_bytes());
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let html = format!(
+    r#"<!doctype html><script async src="{script_url}" integrity="sha512-{b64}"></script>"#
+  );
+
+  let executor = LogExecutor::default();
+  let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
+  tab.register_script_source(script_url, script_body);
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(executor.take_log(), vec![script_body.to_string()]);
+  Ok(())
+}
+
+#[test]
+fn sri_strongest_algorithm_preferred_over_weaker_matches() -> Result<()> {
+  let script_url = "https://example.com/a.js";
+  let script_body = "console.log('ok');";
+  let sha512_wrong = BASE64_STANDARD.encode(Sha512::digest(b"other"));
+  let sha256_ok = BASE64_STANDARD.encode(Sha256::digest(script_body.as_bytes()));
+  let integrity = format!("sha512-{sha512_wrong} sha256-{sha256_ok}");
+
+  let html = format!(
+    r#"<!doctype html><script async src="{script_url}" integrity="{integrity}"></script>"#
+  );
+
+  let executor = LogExecutor::default();
+  let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
+  tab.register_script_source(script_url, script_body);
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(
+    executor.take_log(),
+    Vec::<String>::new(),
+    "expected sha512 mismatch to block even when a weaker digest matches"
+  );
   Ok(())
 }
 
