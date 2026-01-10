@@ -318,11 +318,32 @@ impl CallbackHandle {
           let key_str = scope.alloc_string("handleEvent")?;
           scope.push_root(Value::String(key_str))?;
           let key = VmPropertyKey::from_string(key_str);
-          let Some(method) = vm.get_method_from_object(scope, obj, key)? else {
+          // Implement `GetMethod` + `[[Get]]` directly so accessor getters are invoked via
+          // `call_with_host_and_hooks` (preserving embedder host context / host hooks).
+          let method = match scope.heap().get_property(obj, &key)? {
+            None => Value::Undefined,
+            Some(desc) => match desc.kind {
+              vm_js::PropertyKind::Data { value, .. } => value,
+              vm_js::PropertyKind::Accessor { get, .. } => {
+                if matches!(get, Value::Undefined) {
+                  Value::Undefined
+                } else {
+                  if !scope.heap().is_callable(get)? {
+                    return Err(VmError::TypeError("accessor getter is not callable"));
+                  }
+                  vm.call_with_host_and_hooks(host, scope, hooks, get, callback, &[])?
+                }
+              }
+            },
+          };
+          if matches!(method, Value::Undefined | Value::Null) {
             return Err(VmError::TypeError(
               "Callback interface object is missing a callable handleEvent method",
             ));
-          };
+          }
+          if !scope.heap().is_callable(method)? {
+            return Err(VmError::TypeError("GetMethod: target is not callable"));
+          }
           scope.push_root(method)?;
 
           vm.call_with_host_and_hooks(host, scope, hooks, method, callback, args)
