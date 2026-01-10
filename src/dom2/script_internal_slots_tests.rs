@@ -103,6 +103,7 @@ fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let script = doc.create_element("script", HTML_NAMESPACE);
   doc.set_attribute(script, "async", "").unwrap();
+  assert!(doc.has_attribute(script, "async").unwrap());
   assert!(!doc.node(script).script_force_async);
 
   let cloned = doc.clone_node(script, false).unwrap();
@@ -112,4 +113,8 @@ fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
   assert!(!cloned_node.script_force_async);
   assert!(!cloned_node.script_parser_document);
   assert!(!cloned_node.script_already_started);
+
+  assert!(doc.remove_attribute(cloned, "async").unwrap());
+  assert!(!doc.has_attribute(cloned, "async").unwrap());
+  assert!(!doc.node(cloned).script_force_async);
 }
