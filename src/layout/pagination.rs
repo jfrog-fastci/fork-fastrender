@@ -2308,20 +2308,10 @@ fn collect_fixed_fragments(node: &FragmentNode, origin: Point, out: &mut Vec<Fra
 #[derive(Debug, Clone)]
 struct MarginBoxPlan {
   style: Arc<ComputedStyle>,
-  content: MarginBoxPlanContent,
-}
-
-#[derive(Debug, Clone)]
-enum MarginBoxPlanContent {
-  /// `content: element(...)` and it resolved to a single snapshot, so we can reuse it directly
-  /// without running layout.
-  SnapshotOnly { snapshot: FragmentNode },
-  /// A regular margin box laid out via a dedicated box tree, plus any running-element snapshots to
-  /// substitute into the laid-out fragment tree.
-  BoxTree {
-    tree: BoxTree,
-    element_placeholders: HashMap<usize, FragmentNode>,
-  },
+  /// Synthetic box tree for the margin box content.
+  tree: BoxTree,
+  /// Running-element snapshots to substitute into the laid-out fragment tree.
+  element_placeholders: HashMap<usize, FragmentNode>,
 }
 
 fn substitute_running_element_placeholders(
@@ -2411,90 +2401,21 @@ fn build_margin_box_fragments(
     owned_style.display = Display::Block;
     let style_arc = Arc::new(owned_style);
     let box_style = style_arc.as_ref();
-    let plan = if let ContentValue::Items(items) = &box_style.content_value {
-      if items.len() == 1 {
-        if let ContentItem::Element { ident, select } = &items[0] {
-          if let Some(snapshot) = crate::layout::running_elements::select_running_element(
-            ident,
-            *select,
-            running_elements,
-          ) {
-            MarginBoxPlan {
-              style: style_arc,
-              content: MarginBoxPlanContent::SnapshotOnly { snapshot },
-            }
-          } else {
-            // The only content item was `element()` but it resolved to nothing, so the margin box is
-            // effectively empty.
-            let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, vec![]);
-            MarginBoxPlan {
-              style: style_arc,
-              content: MarginBoxPlanContent::BoxTree {
-                tree: BoxTree::new(root),
-                element_placeholders: HashMap::new(),
-              },
-            }
-          }
-        } else {
-          let (children, element_snapshots) = build_margin_box_children(
-            box_style,
-            page_index,
-            page_count,
-            running_strings,
-            running_elements,
-            &style_arc,
-          );
-          let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
-          let tree = BoxTree::new(root);
-          let element_placeholders =
-            build_running_element_placeholder_map(&tree, element_snapshots);
-          MarginBoxPlan {
-            style: style_arc,
-            content: MarginBoxPlanContent::BoxTree {
-              tree,
-              element_placeholders,
-            },
-          }
-        }
-      } else {
-        let (children, element_snapshots) = build_margin_box_children(
-          box_style,
-          page_index,
-          page_count,
-          running_strings,
-          running_elements,
-          &style_arc,
-        );
-        let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
-        let tree = BoxTree::new(root);
-        let element_placeholders = build_running_element_placeholder_map(&tree, element_snapshots);
-        MarginBoxPlan {
-          style: style_arc,
-          content: MarginBoxPlanContent::BoxTree {
-            tree,
-            element_placeholders,
-          },
-        }
-      }
-    } else {
-      let (children, element_snapshots) = build_margin_box_children(
-        box_style,
-        page_index,
-        page_count,
-        running_strings,
-        running_elements,
-        &style_arc,
-      );
-      let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
-      let tree = BoxTree::new(root);
-      let element_placeholders = build_running_element_placeholder_map(&tree, element_snapshots);
-      MarginBoxPlan {
-        style: style_arc,
-        content: MarginBoxPlanContent::BoxTree {
-          tree,
-          element_placeholders,
-        },
-      }
+    let (children, element_snapshots) = build_margin_box_children(
+      box_style,
+      page_index,
+      page_count,
+      running_strings,
+      running_elements,
+      &style_arc,
+    );
+    let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+    let tree = BoxTree::new(root);
+    let element_placeholders = build_running_element_placeholder_map(&tree, element_snapshots);
+    let plan = MarginBoxPlan {
+      style: style_arc,
+      tree,
+      element_placeholders,
     };
 
     plans.insert(area, plan);
@@ -2522,38 +2443,26 @@ fn build_margin_box_fragments(
       continue;
     }
 
-    match &plan.content {
-      MarginBoxPlanContent::SnapshotOnly { snapshot } => {
-        let mut fragment = FragmentNode::new_block_styled(
-          bounds,
-          vec![snapshot.clone()],
-          plan.style.clone(),
-        );
-        fragment.force_stacking_context_with_z_index(plan.style.z_index.unwrap_or(0));
-        fragments.push(fragment);
-      }
-      MarginBoxPlanContent::BoxTree {
-        tree: box_tree,
-        element_placeholders,
-      } => {
-        let config = LayoutConfig::new(Size::new(bounds.width(), bounds.height()));
-        let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
-        if let Ok(mut tree) = engine.layout_tree(box_tree) {
-          tree.root.bounds = Rect::from_xywh(0.0, 0.0, bounds.width(), bounds.height());
-          tree.root.scroll_overflow = Rect::from_xywh(
-            0.0,
-            0.0,
-            tree.root.scroll_overflow.width().max(bounds.width()),
-            tree.root.scroll_overflow.height().max(bounds.height()),
-          );
-          substitute_running_element_placeholders(&mut tree.root, element_placeholders, &plan.style);
-          translate_fragment(&mut tree.root, bounds.x(), bounds.y());
-          tree
-            .root
-            .force_stacking_context_with_z_index(plan.style.z_index.unwrap_or(0));
-          fragments.push(tree.root);
-        }
-      }
+    let config = LayoutConfig::new(Size::new(bounds.width(), bounds.height()));
+    let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
+    if let Ok(mut tree) = engine.layout_tree(&plan.tree) {
+      tree.root.bounds = Rect::from_xywh(0.0, 0.0, bounds.width(), bounds.height());
+      tree.root.scroll_overflow = Rect::from_xywh(
+        0.0,
+        0.0,
+        tree.root.scroll_overflow.width().max(bounds.width()),
+        tree.root.scroll_overflow.height().max(bounds.height()),
+      );
+      substitute_running_element_placeholders(
+        &mut tree.root,
+        &plan.element_placeholders,
+        &plan.style,
+      );
+      translate_fragment(&mut tree.root, bounds.x(), bounds.y());
+      tree
+        .root
+        .force_stacking_context_with_z_index(plan.style.z_index.unwrap_or(0));
+      fragments.push(tree.root);
     }
   }
 
@@ -3142,44 +3051,33 @@ fn variable_box_metrics(
   }
 
   // Auto size: use intrinsic sizing to compute min/max content contributions.
-  let (intrinsic_min, intrinsic_max) = match &plan.content {
-    MarginBoxPlanContent::SnapshotOnly { snapshot } => {
-      let value = match variable_axis {
-        PhysicalAxis::X => snapshot.bounds.width(),
-        PhysicalAxis::Y => snapshot.bounds.height(),
-      };
-      (value.max(0.0), value.max(0.0))
-    }
-    MarginBoxPlanContent::BoxTree { tree, .. } => {
-      let axis_is_inline = physical_axis_is_inline(style.writing_mode, variable_axis);
-      let intrinsic = |mode| {
-        if axis_is_inline {
-          intrinsic_engine.compute_intrinsic_size(&tree.root, mode)
-        } else {
-          intrinsic_engine.compute_intrinsic_block_size(&tree.root, mode)
-        }
-      };
-      let min = intrinsic(IntrinsicSizingMode::MinContent).unwrap_or(0.0);
-      let max = match intrinsic(IntrinsicSizingMode::MaxContent) {
-        Ok(v) => v,
-        Err(LayoutError::Timeout { .. }) => {
-          return VariableMarginBox {
-            generated: true,
-            outer: None,
-            outer_min: (min.max(0.0) + margin_sum).max(0.0),
-            outer_max: (min.max(0.0) + margin_sum).max(0.0),
-            min_constraint: min_outer,
-            max_constraint: max_outer,
-            margin_start,
-            margin_end,
-          }
-          .fixed_outer((min.max(0.0) + margin_sum).max(0.0))
-        }
-        Err(_) => min,
-      };
-      (min.max(0.0), max.max(0.0))
+  let axis_is_inline = physical_axis_is_inline(style.writing_mode, variable_axis);
+  let intrinsic = |mode| {
+    if axis_is_inline {
+      intrinsic_engine.compute_intrinsic_size(&plan.tree.root, mode)
+    } else {
+      intrinsic_engine.compute_intrinsic_block_size(&plan.tree.root, mode)
     }
   };
+  let min = intrinsic(IntrinsicSizingMode::MinContent).unwrap_or(0.0);
+  let max = match intrinsic(IntrinsicSizingMode::MaxContent) {
+    Ok(v) => v,
+    Err(LayoutError::Timeout { .. }) => {
+      return VariableMarginBox {
+        generated: true,
+        outer: None,
+        outer_min: (min.max(0.0) + margin_sum).max(0.0),
+        outer_max: (min.max(0.0) + margin_sum).max(0.0),
+        min_constraint: min_outer,
+        max_constraint: max_outer,
+        margin_start,
+        margin_end,
+      }
+      .fixed_outer((min.max(0.0) + margin_sum).max(0.0))
+    }
+    Err(_) => min,
+  };
+  let (intrinsic_min, intrinsic_max) = (min.max(0.0), max.max(0.0));
 
   result.outer_min = (intrinsic_min + margin_sum).max(0.0);
   result.outer_max = (intrinsic_max + margin_sum).max(result.outer_min);

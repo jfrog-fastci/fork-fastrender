@@ -1185,6 +1185,51 @@ fn running_element_in_margin_box_is_inserted_in_content_order() {
 }
 
 #[test]
+fn running_element_margin_box_respects_padding() {
+  let html = r#"
+     <html>
+       <head>
+         <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px 20px;
+            @top-center { content: element(header); padding-top: 10px; }
+          }
+          body { margin: 0; }
+          .running { position: running(header); margin: 0; font-size: 16px; line-height: 16px; }
+        </style>
+      </head>
+      <body>
+        <span class="running">Title</span>
+        <div style="height: 400px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let margin_box = page
+    .children
+    .iter()
+    .skip(1)
+    .find(|child| find_text(child, "Title").is_some())
+    .expect("expected running element in margin box");
+
+  let text_pos = find_text_position(margin_box, "Title", (0.0, 0.0))
+    .expect("expected Title text in margin box");
+  let local_y = text_pos.1 - margin_box.bounds.y();
+  assert!(
+    local_y >= 9.0,
+    "expected running element to be laid out inside padding box, got local_y={local_y}"
+  );
+}
+
+#[test]
 fn running_element_inside_style_containment_does_not_affect_margin_boxes() {
   let html = r#"
     <html>
