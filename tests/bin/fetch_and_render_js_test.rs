@@ -17,7 +17,7 @@ html.js-enabled body { background: rgb(0, 255, 0); }
   )
   .expect("write html fixture");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let no_js_png = tmp.path().join("no_js.png");
   let js_png = tmp.path().join("js.png");
 
@@ -83,7 +83,7 @@ html.js-enabled body { background: rgb(0, 255, 0); }
   )
   .expect("write html fixture");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let no_js_png = tmp.path().join("no_js.png");
   let js_png = tmp.path().join("js.png");
 

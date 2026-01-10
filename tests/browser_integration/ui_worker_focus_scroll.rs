@@ -57,7 +57,9 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-focus-scroll").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
@@ -162,7 +164,9 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-focus-scroll-nested").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();

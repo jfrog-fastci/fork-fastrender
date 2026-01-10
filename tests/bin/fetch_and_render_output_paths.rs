@@ -9,7 +9,7 @@ fn write_simple_html(dir: &tempfile::TempDir) -> (String, String) {
     "<html><body><div style=\"width:1px;height:1px;background:#000\"></div></body></html>",
   )
   .expect("write html");
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let expected_output = format!("{}.png", url_to_filename(&url));
   (url, expected_output)
 }

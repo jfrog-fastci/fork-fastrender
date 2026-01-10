@@ -66,7 +66,9 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let handle =
     spawn_ui_worker("fastr-ui-worker-stage-listener-scope").expect("spawn ui worker");
@@ -144,4 +146,3 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

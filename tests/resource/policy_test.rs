@@ -86,7 +86,9 @@ fn blocks_mixed_content_images_in_https_documents() {
 fn blocks_file_images_in_http_documents() {
   let doc_url = "http://example.test/page.html";
   let temp = tempfile::tempdir().unwrap();
-  let file_url = format!("file://{}", temp.path().join("image.png").display());
+  let file_url = url::Url::from_file_path(temp.path().join("image.png"))
+    .unwrap()
+    .to_string();
   let html = format!(r#"<!doctype html><img src="{file_url}">"#);
 
   let fetcher = MockFetcher::default().with_html(doc_url, &html).with_bytes(
@@ -155,9 +157,13 @@ fn blocks_cached_mixed_content_images() {
 #[test]
 fn blocks_cached_file_images_in_http_documents() {
   let temp = tempfile::tempdir().unwrap();
-  let file_doc_url = format!("file://{}", temp.path().join("page.html").display());
+  let file_doc_url = url::Url::from_file_path(temp.path().join("page.html"))
+    .unwrap()
+    .to_string();
   let http_doc_url = "http://example.test/page.html";
-  let file_url = format!("file://{}", temp.path().join("image.png").display());
+  let file_url = url::Url::from_file_path(temp.path().join("image.png"))
+    .unwrap()
+    .to_string();
 
   let fetcher = MockFetcher::default()
     .with_html(

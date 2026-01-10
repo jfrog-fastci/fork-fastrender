@@ -110,7 +110,9 @@ fn make_test_page() -> (tempfile::TempDir, String) {
   "#;
 
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   (dir, url)
 }
 
@@ -144,7 +146,9 @@ fn make_test_page_scroller_far_down() -> (tempfile::TempDir, String) {
   "#;
 
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   (dir, url)
 }
 
@@ -473,7 +477,9 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-pointer-hit-test").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();

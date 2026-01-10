@@ -19,9 +19,10 @@ fn fetch_and_render_exits_non_zero_for_missing_file_url() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let missing = tmp.path().join("missing.html");
   let output = tmp.path().join("out.png");
+  let missing_url = url::Url::from_file_path(&missing).unwrap().to_string();
 
   let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
-    .arg(format!("file://{}", missing.display()))
+    .arg(&missing_url)
     .arg(&output)
     .status()
     .expect("run fetch_and_render");
@@ -53,7 +54,7 @@ fn fetch_and_render_defaults_output_name_from_url() {
   let html_path = tmp.path().join("page.html");
   fs::write(&html_path, "<!doctype html><title>Hello</title>").expect("write html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let expected_png = tmp.path().join(format!("{}.png", url_to_filename(&url)));
 
   let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))

@@ -108,7 +108,9 @@ fn make_test_page() -> (tempfile::TempDir, String) {
   "#;
 
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   (dir, url)
 }
 
@@ -188,7 +190,9 @@ fn make_tab_traversal_page() -> (tempfile::TempDir, String) {
   "#;
 
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   (dir, url)
 }
 

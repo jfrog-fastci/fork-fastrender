@@ -15529,7 +15529,7 @@ mod tests {
     img.save(&path).expect("write png");
 
     let dir = path.parent().unwrap().to_path_buf();
-    let base_url = format!("file://{}", dir.display());
+    let base_url = url::Url::from_directory_path(&dir).unwrap().to_string();
 
     let mut style = ComputedStyle::default();
     style.set_background_layers(vec![BackgroundLayer {

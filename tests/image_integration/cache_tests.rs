@@ -127,7 +127,7 @@ fn repeated_renders_hit_image_cache() {
   let mut renderer = FastRender::new().expect("renderer");
   let mut fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   fixture.push("tests/fixtures/bundle_page/page.html");
-  let url = format!("file://{}", fixture.to_string_lossy());
+  let url = url::Url::from_file_path(&fixture).unwrap().to_string();
 
   let options = RenderOptions::new()
     .with_viewport(320, 240)
@@ -174,7 +174,7 @@ fn stylesheet_inlining_reports_cache_usage() {
   let mut renderer = FastRender::new().expect("renderer");
   let mut fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   fixture.push("tests/fixtures/bundle_page/page.html");
-  let base = format!("file://{}", fixture.to_string_lossy());
+  let base = url::Url::from_file_path(&fixture).unwrap().to_string();
   let html = fs::read_to_string(&fixture).expect("load html");
 
   let options = RenderOptions::new()

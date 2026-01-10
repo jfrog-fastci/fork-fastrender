@@ -233,10 +233,26 @@ fn html_meta_path(html_path: &Path) -> PathBuf {
 }
 
 fn file_url_for_path(path: &Path) -> String {
-  let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+  let abs = fs::canonicalize(path).unwrap_or_else(|_| {
+    if path.is_absolute() {
+      path.to_path_buf()
+    } else {
+      std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(path)
+    }
+  });
   Url::from_file_path(&abs)
     .map(|u| u.to_string())
-    .unwrap_or_else(|_| format!("file://{}", abs.display()))
+    .unwrap_or_else(|()| {
+      let mut url = Url::parse("file:///").expect("file base url");
+      let mut path_str = abs.to_string_lossy().replace('\\', "/");
+      if !path_str.starts_with('/') {
+        path_str.insert(0, '/');
+      }
+      url.set_path(&path_str);
+      url.to_string()
+    })
 }
 
 fn parse_collision_suffix(raw: &str) -> Option<(&str, &str)> {

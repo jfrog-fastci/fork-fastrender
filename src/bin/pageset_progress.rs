@@ -2165,7 +2165,30 @@ impl ProgressSelectionArgs {
 
 fn url_hint_from_cache_path(cache_path: &Path) -> String {
   cached_url_from_cache_meta(cache_path)
-    .unwrap_or_else(|| format!("file://{}", cache_path.display()))
+    .unwrap_or_else(|| file_url_for_path(cache_path))
+}
+
+fn file_url_for_path(path: &Path) -> String {
+  let abs = path.canonicalize().unwrap_or_else(|_| {
+    if path.is_absolute() {
+      PathBuf::from(path)
+    } else {
+      std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(path)
+    }
+  });
+  url::Url::from_file_path(&abs)
+    .map(|u| u.to_string())
+    .unwrap_or_else(|()| {
+      let mut url = url::Url::parse("file:///").expect("file base url");
+      let mut path_str = abs.to_string_lossy().replace('\\', "/");
+      if !path_str.starts_with('/') {
+        path_str.insert(0, '/');
+      }
+      url.set_path(&path_str);
+      url.to_string()
+    })
 }
 
 fn cached_url_from_cache_meta(cache_path: &Path) -> Option<String> {
@@ -7440,7 +7463,7 @@ fn work_item_from_cache(
   // actually render (redirects to `www.`, MDN reference pages, etc).
   let url = cached_url_from_cache_meta(&cache_path)
     .or_else(|| entry.map(|e| e.url.clone()))
-    .unwrap_or_else(|| format!("file://{}", cache_path.display()));
+    .unwrap_or_else(|| file_url_for_path(&cache_path));
   let stem = entry
     .map(|e| e.stem.clone())
     .or_else(|| pageset_stem(cache_stem))

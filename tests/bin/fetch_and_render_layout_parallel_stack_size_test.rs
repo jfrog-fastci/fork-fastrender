@@ -117,7 +117,7 @@ fn fetch_and_render_layout_parallel_workers_use_large_stack() {
   let html_path = temp.path().join("deep_parallel.html");
   fs::write(&html_path, build_deep_parallel_html(500, 8)).expect("write deep html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let output_path = temp.path().join("out.png");
   let output = run_fetch_and_render(
     temp.path(),
@@ -149,7 +149,7 @@ fn fetch_and_render_layout_parallel_without_max_threads_uses_large_stack() {
   let html_path = temp.path().join("deep_parallel.html");
   fs::write(&html_path, build_deep_parallel_html(500, 8)).expect("write deep html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let output_path = temp.path().join("out.png");
   let output = run_fetch_and_render(
     temp.path(),
@@ -183,7 +183,7 @@ fn fetch_and_render_layout_parallel_table_cell_workers_use_large_stack() {
   let html_path = temp.path().join("deep_table.html");
   fs::write(&html_path, build_deep_table_html(300, 4, 4)).expect("write deep html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let output_path = temp.path().join("out.png");
   let output = run_fetch_and_render(
     temp.path(),
@@ -223,7 +223,7 @@ fn fetch_and_render_layout_parallel_auto_table_cell_workers_use_large_stack() {
   let html_path = temp.path().join("deep_table_auto.html");
   fs::write(&html_path, build_deep_table_multi_tbody_html(200, 6, 7, 7)).expect("write deep html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let output_path = temp.path().join("out.png");
   let output = run_fetch_and_render(
     temp.path(),

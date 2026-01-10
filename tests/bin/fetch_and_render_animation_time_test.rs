@@ -32,7 +32,7 @@ fn fetch_and_render_animation_time_flag_changes_output() {
 "#;
   fs::write(&html_path, html).expect("write html");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let out_0 = tmp.path().join("t0.png");
   let out_800 = tmp.path().join("t800.png");
 
@@ -65,4 +65,3 @@ fn fetch_and_render_animation_time_flag_changes_output() {
     "expected different PNG output when sampling animation at different timestamps"
   );
 }
-

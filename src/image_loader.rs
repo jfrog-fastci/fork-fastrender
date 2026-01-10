@@ -11046,11 +11046,11 @@ mod tests {
         .unwrap()
         .as_nanos()
     ));
-    let dir = path.parent().unwrap().to_path_buf();
-    let image = RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).expect("build 1x1");
-    image.save(&path).expect("encode png");
-    let base_url = format!("file://{}", dir.display());
-    cache.set_base_url(base_url);
+  let dir = path.parent().unwrap().to_path_buf();
+  let image = RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).expect("build 1x1");
+  image.save(&path).expect("encode png");
+  let base_url = Url::from_directory_path(&dir).unwrap().to_string();
+  cache.set_base_url(base_url);
 
     let image = cache
       .load(path.file_name().unwrap().to_str().unwrap())
@@ -11148,9 +11148,12 @@ mod tests {
         .unwrap()
         .as_nanos()
     ));
-    std::fs::create_dir_all(dir.join("assets")).expect("create temp dir");
-    let base = format!("file://{}", dir.display());
-    let cache = ImageCache::with_base_url(base);
+  std::fs::create_dir_all(dir.join("assets")).expect("create temp dir");
+  let mut base_url = Url::from_directory_path(&dir).unwrap();
+  let trimmed = base_url.path().trim_end_matches('/').to_string();
+  base_url.set_path(&trimmed);
+  let base = base_url.to_string();
+  let cache = ImageCache::with_base_url(base);
 
     let resolved = cache.resolve_url("assets/image.png");
     assert!(

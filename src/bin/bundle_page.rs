@@ -1055,7 +1055,28 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
   });
   let base_hint = pageset_url_hint
     .clone()
-    .unwrap_or_else(|| format!("file://{}", html_path.display()));
+    .unwrap_or_else(|| {
+      let abs = html_path.canonicalize().unwrap_or_else(|_| {
+        if html_path.is_absolute() {
+          html_path.to_path_buf()
+        } else {
+          std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(&html_path)
+        }
+      });
+      url::Url::from_file_path(&abs)
+        .map(|u| u.to_string())
+        .unwrap_or_else(|()| {
+          let mut url = url::Url::parse("file:///").expect("file base url");
+          let mut path_str = abs.to_string_lossy().replace('\\', "/");
+          if !path_str.starts_with('/') {
+            path_str.insert(0, '/');
+          }
+          url.set_path(&path_str);
+          url.to_string()
+        })
+    });
 
   let mut document_resource = FetchedResource::with_final_url(
     html_bytes,

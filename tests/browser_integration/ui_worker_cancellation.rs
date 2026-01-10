@@ -181,8 +181,12 @@ fn rapid_navigation_cancels_stale_navigation() {
   )
   .expect("write b.html");
 
-  let url_a = format!("file://{}/a.html", dir.path().display());
-  let url_b = format!("file://{}/b.html", dir.path().display());
+  let url_a = url::Url::from_file_path(dir.path().join("a.html"))
+    .unwrap()
+    .to_string();
+  let url_b = url::Url::from_file_path(dir.path().join("b.html"))
+    .unwrap()
+    .to_string();
 
   let cancel_gens = CancelGens::new();
   let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-nav", Some(10))
@@ -320,7 +324,9 @@ fn rapid_scroll_cancels_stale_paint() {
   )
   .expect("write scroll.html");
 
-  let url = format!("file://{}/scroll.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("scroll.html"))
+    .unwrap()
+    .to_string();
 
   let cancel_gens = CancelGens::new();
   let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-scroll", Some(50))

@@ -2822,13 +2822,17 @@ fn canonicalize_file_input_url<'a>(input_url: &'a str) -> Cow<'a, str> {
     // file://relative/path.html
     let rel = &input_url["file://".len()..];
     if let Ok(canon) = std::fs::canonicalize(rel) {
-      input = Cow::Owned(format!("file://{}", canon.display()));
+      if let Ok(url) = Url::from_file_path(&canon) {
+        input = Cow::Owned(url.to_string());
+      }
     }
   } else if let Ok(url) = Url::parse(input_url) {
     if url.scheme() == "file" {
       if let Ok(path) = url.to_file_path() {
         if let Ok(canon) = path.canonicalize() {
-          input = Cow::Owned(format!("file://{}", canon.display()));
+          if let Ok(url) = Url::from_file_path(&canon) {
+            input = Cow::Owned(url.to_string());
+          }
         }
       }
     }
@@ -5162,24 +5166,29 @@ mod tests {
   #[test]
   fn resolve_href_with_file_base_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let base = format!("file://{}", dir.path().display());
+    let mut base_url = Url::from_directory_path(dir.path()).unwrap();
+    let trimmed = base_url.path().trim_end_matches('/').to_string();
+    base_url.set_path(&trimmed);
+    let base = base_url.to_string();
     let resolved = resolve_href(&base, "styles/app.css").expect("resolved file href");
-    assert_eq!(
-      resolved,
-      format!("file://{}/styles/app.css", dir.path().display())
-    );
+    let expected = Url::from_file_path(dir.path().join("styles/app.css"))
+      .unwrap()
+      .to_string();
+    assert_eq!(resolved, expected);
   }
 
   #[test]
   fn resolve_href_with_file_base_file_parent() {
     let dir = tempfile::tempdir().unwrap();
-    let base = format!("file://{}/html/page.html", dir.path().display());
+    let base = Url::from_file_path(dir.path().join("html/page.html"))
+      .unwrap()
+      .to_string();
     std::fs::create_dir_all(dir.path().join("html")).unwrap();
     let resolved = resolve_href(&base, "../styles/app.css").expect("resolved file href");
-    assert_eq!(
-      resolved,
-      format!("file://{}/styles/app.css", dir.path().display())
-    );
+    let expected = Url::from_file_path(dir.path().join("styles/app.css"))
+      .unwrap()
+      .to_string();
+    assert_eq!(resolved, expected);
   }
 
   #[test]

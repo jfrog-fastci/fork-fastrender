@@ -18081,7 +18081,7 @@ mod tests {
     let bytes = vec![7u8; 1024];
     let mut file = NamedTempFile::new().expect("temp file");
     file.write_all(&bytes).expect("write file");
-    let url = format!("file://{}", file.path().display());
+    let url = Url::from_file_path(file.path()).unwrap().to_string();
 
     let fetcher = HttpFetcher::new().with_max_size(64);
     assert!(
@@ -18100,7 +18100,7 @@ mod tests {
     let bytes = b"hello".to_vec();
     let mut file = NamedTempFile::new().expect("temp file");
     file.write_all(&bytes).expect("write file");
-    let base = format!("file://{}", file.path().display());
+    let base = Url::from_file_path(file.path()).unwrap().to_string();
     let url = format!("{base}?v=1#ignored");
 
     let fetcher = HttpFetcher::new();
@@ -18119,7 +18119,7 @@ mod tests {
     file
       .write_all(b"<!DOCTYPE html><html><title>nope</title></html>")
       .expect("write html");
-    let url = format!("file://{}", file.path().display());
+    let url = Url::from_file_path(file.path()).unwrap().to_string();
 
     let fetcher = HttpFetcher::new();
     let res = fetcher
@@ -18168,7 +18168,7 @@ mod tests {
   #[test]
   fn file_fetch_substitutes_placeholder_bytes_for_empty_font_payloads() {
     let file = NamedTempFile::new().expect("temp file");
-    let url = format!("file://{}", file.path().display());
+    let url = Url::from_file_path(file.path()).unwrap().to_string();
 
     let fetcher = HttpFetcher::new();
     let res = fetcher

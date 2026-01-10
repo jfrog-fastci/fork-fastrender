@@ -68,8 +68,12 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
   )
   .expect("write tab2 css");
 
-  let tab1_url = format!("file://{}", tab1_dir.join("index.html").display());
-  let tab2_url = format!("file://{}", tab2_dir.join("index.html").display());
+  let tab1_url = url::Url::from_file_path(tab1_dir.join("index.html"))
+    .unwrap()
+    .to_string();
+  let tab2_url = url::Url::from_file_path(tab2_dir.join("index.html"))
+    .unwrap()
+    .to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-tab-resource-isolation").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();

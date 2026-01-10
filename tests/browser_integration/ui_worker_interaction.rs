@@ -140,7 +140,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     </html>
   "#;
   std::fs::write(&html_path, html).expect("write html");
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
   let handle =
     spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
@@ -201,7 +201,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
     </html>
   "#;
   std::fs::write(&html_path, html).expect("write html");
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
   let handle =
     spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
@@ -278,8 +278,8 @@ fn link_click_triggers_navigation_to_resolved_url() {
   std::fs::write(&page1_path, page1).expect("write page1");
   std::fs::write(&page2_path, page2).expect("write page2");
 
-  let page1_url = format!("file://{}", page1_path.display());
-  let page2_url = format!("file://{}", page2_path.display());
+  let page1_url = url::Url::from_file_path(&page1_path).unwrap().to_string();
+  let page2_url = url::Url::from_file_path(&page2_path).unwrap().to_string();
 
   let handle =
     spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
@@ -392,8 +392,8 @@ fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
   std::fs::write(&page1_path, page1).expect("write page1");
   std::fs::write(&page2_path, page2).expect("write page2");
 
-  let page1_url = format!("file://{}", page1_path.display());
-  let page2_url = format!("file://{}", page2_path.display());
+  let page1_url = url::Url::from_file_path(&page1_path).unwrap().to_string();
+  let page2_url = url::Url::from_file_path(&page2_path).unwrap().to_string();
 
   let handle =
     spawn_ui_worker("fastr-ui-worker-interaction-element-scroll").expect("spawn ui worker");
@@ -502,7 +502,7 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
     </html>
   "#;
   std::fs::write(&html_path, html).expect("write html");
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
   let handle = spawn_ui_worker("fastr-ui-worker-interaction-select")
     .expect("spawn ui worker");

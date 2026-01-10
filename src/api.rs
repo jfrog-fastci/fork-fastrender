@@ -28464,8 +28464,8 @@ mod tests {
       font_path.display()
     );
 
-    let font_url = format!("file://{}", font_path.display());
-    let base_hint = format!("file://{}/", manifest_dir.display());
+    let font_url = Url::from_file_path(&font_path).unwrap().to_string();
+    let base_hint = Url::from_directory_path(&manifest_dir).unwrap().to_string();
     let html = format!(
       r#"<!doctype html>
       <html>

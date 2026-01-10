@@ -36,7 +36,7 @@ fn render_url_loads_external_css_and_images_from_file() {
   let html_path = dir.path().join("page.html");
   std::fs::write(&html_path, html).expect("write html");
 
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let mut renderer = FastRender::new().expect("renderer");
   let result = renderer.render_url(&file_url).expect("render url");
   let pixmap = result.pixmap;
@@ -61,7 +61,7 @@ fn render_url_records_policy_blocked_fetches() {
   let dir = tempfile::tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
   std::fs::write(&html_path, html).expect("write html");
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
   let policy = ResourcePolicy::default()
     .allow_http(false)

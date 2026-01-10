@@ -20,7 +20,7 @@ fn fetch_and_render_soft_timeout_exits_with_stage_message() {
   .expect("write html");
 
   let output_path = temp.path().join("out.png");
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
 
   let output = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
     .args([
@@ -60,4 +60,3 @@ fn fetch_and_render_soft_timeout_exits_with_stage_message() {
     "expected cooperative timeout (not hard-kill timeout), got:\n{combined}"
   );
 }
-

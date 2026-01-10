@@ -15,7 +15,7 @@ html.js-enabled body { background: rgb(0, 255, 0); }
   )
   .expect("write html fixture");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let standard_png = tmp.path().join("standard.png");
   let compat_png = tmp.path().join("compat.png");
 
@@ -76,7 +76,7 @@ img { display: block; width: 1px; height: 1px; }
   )
   .expect("write html fixture");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let standard_png = tmp.path().join("standard.png");
   let compat_png = tmp.path().join("compat.png");
 

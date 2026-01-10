@@ -12,7 +12,7 @@ fn bundles_and_renders_local_fixture() {
   let image_path = fixture_dir.join("image.png");
   let font_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/ColorTestCOLR.ttf");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let bundle_dir = tmp.path().join("capture");
   let output_png = tmp.path().join("out.png");
 
@@ -36,9 +36,9 @@ fn bundles_and_renders_local_fixture() {
     }),
     "data: URLs should not be persisted in bundle manifests"
   );
-  let css_url = format!("file://{}", css_path.display());
-  let image_url = format!("file://{}", image_path.display());
-  let font_url = format!("file://{}", font_path.display());
+  let css_url = url::Url::from_file_path(&css_path).unwrap().to_string();
+  let image_url = url::Url::from_file_path(&image_path).unwrap().to_string();
+  let font_url = url::Url::from_file_path(&font_path).unwrap().to_string();
 
   assert!(
     resources.contains_key(&css_url),
@@ -95,7 +95,7 @@ fn bundles_and_renders_local_fixture_without_rendering_capture() {
   let imported2_bg_path = fixture_dir.join("imported2_bg.png");
   let font_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/ColorTestCOLR.ttf");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let bundle_dir = tmp.path().join("capture");
   let output_png = tmp.path().join("out.png");
 
@@ -125,21 +125,21 @@ fn bundles_and_renders_local_fixture_without_rendering_capture() {
     }),
     "data: URLs should not be persisted in bundle manifests"
   );
-  let css_url = format!("file://{}", css_path.display());
-  let imported_css_url = format!("file://{}", imported_css_path.display());
-  let imported2_css_url = format!("file://{}", imported2_css_path.display());
-  let image_url = format!("file://{}", image_path.display());
-  let image2_url = format!("file://{}", image2_path.display());
-  let source_url = format!("file://{}", source_path.display());
-  let iframe_html_url = format!("file://{}", iframe_html_path.display());
-  let iframe_css_url = format!("file://{}", iframe_css_path.display());
-  let iframe_image_url = format!("file://{}", iframe_image_path.display());
-  let iframe_bg_url = format!("file://{}", iframe_bg_path.display());
-  let inline_bg_url = format!("file://{}", inline_bg_path.display());
-  let inline_attr_url = format!("file://{}", inline_attr_path.display());
-  let imported_bg_url = format!("file://{}", imported_bg_path.display());
-  let imported2_bg_url = format!("file://{}", imported2_bg_path.display());
-  let font_url = format!("file://{}", font_path.display());
+  let css_url = url::Url::from_file_path(&css_path).unwrap().to_string();
+  let imported_css_url = url::Url::from_file_path(&imported_css_path).unwrap().to_string();
+  let imported2_css_url = url::Url::from_file_path(&imported2_css_path).unwrap().to_string();
+  let image_url = url::Url::from_file_path(&image_path).unwrap().to_string();
+  let image2_url = url::Url::from_file_path(&image2_path).unwrap().to_string();
+  let source_url = url::Url::from_file_path(&source_path).unwrap().to_string();
+  let iframe_html_url = url::Url::from_file_path(&iframe_html_path).unwrap().to_string();
+  let iframe_css_url = url::Url::from_file_path(&iframe_css_path).unwrap().to_string();
+  let iframe_image_url = url::Url::from_file_path(&iframe_image_path).unwrap().to_string();
+  let iframe_bg_url = url::Url::from_file_path(&iframe_bg_path).unwrap().to_string();
+  let inline_bg_url = url::Url::from_file_path(&inline_bg_path).unwrap().to_string();
+  let inline_attr_url = url::Url::from_file_path(&inline_attr_path).unwrap().to_string();
+  let imported_bg_url = url::Url::from_file_path(&imported_bg_path).unwrap().to_string();
+  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path).unwrap().to_string();
+  let font_url = url::Url::from_file_path(&font_path).unwrap().to_string();
 
   assert!(
     resources.contains_key(&css_url),
@@ -229,7 +229,7 @@ fn bundles_embedded_css_without_rendering_capture() {
   let imported2_bg_path = fixture_dir.join("imported2_bg.png");
   let font_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/ColorTestCOLR.ttf");
 
-  let url = format!("file://{}", html_path.display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let bundle_dir = tmp.path().join("capture");
 
   let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
@@ -249,12 +249,12 @@ fn bundles_embedded_css_without_rendering_capture() {
   let manifest: Value = serde_json::from_slice(&manifest_bytes).expect("parse manifest");
 
   let resources = manifest["resources"].as_object().expect("resources object");
-  let css_url = format!("file://{}", css_path.display());
-  let imported_css_url = format!("file://{}", imported_css_path.display());
-  let imported2_css_url = format!("file://{}", imported2_css_path.display());
-  let imported_bg_url = format!("file://{}", imported_bg_path.display());
-  let imported2_bg_url = format!("file://{}", imported2_bg_path.display());
-  let font_url = format!("file://{}", font_path.display());
+  let css_url = url::Url::from_file_path(&css_path).unwrap().to_string();
+  let imported_css_url = url::Url::from_file_path(&imported_css_path).unwrap().to_string();
+  let imported2_css_url = url::Url::from_file_path(&imported2_css_path).unwrap().to_string();
+  let imported_bg_url = url::Url::from_file_path(&imported_bg_path).unwrap().to_string();
+  let imported2_bg_url = url::Url::from_file_path(&imported2_bg_path).unwrap().to_string();
+  let font_url = url::Url::from_file_path(&font_path).unwrap().to_string();
 
   assert!(
     resources.contains_key(&css_url),

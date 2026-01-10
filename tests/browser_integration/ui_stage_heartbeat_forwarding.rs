@@ -40,7 +40,9 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
   )
   .expect("write css");
 
-  let base_url = format!("file://{}/index.html", dir.path().display());
+  let base_url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   let html = r#"
     <!doctype html>
     <html>
@@ -146,7 +148,9 @@ fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-loop-stage-test")
     .expect("spawn ui worker")
@@ -312,7 +316,9 @@ fn stage_heartbeats_forwarded_from_history_ui_worker_for_navigation_and_repaints
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-stage-test")
     .expect("spawn ui worker")

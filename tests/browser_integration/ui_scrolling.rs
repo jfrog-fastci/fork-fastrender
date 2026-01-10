@@ -59,7 +59,9 @@ fn scroll_snap_updates_viewport_scroll_state() {
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
@@ -123,7 +125,9 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
 
   let dir = tempdir().expect("temp dir");
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
 
   // Discover the box id the renderer assigns to the scroller so we can assert on it. Use the same
   // `prepare_url` path as the browser worker so box ids match.

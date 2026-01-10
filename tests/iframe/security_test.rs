@@ -16,7 +16,7 @@ fn blocks_file_iframe_in_https_document() {
   )
   .unwrap();
 
-  let file_url = format!("file://{}", inner_path.display());
+  let file_url = url::Url::from_file_path(&inner_path).unwrap().to_string();
   let parent = format!(
     r#"<!doctype html><html><body style="margin:0; background: rgb(0, 200, 0);">
 <iframe src="{file_url}" style="width:48px; height:48px; border:0;"></iframe>
@@ -53,7 +53,7 @@ fn allows_file_iframe_when_opted_in() {
   )
   .unwrap();
 
-  let file_url = format!("file://{}", inner_path.display());
+  let file_url = url::Url::from_file_path(&inner_path).unwrap().to_string();
   let parent = format!(
     r#"<!doctype html><html><body style="margin:0; background: rgb(0, 200, 0);">
 <iframe src="{file_url}" style="width:48px; height:48px; border:0;"></iframe>

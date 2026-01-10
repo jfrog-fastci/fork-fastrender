@@ -26,7 +26,9 @@ fn external_file_stylesheet_affects_layout() {
   let css_path = dir.path().join("style.css");
   fs::write(&css_path, "body { color: rgb(12, 34, 56); }").unwrap();
 
-  let base_url = format!("file://{}/index.html", dir.path().display());
+  let base_url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
   let html = r#"
     <html>
       <head>

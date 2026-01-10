@@ -65,7 +65,7 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
   )
   .expect("write html");
 
-  let url = format!("file://{}/index.html", dir.path().display());
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let handle = spawn_ui_worker_with_factory(
     "fastr-ui-navigation-file-url-test",
     support::deterministic_factory(),

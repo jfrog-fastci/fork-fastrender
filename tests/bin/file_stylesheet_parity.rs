@@ -66,7 +66,7 @@ fn file_and_url_paths_render_the_same_with_external_css() {
     .expect("run fetch_and_render on http");
   assert!(status.success(), "http render should succeed");
 
-  let file_url = format!("file://{}", html_path.display());
+  let file_url = url::Url::from_file_path(&html_path).unwrap().to_string();
   let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
     .args(["--viewport", "40x30"])
     .arg(&file_url)
