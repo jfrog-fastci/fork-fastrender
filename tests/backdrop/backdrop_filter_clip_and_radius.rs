@@ -102,3 +102,61 @@ fn backdrop_filter_snapshot_respects_overflow_clip_and_border_radius() {
     "expected clipped backdrop-filter edge pixel to stay red, got {edge_px:?}"
   );
 }
+
+#[test]
+fn backdrop_filter_blur_does_not_sample_outside_border_box() {
+  // Regression test for a subtle backdrop-filter blur sampling bug:
+  //
+  // The backdrop snapshot for a backdrop-filtered element must be clipped to the element's border
+  // box before filters are applied. If we expand the snapshot using filter outsets, surrounding
+  // content bleeds into the filtered result.
+  //
+  // This reproduces the "tinted band" in apple.com’s globalnav scrim
+  // (`backdrop-filter: saturate(180%) blur(20px)` over a white→gray boundary).
+  const WIDTH: u32 = 100;
+  const HEIGHT: u32 = 100;
+
+  let html = r#"
+    <!doctype html>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; height: 100%; background: white; }
+      #bg_top {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 44px;
+        background: rgb(255, 255, 255);
+      }
+      #bg_bottom {
+        position: absolute;
+        top: 44px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgb(245, 245, 247);
+      }
+      #header {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 44px;
+        backdrop-filter: saturate(180%) blur(20px);
+        background: rgba(255, 255, 255, 0.8);
+      }
+    </style>
+    <div id="bg_top"></div>
+    <div id="bg_bottom"></div>
+    <div id="header"></div>
+  "#;
+
+  let pixmap = render_display_list(html, WIDTH, HEIGHT);
+
+  // If the blur incorrectly samples outside the 44px header border box, the gray content below will
+  // bleed upward and tint the header (usually by 1 LSB in sRGB).
+  assert_eq!(pixel(&pixmap, 50, 20), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 43), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (245, 245, 247, 255));
+}

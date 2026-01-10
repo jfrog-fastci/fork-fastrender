@@ -1347,13 +1347,10 @@ where
   }
   check_active(RenderStage::Paint)?;
 
-  let (out_l, out_t, out_r, out_b) =
-    filter_outset_with_bounds(filters, scale, Some(filter_bounds)).as_tuple();
-
-  let x = (bounds_in_src.min_x() - out_l).floor() as i32;
-  let y = (bounds_in_src.min_y() - out_t).floor() as i32;
-  let width = (bounds_in_src.width() + out_l + out_r).ceil() as u32;
-  let height = (bounds_in_src.height() + out_t + out_b).ceil() as u32;
+  let x = bounds_in_src.min_x().floor() as i32;
+  let y = bounds_in_src.min_y().floor() as i32;
+  let width = bounds_in_src.width().ceil() as u32;
+  let height = bounds_in_src.height().ceil() as u32;
   if width == 0 || height == 0 {
     return Ok(());
   }
