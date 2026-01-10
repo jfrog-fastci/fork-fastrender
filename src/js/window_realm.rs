@@ -402,6 +402,11 @@ const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
+const ELEMENT_CLASS_LIST_ADD_KEY: &str = "__fastrender_element_class_list_add";
+const ELEMENT_CLASS_LIST_REMOVE_KEY: &str = "__fastrender_element_class_list_remove";
+const ELEMENT_CLASS_LIST_TOGGLE_KEY: &str = "__fastrender_element_class_list_toggle";
+const ELEMENT_CLASS_LIST_CONTAINS_KEY: &str = "__fastrender_element_class_list_contains";
+const ELEMENT_CLASS_LIST_REPLACE_KEY: &str = "__fastrender_element_class_list_replace";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
@@ -1118,6 +1123,26 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let class_list_add = {
+    let key = alloc_key(scope, ELEMENT_CLASS_LIST_ADD_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let class_list_remove = {
+    let key = alloc_key(scope, ELEMENT_CLASS_LIST_REMOVE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let class_list_toggle = {
+    let key = alloc_key(scope, ELEMENT_CLASS_LIST_TOGGLE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let class_list_contains = {
+    let key = alloc_key(scope, ELEMENT_CLASS_LIST_CONTAINS_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let class_list_replace = {
+    let key = alloc_key(scope, ELEMENT_CLASS_LIST_REPLACE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let id_get = {
     let key = alloc_key(scope, ELEMENT_ID_GET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1261,6 +1286,69 @@ fn get_or_create_node_wrapper(
         },
       },
     )?;
+  }
+
+  if let Value::Number(_) = dom_source_id_value {
+    if let (
+      Some(Value::Object(add)),
+      Some(Value::Object(remove)),
+      Some(Value::Object(toggle)),
+      Some(Value::Object(contains)),
+      Some(Value::Object(replace)),
+    ) = (
+      class_list_add,
+      class_list_remove,
+      class_list_toggle,
+      class_list_contains,
+      class_list_replace,
+    ) {
+      let class_list = scope.alloc_object()?;
+      scope.push_root(Value::Object(class_list))?;
+
+      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+      scope.define_property(
+        class_list,
+        node_id_key,
+        data_desc(Value::Number(node_id.index() as f64)),
+      )?;
+
+      let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+      scope.define_property(
+        class_list,
+        source_id_key,
+        data_desc(dom_source_id_value),
+      )?;
+
+      let add_key = alloc_key(scope, "add")?;
+      scope.define_property(class_list, add_key, data_desc(Value::Object(add)))?;
+      let remove_key = alloc_key(scope, "remove")?;
+      scope.define_property(
+        class_list,
+        remove_key,
+        data_desc(Value::Object(remove)),
+      )?;
+      let toggle_key = alloc_key(scope, "toggle")?;
+      scope.define_property(
+        class_list,
+        toggle_key,
+        data_desc(Value::Object(toggle)),
+      )?;
+      let contains_key = alloc_key(scope, "contains")?;
+      scope.define_property(
+        class_list,
+        contains_key,
+        data_desc(Value::Object(contains)),
+      )?;
+      let replace_key = alloc_key(scope, "replace")?;
+      scope.define_property(
+        class_list,
+        replace_key,
+        data_desc(Value::Object(replace)),
+      )?;
+
+      let key = alloc_key(scope, "classList")?;
+      scope.define_property(wrapper, key, data_desc(Value::Object(class_list)))?;
+    }
   }
 
   if let Some(Value::Object(func)) = append_child {
@@ -3205,6 +3293,370 @@ fn element_id_set_native(
   Ok(Value::Undefined)
 }
 
+fn element_class_list_add_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(class_list_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.add must be called on a classList object",
+    ));
+  };
+
+  if args.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.add requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.add must be called on a classList object",
+      ));
+    }
+  };
+
+  let mut tokens: Vec<String> = Vec::with_capacity(args.len());
+  for &arg in args {
+    let token_value = scope.heap_mut().to_string(arg)?;
+    let token = scope
+      .heap()
+      .get_string(token_value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    tokens.push(token);
+  }
+  let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.add requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("DOMTokenList.add must be called on a classList object"))?;
+
+  match dom.class_list_add(node_id, &token_refs) {
+    Ok(_) => Ok(Value::Undefined),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_class_list_remove_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(class_list_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.remove must be called on a classList object",
+    ));
+  };
+
+  if args.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.remove requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.remove must be called on a classList object",
+      ));
+    }
+  };
+
+  let mut tokens: Vec<String> = Vec::with_capacity(args.len());
+  for &arg in args {
+    let token_value = scope.heap_mut().to_string(arg)?;
+    let token = scope
+      .heap()
+      .get_string(token_value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    tokens.push(token);
+  }
+  let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.remove requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("DOMTokenList.remove must be called on a classList object"))?;
+
+  match dom.class_list_remove(node_id, &token_refs) {
+    Ok(_) => Ok(Value::Undefined),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_class_list_contains_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(class_list_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.contains must be called on a classList object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.contains requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.contains must be called on a classList object",
+      ));
+    }
+  };
+
+  let token_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let token_value = scope.heap_mut().to_string(token_value)?;
+  let token = scope
+    .heap()
+    .get_string(token_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.contains requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("DOMTokenList.contains must be called on a classList object"))?;
+
+  match dom.class_list_contains(node_id, &token) {
+    Ok(result) => Ok(Value::Bool(result)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_class_list_toggle_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(class_list_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.toggle must be called on a classList object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.toggle requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.toggle must be called on a classList object",
+      ));
+    }
+  };
+
+  let token_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let token_value = scope.heap_mut().to_string(token_value)?;
+  let token = scope
+    .heap()
+    .get_string(token_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let force = match args.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => None,
+    other => Some(scope.heap().to_boolean(other)?),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.toggle requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("DOMTokenList.toggle must be called on a classList object"))?;
+
+  match dom.class_list_toggle(node_id, &token, force) {
+    Ok(result) => Ok(Value::Bool(result)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_class_list_replace_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(class_list_obj) = this else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.replace must be called on a classList object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.replace requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(class_list_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMTokenList.replace must be called on a classList object",
+      ));
+    }
+  };
+
+  let token_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let token_value = scope.heap_mut().to_string(token_value)?;
+  let token = scope
+    .heap()
+    .get_string(token_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let new_token_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let new_token_value = scope.heap_mut().to_string(new_token_value)?;
+  let new_token = scope
+    .heap()
+    .get_string(new_token_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "DOMTokenList.replace requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("DOMTokenList.replace must be called on a classList object"))?;
+
+  match dom.class_list_replace(node_id, &token, &new_token) {
+    Ok(result) => Ok(Value::Bool(result)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
 fn element_get_attribute_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4790,6 +5242,102 @@ fn init_window_globals(
     data_desc(Value::Object(class_name_set_func)),
   )?;
 
+  // Store shared Element.classList methods on `document` so wrappers can reuse them.
+  let class_list_add_call_id = vm.register_native_call(element_class_list_add_native)?;
+  let class_list_add_name = scope.alloc_string("add")?;
+  scope.push_root(Value::String(class_list_add_name))?;
+  let class_list_add_func =
+    scope.alloc_native_function(class_list_add_call_id, None, class_list_add_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      class_list_add_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(class_list_add_func))?;
+  let class_list_add_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_ADD_KEY)?;
+  scope.define_property(
+    document_obj,
+    class_list_add_key,
+    data_desc(Value::Object(class_list_add_func)),
+  )?;
+
+  let class_list_remove_call_id = vm.register_native_call(element_class_list_remove_native)?;
+  let class_list_remove_name = scope.alloc_string("remove")?;
+  scope.push_root(Value::String(class_list_remove_name))?;
+  let class_list_remove_func =
+    scope.alloc_native_function(class_list_remove_call_id, None, class_list_remove_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      class_list_remove_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(class_list_remove_func))?;
+  let class_list_remove_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_REMOVE_KEY)?;
+  scope.define_property(
+    document_obj,
+    class_list_remove_key,
+    data_desc(Value::Object(class_list_remove_func)),
+  )?;
+
+  let class_list_toggle_call_id = vm.register_native_call(element_class_list_toggle_native)?;
+  let class_list_toggle_name = scope.alloc_string("toggle")?;
+  scope.push_root(Value::String(class_list_toggle_name))?;
+  let class_list_toggle_func =
+    scope.alloc_native_function(class_list_toggle_call_id, None, class_list_toggle_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      class_list_toggle_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(class_list_toggle_func))?;
+  let class_list_toggle_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_TOGGLE_KEY)?;
+  scope.define_property(
+    document_obj,
+    class_list_toggle_key,
+    data_desc(Value::Object(class_list_toggle_func)),
+  )?;
+
+  let class_list_contains_call_id = vm.register_native_call(element_class_list_contains_native)?;
+  let class_list_contains_name = scope.alloc_string("contains")?;
+  scope.push_root(Value::String(class_list_contains_name))?;
+  let class_list_contains_func =
+    scope.alloc_native_function(class_list_contains_call_id, None, class_list_contains_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      class_list_contains_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(class_list_contains_func))?;
+  let class_list_contains_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_CONTAINS_KEY)?;
+  scope.define_property(
+    document_obj,
+    class_list_contains_key,
+    data_desc(Value::Object(class_list_contains_func)),
+  )?;
+
+  let class_list_replace_call_id = vm.register_native_call(element_class_list_replace_native)?;
+  let class_list_replace_name = scope.alloc_string("replace")?;
+  scope.push_root(Value::String(class_list_replace_name))?;
+  let class_list_replace_func =
+    scope.alloc_native_function(class_list_replace_call_id, None, class_list_replace_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      class_list_replace_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(class_list_replace_func))?;
+  let class_list_replace_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_REPLACE_KEY)?;
+  scope.define_property(
+    document_obj,
+    class_list_replace_key,
+    data_desc(Value::Object(class_list_replace_func)),
+  )?;
+
   // Store shared Element.id getter/setter functions on `document` so wrappers can reuse them.
   let id_get_call_id = vm.register_native_call(element_id_get_native)?;
   let id_get_name = scope.alloc_string("get id")?;
@@ -5256,6 +5804,40 @@ mod tests {
 
     let doc_el = dom.document_element().expect("document element should exist");
     assert_eq!(dom.element_class_name(doc_el), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn element_class_list_mutates_dom2_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target class=\"a b\"></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const el = document.getElementById('target');\n\
+        el.classList.add('c', 'd');\n\
+        const hasB = el.classList.contains('b');\n\
+        el.classList.remove('a');\n\
+        const toggled = el.classList.toggle('e');\n\
+        const replaced = el.classList.replace('b', 'f');\n\
+        let err = 'no';\n\
+        try { el.classList.add(''); } catch (e) { err = e.name; }\n\
+        return hasB && toggled && replaced && err === 'SyntaxError' && el.className === 'f c d e';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    assert_eq!(dom.element_class_name(target), "f c d e");
     Ok(())
   }
 
