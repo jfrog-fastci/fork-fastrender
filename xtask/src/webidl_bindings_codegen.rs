@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -16,6 +16,13 @@ use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
 
 #[derive(Args, Debug)]
 pub struct WebIdlBindingsCodegenArgs {
+  /// Codegen backend.
+  ///
+  /// - `realm` (default): emit only the Window-facing WebIDL wrappers.
+  /// - `legacy`: also emit the deprecated `VmJsRuntime` DOM scaffold (`src/js/bindings/dom_generated.rs`).
+  #[arg(long, default_value = "realm", value_enum)]
+  pub backend: WebIdlBindingsBackend,
+
   /// Output Rust module path (relative to repo root unless absolute).
   #[arg(
     long,
@@ -25,6 +32,8 @@ pub struct WebIdlBindingsCodegenArgs {
   pub out: PathBuf,
 
   /// Path to the DOM-scaffold bindings allowlist manifest (TOML).
+  ///
+  /// Only used when `--backend legacy` is passed.
   #[arg(
     long,
     default_value = "tools/webidl/bindings_allowlist.toml",
@@ -33,6 +42,8 @@ pub struct WebIdlBindingsCodegenArgs {
   pub dom_allowlist: PathBuf,
 
   /// Output Rust module path for the DOM-scaffold bindings (relative to repo root unless absolute).
+  ///
+  /// Only used when `--backend legacy` is passed.
   #[arg(
     long,
     default_value = "src/js/bindings/dom_generated.rs",
@@ -52,6 +63,14 @@ pub struct WebIdlBindingsCodegenArgs {
   /// subset.
   #[arg(long = "allow-interface", value_name = "NAME")]
   pub allow_interfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WebIdlBindingsBackend {
+  /// Window-facing bindings only (vm-js realm DOM bindings are handwritten).
+  Realm,
+  /// Also generate the deprecated `VmJsRuntime` DOM scaffold.
+  Legacy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,16 +138,22 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   )
   .context("generate WebIDL bindings module")?;
 
-  let dom_allowlist_text = fs::read_to_string(&dom_allowlist_path).with_context(|| {
-    format!(
-      "read WebIDL DOM bindings allowlist {}",
-      dom_allowlist_path.display()
+  let generated_dom = if args.backend == WebIdlBindingsBackend::Legacy {
+    let dom_allowlist_text = fs::read_to_string(&dom_allowlist_path).with_context(|| {
+      format!(
+        "read WebIDL DOM bindings allowlist {}",
+        dom_allowlist_path.display()
+      )
+    })?;
+    let dom_manifest: DomAllowlistManifest = toml::from_str(&dom_allowlist_text)
+      .context("parse WebIDL DOM bindings allowlist TOML")?;
+    Some(
+      generate_dom_bindings_module(&dom_manifest, &rustfmt_config)
+        .context("generate DOM scaffold bindings module")?,
     )
-  })?;
-  let dom_manifest: DomAllowlistManifest = toml::from_str(&dom_allowlist_text)
-    .context("parse WebIDL DOM bindings allowlist TOML")?;
-  let generated_dom = generate_dom_bindings_module(&dom_manifest, &rustfmt_config)
-    .context("generate DOM scaffold bindings module")?;
+  } else {
+    None
+  };
 
   if args.check {
     let existing = fs::read_to_string(&out_path)
@@ -140,13 +165,15 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
       );
     }
 
-    let existing_dom = fs::read_to_string(&dom_out_path)
-      .with_context(|| format!("read generated file {}", dom_out_path.display()))?;
-    if existing_dom != generated_dom {
-      bail!(
-        "generated DOM bindings are out of date: run `bash scripts/cargo_agent.sh xtask webidl-bindings` (path={})",
-        dom_out_path.display()
-      );
+    if let Some(generated_dom) = generated_dom.as_ref() {
+      let existing_dom = fs::read_to_string(&dom_out_path)
+        .with_context(|| format!("read generated file {}", dom_out_path.display()))?;
+      if existing_dom != *generated_dom {
+        bail!(
+          "generated DOM bindings are out of date: run `bash scripts/cargo_agent.sh xtask webidl-bindings --backend legacy` (path={})",
+          dom_out_path.display()
+        );
+      }
     }
     return Ok(());
   }
@@ -158,12 +185,14 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   fs::write(&out_path, generated_bindings)
     .with_context(|| format!("write generated output {}", out_path.display()))?;
 
-  if let Some(parent) = dom_out_path.parent() {
-    fs::create_dir_all(parent)
-      .with_context(|| format!("create output directory {}", parent.display()))?;
+  if let Some(generated_dom) = generated_dom {
+    if let Some(parent) = dom_out_path.parent() {
+      fs::create_dir_all(parent)
+        .with_context(|| format!("create output directory {}", parent.display()))?;
+    }
+    fs::write(&dom_out_path, generated_dom)
+      .with_context(|| format!("write generated output {}", dom_out_path.display()))?;
   }
-  fs::write(&dom_out_path, generated_dom)
-    .with_context(|| format!("write generated output {}", dom_out_path.display()))?;
 
   Ok(())
 }

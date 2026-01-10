@@ -1068,6 +1068,19 @@ fn dom_document_get_elements_by_name(
   Ok(Value::Object(array))
 }
 
+fn dom_illegal_constructor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  throw_type_error(scope, host, "Illegal constructor")
+}
+
 fn dom_document_create_element(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2382,6 +2395,7 @@ pub fn install_dom_bindings_with_limits(
   let call_token_list_add = vm.register_native_call(dom_token_list_add)?;
   let call_token_list_remove = vm.register_native_call(dom_token_list_remove)?;
   let call_token_list_toggle = vm.register_native_call(dom_token_list_toggle)?;
+  let call_illegal_constructor = vm.register_native_call(dom_illegal_constructor)?;
 
   // Install methods/getters.
   install_method(&mut scope, proto_document, "createElement", call_create_element, 1)?;
@@ -2543,6 +2557,33 @@ pub fn install_dom_bindings_with_limits(
   scope.push_root(document_wrapper)?;
 
   let global = realm.global_object();
+
+  // Interface constructors (non-constructable; used for prototype access / `instanceof` checks).
+  install_interface_constructor(
+    &mut scope,
+    realm,
+    global,
+    "Node",
+    proto_node,
+    call_illegal_constructor,
+  )?;
+  install_interface_constructor(
+    &mut scope,
+    realm,
+    global,
+    "Element",
+    proto_element,
+    call_illegal_constructor,
+  )?;
+  install_interface_constructor(
+    &mut scope,
+    realm,
+    global,
+    "Document",
+    proto_document,
+    call_illegal_constructor,
+  )?;
+
   let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
   scope.define_property(
     global,
@@ -2567,6 +2608,46 @@ pub fn install_dom_bindings_with_limits(
   vm.set_user_data(host);
 
   Ok(())
+}
+
+fn install_interface_constructor(
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  global: GcObject,
+  name: &str,
+  proto: GcObject,
+  call: NativeFunctionId,
+) -> Result<GcObject, VmError> {
+  let name_string = scope.alloc_string(name)?;
+  let ctor = scope.alloc_native_function(call, None, name_string, 0)?;
+  scope.push_root(Value::Object(ctor))?;
+
+  scope
+    .heap_mut()
+    .object_set_prototype(ctor, Some(realm.intrinsics().function_prototype()))?;
+
+  // ctor.prototype = proto
+  let prototype_key = PropertyKey::from_string(scope.alloc_string("prototype")?);
+  scope.define_property(
+    ctor,
+    prototype_key,
+    data_desc(
+      Value::Object(proto),
+      /* writable */ false,
+      /* enumerable */ false,
+      /* configurable */ false,
+    ),
+  )?;
+
+  // proto.constructor = ctor
+  let constructor_key = PropertyKey::from_string(scope.alloc_string("constructor")?);
+  scope.define_property(proto, constructor_key, method_desc(Value::Object(ctor)))?;
+
+  // global[name] = ctor
+  let global_key = PropertyKey::from_string(scope.alloc_string(name)?);
+  scope.define_property(global, global_key, method_desc(Value::Object(ctor)))?;
+
+  Ok(ctor)
 }
 
 fn install_method(

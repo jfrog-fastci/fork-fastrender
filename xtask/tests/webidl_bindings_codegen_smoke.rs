@@ -28,17 +28,4 @@ fn generated_bindings_snapshots_contain_known_members() {
     window_bindings.contains("fn u_r_l_search_params_append"),
     "expected URLSearchParams.append wrapper to be present in generated window bindings"
   );
-
-  let dom_bindings_path = repo_root.join("src/js/bindings/dom_generated.rs");
-  let dom_bindings = fs::read_to_string(&dom_bindings_path)
-    .unwrap_or_else(|_| panic!("read {}", dom_bindings_path.display()));
-
-  assert!(
-    dom_bindings.contains("Document.createElement: expected at least 1 arguments"),
-    "expected DOM scaffold to include Document.createElement argument checks"
-  );
-  assert!(
-    dom_bindings.contains("Document.querySelector: expected at least 1 arguments"),
-    "expected DOM scaffold to include Document.querySelector argument checks"
-  );
 }

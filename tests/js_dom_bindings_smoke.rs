@@ -1,138 +1,149 @@
-use fastrender::js::bindings::{install_dom_bindings, DomHost};
-use fastrender::js::webidl::VmJsRuntime;
-use vm_js::{Value, VmError};
-use webidl_js_runtime::JsRuntime as _;
+use fastrender::dom2::Document;
+use fastrender::js::{install_dom_bindings, CurrentScriptState};
+use selectors::context::QuirksMode;
+use std::cell::RefCell;
+use std::rc::Rc;
+use vm_js::{Heap, HeapLimits, PropertyKey, PropertyKind, Value, Vm, VmError, VmOptions};
 
-struct TestHost {
-  global: Value,
+fn get_data_property_value(heap: &Heap, obj: vm_js::GcObject, key: &PropertyKey) -> Option<Value> {
+  heap
+    .get_property(obj, key)
+    .ok()
+    .flatten()
+    .and_then(|desc| match desc.kind {
+      PropertyKind::Data { value, .. } => Some(value),
+      PropertyKind::Accessor { .. } => None,
+    })
 }
 
-impl DomHost for TestHost {
-  fn global_object(&mut self) -> Value {
-    self.global
-  }
+fn get_accessor_getter(heap: &Heap, obj: vm_js::GcObject, key: &PropertyKey) -> Option<Value> {
+  heap
+    .get_property(obj, key)
+    .ok()
+    .flatten()
+    .and_then(|desc| match desc.kind {
+      PropertyKind::Accessor { get, .. } => Some(get),
+      PropertyKind::Data { .. } => None,
+    })
 }
 
-fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
+fn as_utf8_lossy(heap: &Heap, v: Value) -> String {
   let Value::String(s) = v else {
-    panic!("expected string");
+    panic!("expected string, got {v:?}");
   };
-  rt.heap().get_string(s).unwrap().to_utf8_lossy()
+  heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
 #[test]
-fn installs_dom_bindings_and_exposes_constructors_and_document() {
-  let mut rt = VmJsRuntime::new();
-  let global = rt.alloc_object_value().unwrap();
-  let mut host = TestHost { global };
+fn installs_dom_bindings_and_exposes_constructors_and_basic_methods() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
 
-  install_dom_bindings(&mut rt, &mut host).unwrap();
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
 
-  let k_window = rt.prop_key("Window").unwrap();
-  let ctor_window = rt.get(global, k_window).unwrap();
-  assert!(rt.is_callable(ctor_window));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom, current_script)?;
 
-  let k_document = rt.prop_key("document").unwrap();
-  let document = rt.get(global, k_document).unwrap();
-  assert!(rt.is_object(document));
+  let mut scope = heap.scope();
+  let global = realm.global_object();
 
-  // Ensure `Document.prototype.createElement` was installed.
-  let k_create_element = rt.prop_key("createElement").unwrap();
-  let create_element = rt
-    .get(document, k_create_element)
-    .unwrap();
-  assert!(rt.is_callable(create_element));
-
-  // `Element.prototype.querySelector` should exist.
-  let k_element = rt.prop_key("Element").unwrap();
-  let ctor_element = rt.get(global, k_element).unwrap();
-  let k_prototype = rt.prop_key("prototype").unwrap();
-  let element_proto = rt
-    .get(ctor_element, k_prototype)
-    .unwrap();
-  let k_query_selector = rt.prop_key("querySelector").unwrap();
-  let qs_desc = rt
-    .get_own_property(element_proto, k_query_selector)
-    .unwrap();
-  assert!(qs_desc.is_some());
-}
-
-#[test]
-fn unimplemented_methods_throw_type_error_and_validate_required_args() {
-  let mut rt = VmJsRuntime::new();
-  let global = rt.alloc_object_value().unwrap();
-  let mut host = TestHost { global };
-  install_dom_bindings(&mut rt, &mut host).unwrap();
-
-  let k_document = rt.prop_key("document").unwrap();
-  let document = rt.get(global, k_document).unwrap();
-  let k_create_element = rt.prop_key("createElement").unwrap();
-  let create_element = rt
-    .get(document, k_create_element)
-    .unwrap();
-
-  // Missing required argument should throw a TypeError with a deterministic message.
-  let err = rt.call_function(create_element, document, &[]).unwrap_err();
-  let Some(thrown) = err.thrown_value() else {
-    panic!("expected thrown error, got {err:?}");
-  };
-  let msg = rt.to_string(thrown).unwrap();
+  // Global constructors exist (non-constructable but spec-shaped).
+  let key_document_ctor = PropertyKey::from_string(scope.alloc_string("Document")?);
+  let ctor_document = scope
+    .heap()
+    .object_get_own_data_property_value(global, &key_document_ctor)?
+    .expect("globalThis.Document should exist");
   assert!(
-    as_utf8_lossy(&rt, msg).contains("Document.createElement: expected at least 1 arguments"),
-    "got: {}",
-    as_utf8_lossy(&rt, msg)
+    scope.heap().is_callable(ctor_document).unwrap_or(false),
+    "Document should be callable"
   );
-
-  // With the required argument present, the stub body should still throw a TypeError.
-  let arg0 = rt.alloc_string_value("div").unwrap();
-  let err = rt
-    .call_function(create_element, document, &[arg0])
-    .unwrap_err();
-  let Some(thrown) = err.thrown_value() else {
-    panic!("expected thrown error, got {err:?}");
+  let Value::Object(ctor_document_obj) = ctor_document else {
+    panic!("Document should be an object");
   };
-  let msg = rt.to_string(thrown).unwrap();
+  let key_prototype = PropertyKey::from_string(scope.alloc_string("prototype")?);
+  let proto_document = scope
+    .heap()
+    .object_get_own_data_property_value(ctor_document_obj, &key_prototype)?
+    .expect("Document.prototype should exist");
+  let Value::Object(proto_document_obj) = proto_document else {
+    panic!("Document.prototype should be an object");
+  };
+
+  let key_element_ctor = PropertyKey::from_string(scope.alloc_string("Element")?);
+  let ctor_element = scope
+    .heap()
+    .object_get_own_data_property_value(global, &key_element_ctor)?
+    .expect("globalThis.Element should exist");
   assert!(
-    as_utf8_lossy(&rt, msg).contains("TypeError: not implemented"),
-    "got: {}",
-    as_utf8_lossy(&rt, msg)
+    scope.heap().is_callable(ctor_element).unwrap_or(false),
+    "Element should be callable"
   );
-}
+  let Value::Object(ctor_element_obj) = ctor_element else {
+    panic!("Element should be an object");
+  };
+  let proto_element = scope
+    .heap()
+    .object_get_own_data_property_value(ctor_element_obj, &key_prototype)?
+    .expect("Element.prototype should exist");
+  let Value::Object(proto_element_obj) = proto_element else {
+    panic!("Element.prototype should be an object");
+  };
 
-#[test]
-fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
-  let mut rt = VmJsRuntime::new();
-  let global = rt.alloc_object_value().unwrap();
-  let mut host = TestHost { global };
-  install_dom_bindings(&mut rt, &mut host).unwrap();
+  // globalThis.document exists and has the expected prototype.
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(global, &key_document)?
+    .expect("globalThis.document should be defined");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+  assert_eq!(scope.object_get_prototype(document_obj)?, Some(proto_document_obj));
 
-  let k_document = rt.prop_key("document").unwrap();
-  let document = rt.get(global, k_document).unwrap();
-  let k_query_selector = rt.prop_key("querySelector").unwrap();
-  let query_selector = rt.get(document, k_query_selector).unwrap();
-  assert!(rt.is_callable(query_selector));
+  // document.createElement("div") returns an Element wrapper with the correct prototype.
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
 
-  let arg0 = rt.alloc_string_value("body").unwrap();
-  let out = rt.call_function(query_selector, document, &[arg0]).unwrap();
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let el_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  let Value::Object(el_obj) = el_val else {
+    panic!("createElement should return an object");
+  };
+  assert_eq!(scope.object_get_prototype(el_obj)?, Some(proto_element_obj));
+
+  let key_tag_name = PropertyKey::from_string(scope.alloc_string("tagName")?);
+  let tag_name_get =
+    get_accessor_getter(scope.heap(), el_obj, &key_tag_name).expect("tagName getter exists");
+  let tag_name = vm.call_without_host(&mut scope, tag_name_get, el_val, &[])?;
+  assert_eq!(as_utf8_lossy(scope.heap(), tag_name), "DIV");
+
+  // document.querySelector("body") returns null on an empty document; invalid selectors throw.
+  let key_query_selector = PropertyKey::from_string(scope.alloc_string("querySelector")?);
+  let query_selector =
+    get_data_property_value(scope.heap(), document_obj, &key_query_selector).expect("querySelector exists");
+
+  let arg_body = Value::String(scope.alloc_string("body")?);
+  let out = vm.call_without_host(&mut scope, query_selector, document_val, &[arg_body])?;
   assert!(matches!(out, Value::Null));
 
-  let arg0 = rt.alloc_string_value("[").unwrap();
-  let err = rt.call_function(query_selector, document, &[arg0]).unwrap_err();
-  let Some(thrown) = err.thrown_value() else {
-    panic!("expected thrown error, got {err:?}");
+  let arg_bad = Value::String(scope.alloc_string("[")?);
+  let thrown = match vm.call_without_host(&mut scope, query_selector, document_val, &[arg_bad]) {
+    Ok(_) => panic!("expected querySelector to throw"),
+    Err(err) => err.thrown_value().expect("expected thrown value"),
   };
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("thrown value should be an object");
+  };
+  let key_name = PropertyKey::from_string(scope.alloc_string("name")?);
+  let name_val = get_data_property_value(scope.heap(), thrown_obj, &key_name)
+    .expect("thrown object should have .name");
+  assert_eq!(as_utf8_lossy(scope.heap(), name_val), "SyntaxError");
 
-  let k_name = rt.prop_key("name").unwrap();
-  let name = rt.get(thrown, k_name).unwrap();
-  let name = rt.to_string(name).unwrap();
-  assert_eq!(as_utf8_lossy(&rt, name), "SyntaxError");
-
-  let k_message = rt.prop_key("message").unwrap();
-  let message = rt.get(thrown, k_message).unwrap();
-  let message = rt.to_string(message).unwrap();
-  let message = as_utf8_lossy(&rt, message);
-  assert!(
-    message.contains("Invalid selector"),
-    "expected message to mention invalid selector, got {message:?}"
-  );
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
 }

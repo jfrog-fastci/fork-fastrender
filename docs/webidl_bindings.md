@@ -21,10 +21,9 @@ how to update it.
     `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`).
 - **Binding installation / host scaffolding (temporary)**: `crates/webidl-js-runtime`
   - This provides a minimal `vm-js`-backed value/object model (`VmJsRuntime`) and a host-facing
-    trait (`WebIdlBindingsRuntime`) used by early generated bindings to install functions onto a
-    global object.
-  - It intentionally reuses `vendor/ecma-rs/webidl`’s core types (`InterfaceId`, `WebIdlHooks`,
-    `WebIdlLimits`) so FastRender only has one set of WebIDL “core” identifiers/limits/hook traits.
+    trait (`WebIdlBindingsRuntime`) used by early generated bindings.
+  - Note: FastRender’s real DOM bindings are now **`vm-js` realm-based** (`src/js/vm_dom.rs`) and do
+    not use this runtime scaffold.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.
@@ -165,18 +164,18 @@ Notes:
 
 ### Outputs
 
-`bash scripts/cargo_agent.sh xtask webidl-bindings` writes two committed Rust modules:
+`bash scripts/cargo_agent.sh xtask webidl-bindings` writes a committed Rust module:
 
 - **Window-facing bindings glue**: `src/js/bindings/generated/mod.rs`
   - Generated wrappers perform WebIDL-ish argument conversions then dispatch into the host
     integration via `fastrender::js::bindings::WebHostBindings`.
-- **DOM scaffold bindings (temporary)**: `src/js/bindings/dom_generated.rs`
-  - A minimal `vm-js`-backed DOM surface used for early integration and unit tests.
-  - Controlled by an explicit allowlist: `tools/webidl/bindings_allowlist.toml`.
 
-To add new scaffold bindings, edit `tools/webidl/bindings_allowlist.toml` (interfaces, attributes,
-operations) and rerun `bash scripts/cargo_agent.sh xtask webidl-bindings`. The generator fails fast if allowlisted members
-do not exist in the snapshot world (typo guard).
+DOM bindings are currently implemented directly against `vm-js` realms in `src/js/vm_dom.rs` and are
+installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
+
+Note: The deprecated `VmJsRuntime` DOM scaffold can still be generated for debugging with
+`bash scripts/cargo_agent.sh xtask webidl-bindings --backend legacy`, but it is not committed or
+used by tests.
 
 ## Debugging unsupported/odd IDL
 
