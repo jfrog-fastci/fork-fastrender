@@ -1,7 +1,10 @@
 use fastrender::api::{FastRender, RenderOptions};
+use fastrender::scroll::{ScrollBounds, ScrollChainState};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
+use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::{Point, Size};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {
@@ -20,6 +23,50 @@ fn box_id_by_element_id(node: &BoxNode, target_id: &str) -> Option<usize> {
     .children
     .iter()
     .find_map(|child| box_id_by_element_id(child, target_id))
+}
+
+fn scroll_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<ScrollBounds> {
+  fn merge_bounds(existing: &mut ScrollBounds, next: ScrollBounds) {
+    existing.min_x = existing.min_x.min(next.min_x);
+    existing.min_y = existing.min_y.min(next.min_y);
+    existing.max_x = existing.max_x.max(next.max_x);
+    existing.max_y = existing.max_y.max(next.max_y);
+  }
+
+  fn walk(
+    fragment: &FragmentNode,
+    box_id: usize,
+    viewport_for_units: Size,
+    out: &mut Option<ScrollBounds>,
+  ) {
+    if fragment.box_id() == Some(box_id) {
+      if let Some(state) = ScrollChainState::from_fragment(
+        fragment,
+        Point::ZERO,
+        viewport_for_units,
+        viewport_for_units,
+        false,
+        false,
+      ) {
+        match out.as_mut() {
+          Some(existing) => merge_bounds(existing, state.bounds),
+          None => *out = Some(state.bounds),
+        }
+      }
+    }
+
+    for child in fragment.children.iter() {
+      walk(child, box_id, viewport_for_units, out);
+    }
+  }
+
+  let viewport_for_units = tree.viewport_size();
+  let mut out = None;
+  walk(&tree.root, box_id, viewport_for_units, &mut out);
+  for fragment in tree.additional_fragments.iter() {
+    walk(fragment, box_id, viewport_for_units, &mut out);
+  }
+  out
 }
 
 #[test]
@@ -243,5 +290,141 @@ fn container_scroll_state_scrollable_left_tracks_element_scroll_offset() {
     target_right.styles.color,
     Rgba::rgb(255, 0, 0),
     "expected scrollable: left to match at scroll end"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_x_matches_horizontal_scroll_containers() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: x) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(80, 60))
+    .expect("prepare");
+
+  let target = find_by_id(prepared.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: x to match for horizontal scrollers"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_none_matches_non_scrollable_containers() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        container-name: scroller;
+      }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: none) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(80, 60))
+    .expect("prepare");
+
+  let target = find_by_id(prepared.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: none to match when there is no overflow"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_inline_start_respects_rtl_direction() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        direction: rtl;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: inline-start) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+  let bounds =
+    scroll_bounds_for_box_id(prepared.fragment_tree(), scroller_box_id).expect("scroll bounds");
+
+  let prepared_min = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, bounds.min_x, 0.0),
+    )
+    .expect("prepare min");
+  let target_min = find_by_id(prepared_min.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_min.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: inline-start to match when not at the inline-start edge"
+  );
+
+  let prepared_max = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, bounds.max_x, 0.0),
+    )
+    .expect("prepare max");
+  let target_max = find_by_id(prepared_max.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_max.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: inline-start to be false at the inline-start edge"
   );
 }
