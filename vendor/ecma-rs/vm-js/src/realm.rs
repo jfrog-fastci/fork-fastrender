@@ -201,6 +201,27 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.is_nan())),
       )?;
 
+      let is_finite_key = PropertyKey::from_string(scope.alloc_string("isFinite")?);
+      scope.define_property(
+        global_object,
+        is_finite_key,
+        global_data_desc(Value::Object(intrinsics.is_finite())),
+      )?;
+
+      let parse_int_key = PropertyKey::from_string(scope.alloc_string("parseInt")?);
+      scope.define_property(
+        global_object,
+        parse_int_key,
+        global_data_desc(Value::Object(intrinsics.parse_int())),
+      )?;
+
+      let parse_float_key = PropertyKey::from_string(scope.alloc_string("parseFloat")?);
+      scope.define_property(
+        global_object,
+        parse_float_key,
+        global_data_desc(Value::Object(intrinsics.parse_float())),
+      )?;
+
       let math_key = PropertyKey::from_string(scope.alloc_string("Math")?);
       scope.define_property(
         global_object,

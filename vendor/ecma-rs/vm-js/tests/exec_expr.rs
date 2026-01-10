@@ -739,3 +739,25 @@ fn math_methods_work() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn global_parse_int_parse_float_and_is_finite_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var ok = parseInt("08", 10) === 8
+        && parseInt("0x10") === 16
+        && parseInt("  -0xF") === -15
+        && isNaN(parseInt("x"))
+        && parseFloat("1.5px") === 1.5
+        && parseFloat("Infinity") === 1e999
+        && parseFloat("-Infinity") === -1e999
+        && isNaN(parseFloat("x"))
+        && isFinite(1)
+        && !isFinite(1e999)
+        && !isFinite(0/0);
+      ok"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

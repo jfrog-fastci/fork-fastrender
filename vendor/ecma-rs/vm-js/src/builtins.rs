@@ -7294,6 +7294,227 @@ pub fn global_is_nan(
   Ok(Value::Bool(n.is_nan()))
 }
 
+/// Global `isFinite(x)` (minimal).
+pub fn global_is_finite(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.first().copied().unwrap_or(Value::Undefined);
+  let n = scope.to_number(vm, host, hooks, v)?;
+  Ok(Value::Bool(n.is_finite()))
+}
+
+/// Global `parseInt(string, radix)` (minimal).
+pub fn global_parse_int(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let radix_val = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let mut radix: i32 = 0;
+  if !matches!(radix_val, Value::Undefined) {
+    let r = scope.to_number(vm, host, hooks, radix_val)?;
+    if !r.is_finite() || r == 0.0 {
+      radix = 0;
+    } else {
+      radix = r.trunc() as i32;
+    }
+  }
+  if radix != 0 && !(2..=36).contains(&radix) {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  let s = scope.to_string(vm, host, hooks, input)?;
+  scope.push_root(Value::String(s))?;
+  let units = scope.heap().get_string(s)?.as_code_units();
+
+  let mut i = 0usize;
+  while i < units.len() && is_trim_whitespace_unit(units[i]) {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    i += 1;
+  }
+  if i >= units.len() {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  let mut sign = 1.0;
+  if units[i] == b'+' as u16 {
+    i += 1;
+  } else if units[i] == b'-' as u16 {
+    sign = -1.0;
+    i += 1;
+  }
+
+  if radix == 0 {
+    if i + 1 < units.len()
+      && units[i] == b'0' as u16
+      && (units[i + 1] == b'x' as u16 || units[i + 1] == b'X' as u16)
+    {
+      radix = 16;
+      i += 2;
+    } else {
+      radix = 10;
+    }
+  } else if radix == 16 {
+    if i + 1 < units.len()
+      && units[i] == b'0' as u16
+      && (units[i + 1] == b'x' as u16 || units[i + 1] == b'X' as u16)
+    {
+      i += 2;
+    }
+  }
+
+  let radix_f64 = radix as f64;
+  let radix_u32 = radix as u32;
+  let mut value: f64 = 0.0;
+  let mut any = false;
+
+  while i < units.len() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let u = units[i];
+    let digit: u32 = if (b'0' as u16..=b'9' as u16).contains(&u) {
+      (u - b'0' as u16) as u32
+    } else if (b'a' as u16..=b'z' as u16).contains(&u) {
+      10 + (u - b'a' as u16) as u32
+    } else if (b'A' as u16..=b'Z' as u16).contains(&u) {
+      10 + (u - b'A' as u16) as u32
+    } else {
+      break;
+    };
+    if digit >= radix_u32 {
+      break;
+    }
+    any = true;
+    value = value * radix_f64 + (digit as f64);
+    i += 1;
+  }
+
+  if !any {
+    return Ok(Value::Number(f64::NAN));
+  }
+  Ok(Value::Number(sign * value))
+}
+
+/// Global `parseFloat(string)` (minimal).
+pub fn global_parse_float(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, input)?;
+  scope.push_root(Value::String(s))?;
+  let units = scope.heap().get_string(s)?.as_code_units();
+
+  let mut i = 0usize;
+  while i < units.len() && is_trim_whitespace_unit(units[i]) {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    i += 1;
+  }
+  if i >= units.len() {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  let start = i;
+  let mut sign = 1.0;
+  if units[i] == b'+' as u16 {
+    i += 1;
+  } else if units[i] == b'-' as u16 {
+    sign = -1.0;
+    i += 1;
+  }
+
+  // Infinity / NaN tokens.
+  const INFINITY_UNITS: [u16; 8] = [73, 110, 102, 105, 110, 105, 116, 121]; // "Infinity"
+  const NAN_UNITS: [u16; 3] = [78, 97, 78]; // "NaN"
+  if i + INFINITY_UNITS.len() <= units.len() && &units[i..i + INFINITY_UNITS.len()] == INFINITY_UNITS {
+    return Ok(Value::Number(sign * f64::INFINITY));
+  }
+  if i + NAN_UNITS.len() <= units.len() && &units[i..i + NAN_UNITS.len()] == NAN_UNITS {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  let mut j = i;
+  let mut saw_digit = false;
+  while j < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[j]) {
+    saw_digit = true;
+    j += 1;
+    if j % 1024 == 0 {
+      vm.tick()?;
+    }
+  }
+  if j < units.len() && units[j] == b'.' as u16 {
+    j += 1;
+    while j < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[j]) {
+      saw_digit = true;
+      j += 1;
+      if j % 1024 == 0 {
+        vm.tick()?;
+      }
+    }
+  }
+
+  if !saw_digit {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  if j < units.len() && (units[j] == b'e' as u16 || units[j] == b'E' as u16) {
+    let exp_pos = j;
+    let mut k = j + 1;
+    if k < units.len() && (units[k] == b'+' as u16 || units[k] == b'-' as u16) {
+      k += 1;
+    }
+    let mut exp_digit = false;
+    while k < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[k]) {
+      exp_digit = true;
+      k += 1;
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+    }
+    if exp_digit {
+      j = k;
+    } else {
+      j = exp_pos;
+    }
+  }
+
+  let mut buf = String::with_capacity(j.saturating_sub(start));
+  for &u in &units[start..j] {
+    if u > 0x7F {
+      return Ok(Value::Number(f64::NAN));
+    }
+    buf.push((u as u8) as char);
+  }
+
+  let n = buf.parse::<f64>().unwrap_or(f64::NAN);
+  Ok(Value::Number(n))
+}
+
 static MATH_RANDOM_STATE: AtomicU64 = AtomicU64::new(0x243F_6A88_85A3_08D3);
 
 fn math_unary_number_op(

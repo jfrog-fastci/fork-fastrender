@@ -52,6 +52,9 @@ pub struct Intrinsics {
   array_buffer: GcObject,
   uint8_array: GcObject,
   is_nan: GcObject,
+  is_finite: GcObject,
+  parse_int: GcObject,
+  parse_float: GcObject,
   math: GcObject,
   json: GcObject,
 
@@ -511,6 +514,9 @@ impl Intrinsics {
     let date_call = vm.register_native_call(builtins::date_constructor_call)?;
     let date_construct = vm.register_native_construct(builtins::date_constructor_construct)?;
     let is_nan_call = vm.register_native_call(builtins::global_is_nan)?;
+    let is_finite_call = vm.register_native_call(builtins::global_is_finite)?;
+    let parse_int_call = vm.register_native_call(builtins::global_parse_int)?;
+    let parse_float_call = vm.register_native_call(builtins::global_parse_float)?;
 
     // --- Baseline constructors ---
     // `%Object%`
@@ -1636,6 +1642,36 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(is_nan, Some(function_prototype))?;
 
+    // `%isFinite%` (global function)
+    let is_finite_name = scope.alloc_string("isFinite")?;
+    let is_finite =
+      alloc_rooted_native_function(scope, roots, is_finite_call, None, is_finite_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(is_finite, Some(function_prototype))?;
+
+    // `%parseInt%` (global function)
+    let parse_int_name = scope.alloc_string("parseInt")?;
+    let parse_int =
+      alloc_rooted_native_function(scope, roots, parse_int_call, None, parse_int_name, 2)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(parse_int, Some(function_prototype))?;
+
+    // `%parseFloat%` (global function)
+    let parse_float_name = scope.alloc_string("parseFloat")?;
+    let parse_float = alloc_rooted_native_function(
+      scope,
+      roots,
+      parse_float_call,
+      None,
+      parse_float_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(parse_float, Some(function_prototype))?;
+
     // `%Symbol%`
     let symbol_call = vm.register_native_call(builtins::symbol_constructor_call)?;
     let symbol_name = scope.alloc_string("Symbol")?;
@@ -2541,6 +2577,9 @@ impl Intrinsics {
       array_buffer,
       uint8_array,
       is_nan,
+      is_finite,
+      parse_int,
+      parse_float,
       math,
       json,
       error,
@@ -2664,6 +2703,18 @@ impl Intrinsics {
 
   pub fn is_nan(&self) -> GcObject {
     self.is_nan
+  }
+
+  pub fn is_finite(&self) -> GcObject {
+    self.is_finite
+  }
+
+  pub fn parse_int(&self) -> GcObject {
+    self.parse_int
+  }
+
+  pub fn parse_float(&self) -> GcObject {
+    self.parse_float
   }
 
   pub fn math(&self) -> GcObject {
