@@ -1888,36 +1888,6 @@ impl InteractionEngine {
     }
   }
 
-  #[cfg(test)]
-  fn set_text_selection_caret(&mut self, node_id: usize, caret: usize) {
-    let Some(edit) = self.text_edit.as_mut() else {
-      return;
-    };
-    if edit.node_id != node_id {
-      return;
-    }
-    edit.set_caret(caret);
-    edit.clear_selection();
-  }
-
-  #[cfg(test)]
-  fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
-    let Some(edit) = self.text_edit.as_mut() else {
-      return;
-    };
-    if edit.node_id != node_id {
-      return;
-    }
-    edit.preferred_column = None;
-    if start == end {
-      edit.selection_anchor = None;
-      edit.caret = start;
-    } else {
-      edit.selection_anchor = Some(start);
-      edit.caret = end;
-    }
-  }
-
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,

@@ -130,6 +130,8 @@ pub mod quickjs_dom;
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
