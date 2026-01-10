@@ -34,6 +34,9 @@ use fastrender::js::{
   ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
   WindowHostState,
 };
+use fastrender::js::import_maps::{
+  create_import_map_parse_result, register_import_map, ImportMapState,
+};
 use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
@@ -422,6 +425,8 @@ fn render_page(
     let scheduler = std::rc::Rc::new(std::cell::RefCell::new(
       ScriptScheduler::<fastrender::dom2::NodeId>::new(),
     ));
+    let import_map_state =
+      std::rc::Rc::new(std::cell::RefCell::new(ImportMapState::default()));
 
     let mut scripts_queued = 0usize;
     let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
@@ -566,6 +571,7 @@ fn render_page(
                 if spec.src_attr_present {
                   if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
                     let loader = Rc::clone(&module_loader);
+                    let import_map_state = Rc::clone(&import_map_state);
                     let entry_url: Arc<str> = Arc::from(resolved_src.clone());
                     let script_name: Arc<str> = Arc::from(format!("<module script {resolved_src}>"));
                     if let Err(err) =
@@ -574,8 +580,13 @@ fn render_page(
                         host.current_script_state().borrow_mut().current_script = None;
 
                         let result = (|| {
-                          let bundle =
-                            loader.borrow_mut().build_bundle_for_url(&entry_url, max_script_bytes)?;
+                          let mut loader = loader.borrow_mut();
+                          let mut map_state = import_map_state.borrow_mut();
+                          let bundle = loader.build_bundle_for_url_with_import_maps(
+                            &mut *map_state,
+                            &entry_url,
+                            max_script_bytes,
+                          )?;
                           let bundle_text: Arc<str> = Arc::from(bundle);
 
                           {
@@ -618,6 +629,7 @@ fn render_page(
                   ));
                 } else {
                   let loader = Rc::clone(&module_loader);
+                  let import_map_state = Rc::clone(&import_map_state);
                   let inline_id: Arc<str> =
                     Arc::from(format!("{base_hint}#inline-module-{}", script.index()));
                   let inline_base_url: Arc<str> =
@@ -631,7 +643,10 @@ fn render_page(
                       host.current_script_state().borrow_mut().current_script = None;
 
                       let result = (|| {
-                        let bundle = loader.borrow_mut().build_bundle_for_inline(
+                        let mut loader = loader.borrow_mut();
+                        let mut map_state = import_map_state.borrow_mut();
+                        let bundle = loader.build_bundle_for_inline_with_import_maps(
+                          &mut *map_state,
                           &inline_id,
                           &inline_base_url,
                           &script_text,
@@ -667,6 +682,38 @@ fn render_page(
                     log(&format!("JavaScript: failed to queue inline module script task: {err}"));
                   } else {
                     scripts_queued += 1;
+                  }
+                }
+              }
+
+              if spec.script_type == ScriptType::ImportMap {
+                if spec.src_attr_present {
+                  // External import maps are not supported (HTML requires them to queue `error`).
+                  log("JavaScript: skipping <script type=importmap src> (external import maps are not supported)");
+                } else {
+                  let base_url_str = spec
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| base_hint.clone());
+                  match url::Url::parse(&base_url_str) {
+                    Ok(base_url) => {
+                      let result = create_import_map_parse_result(&spec.inline_text, &base_url);
+                      for warning in &result.warnings {
+                        log(&format!(
+                          "JavaScript: import map warning: {:?}",
+                          warning.kind
+                        ));
+                      }
+                      let mut map_state = import_map_state.borrow_mut();
+                      if let Err(err) = register_import_map(&mut *map_state, result) {
+                        log(&format!("JavaScript: import map error: {err}"));
+                      }
+                    }
+                    Err(err) => {
+                      log(&format!(
+                        "JavaScript: skipping import map due to invalid base URL {base_url_str:?}: {err}"
+                      ));
+                    }
                   }
                 }
               }
@@ -1355,6 +1402,7 @@ fn render_page(
               if spec.src_attr_present {
                 if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
                   let loader = Rc::clone(&module_loader);
+                  let import_map_state = Rc::clone(&import_map_state);
                   let entry_url: Arc<str> = Arc::from(resolved_src.clone());
                   let script_name: Arc<str> = Arc::from(format!("<module script {resolved_src}>"));
                   if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
@@ -1362,7 +1410,13 @@ fn render_page(
                     host.current_script_state().borrow_mut().current_script = None;
 
                     let result = (|| {
-                      let bundle = loader.borrow_mut().build_bundle_for_url(&entry_url, max_script_bytes)?;
+                      let mut loader = loader.borrow_mut();
+                      let mut map_state = import_map_state.borrow_mut();
+                      let bundle = loader.build_bundle_for_url_with_import_maps(
+                        &mut *map_state,
+                        &entry_url,
+                        max_script_bytes,
+                      )?;
                       let bundle_text: Arc<str> = Arc::from(bundle);
 
                       {
@@ -1402,6 +1456,7 @@ fn render_page(
                 ));
               } else {
                 let loader = Rc::clone(&module_loader);
+                let import_map_state = Rc::clone(&import_map_state);
                 let inline_id: Arc<str> = Arc::from(format!("{base_hint}#inline-module-{}", script.index()));
                 let inline_base_url: Arc<str> =
                   Arc::from(spec.base_url.clone().unwrap_or_else(|| base_hint.clone()));
@@ -1412,7 +1467,10 @@ fn render_page(
                   host.current_script_state().borrow_mut().current_script = None;
 
                   let result = (|| {
-                    let bundle = loader.borrow_mut().build_bundle_for_inline(
+                    let mut loader = loader.borrow_mut();
+                    let mut map_state = import_map_state.borrow_mut();
+                    let bundle = loader.build_bundle_for_inline_with_import_maps(
+                      &mut *map_state,
                       &inline_id,
                       &inline_base_url,
                       &script_text,
@@ -1449,6 +1507,37 @@ fn render_page(
               }
             }
 
+            if spec.script_type == ScriptType::ImportMap {
+              if spec.src_attr_present {
+                // External import maps are not supported (HTML requires them to queue `error`).
+                log("JavaScript: skipping <script type=importmap src> (external import maps are not supported)");
+              } else {
+                let base_url_str = spec
+                  .base_url
+                  .clone()
+                  .unwrap_or_else(|| base_hint.clone());
+                match url::Url::parse(&base_url_str) {
+                  Ok(base_url) => {
+                    let result = create_import_map_parse_result(&spec.inline_text, &base_url);
+                    for warning in &result.warnings {
+                      log(&format!(
+                        "JavaScript: import map warning: {:?}",
+                        warning.kind
+                      ));
+                    }
+                    let mut map_state = import_map_state.borrow_mut();
+                    if let Err(err) = register_import_map(&mut *map_state, result) {
+                      log(&format!("JavaScript: import map error: {err}"));
+                    }
+                  }
+                  Err(err) => {
+                    log(&format!(
+                      "JavaScript: skipping import map due to invalid base URL {base_url_str:?}: {err}"
+                    ));
+                  }
+                }
+              }
+            }
             let base_url_at_discovery = spec.base_url.clone();
             let discovered = match scheduler
               .borrow_mut()

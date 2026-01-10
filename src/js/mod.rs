@@ -132,6 +132,10 @@ pub mod quickjs_dom;
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
 
+// HTML "prepare the script element" helpers for dynamically inserted `<script>` elements.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
+
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;

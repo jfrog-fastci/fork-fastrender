@@ -83,12 +83,6 @@ where
       return (None, false);
     }
 
-    // HTML element post-connection steps: parser-inserted scripts are prepared by the parser, not by
-    // DOM insertion.
-    if dom.node(script).script_parser_document {
-      return (None, false);
-    }
-
     // HTML: scripts inside inert `<template>` contents are treated as disconnected and must not
     // execute.
     if !dom.is_connected_for_scripting(script) {
