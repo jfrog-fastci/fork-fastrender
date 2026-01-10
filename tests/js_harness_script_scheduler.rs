@@ -17,6 +17,7 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
     defer_attr,
     nomodule_attr: false,
     crossorigin: None,
+    integrity_attr_present: false,
     integrity: None,
     referrer_policy: None,
     parser_inserted: true,

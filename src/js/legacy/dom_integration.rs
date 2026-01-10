@@ -201,13 +201,6 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
   let force_async = dom.node(script).script_force_async;
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
-  let crossorigin =
-    super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
-  let integrity = dom
-    .get_attribute(script, "integrity")
-    .ok()
-    .flatten()
-    .map(|value| value.to_string());
   let referrer_policy = dom
     .get_attribute(script, "referrerpolicy")
     .ok()
@@ -217,6 +210,10 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
   let raw_src = dom.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
   let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(None, raw));
+
+  let (integrity_attr_present, integrity) =
+    super::clamp_integrity_attribute(dom.get_attribute(script, "integrity").ok().flatten());
+  let crossorigin = super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
 
   let mut inline_text = String::new();
   for &child in &dom.node(script).children {
@@ -235,6 +232,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     defer_attr,
     nomodule_attr,
     crossorigin,
+    integrity_attr_present,
     integrity,
     referrer_policy,
     parser_inserted: false,

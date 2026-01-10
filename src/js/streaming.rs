@@ -26,10 +26,6 @@ pub fn build_parser_inserted_script_element_spec(
   let async_attr = script.get_attribute_ref("async").is_some();
   let defer_attr = script.get_attribute_ref("defer").is_some();
   let nomodule_attr = script.get_attribute_ref("nomodule").is_some();
-  let crossorigin = super::parse_crossorigin_attr(script.get_attribute_ref("crossorigin"));
-  let integrity = script
-    .get_attribute_ref("integrity")
-    .map(|value| value.to_string());
   let referrer_policy = script
     .get_attribute_ref("referrerpolicy")
     .and_then(crate::resource::ReferrerPolicy::from_attribute);
@@ -37,6 +33,9 @@ pub fn build_parser_inserted_script_element_spec(
   let raw_src = script.get_attribute_ref("src");
   let src_attr_present = raw_src.is_some();
   let src = raw_src.and_then(|value| resolve_script_src_at_parse_time(base_url_ref, value));
+  let (integrity_attr_present, integrity) =
+    super::clamp_integrity_attribute(script.get_attribute_ref("integrity"));
+  let crossorigin = super::parse_crossorigin_attr(script.get_attribute_ref("crossorigin"));
 
   let mut inline_text = String::new();
   for child in &script.children {
@@ -55,6 +54,7 @@ pub fn build_parser_inserted_script_element_spec(
     defer_attr,
     nomodule_attr,
     crossorigin,
+    integrity_attr_present,
     integrity,
     referrer_policy,
     parser_inserted: true,

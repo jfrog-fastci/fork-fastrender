@@ -40,6 +40,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
+      integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
@@ -62,6 +63,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
+      integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
@@ -86,6 +88,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
+      integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
@@ -97,13 +100,6 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = doc.has_attribute(script, "nomodule").unwrap_or(false);
-  let crossorigin =
-    super::parse_crossorigin_attr(doc.get_attribute(script, "crossorigin").ok().flatten());
-  let integrity = doc
-    .get_attribute(script, "integrity")
-    .ok()
-    .flatten()
-    .map(|value| value.to_string());
   let referrer_policy = doc
     .get_attribute(script, "referrerpolicy")
     .ok()
@@ -113,6 +109,10 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   let raw_src = doc.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
   let src = raw_src.and_then(|raw_src| base.resolve_script_src(raw_src));
+
+  let (integrity_attr_present, integrity) =
+    super::clamp_integrity_attribute(doc.get_attribute(script, "integrity").ok().flatten());
+  let crossorigin = super::parse_crossorigin_attr(doc.get_attribute(script, "crossorigin").ok().flatten());
 
   let mut inline_text = String::new();
   for &child in &doc.node(script).children {
@@ -126,11 +126,12 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     src,
     src_attr_present,
     inline_text,
-    crossorigin,
     async_attr,
     force_async: false,
     defer_attr,
     nomodule_attr,
+    crossorigin,
+    integrity_attr_present,
     integrity,
     referrer_policy,
     parser_inserted: true,

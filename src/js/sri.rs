@@ -1,6 +1,12 @@
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD};
 use base64::Engine;
 use sha2::{Digest, Sha256, Sha384, Sha512};
+
+/// Maximum number of bytes we will store from a raw `integrity` attribute.
+///
+/// This is a deterministic bound to prevent pathological attribute values from forcing large
+/// allocations.
+pub(crate) const MAX_INTEGRITY_ATTRIBUTE_BYTES: usize = 4096;
 
 fn is_ascii_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
@@ -29,9 +35,13 @@ pub(crate) fn verify_integrity(bytes: &[u8], integrity: &str) -> std::result::Re
       continue;
     };
     let digest_b64 = digest_b64.split('?').next().unwrap_or(digest_b64);
-    let decoded = match BASE64_STANDARD.decode(digest_b64) {
-      Ok(decoded) => decoded,
-      Err(_) => continue,
+    let decoded = match BASE64_STANDARD
+      .decode(digest_b64)
+      .ok()
+      .or_else(|| BASE64_STANDARD_NO_PAD.decode(digest_b64).ok())
+    {
+      Some(decoded) => decoded,
+      None => continue,
     };
 
     if alg.eq_ignore_ascii_case("sha256") {

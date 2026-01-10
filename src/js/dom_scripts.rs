@@ -71,10 +71,6 @@ pub fn extract_script_elements(
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
         let nomodule_attr = node.get_attribute_ref("nomodule").is_some();
-        let crossorigin = super::parse_crossorigin_attr(node.get_attribute_ref("crossorigin"));
-        let integrity = node
-          .get_attribute_ref("integrity")
-          .map(|value| value.to_string());
         let referrer_policy = node
           .get_attribute_ref("referrerpolicy")
           .and_then(crate::resource::ReferrerPolicy::from_attribute);
@@ -82,6 +78,9 @@ pub fn extract_script_elements(
         let raw_src = node.get_attribute_ref("src");
         let src_attr_present = raw_src.is_some();
         let src = raw_src.and_then(|value| base_url_tracker.resolve_script_src(value));
+        let (integrity_attr_present, integrity) =
+          super::clamp_integrity_attribute(node.get_attribute_ref("integrity"));
+        let crossorigin = super::parse_crossorigin_attr(node.get_attribute_ref("crossorigin"));
 
         let mut inline_text = String::new();
         for child in &node.children {
@@ -100,6 +99,7 @@ pub fn extract_script_elements(
           defer_attr,
           nomodule_attr,
           crossorigin,
+          integrity_attr_present,
           integrity,
           referrer_policy,
           // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and

@@ -1701,30 +1701,43 @@ impl BrowserTabHost {
         ))
       })?;
 
+    // Subresource Integrity (SRI) enforcement. When the `integrity` attribute is present, we must
+    // reject the script if the metadata is invalid or the fetched bytes do not match.
+    //
+    // Additionally, HTML requires a CORS-enabled fetch for cross-origin resources when SRI is used.
+    // We enforce this by requiring a `crossorigin` attribute for cross-origin URLs.
+    let integrity = if spec.integrity_attr_present {
+      let integrity = spec.integrity.as_deref().ok_or_else(|| {
+        Error::Other(format!(
+          "SRI blocked script {url}: integrity attribute exceeded max length of {} bytes",
+          crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES
+        ))
+      })?;
+
+      if spec.crossorigin.is_none() {
+        if let (Some(doc_origin), Some(target_origin)) =
+          (self.document_origin.as_ref(), crate::resource::origin_from_url(url))
+        {
+          if !doc_origin.same_origin(&target_origin) {
+            return Err(Error::Other(format!(
+              "SRI blocked script {url}: cross-origin integrity requires a CORS-enabled fetch (missing crossorigin attribute)"
+            )));
+          }
+        }
+      }
+
+      Some(integrity)
+    } else {
+      None
+    };
+
     if let Some(source) = self.external_script_sources.get(url) {
       span.arg_u64("bytes", source.as_bytes().len() as u64);
       self.js_execution_options.check_script_source_bytes(
         source.as_bytes().len(),
         &format!("source=external url={url}"),
       )?;
-      if let Some(integrity) = spec.integrity.as_deref() {
-        // The Fetch standard's SRI integration runs against the *filtered* response body. For
-        // cross-origin `no-cors` requests, the response is opaque and therefore has a null body,
-        // causing integrity checks to fail even when the underlying bytes would match. Match browser
-        // behavior by rejecting cross-origin script integrity metadata unless a CORS-mode fetch is
-        // used (i.e. `<script crossorigin=...>`).
-        if spec.crossorigin.is_none() {
-          let script_origin = origin_from_url(url);
-          if let (Some(doc_origin), Some(script_origin)) =
-            (self.document_origin.as_ref(), script_origin.as_ref())
-          {
-            if doc_origin != script_origin {
-              return Err(Error::Other(format!(
-                "SRI blocked script {url}: cross-origin integrity requires a CORS fetch (add a crossorigin attribute)"
-              )));
-            }
-          }
-        }
+      if let Some(integrity) = integrity {
         crate::js::sri::verify_integrity(source.as_bytes(), integrity).map_err(|message| {
           Error::Other(format!("SRI blocked script {url}: {message}"))
         })?;
@@ -1766,21 +1779,7 @@ impl BrowserTabHost {
         )?;
       }
     }
-    if let Some(integrity) = spec.integrity.as_deref() {
-      // Mirror Fetch's SRI behavior: cross-origin `no-cors` requests return an opaque response with
-      // a null body, meaning integrity checks fail even when the underlying bytes match.
-      if spec.crossorigin.is_none() {
-        let script_origin = origin_from_url(url);
-        if let (Some(doc_origin), Some(script_origin)) =
-          (self.document_origin.as_ref(), script_origin.as_ref())
-        {
-          if doc_origin != script_origin {
-            return Err(Error::Other(format!(
-              "SRI blocked script {url}: cross-origin integrity requires a CORS fetch (add a crossorigin attribute)"
-            )));
-          }
-        }
-      }
+    if let Some(integrity) = integrity {
       crate::js::sri::verify_integrity(&resource.bytes, integrity).map_err(|message| {
         Error::Other(format!("SRI blocked script {url}: {message}"))
       })?;
@@ -2968,6 +2967,9 @@ mod tests {
   use url::Url;
 
   use crate::web::events::{AddEventListenerOptions, DomError, EventListenerInvoker, ListenerId};
+  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::Engine;
+  use sha2::{Digest, Sha256};
 
   struct RecordingInvoker {
     log: Rc<RefCell<Vec<String>>>,
@@ -3022,6 +3024,12 @@ mod tests {
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
+  }
+
+  fn sri_sha256_token(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let b64 = BASE64_STANDARD.encode(digest);
+    format!("sha256-{b64}")
   }
 
   #[test]
@@ -3384,6 +3392,310 @@ mod tests {
 
     assert_eq!(&*event_log.borrow(), &["error".to_string()]);
     assert_eq!(&*script_log.borrow(), &["B".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_match_executes_and_dispatches_load_event() -> Result<()> {
+    let source = "A";
+    let integrity = sri_sha256_token(source.as_bytes());
+    let html = format!(r#"<script src="a.js" integrity="{integrity}"></script>"#);
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.register_external_script_source("a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    let load_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        load_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+    let error_listener = ListenerId::new(2);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(&*event_log.borrow(), &["load".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_mismatch_dispatches_error_and_skips_execution() -> Result<()> {
+    let source = "A";
+    let wrong = sri_sha256_token(b"other");
+    let html = format!(
+      r#"<script src="a.js" integrity="{wrong}"></script><script>B</script>"#
+    );
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.register_external_script_source("a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(first_node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_accepts_multiple_hashes_if_any_matches() -> Result<()> {
+    let source = "A";
+    let wrong = sri_sha256_token(b"other");
+    let correct = sri_sha256_token(source.as_bytes());
+    let integrity = format!("{wrong} {correct}");
+    let html = format!(r#"<script src="a.js" integrity="{integrity}"></script>"#);
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.register_external_script_source("a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    let load_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        load_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(&*event_log.borrow(), &["load".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_with_only_unsupported_algorithms_is_rejected() -> Result<()> {
+    let source = "A";
+    let html =
+      r#"<script src="a.js" integrity="sha512-deadbeef"></script><script>B</script>"#;
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(html, Rc::clone(&script_log))?;
+    host.register_external_script_source("a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(first_node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_cross_origin_requires_crossorigin_attribute() -> Result<()> {
+    let source = "A";
+    let integrity = sri_sha256_token(source.as_bytes());
+    let html = format!(
+      r#"<script src="https://other.com/a.js" integrity="{integrity}"></script><script>B</script>"#
+    );
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.reset_scripting_state(Some("https://example.com/doc.html".to_string()), ReferrerPolicy::default())?;
+    host.register_external_script_source("https://other.com/a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
+    assert_eq!(discovered.len(), 2);
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(first_node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_integrity_cross_origin_with_crossorigin_allows_execution() -> Result<()> {
+    let source = "A";
+    let integrity = sri_sha256_token(source.as_bytes());
+    let html = format!(
+      r#"<script src="https://other.com/a.js" crossorigin integrity="{integrity}"></script>"#
+    );
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.reset_scripting_state(Some("https://example.com/doc.html".to_string()), ReferrerPolicy::default())?;
+    host.register_external_script_source("https://other.com/a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    let load_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        load_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+    let error_listener = ListenerId::new(2);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(
+      node_id,
+      spec,
+      base_url_at_discovery,
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["load".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()]
+    );
     Ok(())
   }
 

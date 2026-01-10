@@ -1311,6 +1311,7 @@ mod tests {
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
+      integrity_attr_present: false,
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,

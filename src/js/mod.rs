@@ -131,7 +131,6 @@ pub mod quickjs_dom;
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
-
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
@@ -275,10 +274,13 @@ pub struct ScriptElementSpec {
   /// When `None`, classic scripts are fetched in `no-cors` mode (no CORS enforcement).
   /// When `Some`, scripts are fetched in `cors` mode and CORS response headers are enforced.
   pub crossorigin: Option<crate::resource::CorsMode>,
-  /// Raw `integrity` attribute value (Subresource Integrity).
+  /// Whether the `integrity` attribute is present on the element.
+  pub integrity_attr_present: bool,
+  /// Raw `integrity` attribute value (Subresource Integrity) when within a bounded size limit.
   ///
-  /// When present, the fetched script bytes must match the provided digest(s) or execution is
-  /// blocked.
+  /// When `integrity_attr_present` is true but this field is `None`, the attribute exceeded
+  /// [`sri::MAX_INTEGRITY_ATTRIBUTE_BYTES`] and must be treated as invalid metadata (the script must
+  /// not execute).
   pub integrity: Option<String>,
   /// Parsed `referrerpolicy` attribute value.
   ///
@@ -317,6 +319,16 @@ impl ScriptElementSpec {
   pub fn is_effectively_async(&self) -> bool {
     self.async_attr || self.force_async
   }
+}
+
+pub(crate) fn clamp_integrity_attribute(raw: Option<&str>) -> (bool, Option<String>) {
+  let Some(raw) = raw else {
+    return (false, None);
+  };
+  if raw.len() > sri::MAX_INTEGRITY_ATTRIBUTE_BYTES {
+    return (true, None);
+  }
+  (true, Some(raw.to_string()))
 }
 
 /// Determine the script type for a `<script>` element based on `type`/`language` attributes.

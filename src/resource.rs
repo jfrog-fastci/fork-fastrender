@@ -117,7 +117,7 @@ impl DocumentOrigin {
     }
   }
 
-  fn same_origin(&self, other: &DocumentOrigin) -> bool {
+  pub fn same_origin(&self, other: &DocumentOrigin) -> bool {
     if self.scheme != other.scheme {
       return false;
     }

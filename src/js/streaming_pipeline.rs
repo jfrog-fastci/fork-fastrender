@@ -293,6 +293,7 @@ impl ClassicScriptPipelineState {
         defer_attr: false,
         nomodule_attr: false,
         crossorigin: None,
+        integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
@@ -315,6 +316,7 @@ impl ClassicScriptPipelineState {
         defer_attr: false,
         nomodule_attr: false,
         crossorigin: None,
+        integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
@@ -335,6 +337,7 @@ impl ClassicScriptPipelineState {
         defer_attr: false,
         nomodule_attr: false,
         crossorigin: None,
+        integrity_attr_present: false,
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
@@ -346,13 +349,6 @@ impl ClassicScriptPipelineState {
     let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
     let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
     let nomodule_attr = dom.has_attribute(script_node_id, "nomodule").unwrap_or(false);
-    let crossorigin =
-      super::parse_crossorigin_attr(dom.get_attribute(script_node_id, "crossorigin").ok().flatten());
-    let integrity = dom
-      .get_attribute(script_node_id, "integrity")
-      .ok()
-      .flatten()
-      .map(|value| value.to_string());
     let referrer_policy = dom
       .get_attribute(script_node_id, "referrerpolicy")
       .ok()
@@ -366,6 +362,12 @@ impl ClassicScriptPipelineState {
     let src_attr_present = raw_src.is_some();
     let src =
       raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));
+
+    let (integrity_attr_present, integrity) = super::clamp_integrity_attribute(
+      dom.get_attribute(script_node_id, "integrity").ok().flatten(),
+    );
+    let crossorigin =
+      super::parse_crossorigin_attr(dom.get_attribute(script_node_id, "crossorigin").ok().flatten());
 
     let inline_text = {
       let mut out = String::new();
@@ -386,11 +388,12 @@ impl ClassicScriptPipelineState {
       src,
       src_attr_present,
       inline_text,
-      crossorigin,
       async_attr,
       force_async: false,
       defer_attr,
       nomodule_attr,
+      crossorigin,
+      integrity_attr_present,
       integrity,
       referrer_policy,
       parser_inserted: true,
