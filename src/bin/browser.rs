@@ -1609,6 +1609,10 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::CloseTab(tab_id) => {
+          if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
+            continue;
+          }
+
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -1653,8 +1657,6 @@ impl App {
               reason: RepaintReason::Explicit,
             });
 
-            // Closing the last tab creates a fresh new-tab page; focus the address bar for quick
-            // navigation.
             self.focus_address_bar_select_all();
             self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {

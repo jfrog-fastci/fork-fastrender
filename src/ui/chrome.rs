@@ -98,8 +98,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
     actions.push(ChromeAction::NewTab);
   }
   if close_tab {
-    if let Some(tab_id) = app.active_tab_id() {
-      actions.push(ChromeAction::CloseTab(tab_id));
+    if app.tabs.len() > 1 {
+      if let Some(tab_id) = app.active_tab_id() {
+        actions.push(ChromeAction::CloseTab(tab_id));
+      }
     }
   }
   if reload {
@@ -171,6 +173,7 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     // Tabs row.
     ui.horizontal_wrapped(|ui| {
+      let can_close_tabs = app.tabs.len() > 1;
       for tab in &app.tabs {
         let is_active = app.active_tab_id() == Some(tab.id);
         let title = tab.display_title();
@@ -179,7 +182,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
           actions.push(ChromeAction::ActivateTab(tab.id));
         }
 
-        if ui.button("×").clicked() {
+        if ui
+          .add_enabled(can_close_tabs, egui::Button::new("×"))
+          .clicked()
+        {
           actions.push(ChromeAction::CloseTab(tab.id));
         }
 
@@ -458,8 +464,10 @@ mod tests {
   #[test]
   fn ctrl_w_emits_close_tab_for_active_tab_even_when_address_bar_focused() {
     let mut app = BrowserAppState::new();
-    let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
     app.chrome.address_bar_has_focus = true;
     app.chrome.address_bar_editing = true;
 
@@ -476,8 +484,30 @@ mod tests {
     assert!(
       actions
         .iter()
-        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_id)),
-      "expected ChromeAction::CloseTab({tab_id:?}), got {actions:?}"
+        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+      "expected ChromeAction::CloseTab({tab_a:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_w_is_noop_when_only_one_tab_exists() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = new_context_with_key(
+      egui::Key::W,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
+      "expected no CloseTab action when only one tab exists, got {actions:?}"
     );
   }
 

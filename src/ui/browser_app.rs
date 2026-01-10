@@ -268,7 +268,7 @@ pub struct BrowserAppState {
 pub struct RemoveTabResult {
   /// New active tab id (only set when the closed tab was the active tab).
   pub new_active: Option<TabId>,
-  /// New tab created to maintain the "at least one tab" invariant.
+  /// New tab created as a recovery path when the tab list becomes unexpectedly empty.
   pub created_tab: Option<TabId>,
 }
 
@@ -356,8 +356,7 @@ impl BrowserAppState {
 
   /// Removes a tab, returning the new active tab if the active tab changed.
   ///
-  /// Invariant: closing the last tab will immediately create a new `about:newtab` tab and make it
-  /// active.
+  /// Invariant: closing the last remaining tab is a no-op.
   pub fn remove_tab(&mut self, tab_id: TabId) -> RemoveTabResult {
     let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
       return RemoveTabResult {
@@ -366,6 +365,13 @@ impl BrowserAppState {
       };
     };
 
+    if self.tabs.len() == 1 {
+      return RemoveTabResult {
+        new_active: None,
+        created_tab: None,
+      };
+    }
+
     self.tabs.remove(idx);
 
     let was_active = self.active_tab == Some(tab_id);
@@ -373,18 +379,6 @@ impl BrowserAppState {
       return RemoveTabResult {
         new_active: None,
         created_tab: None,
-      };
-    }
-
-    if self.tabs.is_empty() {
-      let new_tab_id = TabId::new();
-      self.push_tab(
-        BrowserTabState::new(new_tab_id, about_pages::ABOUT_NEWTAB.to_string()),
-        true,
-      );
-      return RemoveTabResult {
-        new_active: Some(new_tab_id),
-        created_tab: Some(new_tab_id),
       };
     }
 
@@ -662,7 +656,7 @@ mod browser_app_tests {
   }
 
   #[test]
-  fn closing_last_tab_immediately_creates_newtab() {
+  fn closing_last_tab_is_noop() {
     let _lock = crate::ui::messages::TAB_ID_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -680,14 +674,9 @@ mod browser_app_tests {
     let result = app.remove_tab(tab_id);
 
     assert_eq!(app.tabs.len(), 1);
-    let new_tab_id = app.active_tab_id().expect("must have active tab after close");
-    assert_ne!(new_tab_id, tab_id);
-    assert_eq!(result.new_active, Some(new_tab_id));
-    assert_eq!(result.created_tab, Some(new_tab_id));
-    assert_eq!(
-      app.tab(new_tab_id).and_then(|t| t.current_url()),
-      Some(about_pages::ABOUT_NEWTAB)
-    );
+    assert_eq!(app.active_tab_id(), Some(tab_id));
+    assert_eq!(result.new_active, None);
+    assert_eq!(result.created_tab, None);
   }
 
   #[test]
@@ -728,15 +717,12 @@ mod browser_app_tests {
     assert_eq!(app.tabs.len(), 1);
     assert_active_is_valid(&app);
 
-    // Closing the last tab should auto-create a new one.
+    // Closing the last remaining tab should be a no-op.
     let last = app.active_tab_id().unwrap();
     app.close_tab(last);
     assert_eq!(app.tabs.len(), 1);
     assert_active_is_valid(&app);
-    assert_eq!(
-      app.active_tab().and_then(|t| t.current_url()),
-      Some(about_pages::ABOUT_NEWTAB)
-    );
+    assert_eq!(app.active_tab_id(), Some(last));
   }
 
   #[test]
