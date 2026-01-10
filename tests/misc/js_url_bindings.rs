@@ -295,6 +295,85 @@ fn window_realm_exec_script_url_constructor_smoke() {
 }
 
 #[test]
+fn window_realm_exec_script_url_constructors_require_new() {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
+
+  let typeof_url = realm.exec_script(r#"typeof URL === "function""#).unwrap();
+  assert_eq!(typeof_url, Value::Bool(true));
+
+  let url_proto = realm
+    .exec_script(r#"URL.prototype !== null && typeof URL.prototype === "object""#)
+    .unwrap();
+  assert_eq!(url_proto, Value::Bool(true));
+
+  let url_call_throws = realm
+    .exec_script(
+      r#"
+        (function () {
+          try {
+            URL("https://example.com");
+            return false;
+          } catch (e) {
+            return e instanceof TypeError && e.message === "Illegal constructor";
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(url_call_throws, Value::Bool(true));
+
+  let url_new_works = realm
+    .exec_script(
+      r#"
+        (function () {
+          const u = new URL("https://example.com");
+          return typeof u === "object" && u !== null;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(url_new_works, Value::Bool(true));
+
+  let typeof_sp = realm
+    .exec_script(r#"typeof URLSearchParams === "function""#)
+    .unwrap();
+  assert_eq!(typeof_sp, Value::Bool(true));
+
+  let sp_proto = realm
+    .exec_script(r#"URLSearchParams.prototype !== null && typeof URLSearchParams.prototype === "object""#)
+    .unwrap();
+  assert_eq!(sp_proto, Value::Bool(true));
+
+  let sp_call_throws = realm
+    .exec_script(
+      r#"
+        (function () {
+          try {
+            URLSearchParams("a=b");
+            return false;
+          } catch (e) {
+            return e instanceof TypeError && e.message === "Illegal constructor";
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(sp_call_throws, Value::Bool(true));
+
+  let sp_new_works = realm
+    .exec_script(
+      r#"
+        (function () {
+          const p = new URLSearchParams("a=b");
+          return typeof p === "object" && p !== null;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(sp_new_works, Value::Bool(true));
+}
+
+#[test]
 fn window_realm_exec_script_url_searchparams_is_live_and_cached() {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
 

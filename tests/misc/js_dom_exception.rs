@@ -6,7 +6,7 @@ use fastrender::web::dom::DomException;
 use std::cell::RefCell;
 use std::rc::Rc;
 use webidl_js_runtime::runtime::JsRuntime as _;
-use vm_js::{PropertyKey, Value, VmError};
+use vm_js::{PropertyKey, Value};
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {
   let v = rt.alloc_string_value(s).expect("alloc string");

@@ -305,7 +305,20 @@ fn object_builtins_smoke() -> Result<(), VmError> {
       &args,
     )
     .unwrap_err();
-  assert!(matches!(err, VmError::TypeError(_)));
+  match &err {
+    VmError::TypeError(_) => {}
+    _ => {
+      let Some(thrown) = err.thrown_value() else {
+        panic!("expected TypeError, got {err:?}");
+      };
+      let Value::Object(thrown_obj) = thrown else {
+        panic!("expected thrown TypeError object, got {thrown:?}");
+      };
+      let name = get_own_data_property(&mut scope, thrown_obj, "name")?
+        .expect("thrown error object should have a 'name' property");
+      assert_eq!(to_utf8_string(scope.heap(), name), "TypeError");
+    }
+  }
 
   // Object.setPrototypeOf
   let set_proto = get_own_data_property(&mut scope, object, "setPrototypeOf")?

@@ -1027,6 +1027,10 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(false);
     };
 
+    let mut trace_span = self.trace.span("js.task.run", "js");
+    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_u64("seq", task.seq);
+
     let previous_timer_nesting_level = self.timer_nesting_level;
     if task.source != TaskSource::Timer {
       self.timer_nesting_level = 0;

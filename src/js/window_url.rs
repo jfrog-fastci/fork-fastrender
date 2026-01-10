@@ -16,8 +16,7 @@ use vm_js::{
   RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
-const URL_CALL_WITHOUT_NEW_ERROR: &str = "URL constructor must be called with new";
-const URLSP_CALL_WITHOUT_NEW_ERROR: &str = "URLSearchParams constructor must be called with new";
+const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
 const URL_INVALID_ERROR: &str = "Invalid URL";
 const URL_INPUT_TOO_LONG_ERROR: &str = "URL constructor input exceeded max bytes";
 const URL_BASE_TOO_LONG_ERROR: &str = "URL constructor base exceeded max bytes";
@@ -319,15 +318,22 @@ fn install_accessor(
 }
 
 fn url_call_without_new_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError(URL_CALL_WITHOUT_NEW_ERROR))
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+  Err(vm_js::throw_type_error(
+    scope,
+    intrinsics,
+    ILLEGAL_CONSTRUCTOR_ERROR,
+  ))
 }
 
 fn url_construct_native(
@@ -337,8 +343,19 @@ fn url_construct_native(
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
+  if new_target != Value::Object(callee) {
+    let intrinsics = vm
+      .intrinsics()
+      .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      ILLEGAL_CONSTRUCTOR_ERROR,
+    ));
+  }
+
   let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
 
   let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -702,15 +719,22 @@ fn url_to_json_native(
 }
 
 fn urlsp_call_without_new_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError(URLSP_CALL_WITHOUT_NEW_ERROR))
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+  Err(vm_js::throw_type_error(
+    scope,
+    intrinsics,
+    ILLEGAL_CONSTRUCTOR_ERROR,
+  ))
 }
 
 fn urlsp_construct_native(
@@ -720,8 +744,19 @@ fn urlsp_construct_native(
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
+  if new_target != Value::Object(callee) {
+    let intrinsics = vm
+      .intrinsics()
+      .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      ILLEGAL_CONSTRUCTOR_ERROR,
+    ));
+  }
+
   let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
 
   let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1068,7 +1103,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   let sp_name = scope.alloc_string("URLSearchParams")?;
   scope.push_root(Value::String(sp_name))?;
   let sp_ctor =
-    scope.alloc_native_function_with_slots(sp_call_id, Some(sp_construct_id), sp_name, 1, &slots)?;
+    scope.alloc_native_function_with_slots(sp_call_id, Some(sp_construct_id), sp_name, 0, &slots)?;
   scope
     .heap_mut()
     .object_set_prototype(sp_ctor, Some(realm.intrinsics().function_prototype()))?;
