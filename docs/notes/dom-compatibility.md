@@ -53,7 +53,9 @@ These lifts are intentionally conservative:
 
 - **Never overwrite** a non-empty, non-placeholder author-provided attribute.
 - `src`/`poster` are only overwritten when the existing value is considered a placeholder (below).
-- `srcset`/`sizes` are only overwritten when the existing value is empty/missing.
+- `srcset` is only overwritten when it is missing/empty **or effectively placeholder-only** (i.e.
+  parsing yields candidates and every candidate URL is a placeholder).
+- `sizes` are only overwritten when the existing value is empty/missing.
 
 #### Placeholder detection (for `src`/`poster`)
 
@@ -65,14 +67,18 @@ These lifts are intentionally conservative:
 - start with `javascript:`, `vbscript:`, or `mailto:` (case-insensitive)
 - a `data:image/gif;base64,…` that decodes to a `1×1` GIF (payload length is capped to keep this
   check cheap)
+- a `data:image/png;base64,…` that decodes to a `1×1` PNG (payload length is capped and width/height
+  are read from the `IHDR` chunk)
 - a small `data:image/svg+xml,…` that decodes to a structurally blank SVG (no visible shape
   elements; payload decoding is size-capped)
+- `data:image/*;base64` strings with no comma/payload (e.g. `data:image/png;base64`) are treated as
+  placeholders (common broken lazyload markup)
 
 These placeholder rules are reused anywhere compat mode decides whether to replace an existing
 `src`-like attribute (`<img>`, `<iframe>`, `<video>`, `<audio>`, and `<video poster>`).
 
 FastRender's HTML image prefetch discovery uses the same placeholder heuristics, so tools like
-`prefetch_assets` prefer `data-src`/`data-srcset` when `src` is a recognized placeholder.
+`prefetch_assets` prefer `data-src`/`data-srcset` when `src`/`srcset` are recognized placeholders.
 
 When lifting a URL from `data-*` candidates, placeholder values are ignored and later candidates are
 tried instead.
@@ -91,9 +97,9 @@ tried instead.
   - `data-img-src`
   - `data-img-url`
   - `data-hires`
-  - `data-src-retina`
-  - `data-default-src`
-- `srcset`: if missing or empty, copy from the first non-empty candidate among:
+- `data-src-retina`
+- `data-default-src`
+- `srcset`: if missing/empty or placeholder-only, copy from the first non-empty candidate among:
   - `data-gl-srcset`
   - `data-srcset`
   - `data-lazy-srcset`
@@ -104,7 +110,7 @@ tried instead.
 
 #### `<picture><source>` (and `<source>` generally)
 
-- `srcset`: if missing or empty, copy from the first non-empty candidate among:
+- `srcset`: if missing/empty or placeholder-only, copy from the first non-empty candidate among:
   - `data-srcset`
   - `data-lazy-srcset`
   - `data-gl-srcset`

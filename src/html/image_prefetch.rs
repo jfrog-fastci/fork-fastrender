@@ -1333,9 +1333,51 @@ mod tests {
   }
 
   #[test]
+  fn falls_back_from_1x1_png_data_src_to_data_src() {
+    let html = r#"<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=" data-src="a.jpg">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 2,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+    assert_eq!(out.urls, vec!["https://example.com/a.jpg".to_string()]);
+  }
+
+  #[test]
   fn falls_back_from_blank_svg_data_src_to_data_src() {
     let html =
       r#"<img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" data-src="a.jpg">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 2,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+    assert_eq!(out.urls, vec!["https://example.com/a.jpg".to_string()]);
+  }
+
+  #[test]
+  fn falls_back_from_base64_image_header_without_payload_src_to_data_src() {
+    let html = r#"<img src="data:image/png;base64" data-src="a.jpg">"#;
     let dom = parse_html(html).unwrap();
 
     let media_ctx = media_ctx_for((800.0, 600.0), 1.0);

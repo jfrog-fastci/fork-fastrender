@@ -294,6 +294,54 @@ fn compatibility_mode_lifts_svg_placeholder_img_src_from_data_src() {
 }
 
 #[test]
+fn compatibility_mode_overwrites_1x1_png_placeholder_img_src_from_data_src() {
+  let placeholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+  let html = format!(
+    r#"<html><body><img src="{placeholder}" data-src="real.jpg"></body></html>"#
+  );
+
+  let standard_dom = parse_html(&html).expect("parse standard DOM");
+  let standard_img = find_element(&standard_dom, "img").expect("standard img element");
+  assert_eq!(
+    standard_img.get_attribute_ref("src"),
+    Some(placeholder),
+    "standard mode should preserve placeholder src"
+  );
+
+  let compat_dom =
+    parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("src"),
+    Some("real.jpg"),
+    "compat mode should overwrite 1×1 PNG placeholder src with data-src"
+  );
+}
+
+#[test]
+fn compatibility_mode_overwrites_base64_image_header_without_payload_img_src_from_data_src() {
+  let html =
+    r#"<html><body><img src="data:image/png;base64" data-src="real.jpg"></body></html>"#;
+
+  let standard_dom = parse_html(html).expect("parse standard DOM");
+  let standard_img = find_element(&standard_dom, "img").expect("standard img element");
+  assert_eq!(
+    standard_img.get_attribute_ref("src"),
+    Some("data:image/png;base64"),
+    "standard mode should preserve placeholder src"
+  );
+
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("src"),
+    Some("real.jpg"),
+    "compat mode should overwrite base64 header placeholder src with data-src"
+  );
+}
+
+#[test]
 fn compatibility_mode_lifts_img_src_from_lazy_data_attributes() {
   let html = r#"<html><body><img data-src="https://example.com/a.jpg"></body></html>"#;
 
