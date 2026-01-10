@@ -155,7 +155,7 @@ fn builtins_function_apply_consumes_fuel_in_native_loop() {
   }
 
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap).unwrap();
 
   let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
@@ -318,5 +318,32 @@ fn object_literal_methods_or_shorthand_consume_fuel() {
   src.push_str("});");
 
   let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn function_prologue_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  rt.vm.set_budget(Budget::unlimited(1));
+  let f = rt.exec_script("function f(){} f").unwrap();
+  let Value::Object(f) = f else {
+    panic!("expected function object, got {f:?}");
+  };
+
+  let args: Vec<Value> = (0..512).map(|i| Value::Number(i as f64)).collect();
+
+  rt.vm.set_budget(Budget {
+    fuel: Some(10),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut scope = rt.heap.scope();
+  let err = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(f), Value::Undefined, &args)
+    .unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }

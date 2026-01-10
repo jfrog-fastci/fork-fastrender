@@ -969,10 +969,13 @@ impl<'a> Evaluator<'a> {
     func: &Node<Func>,
     args: &[Value],
   ) -> Result<(), VmError> {
+    const PROLOGUE_TICK_EVERY: usize = 32;
+
     // Pre-create all parameter bindings before evaluating default initializers so identifier
     // references during parameter evaluation observe TDZ semantics.
     let env_rec = self.env.lexical_env;
     for param in &func.stx.parameters {
+      self.tick()?;
       self.instantiate_lexical_names_from_pat(
         scope,
         env_rec,
@@ -1016,6 +1019,9 @@ impl<'a> Evaluator<'a> {
       )?;
 
       for (i, v) in args.iter().copied().enumerate() {
+        if i % PROLOGUE_TICK_EVERY == 0 {
+          self.tick()?;
+        }
         let mut idx_scope = scope.reborrow();
         idx_scope.push_root(Value::Object(args_obj))?;
         idx_scope.push_root(v)?;
@@ -1031,6 +1037,7 @@ impl<'a> Evaluator<'a> {
 
     // Bind parameters in order, evaluating default initializers as needed.
     for (idx, param) in func.stx.parameters.iter().enumerate() {
+      self.tick()?;
       if param.stx.rest {
         // Rest parameter: collect remaining args into an Array.
         let rest_slice = args.get(idx..).unwrap_or(&[]);
@@ -1047,6 +1054,9 @@ impl<'a> Evaluator<'a> {
           .object_set_prototype(arr, Some(intr.array_prototype()))?;
 
         for (i, v) in rest_slice.iter().copied().enumerate() {
+          if i % PROLOGUE_TICK_EVERY == 0 {
+            self.tick()?;
+          }
           let mut elem_scope = rest_scope.reborrow();
           elem_scope.push_root(Value::Object(arr))?;
           elem_scope.push_root(v)?;
