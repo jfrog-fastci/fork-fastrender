@@ -18,28 +18,28 @@
   "auto_notes": "missing cache",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 778636,
-    "diff_percent": 60.3781,
-    "perceptual": 1.0,
+    "diff_pixels": 276879,
+    "diff_percent": 21.4701,
+    "perceptual": 0.2324,
     "first_mismatch": {
-      "x": 102,
-      "y": 9,
+      "x": 75,
+      "y": 10,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        247,
+        247,
+        248,
         255
       ],
       "rendered_rgba": [
-        253,
-        253,
-        253,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "8f5c2edf71f66921accb130b2148b05a1dd44498"
+    "computed_at_commit": "d95572fe5cfb39b2eb38433196ef7ba374727068"
   },
   "hotspot": "fetch",
   "failure_stage": null,
