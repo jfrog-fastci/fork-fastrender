@@ -1480,8 +1480,6 @@ pub mod window {
     rt.define_method(global, "clearInterval", func)?;
     let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
     rt.define_method(global, "clearTimeout", func)?;
-    let func = rt.create_function("alert", 0, window_alert::<Host, R>)?;
-    rt.define_method(global, "alert", func)?;
     let func = rt.create_function("queueMicrotask", 1, window_queue_microtask::<Host, R>)?;
     rt.define_method(global, "queueMicrotask", func)?;
     let func = rt.create_function("setInterval", 1, window_set_interval::<Host, R>)?;
