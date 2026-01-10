@@ -4,6 +4,7 @@ pub mod browser;
 pub mod capture_accuracy_fixtures;
 pub mod capture_missing_failure_fixtures;
 pub mod cmd;
+pub mod page_loop_plan;
 pub mod freeze_page_fixture;
 pub mod lint_no_panics;
 pub mod lint_no_openssl;

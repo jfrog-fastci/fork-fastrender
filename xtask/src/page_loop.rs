@@ -4,6 +4,7 @@ use fastrender::pageset::{pageset_entries_with_collisions, PagesetFilter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use xtask::page_loop_plan::{build_bins_command, InspectFragCommandArgs};
 
 const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 const DEFAULT_OUT_BASE: &str = "target/page_loop";
@@ -260,9 +261,50 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   }
 
   let run_chrome = args.chrome && !args.no_chrome;
-  let render_fixtures_cmd = build_render_fixtures_command(&repo_root, &layout, &args, run_chrome)?;
-  let inspect_frag_cmd = if args.overlay || args.inspect_dump_json {
-    Some(build_inspect_frag_command(&repo_root, &layout, &args)?)
+  let needs_inspect_frag = args.overlay || args.inspect_dump_json;
+  let mut bins_to_build = vec!["render_fixtures"];
+  if needs_inspect_frag {
+    bins_to_build.push("inspect_frag");
+  }
+  if run_chrome {
+    bins_to_build.push("diff_renders");
+  }
+  let build_bins_cmd = build_bins_command(&repo_root, args.debug, &bins_to_build);
+
+  let render_fixtures_cmd = xtask::page_loop_plan::build_render_fixtures_command(
+    &repo_root,
+    args.debug,
+    &layout.fixtures_dir,
+    &layout.fastrender_dir,
+    &layout.fixture_stem,
+    args.jobs,
+    args.viewport,
+    args.dpr,
+    args.media.as_cli_value(),
+    args.timeout,
+    run_chrome,
+    args.write_snapshot,
+  );
+
+  let inspect_frag_cmd = if needs_inspect_frag {
+    Some(xtask::page_loop_plan::build_inspect_frag_command(
+      &repo_root,
+      args.debug,
+      &InspectFragCommandArgs {
+        fixture_html: layout.fixture_html.clone(),
+        overlay_png: args.overlay.then(|| layout.overlay_png.clone()),
+        dump_json_dir: args.inspect_dump_json.then(|| layout.inspect_dir.clone()),
+        filter_selector: args.inspect_filter_selector.clone(),
+        filter_id: args.inspect_filter_id.clone(),
+        dump_custom_properties: args.inspect_dump_custom_properties,
+        custom_property_prefix: args.inspect_custom_property_prefix.clone(),
+        custom_properties_limit: args.inspect_custom_properties_limit,
+        viewport: args.viewport,
+        dpr: args.dpr,
+        media: args.media.as_cli_value().to_string(),
+        timeout: args.timeout,
+      },
+    ))
   } else {
     None
   };
@@ -273,13 +315,8 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     None
   };
 
-  let build_diff_renders_cmd = if run_chrome {
-    Some(build_diff_renders_build_command(&repo_root, &args))
-  } else {
-    None
-  };
   let diff_renders_cmd = if run_chrome {
-    Some(build_diff_renders_command(&repo_root, &layout, &args)?)
+    Some(build_diff_renders_command(&repo_root, &layout, args.debug)?)
   } else {
     None
   };
@@ -309,14 +346,12 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     }
     println!();
 
+    crate::print_command(&build_bins_cmd);
     crate::print_command(&render_fixtures_cmd);
     if let Some(cmd) = inspect_frag_cmd.as_ref() {
       crate::print_command(cmd);
     }
     if let Some(cmd) = chrome_cmd.as_ref() {
-      crate::print_command(cmd);
-    }
-    if let Some(cmd) = build_diff_renders_cmd.as_ref() {
       crate::print_command(cmd);
     }
     if let Some(cmd) = diff_renders_cmd.as_ref() {
@@ -345,6 +380,9 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     remove_file_if_exists(&layout.report_json).context("clear existing report.json")?;
   }
 
+  println!("Building renderer binaries...");
+  crate::run_command(build_bins_cmd).context("build renderer binaries failed")?;
+
   println!("Rendering fixture with FastRender...");
   crate::run_command(render_fixtures_cmd).context("render_fixtures failed")?;
 
@@ -361,11 +399,6 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   if let Some(cmd) = chrome_cmd {
     println!("Rendering Chrome baseline...");
     crate::run_command(cmd).context("chrome-baseline-fixtures failed")?;
-  }
-
-  if let Some(cmd) = build_diff_renders_cmd {
-    println!("Building diff_renders...");
-    crate::run_command(cmd).context("build diff_renders failed")?;
   }
 
   if let Some(cmd) = diff_renders_cmd {
@@ -694,92 +727,6 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
   }
 }
 
-fn build_render_fixtures_command(
-  repo_root: &Path,
-  layout: &Layout,
-  args: &PageLoopArgs,
-  patch_for_chrome: bool,
-) -> Result<Command> {
-  let mut cmd = crate::cmd::cargo_agent_command(repo_root);
-  cmd.current_dir(repo_root);
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
-  cmd.arg("run");
-  if !args.debug {
-    cmd.arg("--release");
-  }
-  cmd.args(["--bin", "render_fixtures", "--"]);
-  cmd.arg("--fixtures-dir").arg(&layout.fixtures_dir);
-  cmd.arg("--out-dir").arg(&layout.fastrender_dir);
-  cmd.arg("--fixtures").arg(&layout.fixture_stem);
-  cmd.arg("--jobs").arg(args.jobs.to_string());
-  cmd
-    .arg("--viewport")
-    .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
-  cmd.arg("--dpr").arg(args.dpr.to_string());
-  cmd.arg("--media").arg(args.media.as_cli_value());
-  cmd.arg("--timeout").arg(args.timeout.to_string());
-  if patch_for_chrome {
-    // `chrome-baseline-fixtures` always renders a patched HTML variant (forces light-mode, disables
-    // JS/animations via CSP + style injection). When diffing against Chrome, render the same patch
-    // via `render_fixtures` so the resulting report reflects renderer differences rather than the
-    // harness modifications.
-    cmd.arg("--patch-html-for-chrome-baseline");
-  }
-  if args.write_snapshot {
-    cmd.arg("--write-snapshot");
-  }
-  Ok(cmd)
-}
-
-fn build_inspect_frag_command(
-  repo_root: &Path,
-  layout: &Layout,
-  args: &PageLoopArgs,
-) -> Result<Command> {
-  let mut cmd = crate::cmd::cargo_agent_command(repo_root);
-  cmd.current_dir(repo_root);
-  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
-  cmd.arg("run");
-  if !args.debug {
-    cmd.arg("--release");
-  }
-  cmd.args(["--bin", "inspect_frag", "--"]);
-  cmd.arg(layout.fixture_html.as_os_str());
-  if args.overlay {
-    cmd.arg("--render-overlay").arg(&layout.overlay_png);
-  }
-  if args.inspect_dump_json {
-    cmd.arg("--dump-json").arg(&layout.inspect_dir);
-  }
-  if let Some(selector) = args.inspect_filter_selector.as_deref() {
-    cmd.arg("--filter-selector").arg(selector);
-  }
-  if let Some(id) = args.inspect_filter_id.as_deref() {
-    cmd.arg("--filter-id").arg(id);
-  }
-  if args.inspect_dump_custom_properties {
-    cmd.arg("--dump-custom-properties");
-    for prefix in &args.inspect_custom_property_prefix {
-      // `--custom-property-prefix` values often start with `--` (since CSS custom properties do).
-      // `inspect_frag` (clap) treats bare `--foo` tokens as flags unless passed in `--flag=value`
-      // form, so use the equals-sign style to avoid requiring callers to do the same.
-      cmd.arg(format!("--custom-property-prefix={prefix}"));
-    }
-    if let Some(limit) = args.inspect_custom_properties_limit {
-      cmd
-        .arg("--custom-properties-limit")
-        .arg(limit.to_string());
-    }
-  }
-  cmd
-    .arg("--viewport")
-    .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
-  cmd.arg("--dpr").arg(args.dpr.to_string());
-  cmd.arg("--media").arg(args.media.as_cli_value());
-  cmd.arg("--timeout").arg(args.timeout.to_string());
-  Ok(cmd)
-}
-
 fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
   let xtask = std::env::current_exe().context("resolve current xtask executable path")?;
   let mut cmd = crate::cmd::run_limited_xtask_command(repo_root);
@@ -804,24 +751,8 @@ fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageL
   Ok(cmd)
 }
 
-fn build_diff_renders_build_command(repo_root: &Path, args: &PageLoopArgs) -> Command {
-  let mut cmd = crate::cmd::cargo_agent_command(repo_root);
-  cmd.current_dir(repo_root);
-  cmd.arg("build");
-  if !args.debug {
-    cmd.arg("--release");
-  }
-  cmd.args(["--bin", "diff_renders"]);
-  cmd
-}
-
-fn build_diff_renders_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
-  let target_dir = crate::cargo_target_dir(repo_root);
-  let profile_dir = if args.debug { "debug" } else { "release" };
-  let diff_renders_exe = target_dir.join(profile_dir).join(format!(
-    "diff_renders{}",
-    std::env::consts::EXE_SUFFIX
-  ));
+fn build_diff_renders_command(repo_root: &Path, layout: &Layout, debug: bool) -> Result<Command> {
+  let diff_renders_exe = xtask::page_loop_plan::diff_renders_executable(repo_root, debug);
   let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   cmd.arg(&diff_renders_exe);
   cmd.arg("--before").arg(&layout.chrome_png);
