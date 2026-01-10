@@ -267,8 +267,13 @@ impl ScriptOrchestrator {
       ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
       // `Document.currentScript` is null for module scripts.
       ScriptType::Module => None,
-      // Import maps and unknown script types are not executed (currentScript remains null).
-      ScriptType::ImportMap | ScriptType::Unknown => None,
+      // `Document.currentScript` is also null for import map scripts.
+      //
+      // Import maps *do* execute (they register/merge into import map state), but per HTML they never
+      // set `currentScript`.
+      ScriptType::ImportMap => None,
+      // Unknown script types should be ignored by "prepare a script" (currentScript remains null).
+      ScriptType::Unknown => None,
     };
 
     let source_snapshot = host.with_dom(|dom| script_source_snapshot(dom, script));
