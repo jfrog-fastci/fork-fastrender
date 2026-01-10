@@ -88,7 +88,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `parse an import map string`:
   * `rg -n 'parse an import map string' specs/whatwg-html/source`
 * `sort and normalize a module specifier map`:
-  * `rg -n 'sort and normalize a module specifier map' specs/whatwg-html/source`
+  * `rg -n 'sorting and normalizing a module specifier map' specs/whatwg-html/source`
 * `normalize a specifier key`:
   * `rg -n 'normalize a specifier key' specs/whatwg-html/source`
 * `sort and normalize scopes`:
