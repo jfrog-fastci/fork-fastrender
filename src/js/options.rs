@@ -25,8 +25,7 @@ pub struct JsExecutionOptions {
   /// Maximum number of bytes accepted for a single script's source text (inline or external).
   pub max_script_bytes: usize,
 
-  /// Placeholder VM budget: maximum number of VM instructions that may be executed before the VM is
-  /// interrupted.
+  /// VM budget: maximum number of VM instructions that may be executed before the VM is interrupted.
   ///
   /// For the `vm-js` backend, this is enforced as a per-run fuel budget.
   pub max_instruction_count: Option<u64>,
