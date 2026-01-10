@@ -152,6 +152,17 @@ struct Args {
   #[arg(long, default_value = "1.0")]
   dpr: f32,
 
+  /// Additional deterministic font directories to load (can be repeated).
+  #[arg(long, value_name = "DIR")]
+  font_dir: Vec<PathBuf>,
+
+  /// Enable system font discovery in addition to bundled fonts.
+  ///
+  /// When omitted, `inspect_frag` defaults to bundled fonts to keep page-loop/fixture workflows
+  /// deterministic across machines.
+  #[arg(long)]
+  system_fonts: bool,
+
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaTypeArg::Screen)]
   media: MediaTypeArg,
@@ -1280,7 +1291,7 @@ fn run(args: Args) -> Result<(), DynError> {
 
   let fetcher = build_fetcher(&args)?;
 
-  let font_config = inspect_frag_font_config();
+  let font_config = inspect_frag_font_config(&args);
   let mut renderer = FastRender::builder()
     .device_pixel_ratio(args.dpr)
     .compat_mode(args.compat.compat_profile())
@@ -1564,12 +1575,13 @@ fn run(args: Args) -> Result<(), DynError> {
   Ok(())
 }
 
-fn inspect_frag_font_config() -> FontConfig {
-  let mut config = FontConfig::default();
-  if config.use_system_fonts {
-    // Align with `render_fixtures`: when using system fonts, keep bundled fallbacks enabled so
-    // sparse host font sets (and scripts/emoji fallbacks) still render deterministically.
-    config.use_bundled_fonts = true;
+fn inspect_frag_font_config(args: &Args) -> FontConfig {
+  let mut config = FontConfig::bundled_only();
+  if args.system_fonts {
+    config = config.with_system_fonts(true);
+  }
+  if !args.font_dir.is_empty() {
+    config = config.with_font_dirs(args.font_dir.clone());
   }
   config
 }
@@ -1777,7 +1789,7 @@ mod tests {
       .device_pixel_ratio(offline_args.dpr)
       .compat_mode(offline_args.compat.compat_profile())
       .dom_compatibility_mode(offline_args.compat.dom_compat_mode())
-      .font_sources(inspect_frag_font_config())
+      .font_sources(inspect_frag_font_config(&offline_args))
       .fetcher(fetcher)
       .runtime_toggles(runtime_toggles)
       .build()
@@ -1842,5 +1854,35 @@ mod tests {
     assert_eq!(path.len(), depth + 1);
     assert!(path.first().is_some_and(|l| l.starts_with("block")));
     assert!(path.last().is_some_and(|l| l.starts_with("text")));
+  }
+
+  #[test]
+  fn font_config_defaults_to_bundled_only() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(&html_path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+
+    let args =
+      Args::try_parse_from(["inspect_frag", html_path.to_str().unwrap()]).expect("parse args");
+    let config = inspect_frag_font_config(&args);
+    assert!(config.use_bundled_fonts);
+    assert!(!config.use_system_fonts);
+  }
+
+  #[test]
+  fn font_config_system_fonts_keeps_bundled_fallbacks() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(&html_path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+
+    let args = Args::try_parse_from([
+      "inspect_frag",
+      html_path.to_str().unwrap(),
+      "--system-fonts",
+    ])
+    .expect("parse args");
+    let config = inspect_frag_font_config(&args);
+    assert!(config.use_bundled_fonts);
+    assert!(config.use_system_fonts);
   }
 }
