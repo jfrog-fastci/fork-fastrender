@@ -58,6 +58,16 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - Set to `0`, empty, or unset to disable.
   - Accepts `_` separators (e.g. `1_024`).
   - On Linux this attempts to apply an `RLIMIT_AS` cap at process start; on other platforms it is currently unsupported.
+- `FASTR_BROWSER_MAX_PIXELS=<pixels>` – safety limit for the maximum total device pixels in a single rendered frame (`pixmap_width_px × pixmap_height_px`).
+  - Default: `50_000_000` (~200 MiB for RGBA8).
+  - Accepts `_` separators (e.g. `50_000_000`).
+- `FASTR_BROWSER_MAX_DIM_PX=<px>` – safety limit for the maximum **width or height** in device pixels for a single rendered frame.
+  - Default: `8192`.
+  - Accepts `_` separators.
+- `FASTR_BROWSER_MAX_DPR=<ratio>` – safety cap for the effective device pixel ratio used for rendering.
+  - Default: `10.0` (matches the renderer’s built-in clamp).
+  - Values are clamped to the renderer’s supported DPR range.
+  - Accepts `_` separators.
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 
