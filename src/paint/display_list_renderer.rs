@@ -16019,7 +16019,32 @@ impl DisplayListRenderer {
     let target_w = target_bounds.width().ceil().max(1.0) as u32;
     let target_h = target_bounds.height().ceil().max(1.0) as u32;
 
-    let Some(full) = (if item.src_rect.is_none() {
+    // The scaled-pixmap fast path intentionally ignores the destination rectangle's translation so
+    // scaled results can be cached/reused across different draws. This matches many common cases
+    // (integer-aligned images), but it diverges from Skia/Chrome when the image is drawn at a
+    // fractional device-pixel offset: the subpixel translation influences sampling.
+    //
+    // Prefer fidelity over caching for those subpixel cases by falling back to the full-resolution
+    // image pixmap. This avoids large fixture diffs for photo-heavy pages where images often end up
+    // on fractional coordinates due to percentage widths.
+    let can_use_scaled_pixmap = if item.src_rect.is_some() {
+      false
+    } else {
+      let transform = self.canvas.transform();
+      if transform == Transform::identity() {
+        Self::is_near_integer(dest_rect_device.x()) && Self::is_near_integer(dest_rect_device.y())
+      } else if Self::is_translation_only_transform(transform) {
+        // When painting is offset by a translation (e.g. tiled render), use the effective device
+        // origin when determining whether the draw is pixel-aligned.
+        let eff_x = dest_rect_device.x() + transform.tx;
+        let eff_y = dest_rect_device.y() + transform.ty;
+        Self::is_near_integer(eff_x) && Self::is_near_integer(eff_y)
+      } else {
+        false
+      }
+    };
+
+    let Some(full) = (if item.src_rect.is_none() && can_use_scaled_pixmap {
       self.image_data_to_pixmap_at_size(&item.image, target_w, target_h, item.filter_quality)?
     } else {
       self.image_data_to_pixmap(&item.image)?
@@ -22573,6 +22598,49 @@ mod tests {
       cache_misses.load(Ordering::SeqCst),
       1,
       "expected pixmap conversion to be cached across repeated draws"
+    );
+  }
+
+  #[test]
+  fn scaled_image_pixmap_is_not_used_for_subpixel_unaligned_draws() {
+    let pixels = vec![255u8; 100 * 100 * 4];
+    let image = Arc::new(ImageData::new_pixels(100, 100, pixels));
+
+    let mut renderer = DisplayListRenderer::new(200, 200, Rgba::WHITE, FontContext::new()).unwrap();
+
+    // Integer-aligned image draws are safe to pre-scale: translation does not affect sampling.
+    let aligned = ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      image: image.clone(),
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    };
+    let aligned_pixmap = renderer
+      .image_to_pixmap(&aligned)
+      .expect("aligned pixmap")
+      .expect("pixmap exists");
+    assert_eq!(
+      (aligned_pixmap.width(), aligned_pixmap.height()),
+      (10, 10),
+      "expected aligned draw to use scaled pixmap"
+    );
+
+    // Subpixel translations influence sampling. Avoid the scaled-pixmap fast path so we match
+    // Skia/Chrome's behaviour for fractional destination rectangles.
+    let subpixel = ImageItem {
+      dest_rect: Rect::from_xywh(0.25, 0.0, 10.0, 10.0),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    };
+    let subpixel_pixmap = renderer
+      .image_to_pixmap(&subpixel)
+      .expect("subpixel pixmap")
+      .expect("pixmap exists");
+    assert_eq!(
+      (subpixel_pixmap.width(), subpixel_pixmap.height()),
+      (100, 100),
+      "expected subpixel draw to use full-resolution pixmap"
     );
   }
 
