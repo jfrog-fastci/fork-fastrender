@@ -9486,6 +9486,26 @@ fn init_window_globals(
       dom_source_key,
       data_desc(Value::Number(dom_source_id as f64)),
     )?;
+
+    // Treat `window.document` as the canonical Node wrapper for `NodeId(0)` so any Node traversal
+    // returning the document node preserves object identity and uses Node shims (e.g. `textContent`)
+    // consistently.
+    let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+    scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+    let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+    scope.define_property(
+      document_obj,
+      wrapper_document_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(document_obj),
+          writable: false,
+        },
+      },
+    )?;
   }
 
   // document.documentElement
@@ -10751,6 +10771,24 @@ fn init_window_globals(
     text_content_set_key,
     data_desc(Value::Object(text_content_set_func)),
   )?;
+
+  if config.dom_source_id.is_some() {
+    // Ensure `window.document` exposes Node.textContent semantics when it acts as the canonical
+    // wrapper for `NodeId(0)`.
+    let text_content_key = alloc_key(&mut scope, "textContent")?;
+    scope.define_property(
+      document_obj,
+      text_content_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(text_content_get_func),
+          set: Value::Object(text_content_set_func),
+        },
+      },
+    )?;
+  }
 
   let node_remove_call_id = vm.register_native_call(node_remove_native)?;
   let node_remove_name = scope.alloc_string("remove")?;
