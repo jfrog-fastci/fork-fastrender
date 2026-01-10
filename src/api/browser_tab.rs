@@ -5898,6 +5898,8 @@ html, body { margin: 0; padding: 0; }
         document: &mut BrowserDocumentDom2,
         event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
+        // Tests only exercise classic scripts today; treat module scripts the same way so the
+        // executor remains usable as module support is incrementally added.
         self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
 

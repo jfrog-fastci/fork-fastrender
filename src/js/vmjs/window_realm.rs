@@ -282,7 +282,8 @@ impl WindowRealm {
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self, VmError> {
     if js_execution_options.max_vm_heap_bytes.is_some() {
-      // When explicitly configured, treat the heap cap as authoritative (don't apply RLIMIT scaling).
+      // When explicitly configured, override any heap limits provided by the config. The chosen
+      // limit is still clamped by the OS address-space ceiling (`RLIMIT_AS`) when tighter.
       config.heap_limits = super::vm_limits::heap_limits_from_js_options(&js_execution_options);
     }
 
