@@ -146,6 +146,7 @@ fn create_abort_event(scope: &mut Scope<'_>) -> Result<Value, VmError> {
 fn abort_signal(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   signal_obj: GcObject,
   reason: Value,
@@ -172,7 +173,8 @@ fn abort_signal(
     if scope.heap().is_callable(dispatch_fn).unwrap_or(false) {
       // Ignore the return value; for AbortSignal it is always used for notification, not for
       // cancelation.
-      let _ = vm.call_with_host(
+      let _ = vm.call_with_host_and_hooks(
+        host,
         scope,
         host_hooks,
         dispatch_fn,
@@ -184,7 +186,8 @@ fn abort_signal(
     let onabort = get_own_data_prop(scope, signal_obj, "onabort")?;
     if scope.heap().is_callable(onabort).unwrap_or(false) {
       // Like DOM event dispatch, exceptions from event handlers should not make abort() throw.
-      let _ = vm.call_with_host(
+      let _ = vm.call_with_host_and_hooks(
+        host,
         scope,
         host_hooks,
         onabort,
@@ -280,7 +283,7 @@ fn abort_controller_ctor_construct(
 fn abort_controller_abort_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -300,7 +303,15 @@ fn abort_controller_abort_native(
   };
   scope.push_root(reason)?;
 
-  abort_signal(vm, scope, host_hooks, signal_obj, reason, /* dispatch_event */ true)?;
+  abort_signal(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    signal_obj,
+    reason,
+    /* dispatch_event */ true,
+  )?;
   Ok(Value::Undefined)
 }
 
@@ -471,7 +482,7 @@ fn abort_signal_static_timeout_native(
 fn abort_timeout_callback_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -487,14 +498,22 @@ fn abort_timeout_callback_native(
 
   let reason = create_timeout_reason(scope)?;
   scope.push_root(reason)?;
-  abort_signal(vm, scope, host_hooks, signal_obj, reason, /* dispatch_event */ true)?;
+  abort_signal(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    signal_obj,
+    reason,
+    /* dispatch_event */ true,
+  )?;
   Ok(Value::Undefined)
 }
 
 fn abort_signal_static_any_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -542,6 +561,7 @@ fn abort_signal_static_any_native(
       abort_signal(
         vm,
         scope,
+        host,
         host_hooks,
         signal,
         reason,
@@ -588,7 +608,7 @@ fn abort_signal_static_any_native(
 fn abort_any_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -609,6 +629,7 @@ fn abort_any_listener_native(
   abort_signal(
     vm,
     scope,
+    host,
     host_hooks,
     composite_obj,
     reason,

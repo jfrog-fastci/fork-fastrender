@@ -810,6 +810,68 @@ mod tests {
     ))
   }
 
+  fn record_host_native(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    if host.as_any_mut().downcast_mut::<DocumentHostState>().is_some() {
+      Ok(Value::Bool(true))
+    } else {
+      Err(VmError::TypeError(
+        "recordHost called without the embedder DocumentHostState VmHost context",
+      ))
+    }
+  }
+
+  fn install_record_host(host: &mut WindowHost) {
+    let window = host.host_mut().window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+
+    scope.push_root(Value::Object(global)).expect("push root global");
+
+    let id = vm
+      .register_native_call(record_host_native)
+      .expect("register recordHost native");
+    let name_s = scope.alloc_string("recordHost").expect("alloc recordHost name");
+    scope
+      .push_root(Value::String(name_s))
+      .expect("push root recordHost name");
+
+    let func = scope
+      .alloc_native_function(id, None, name_s, 0)
+      .expect("alloc recordHost function");
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+      .expect("set recordHost prototype");
+    scope
+      .push_root(Value::Object(func))
+      .expect("push root recordHost function");
+
+    let key = PropertyKey::from_string(name_s);
+    scope
+      .define_property(
+        global,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(func),
+            writable: true,
+          },
+        },
+      )
+      .expect("define recordHost global");
+  }
+
   #[test]
   fn exec_script_passes_real_vm_host_context() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
@@ -880,6 +942,49 @@ mod tests {
 
     assert!(matches!(
       get_global_prop(&mut host, "__microtask"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_event_listener_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      window.addEventListener('x', () => { globalThis.__host_ok = recordHost(); });
+      window.dispatchEvent({ type: 'x' });
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn abort_signal_onabort_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      var c = new AbortController();
+      c.signal.onabort = () => { globalThis.__host_ok = recordHost(); };
+      c.abort();
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
     ));
     Ok(())
