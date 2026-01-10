@@ -233,6 +233,11 @@ pub struct Painter {
   image_cache: ImageCache,
   /// SVG defs elements (by id) serialized from the DOM (document-level registry).
   svg_id_defs: Option<Arc<HashMap<String, String>>>,
+  /// Raw SVG defs elements (by id) serialized from the DOM (document-level registry).
+  ///
+  /// Used to inline same-document fragment references across sibling `<svg>` roots (e.g. sprite
+  /// sheets referenced by `<use href="#...">`) while preserving `currentColor` semantics.
+  svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
   /// Cache of shaped runs keyed by style and text to avoid reshaping identical content during paint
   text_shape_cache: Arc<Mutex<HashMap<TextCacheKey, Vec<ShapedRun>>>>,
   /// Optional trace collector for Chrome trace output.
@@ -1371,6 +1376,7 @@ impl Painter {
       font_ctx,
       image_cache,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       text_shape_cache: Arc::new(Mutex::new(HashMap::new())),
       trace: TraceHandle::disabled(),
       scroll_state: ScrollState::default(),
@@ -1490,6 +1496,7 @@ impl Painter {
     let trace = self.trace.clone();
     let _paint_span = trace.span("paint", "paint");
     self.svg_id_defs = tree.svg_id_defs.clone();
+    self.svg_id_defs_raw = tree.svg_id_defs_raw.clone();
 
     if dump_counts_enabled() {
       let (total, text, replaced, lines, inline) = fragment_tree_counts(tree);
@@ -3409,6 +3416,7 @@ impl Painter {
           font_ctx: self.font_ctx.clone(),
           image_cache: self.image_cache.clone(),
           svg_id_defs: self.svg_id_defs.clone(),
+          svg_id_defs_raw: self.svg_id_defs_raw.clone(),
           text_shape_cache: Arc::clone(&self.text_shape_cache),
           trace: self.trace.clone(),
           scroll_state: self.scroll_state.clone(),
@@ -3447,6 +3455,7 @@ impl Painter {
             font_ctx: self.font_ctx.clone(),
             image_cache: self.image_cache.clone(),
             svg_id_defs: self.svg_id_defs.clone(),
+            svg_id_defs_raw: self.svg_id_defs_raw.clone(),
             text_shape_cache: Arc::clone(&self.text_shape_cache),
             trace: self.trace.clone(),
             scroll_state: self.scroll_state.clone(),
@@ -8774,11 +8783,23 @@ impl Painter {
       return false;
     }
 
+    let mut injected_svg: Option<String> = None;
+    let mut injected_insert_pos: Option<usize> = None;
+    if let Some(defs) = self.svg_id_defs_raw.as_ref() {
+      if let Some((svg, pos)) =
+        crate::paint::svg_id_defs_injection::inject_svg_id_defs_raw(svg_markup, defs.as_ref())
+      {
+        injected_svg = Some(svg);
+        injected_insert_pos = Some(pos);
+      }
+    }
+    let svg_markup = injected_svg.as_deref().unwrap_or(svg_markup);
+
     let defs_injection = self.svg_id_defs.as_ref().and_then(|defs| {
       crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg_markup)
     });
 
-    let mut insert_pos = style_injection.map(|inj| inj.insert_pos);
+    let mut insert_pos = injected_insert_pos.or_else(|| style_injection.map(|inj| inj.insert_pos));
     if let Some(pos) = insert_pos {
       if svg_markup.get(..pos).is_none() || svg_markup.get(pos..).is_none() {
         insert_pos = None;
@@ -9044,6 +9065,7 @@ impl Painter {
       font_ctx: self.font_ctx.clone(),
       image_cache: self.image_cache.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
+      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
       text_shape_cache: Arc::clone(&self.text_shape_cache),
       trace: self.trace.clone(),
       scroll_state: self.scroll_state.clone(),
@@ -17735,6 +17757,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
         .with_font_context(font_ctx.clone())
         .with_svg_filter_defs(tree.svg_filter_defs.clone())
         .with_svg_id_defs(tree.svg_id_defs.clone())
+        .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
         .with_scroll_state(scroll_state.clone())
         .with_device_pixel_ratio(scale)
         .with_parallelism(&paint_parallelism)

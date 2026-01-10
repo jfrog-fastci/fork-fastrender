@@ -123,6 +123,7 @@ pub mod scratch;
 pub mod stacking;
 pub mod svg_filter;
 pub(crate) mod svg_foreign_object;
+pub(crate) mod svg_id_defs_injection;
 pub(crate) mod svg_mask_image;
 mod text_decoration;
 pub(crate) mod text_decoration_skip_ink;

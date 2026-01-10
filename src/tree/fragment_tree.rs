@@ -1756,6 +1756,12 @@ pub struct FragmentTree {
   /// SVG defs elements (by id) serialized from the DOM (document-level registry).
   pub svg_id_defs: Option<Arc<HashMap<String, String>>>,
 
+  /// Raw SVG defs elements (by id) serialized from the DOM (document-level registry).
+  ///
+  /// This is used for inlining same-document fragment references (e.g. `<use href="#id">`) across
+  /// sibling `<svg>` roots without freezing `currentColor` to the sprite sheet's computed `color`.
+  pub svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
+
   /// The viewport size (may differ from root fragment bounds)
   viewport: Option<Size>,
 
@@ -1773,6 +1779,7 @@ impl FragmentTree {
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       viewport: None,
       scroll_metadata: None,
     }
@@ -1790,6 +1797,7 @@ impl FragmentTree {
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       viewport: Some(viewport),
       scroll_metadata: None,
     }
@@ -1811,6 +1819,7 @@ impl FragmentTree {
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       viewport: Some(viewport),
       scroll_metadata: None,
     }

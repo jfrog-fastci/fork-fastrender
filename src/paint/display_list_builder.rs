@@ -222,6 +222,11 @@ pub struct DisplayListBuilder {
   svg_filter_defs: Option<Arc<HashMap<String, String>>>,
   /// Serialized SVG defs (by id) collected from the document DOM.
   svg_id_defs: Option<Arc<HashMap<String, String>>>,
+  /// Raw serialized SVG defs (by id) collected from the document DOM.
+  ///
+  /// Used to inline same-document fragment references across sibling `<svg>` roots while
+  /// preserving `currentColor` semantics.
+  svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
   /// Viewport size used for resolving viewport-relative units (e.g. vw/vh) during paint.
   viewport: Option<(f32, f32)>,
   /// Optional viewport size used for visibility/culling decisions while building the display list.
@@ -1332,6 +1337,7 @@ impl DisplayListBuilder {
       ))),
       svg_filter_defs: None,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       viewport: None,
       culling_viewport: None,
       font_ctx: FontContext::new(),
@@ -1376,6 +1382,7 @@ impl DisplayListBuilder {
       ))),
       svg_filter_defs: None,
       svg_id_defs: None,
+      svg_id_defs_raw: None,
       viewport: None,
       culling_viewport: None,
       font_ctx: FontContext::new(),
@@ -1440,6 +1447,18 @@ impl DisplayListBuilder {
   /// Updates the SVG id registry used for fragment-only `url(#...)` mask images.
   pub fn set_svg_id_defs(&mut self, defs: Option<Arc<HashMap<String, String>>>) {
     self.svg_id_defs = defs;
+  }
+
+  /// Sets raw serialized SVG id definitions to use when resolving same-document fragment
+  /// references inside inline SVG (e.g. `<use href="#id">`).
+  pub fn with_svg_id_defs_raw(mut self, defs: Option<Arc<HashMap<String, String>>>) -> Self {
+    self.svg_id_defs_raw = defs;
+    self
+  }
+
+  /// Updates the raw SVG id registry used for inline SVG `<use>`/paint-server references.
+  pub fn set_svg_id_defs_raw(&mut self, defs: Option<Arc<HashMap<String, String>>>) {
+    self.svg_id_defs_raw = defs;
   }
 
   /// Sets the font context for shaping text into the display list.
@@ -1603,6 +1622,10 @@ impl DisplayListBuilder {
       .svg_id_defs
       .clone()
       .or_else(|| self.svg_id_defs.clone());
+    self.svg_id_defs_raw = tree
+      .svg_id_defs_raw
+      .clone()
+      .or_else(|| self.svg_id_defs_raw.clone());
 
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
     let mut contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
@@ -1804,6 +1827,10 @@ impl DisplayListBuilder {
       .svg_id_defs
       .clone()
       .or_else(|| self.svg_id_defs.clone());
+    self.svg_id_defs_raw = tree
+      .svg_id_defs_raw
+      .clone()
+      .or_else(|| self.svg_id_defs_raw.clone());
     let stackings = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
       tree,
       &self.scroll_state,
@@ -5596,6 +5623,7 @@ impl DisplayListBuilder {
       decoded_image_cache: Arc::clone(&self.decoded_image_cache),
       svg_filter_defs: self.svg_filter_defs.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
+      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
       viewport: self.viewport,
       culling_viewport: self.culling_viewport,
       font_ctx: self.font_ctx.clone(),
@@ -12474,12 +12502,24 @@ impl DisplayListBuilder {
       return false;
     }
 
+    let mut injected_svg: Option<String> = None;
+    let mut injected_insert_pos: Option<usize> = None;
+    if let Some(defs) = self.svg_id_defs_raw.as_ref() {
+      if let Some((patched, pos)) =
+        crate::paint::svg_id_defs_injection::inject_svg_id_defs_raw(svg, defs.as_ref())
+      {
+        injected_svg = Some(patched);
+        injected_insert_pos = Some(pos);
+      }
+    }
+    let svg = injected_svg.as_deref().unwrap_or(svg);
+
     let style_injection = content.document_css_injection.as_ref();
     let defs_injection = self.svg_id_defs.as_ref().and_then(|defs| {
       crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg)
     });
 
-    let mut insert_pos = style_injection.map(|inj| inj.insert_pos);
+    let mut insert_pos = injected_insert_pos.or_else(|| style_injection.map(|inj| inj.insert_pos));
     if let Some(pos) = insert_pos {
       if svg.get(..pos).is_none() || svg.get(pos..).is_none() {
         insert_pos = None;
@@ -12489,18 +12529,18 @@ impl DisplayListBuilder {
       insert_pos = crate::paint::svg_mask_image::svg_root_start_tag_end(svg);
     }
 
-    let injection: Option<(usize, Cow<'_, str>)> = match (insert_pos, defs_injection, style_injection)
-    {
-      (Some(pos), Some(defs), Some(style)) => {
-        let mut combined = defs;
-        combined.reserve(style.style_element.len());
-        combined.push_str(style.style_element.as_ref());
-        Some((pos, Cow::Owned(combined)))
-      }
-      (Some(pos), Some(defs), None) => Some((pos, Cow::Owned(defs))),
-      (Some(pos), None, Some(style)) => Some((pos, Cow::Borrowed(style.style_element.as_ref()))),
-      _ => None,
-    };
+    let injection: Option<(usize, Cow<'_, str>)> =
+      match (insert_pos, defs_injection, style_injection) {
+        (Some(pos), Some(defs), Some(style)) => {
+          let mut combined = defs;
+          combined.reserve(style.style_element.len());
+          combined.push_str(style.style_element.as_ref());
+          Some((pos, Cow::Owned(combined)))
+        }
+        (Some(pos), Some(defs), None) => Some((pos, Cow::Owned(defs))),
+        (Some(pos), None, Some(style)) => Some((pos, Cow::Borrowed(style.style_element.as_ref()))),
+        _ => None,
+      };
 
     let (content_hash, content_len) = match injection.as_ref() {
       Some((insert_pos, injected)) => match (svg.get(..*insert_pos), svg.get(*insert_pos..)) {

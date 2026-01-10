@@ -2257,6 +2257,305 @@ fn serialize_svg_mask_subtree_with_namespaces(
   }
 }
 
+/// Collect raw SVG defs referenced across sibling `<svg>` roots (e.g. sprite-sheet `<symbol>`
+/// definitions referenced via `<use href="#...">`).
+///
+/// Unlike [`collect_svg_id_defs`], these fragments are serialized without inlining computed SVG
+/// presentation properties. This is important for constructs such as `fill="currentColor"` /
+/// `stroke="currentColor"` inside sprite sheets, which must inherit `color` from the referencing
+/// SVG root rather than being frozen to the sprite sheet's computed `color`.
+///
+/// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
+pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
+  fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
+    let bytes = value.as_bytes();
+    let mut idx = 0usize;
+    while idx + 4 <= bytes.len() {
+      let b = bytes[idx];
+      if (b == b'u' || b == b'U')
+        && (bytes[idx + 1] == b'r' || bytes[idx + 1] == b'R')
+        && (bytes[idx + 2] == b'l' || bytes[idx + 2] == b'L')
+        && bytes[idx + 3] == b'('
+      {
+        idx += 4;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+          idx += 1;
+        }
+
+        let mut quote: Option<u8> = None;
+        if idx < bytes.len() && (bytes[idx] == b'\'' || bytes[idx] == b'"') {
+          quote = Some(bytes[idx]);
+          idx += 1;
+          while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+          }
+        }
+
+        if idx < bytes.len() && bytes[idx] == b'#' {
+          idx += 1;
+          let start = idx;
+          while idx < bytes.len() {
+            let ch = bytes[idx];
+            if ch == b')' || ch.is_ascii_whitespace() {
+              break;
+            }
+            if quote.is_some_and(|q| q == ch) {
+              break;
+            }
+            idx += 1;
+          }
+          if start < idx {
+            out.insert(value[start..idx].to_string());
+          }
+        }
+
+        while idx < bytes.len() && bytes[idx] != b')' {
+          idx += 1;
+        }
+        if idx < bytes.len() {
+          idx += 1;
+        }
+      } else {
+        idx += 1;
+      }
+    }
+  }
+
+  fn is_href_attr(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("href") {
+      return true;
+    }
+    name
+      .rsplit_once(':')
+      .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+  }
+
+  fn collect_svg_ids_and_refs_within_root(
+    styled: &StyledNode,
+    in_svg_style: bool,
+    ids: &mut HashSet<String>,
+    refs: &mut HashSet<String>,
+  ) {
+    match &styled.node.node_type {
+      crate::dom::DomNodeType::Element {
+        tag_name,
+        namespace,
+        attributes,
+      } => {
+        let is_svg = namespace == SVG_NAMESPACE;
+        if is_svg {
+          if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+            ids.insert(id.to_string());
+          }
+          let is_style = tag_name.eq_ignore_ascii_case("style");
+          let next_in_svg_style = in_svg_style || is_style;
+
+          for (name, value) in attributes {
+            if is_href_attr(name) {
+              let trimmed = trim_ascii_whitespace(value);
+              if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+                refs.insert(id.to_string());
+              }
+            }
+            extract_url_fragment_ids(value, refs);
+          }
+
+          for child in &styled.children {
+            collect_svg_ids_and_refs_within_root(child, next_in_svg_style, ids, refs);
+          }
+        } else {
+          for child in &styled.children {
+            collect_svg_ids_and_refs_within_root(child, in_svg_style, ids, refs);
+          }
+        }
+      }
+      crate::dom::DomNodeType::Text { content } => {
+        if in_svg_style {
+          extract_url_fragment_ids(content, refs);
+        }
+      }
+      _ => {
+        for child in &styled.children {
+          collect_svg_ids_and_refs_within_root(child, in_svg_style, ids, refs);
+        }
+      }
+    }
+  }
+
+  fn collect_requested_cross_root_ids(
+    styled: &StyledNode,
+    parent_ns: Option<&str>,
+    out: &mut HashSet<String>,
+  ) {
+    if let crate::dom::DomNodeType::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &styled.node.node_type
+    {
+      let is_svg_root = namespace == SVG_NAMESPACE
+        && tag_name.eq_ignore_ascii_case("svg")
+        && parent_ns != Some(SVG_NAMESPACE);
+      if is_svg_root {
+        let mut ids = HashSet::new();
+        let mut refs = HashSet::new();
+        collect_svg_ids_and_refs_within_root(styled, false, &mut ids, &mut refs);
+        for reference in refs {
+          if !ids.contains(&reference) {
+            out.insert(reference);
+          }
+        }
+      }
+      let next_parent = Some(namespace.as_str());
+      for child in &styled.children {
+        collect_requested_cross_root_ids(child, next_parent, out);
+      }
+    } else {
+      for child in &styled.children {
+        collect_requested_cross_root_ids(child, parent_ns, out);
+      }
+    }
+  }
+
+  struct IndexedNode<'a> {
+    node: &'a StyledNode,
+    namespaces: Vec<(String, String)>,
+  }
+
+  fn build_svg_id_index<'a>(
+    styled: &'a StyledNode,
+    inherited_xmlns: &[(String, String)],
+    out: &mut HashMap<String, IndexedNode<'a>>,
+  ) {
+    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
+    let mut namespaces = inherited_xmlns;
+
+    if let crate::dom::DomNodeType::Element {
+      namespace,
+      attributes,
+      ..
+    } = &styled.node.node_type
+    {
+      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
+        let mut updated = inherited_xmlns.to_vec();
+        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            updated.push((name.clone(), value.clone()));
+          }
+        }
+        owned_namespaces = Some(updated);
+        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
+      }
+
+      if namespace == SVG_NAMESPACE {
+        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+          if !out.contains_key(id) {
+            out.insert(
+              id.to_string(),
+              IndexedNode {
+                node: styled,
+                namespaces: namespaces.to_vec(),
+              },
+            );
+          }
+        }
+      }
+    }
+
+    for child in &styled.children {
+      build_svg_id_index(child, namespaces, out);
+    }
+  }
+
+  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg_style: bool, out: &mut HashSet<String>) {
+    match &styled.node.node_type {
+      crate::dom::DomNodeType::Element {
+        tag_name,
+        namespace,
+        attributes,
+      } => {
+        let is_svg = namespace == SVG_NAMESPACE;
+        let is_style = is_svg && tag_name.eq_ignore_ascii_case("style");
+        let next_in_svg_style = in_svg_style || is_style;
+
+        if is_svg {
+          for (name, value) in attributes {
+            if is_href_attr(name) {
+              let trimmed = trim_ascii_whitespace(value);
+              if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+                out.insert(id.to_string());
+              }
+            }
+            extract_url_fragment_ids(value, out);
+          }
+        }
+
+        for child in &styled.children {
+          collect_referenced_svg_ids(child, next_in_svg_style, out);
+        }
+      }
+      crate::dom::DomNodeType::Text { content } => {
+        if in_svg_style {
+          extract_url_fragment_ids(content, out);
+        }
+      }
+      _ => {
+        for child in &styled.children {
+          collect_referenced_svg_ids(child, in_svg_style, out);
+        }
+      }
+    }
+  }
+
+  let mut requested = HashSet::new();
+  collect_requested_cross_root_ids(styled, None, &mut requested);
+  if requested.is_empty() {
+    return HashMap::new();
+  }
+
+  let mut index: HashMap<String, IndexedNode<'_>> = HashMap::new();
+  build_svg_id_index(styled, &[], &mut index);
+  if index.is_empty() {
+    return HashMap::new();
+  }
+
+  let mut required: HashSet<String> = HashSet::new();
+  let mut queue: VecDeque<String> = VecDeque::new();
+  for id in requested {
+    if index.contains_key(&id) && required.insert(id.clone()) {
+      queue.push_back(id);
+    }
+  }
+
+  while let Some(id) = queue.pop_front() {
+    let Some(entry) = index.get(&id) else {
+      continue;
+    };
+    let mut refs = HashSet::new();
+    collect_referenced_svg_ids(entry.node, false, &mut refs);
+    for reference in refs {
+      if !index.contains_key(&reference) {
+        continue;
+      }
+      if required.insert(reference.clone()) {
+        queue.push_back(reference);
+      }
+    }
+  }
+
+  let mut defs = HashMap::new();
+  for id in required {
+    let Some(entry) = index.get(&id) else {
+      continue;
+    };
+    let mut serialized = String::new();
+    serialize_node_with_namespaces(entry.node, &entry.namespaces, &mut serialized);
+    defs.insert(id, serialized);
+  }
+
+  defs
+}
+
 /// Collect all SVG `<mask>` definitions with an `id` attribute from a styled DOM tree.
 ///
 /// The returned map contains serialized mask elements keyed by their id. Serialized masks inline

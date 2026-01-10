@@ -1241,6 +1241,7 @@ fn inspect_pipeline(
     filtered_tree.keyframes = fragment_tree.keyframes.clone();
     filtered_tree.svg_filter_defs = fragment_tree.svg_filter_defs.clone();
     filtered_tree.svg_id_defs = fragment_tree.svg_id_defs.clone();
+    filtered_tree.svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
     filtered_tree.scroll_metadata = fragment_tree.scroll_metadata.clone();
     fragment_tree = filtered_tree;
 

@@ -6934,6 +6934,7 @@ impl FastRender {
           let viewport = fragment_tree.viewport_size();
           let svg_filter_defs = fragment_tree.svg_filter_defs.clone();
           let svg_id_defs = fragment_tree.svg_id_defs.clone();
+          let svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
           let base_url = self.base_url.clone();
           let build_display_list_for_root =
             |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
@@ -6941,6 +6942,7 @@ impl FastRender {
                 .with_font_context(self.font_context.clone())
                 .with_svg_filter_defs(svg_filter_defs.clone())
                 .with_svg_id_defs(svg_id_defs.clone())
+                .with_svg_id_defs_raw(svg_id_defs_raw.clone())
                 .with_scroll_state(scroll_state.clone())
                 .with_device_pixel_ratio(self.device_pixel_ratio)
                 .with_parallelism(&paint_parallelism)
@@ -11268,6 +11270,7 @@ impl FastRender {
     }
     let mut svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&styled_tree);
     let mut svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&styled_tree);
+    let mut svg_id_defs_raw = crate::tree::box_generation::collect_svg_id_defs_raw(&styled_tree);
 
     let fallback_page_size = layout_viewport_size;
     let owned_page_rules = {
@@ -11896,6 +11899,7 @@ impl FastRender {
         drop((container_scope, reuse_map));
         svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&new_styled_tree);
         svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&new_styled_tree);
+        svg_id_defs_raw = crate::tree::box_generation::collect_svg_id_defs_raw(&new_styled_tree);
 
         if let Some(rec) = stats.as_deref_mut() {
           RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, container_cascade_timer);
@@ -12098,6 +12102,7 @@ impl FastRender {
 
     let svg_filter_defs = (!svg_filter_defs.is_empty()).then(|| Arc::new(svg_filter_defs));
     let svg_id_defs = (!svg_id_defs.is_empty()).then(|| Arc::new(svg_id_defs));
+    let svg_id_defs_raw = (!svg_id_defs_raw.is_empty()).then(|| Arc::new(svg_id_defs_raw));
     if let Some(start) = layout_start {
       let now = Instant::now();
       eprintln!("timing:layout {:?}", now - start);
@@ -12174,6 +12179,9 @@ impl FastRender {
     }
     if let Some(defs) = svg_id_defs.clone() {
       fragment_tree.svg_id_defs = Some(defs);
+    }
+    if let Some(defs) = svg_id_defs_raw.clone() {
+      fragment_tree.svg_id_defs_raw = Some(defs);
     }
 
     if has_starting_tree {

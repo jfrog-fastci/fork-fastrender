@@ -1074,6 +1074,7 @@ fn render_foreign_object_data_url(
   paint_tree.keyframes = fragment_tree.keyframes.clone();
   paint_tree.svg_filter_defs = fragment_tree.svg_filter_defs.clone();
   paint_tree.svg_id_defs = fragment_tree.svg_id_defs.clone();
+  paint_tree.svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
   paint_tree.scroll_metadata = fragment_tree.scroll_metadata.clone();
 
   let mut paint_font_ctx = font_ctx.clone();
