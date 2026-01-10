@@ -1496,6 +1496,8 @@ where
 
   // 8. Track Alignment
 
+  let start_end_axis_positive = style.start_end_axis_positive();
+
   // Align columns
   align_tracks(
     container_content_box.get(AbstractAxis::Inline),
@@ -1509,6 +1511,7 @@ where
     },
     &mut columns,
     justify_content,
+    start_end_axis_positive.x,
   );
   // Align rows
   align_tracks(
@@ -1523,6 +1526,7 @@ where
     },
     &mut rows,
     align_content,
+    start_end_axis_positive.y,
   );
 
   // 9. Size, Align, and Position Grid Items

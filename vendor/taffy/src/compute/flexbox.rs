@@ -129,6 +129,10 @@ struct AlgoConstants {
   is_wrap_reverse: bool,
   /// Whether the CSS inline axis is vertical (i.e. swapped relative to Taffy's physical axes).
   axes_swapped: bool,
+  /// Whether the "start" edge of each physical axis corresponds to the smaller coordinate value.
+  ///
+  /// This is used by alignment fallback logic for the `start`/`end` keywords.
+  start_end_axis_positive: Point<bool>,
 
   /// The item's min_size style
   min_size: Size<Option<f32>>,
@@ -499,6 +503,7 @@ fn compute_constants(
   let is_wrap = matches!(style.flex_wrap(), FlexWrap::Wrap | FlexWrap::WrapReverse);
   let is_wrap_reverse = style.flex_wrap() == FlexWrap::WrapReverse;
   let axes_swapped = style.axes_swapped();
+  let start_end_axis_positive = style.start_end_axis_positive();
 
   let aspect_ratio = style.aspect_ratio();
   let margin = style
@@ -552,6 +557,7 @@ fn compute_constants(
     is_wrap,
     is_wrap_reverse,
     axes_swapped,
+    start_end_axis_positive,
     min_size: style
       .min_size()
       .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
@@ -2008,7 +2014,13 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
         .justify_content
         .unwrap_or(JustifyContent::FlexStart);
       let justify_content_mode =
-        apply_alignment_fallback(free_space, num_items, raw_justify_content_mode, is_safe);
+        apply_alignment_fallback(
+          free_space,
+          num_items,
+          raw_justify_content_mode,
+          is_safe,
+          constants.start_end_axis_positive.main(constants.dir),
+        );
 
       let justify_item = |(i, child): (usize, &mut FlexItem)| {
         child.offset_main = compute_alignment_offset(
@@ -2214,7 +2226,13 @@ fn align_flex_lines_per_align_content(
   let is_safe = false; // TODO: Implement safe alignment
 
   let align_content_mode =
-    apply_alignment_fallback(free_space, num_lines, constants.align_content, is_safe);
+    apply_alignment_fallback(
+      free_space,
+      num_lines,
+      constants.align_content,
+      is_safe,
+      constants.start_end_axis_positive.cross(constants.dir),
+    );
 
   let align_line = |(i, line): (usize, &mut FlexLine)| {
     line.offset_cross = compute_alignment_offset(

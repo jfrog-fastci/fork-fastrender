@@ -6057,6 +6057,18 @@ impl FlexFormattingContext {
     let inline_positive_container = self.inline_axis_positive(style);
     let block_positive_container = self.block_axis_positive(style);
     let inline_is_horizontal_container = matches!(style.writing_mode, WritingMode::HorizontalTb);
+    let start_end_axis_positive = taffy::geometry::Point {
+      x: if inline_is_horizontal_container {
+        inline_positive_container
+      } else {
+        block_positive_container
+      },
+      y: if inline_is_horizontal_container {
+        block_positive_container
+      } else {
+        inline_positive_container
+      },
+    };
     let container_main_is_inline = matches!(
       style.flex_direction,
       FlexDirection::Row | FlexDirection::RowReverse
@@ -6215,6 +6227,7 @@ impl FlexFormattingContext {
       ),
       justify_self: None,
       justify_items: None,
+      start_end_axis_positive,
 
       // Gap
       gap: taffy::geometry::Size {

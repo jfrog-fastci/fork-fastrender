@@ -22,6 +22,7 @@ pub(super) fn align_tracks(
   border: Line<f32>,
   tracks: &mut [GridTrack],
   track_alignment_style: AlignContent,
+  start_end_axis_positive: bool,
 ) {
   let used_size: f32 = tracks.iter().map(|track| track.base_size).sum();
   let free_space = grid_container_content_box_size - used_size;
@@ -41,7 +42,13 @@ pub(super) fn align_tracks(
   let layout_is_reversed = false;
   let is_safe = false; // TODO: Implement safe alignment
   let track_alignment =
-    apply_alignment_fallback(free_space, num_tracks, track_alignment_style, is_safe);
+    apply_alignment_fallback(
+      free_space,
+      num_tracks,
+      track_alignment_style,
+      is_safe,
+      start_end_axis_positive,
+    );
 
   // Compute offsets
   let mut total_offset = origin;

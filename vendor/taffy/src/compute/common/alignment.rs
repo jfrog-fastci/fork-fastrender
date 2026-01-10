@@ -10,6 +10,7 @@ pub(crate) fn apply_alignment_fallback(
   num_items: usize,
   mut alignment_mode: AlignContent,
   mut is_safe: bool,
+  start_end_axis_positive: bool,
 ) -> AlignContent {
   let free_space = if free_space.is_finite() { free_space } else { 0.0 };
 
@@ -29,7 +30,11 @@ pub(crate) fn apply_alignment_fallback(
 
   // 2. If free space is negative the "safe" alignment variants all fallback to Start alignment
   if free_space <= 0.0 && is_safe {
-    alignment_mode = AlignContent::Start;
+    alignment_mode = if start_end_axis_positive {
+      AlignContent::Start
+    } else {
+      AlignContent::End
+    };
   }
 
   alignment_mode

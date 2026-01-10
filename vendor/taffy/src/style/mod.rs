@@ -192,6 +192,17 @@ pub trait CoreStyle {
   fn axes_swapped(&self) -> bool {
     false
   }
+
+  /// Whether the "start" edge of each absolute axis corresponds to the smaller coordinate value.
+  ///
+  /// Taffy's layout algorithms operate in a fixed physical coordinate space with +x to the right
+  /// and +y down. Integrators that map logical writing modes/directions into this coordinate system
+  /// should provide the resolved start/end polarity so that alignment fallback (e.g. distributed
+  /// alignment values falling back to a safe start) can choose the correct edge.
+  #[inline(always)]
+  fn start_end_axis_positive(&self) -> Point<bool> {
+    Point { x: true, y: true }
+  }
 }
 
 /// Sets the layout used for the children of this node
@@ -549,6 +560,13 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
   /// horizontal/vertical interpretation so subgrid inheritance can remap track data correctly.
   #[cfg(feature = "grid")]
   pub axes_swapped: bool,
+  /// Whether the "start" edge of each physical axis corresponds to the smaller coordinate value.
+  ///
+  /// This is used by alignment fallback logic for the `start`/`end` keywords. For example, in RTL
+  /// contexts the inline-start edge is the physical right edge, so `start_end_axis_positive.x`
+  /// would be `false`.
+  #[cfg(any(feature = "flexbox", feature = "grid"))]
+  pub start_end_axis_positive: Point<bool>,
   /// Line names supplied on a row subgrid
   #[cfg(feature = "grid")]
   pub subgrid_row_names: GridTrackVec<GridTrackVec<S>>,
@@ -654,6 +672,8 @@ impl<S: CheapCloneStr> Style<S> {
     subgrid_columns: false,
     #[cfg(feature = "grid")]
     axes_swapped: false,
+    #[cfg(any(feature = "flexbox", feature = "grid"))]
+    start_end_axis_positive: Point { x: true, y: true },
     #[cfg(feature = "grid")]
     subgrid_row_names: GridTrackVec::new(),
     #[cfg(feature = "grid")]
@@ -763,6 +783,12 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
   fn axes_swapped(&self) -> bool {
     self.axes_swapped
   }
+
+  #[inline(always)]
+  #[cfg(any(feature = "flexbox", feature = "grid"))]
+  fn start_end_axis_positive(&self) -> Point<bool> {
+    self.start_end_axis_positive
+  }
 }
 
 impl<T: CoreStyle> CoreStyle for &'_ T {
@@ -827,6 +853,11 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
   #[inline(always)]
   fn border(&self) -> Rect<LengthPercentage> {
     (*self).border()
+  }
+
+  #[inline(always)]
+  fn start_end_axis_positive(&self) -> Point<bool> {
+    (*self).start_end_axis_positive()
   }
 
   #[inline(always)]

@@ -2774,6 +2774,18 @@ impl GridFormattingContext {
     let inline_positive_container = container_axis_style.inline_positive();
     let block_positive_container = container_axis_style.block_positive();
     let inline_is_horizontal_container = container_axis_style.inline_is_horizontal();
+    taffy_style.start_end_axis_positive = taffy::geometry::Point {
+      x: if inline_is_horizontal_container {
+        inline_positive_container
+      } else {
+        block_positive_container
+      },
+      y: if inline_is_horizontal_container {
+        block_positive_container
+      } else {
+        inline_positive_container
+      },
+    };
 
     let reserve_scroll_x = style.scrollbar_gutter.stable
       && matches!(
