@@ -20,8 +20,8 @@
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 375,
-    "diff_percent": 0.0291,
-    "perceptual": 0.0006,
+    "diff_percent": 0.0391,
+    "perceptual": 0.0007,
     "first_mismatch": {
       "x": 24,
       "y": 14,
@@ -40,7 +40,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "d18eaa7b083f7ee7955f86b559151052cb5602d1"
+    "computed_at_commit": "d405cea3bbd5f800be8e402e2618074673346bb2"
   },
   "hotspot": "css",
   "failure_stage": null,
