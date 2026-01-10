@@ -227,6 +227,7 @@ mod tests {
     ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
   use crate::resource::FetchDestination;
+  use selectors::context::QuirksMode;
 
   struct TestHost {
     dom: Document,
@@ -303,6 +304,56 @@ mod tests {
     ) -> Result<()> {
       Ok(())
     }
+  }
+
+  #[test]
+  fn dynamic_script_spec_force_async_defaults_true_for_dom_created_scripts() {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
+    assert!(
+      dom.node(script).script_force_async,
+      "expected dom2 create_element('script') to default script_force_async=true"
+    );
+
+    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    assert!(
+      spec.force_async,
+      "expected ScriptElementSpec.force_async=true for DOM-created dynamic scripts"
+    );
+  }
+
+  #[test]
+  fn dynamic_script_spec_force_async_defaults_false_for_inner_html_parsed_scripts() {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append_child should succeed");
+
+    dom
+      .set_inner_html(container, "<script id=s>console.log(1)</script>")
+      .expect("set_inner_html should succeed");
+    let script = dom
+      .get_element_by_id("s")
+      .expect("expected script to be present after set_inner_html");
+
+    assert!(
+      dom.node(script).script_already_started,
+      "innerHTML/outerHTML parsing must mark scripts as already started"
+    );
+    assert!(
+      !dom.node(script).script_force_async,
+      "innerHTML/outerHTML parsing must set script_force_async=false"
+    );
+
+    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    assert!(
+      !spec.force_async,
+      "expected ScriptElementSpec.force_async=false for fragment-parser-created scripts"
+    );
   }
 
   #[test]

@@ -204,6 +204,10 @@ mod tests {
     assert!(spec.async_attr);
     assert!(!spec.defer_attr);
     assert!(spec.parser_inserted);
+    assert!(
+      !spec.force_async,
+      "parser-inserted scripts must have force_async=false"
+    );
     assert_eq!(spec.script_type, ScriptType::Classic);
   }
 
