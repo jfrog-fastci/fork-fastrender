@@ -2,11 +2,13 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptState;
+use crate::resource::ResourceFetcher;
 use crate::web::dom::DomException;
 use std::char::decode_utf16;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use vm_js::{
   GcObject, GcString, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
   Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
@@ -220,6 +222,8 @@ fn live_collection_matches(kind: &LiveCollectionKind, tag: &str, namespace: &str
 pub struct DomHost {
   dom: Rc<RefCell<Document>>,
   current_script: Rc<RefCell<CurrentScriptState>>,
+  document_url: Option<String>,
+  cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
 
   /// Maximum number of bytes allowed when converting JS strings to Rust `String`s for DOM APIs.
   ///
@@ -715,6 +719,20 @@ impl DomHost {
 
     self.live_collections = out;
     Ok(())
+  }
+
+  pub fn set_cookie_fetcher_for_document(
+    &mut self,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) {
+    self.document_url = Some(document_url.into());
+    self.cookie_fetcher = Some(fetcher);
+  }
+
+  pub fn clear_cookie_fetcher(&mut self) {
+    self.document_url = None;
+    self.cookie_fetcher = None;
   }
 }
 
@@ -2211,6 +2229,13 @@ fn dom_document_cookie_getter(
 ) -> Result<Value, VmError> {
   let host = host_mut(vm)?;
   require_this_document(scope, host, this)?;
+
+  if let (Some(fetcher), Some(url)) = (host.cookie_fetcher.as_ref(), host.document_url.as_deref()) {
+    if let Some(header) = fetcher.cookie_header_value(url) {
+      host.cookie_jar.replace_from_cookie_header(&header);
+    }
+  }
+
   Ok(Value::String(scope.alloc_string(&host.cookie_jar.cookie_string())?))
 }
 
@@ -2243,6 +2268,10 @@ fn dom_document_cookie_setter(
       js.to_utf8_lossy()
     }
   };
+
+  if let (Some(fetcher), Some(url)) = (host.cookie_fetcher.as_ref(), host.document_url.as_deref()) {
+    fetcher.store_cookie_from_document(url, &cookie_string);
+  }
 
   host.cookie_jar.set_cookie_string(&cookie_string);
   Ok(Value::Undefined)
@@ -2491,6 +2520,8 @@ pub fn install_dom_bindings_with_limits(
   let mut host = DomHost {
     dom: dom.clone(),
     current_script: current_script.clone(),
+    document_url: None,
+    cookie_fetcher: None,
     max_string_bytes,
     cookie_jar: CookieJar::new(),
     node_wrappers: HashMap::new(),
@@ -2600,9 +2631,12 @@ fn install_accessor(
 mod tests {
   use super::*;
 
+  use crate::error::Error;
+  use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
   use std::cell::RefCell;
   use std::rc::Rc;
+  use std::sync::{Arc, Mutex};
   use vm_js::{Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Value, Vm, VmError, VmOptions};
 
   fn get_accessor_getter(heap: &Heap, obj: vm_js::GcObject, key: &PropertyKey) -> Option<Value> {
@@ -2625,6 +2659,56 @@ mod tests {
         PropertyKind::Accessor { set, .. } => Some(set),
         PropertyKind::Data { .. } => None,
       })
+  }
+
+  #[derive(Default)]
+  struct CookieRecordingFetcher {
+    cookies: Mutex<Vec<(String, String)>>,
+  }
+
+  impl CookieRecordingFetcher {
+    fn cookie_header(&self) -> String {
+      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+    }
+  }
+
+  impl ResourceFetcher for CookieRecordingFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "CookieRecordingFetcher does not support fetch: {url}"
+      )))
+    }
+
+    fn cookie_header_value(&self, _url: &str) -> Option<String> {
+      Some(self.cookie_header())
+    }
+
+    fn store_cookie_from_document(&self, _url: &str, cookie_string: &str) {
+      let first = cookie_string
+        .split_once(';')
+        .map(|(a, _)| a)
+        .unwrap_or(cookie_string);
+      let first = first.trim_matches(|c: char| c.is_ascii_whitespace());
+      let Some((name, value)) = first.split_once('=') else {
+        return;
+      };
+      let name = name.trim_matches(|c: char| c.is_ascii_whitespace());
+      if name.is_empty() {
+        return;
+      }
+
+      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
+        existing.1 = value.to_string();
+      } else {
+        lock.push((name.to_string(), value.to_string()));
+      }
+    }
   }
 
   #[test]
@@ -2674,6 +2758,78 @@ mod tests {
     assert_eq!(
       scope.heap().get_string(cookie_s)?.to_utf8_lossy(),
       "a=b; b=c"
+    );
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn document_cookie_syncs_with_fetcher_cookie_store() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom, current_script)?;
+
+    let fetcher = Arc::new(CookieRecordingFetcher::default());
+    fetcher.store_cookie_from_document("https://example.invalid/", "z=1");
+    vm
+      .user_data_mut::<DomHost>()
+      .expect("DomHost user_data should be installed")
+      .set_cookie_fetcher_for_document("https://example.invalid/", fetcher.clone());
+
+    let mut scope = heap.scope();
+
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .expect("globalThis.document should exist");
+    let document_obj = match document_val {
+      Value::Object(o) => o,
+      other => panic!("expected document object, got {other:?}"),
+    };
+
+    let key_cookie = PropertyKey::from_string(scope.alloc_string("cookie")?);
+    let cookie_get = get_accessor_getter(scope.heap(), document_obj, &key_cookie)
+      .expect("document.cookie getter should exist");
+    let cookie_set = get_accessor_setter(scope.heap(), document_obj, &key_cookie)
+      .expect("document.cookie setter should exist");
+
+    let cookie = vm.call_without_host(&mut scope, cookie_get, document_val, &[])?;
+    let Value::String(cookie_s) = cookie else {
+      panic!("expected cookie string, got {cookie:?}");
+    };
+    assert_eq!(
+      scope.heap().get_string(cookie_s)?.to_utf8_lossy(),
+      "z=1",
+      "cookie getter should mirror fetcher cookie state"
+    );
+
+    let b = Value::String(scope.alloc_string("b=c; Path=/")?);
+    vm.call_without_host(&mut scope, cookie_set, document_val, &[b])?;
+    let a = Value::String(scope.alloc_string("a=b")?);
+    vm.call_without_host(&mut scope, cookie_set, document_val, &[a])?;
+
+    assert_eq!(
+      fetcher
+        .cookie_header_value("https://example.invalid/")
+        .unwrap_or_default(),
+      "z=1; b=c; a=b"
+    );
+
+    let cookie = vm.call_without_host(&mut scope, cookie_get, document_val, &[])?;
+    let Value::String(cookie_s) = cookie else {
+      panic!("expected cookie string, got {cookie:?}");
+    };
+    assert_eq!(
+      scope.heap().get_string(cookie_s)?.to_utf8_lossy(),
+      "a=b; b=c; z=1"
     );
 
     drop(scope);
