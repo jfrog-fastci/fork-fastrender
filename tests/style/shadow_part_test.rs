@@ -1,6 +1,7 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::css::types::StyleSheet;
 use fastrender::dom::{enumerate_dom_ids, parse_html, DomNode};
+use fastrender::geometry::Point;
 use fastrender::style::cascade::{
   apply_style_set_with_media_target_and_imports, apply_styles_with_media_target_and_imports,
   ContainerQueryContext, ContainerQueryInfo, StyledNode,
@@ -444,6 +445,7 @@ fn part_container_query_is_evaluated_against_the_part_element() {
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
+          box_id: None,
           width: inline_size,
           height: 300.0,
           inline_size,
@@ -452,6 +454,8 @@ fn part_container_query_is_evaluated_against_the_part_element() {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(ComputedStyle::default()),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -526,6 +530,7 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
+          box_id: None,
           width: inline_size,
           height: block_size,
           inline_size,
@@ -534,6 +539,8 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
           names: Vec::new(),
           font_size: style.font_size,
           styles: Arc::clone(&style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };

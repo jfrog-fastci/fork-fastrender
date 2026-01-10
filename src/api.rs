@@ -6230,6 +6230,10 @@ impl FastRender {
         let previous_dpr = self.device_pixel_ratio;
         let artifacts_result = (|| -> Result<LayoutArtifacts> {
           self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+          let scroll_state = ScrollState::from_parts(
+            Point::new(options.scroll_x, options.scroll_y),
+            options.element_scroll_offsets.clone(),
+          );
           self.layout_document_for_media_with_artifacts(
             &dom,
             layout_width,
@@ -6239,7 +6243,7 @@ impl FastRender {
               page_stacking: PageStacking::Stacked { gap: 0.0 },
               animation_time: options.animation_time,
             },
-            Point::new(options.scroll_x, options.scroll_y),
+            &scroll_state,
             Some(&deadline),
             options.stage_mem_budget_bytes,
             trace_handle,
@@ -6511,6 +6515,10 @@ impl FastRender {
         dom_parse_rss_end,
         stage_mem_budget_bytes,
       )?;
+      let scroll_state = ScrollState::from_parts(
+        Point::new(scroll_x, scroll_y),
+        element_scroll_offsets.clone(),
+      );
       let layout_artifacts = self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -6521,7 +6529,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time,
         },
-        Point::new(scroll_x, scroll_y),
+        &scroll_state,
         deadline,
         stage_mem_budget_bytes,
         trace,
@@ -7201,6 +7209,10 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+      let scroll_state = ScrollState::from_parts(
+        Point::new(options.scroll_x, options.scroll_y),
+        options.element_scroll_offsets.clone(),
+      );
       self.layout_document_for_media_with_artifacts(
         dom,
         layout_width,
@@ -7210,7 +7222,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
         },
-        Point::new(options.scroll_x, options.scroll_y),
+        &scroll_state,
         Some(&deadline),
         options.stage_mem_budget_bytes,
         trace,
@@ -7492,6 +7504,10 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+      let scroll_state = ScrollState::from_parts(
+        Point::new(options.scroll_x, options.scroll_y),
+        options.element_scroll_offsets.clone(),
+      );
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -7502,7 +7518,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
         },
-        Point::new(options.scroll_x, options.scroll_y),
+        &scroll_state,
         Some(&deadline),
         options.stage_mem_budget_bytes,
         trace,
@@ -7785,6 +7801,10 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+      let scroll_state = ScrollState::from_parts(
+        Point::new(options.scroll_x, options.scroll_y),
+        options.element_scroll_offsets.clone(),
+      );
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -7795,7 +7815,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
         },
-        Point::new(options.scroll_x, options.scroll_y),
+        &scroll_state,
         Some(&deadline),
         options.stage_mem_budget_bytes,
         trace,
@@ -10442,13 +10462,14 @@ impl FastRender {
           }
         }
       }
+      let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
         width,
         height,
         media_type,
         LayoutDocumentOptions::default(),
-        Point::ZERO,
+        &scroll_state,
         deadline.as_ref(),
         None,
         &trace,
@@ -10532,13 +10553,14 @@ impl FastRender {
           }
         }
       }
+      let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
         width,
         height,
         media_type,
         options,
-        Point::ZERO,
+        &scroll_state,
         deadline,
         None,
         &trace,
@@ -10558,7 +10580,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
-    viewport_scroll: Point,
+    scroll_state: &ScrollState,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
@@ -10585,7 +10607,7 @@ impl FastRender {
           height,
           media_type,
           options,
-          viewport_scroll,
+          scroll_state,
           deadline,
           stage_mem_budget_bytes,
           trace,
@@ -10601,7 +10623,7 @@ impl FastRender {
       height,
       media_type,
       options,
-      viewport_scroll,
+      scroll_state,
       deadline,
       stage_mem_budget_bytes,
       trace,
@@ -10617,7 +10639,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
-    viewport_scroll: Point,
+    scroll_state: &ScrollState,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
@@ -10652,7 +10674,7 @@ impl FastRender {
               height,
               media_type,
               options,
-              viewport_scroll,
+              scroll_state,
               deadline,
               stage_mem_budget_bytes,
               trace,
@@ -10680,7 +10702,7 @@ impl FastRender {
       height,
       media_type,
       options,
-      viewport_scroll,
+      scroll_state,
       deadline,
       stage_mem_budget_bytes,
       trace,
@@ -10696,7 +10718,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
-    viewport_scroll: Point,
+    scroll_state: &ScrollState,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
@@ -10730,7 +10752,7 @@ impl FastRender {
         height,
         media_type,
         options,
-        viewport_scroll,
+        scroll_state,
         deadline,
         stage_mem_budget_bytes,
         trace,
@@ -10748,7 +10770,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
-    viewport_scroll: Point,
+    scroll_state: &ScrollState,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
@@ -10769,7 +10791,7 @@ impl FastRender {
         base_height,
         media_type,
         options,
-        viewport_scroll,
+        scroll_state,
         deadline,
         stage_mem_budget_bytes,
         trace,
@@ -10790,7 +10812,7 @@ impl FastRender {
         base_height,
         media_type,
         options,
-        viewport_scroll,
+        scroll_state,
         deadline,
         stage_mem_budget_bytes,
         trace,
@@ -10852,7 +10874,7 @@ impl FastRender {
       base_height,
       media_type,
       options,
-      viewport_scroll,
+      scroll_state,
       deadline,
       stage_mem_budget_bytes,
       trace,
@@ -10872,7 +10894,7 @@ impl FastRender {
     viewport_fixed_height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
-    viewport_scroll: Point,
+    scroll_state: &ScrollState,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
@@ -10998,6 +11020,7 @@ impl FastRender {
       has_container_rules: _,
       needs_container_pass,
       has_container_style_queries,
+      has_container_scroll_state_queries,
       container_style_query_custom_properties,
       container_style_query_properties,
       container_size_query_custom_properties,
@@ -11522,7 +11545,7 @@ impl FastRender {
     );
     config.quirks_mode = dom_with_state.document_quirks_mode();
     config.fragmentation = manual_fragmentation;
-    config.viewport_scroll = viewport_scroll;
+    config.viewport_scroll = scroll_state.viewport;
     config.enable_cache = !toggles.truthy("FASTR_DISABLE_LAYOUT_CACHE");
     config.parallelism = resolved_parallelism;
     let enable_layout_cache = config.enable_cache;
@@ -11667,6 +11690,8 @@ impl FastRender {
       properties.sort();
       properties.dedup();
 
+      let include_scroll_state = has_container_scroll_state_queries;
+
       let container_query_fingerprint = if custom_properties.is_empty()
         && !include_color
         && !include_background_color
@@ -11677,6 +11702,7 @@ impl FastRender {
         && !include_opacity
         && !include_z_index
         && !include_font_size
+        && !include_scroll_state
         && properties.is_empty()
       {
         None
@@ -11692,6 +11718,7 @@ impl FastRender {
           include_opacity,
           include_z_index,
           include_font_size,
+          include_scroll_state,
           properties,
         })
       };
@@ -11701,7 +11728,9 @@ impl FastRender {
         &fragment_tree,
         &styled_tree,
         &media_ctx,
+        scroll_state,
         has_container_style_queries,
+        include_scroll_state,
       );
       let mut layout_fingerprint = styled_layout_fingerprint_digest(&styled_tree);
       let mut iterations: u32 = 0;
@@ -11916,7 +11945,9 @@ impl FastRender {
           &fragment_tree,
           &styled_tree,
           &media_ctx,
+          scroll_state,
           has_container_style_queries,
+          include_scroll_state,
         );
         let ctx_fp_after = container_query_context_fingerprint(
           &next_container_ctx,
@@ -12224,13 +12255,14 @@ impl FastRender {
           }
         }
       }
+      let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
         width,
         height,
         MediaType::Screen,
         LayoutDocumentOptions::default(),
-        Point::ZERO,
+        &scroll_state,
         None,
         None,
         &trace,
@@ -17094,6 +17126,7 @@ struct ContainerQueryFingerprintConfig {
   include_opacity: bool,
   include_z_index: bool,
   include_font_size: bool,
+  include_scroll_state: bool,
   properties: Vec<String>,
 }
 
@@ -17173,6 +17206,13 @@ fn writing_mode_fingerprint(writing_mode: WritingMode) -> u8 {
   }
 }
 
+fn direction_fingerprint(direction: crate::style::types::Direction) -> u8 {
+  match direction {
+    crate::style::types::Direction::Ltr => 0,
+    crate::style::types::Direction::Rtl => 1,
+  }
+}
+
 fn overflow_fingerprint(overflow: crate::style::types::Overflow) -> u8 {
   match overflow {
     crate::style::types::Overflow::Visible => 0,
@@ -17217,6 +17257,26 @@ fn container_query_context_fingerprint(
       name.hash(&mut hasher);
     }
     if let Some(config) = config {
+      if config.include_scroll_state {
+        info.box_id.hash(&mut hasher);
+        info.scroll_offset.x.to_bits().hash(&mut hasher);
+        info.scroll_offset.y.to_bits().hash(&mut hasher);
+        match info.scroll_bounds {
+          Some(bounds) => {
+            1u8.hash(&mut hasher);
+            bounds.min_x.to_bits().hash(&mut hasher);
+            bounds.min_y.to_bits().hash(&mut hasher);
+            bounds.max_x.to_bits().hash(&mut hasher);
+            bounds.max_y.to_bits().hash(&mut hasher);
+          }
+          None => {
+            0u8.hash(&mut hasher);
+          }
+        }
+        overflow_fingerprint(info.styles.overflow_x).hash(&mut hasher);
+        overflow_fingerprint(info.styles.overflow_y).hash(&mut hasher);
+        direction_fingerprint(info.styles.direction).hash(&mut hasher);
+      }
       if config.include_color {
         info.styles.color.r.hash(&mut hasher);
         info.styles.color.g.hash(&mut hasher);
@@ -18101,13 +18161,108 @@ fn build_container_query_context(
   fragments: &FragmentTree,
   styled_tree: &StyledNode,
   media_ctx: &MediaContext,
+  scroll_state: &ScrollState,
   include_style_containers: bool,
+  include_scroll_state: bool,
 ) -> ContainerQueryContext {
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
   let mut scrollbar_reservations: HashMap<usize, ScrollbarReservation> = HashMap::new();
   collect_fragment_sizes(&fragments.root, &mut sizes, &mut scrollbar_reservations);
   for extra in &fragments.additional_fragments {
     collect_fragment_sizes(extra, &mut sizes, &mut scrollbar_reservations);
+  }
+
+  let mut scroll_bounds_by_box_id: HashMap<usize, crate::scroll::ScrollBounds> = HashMap::new();
+  if include_scroll_state {
+    fn merge_scroll_bounds(
+      existing: &mut crate::scroll::ScrollBounds,
+      next: crate::scroll::ScrollBounds,
+    ) {
+      existing.min_x = existing.min_x.min(next.min_x);
+      existing.min_y = existing.min_y.min(next.min_y);
+      existing.max_x = existing.max_x.max(next.max_x);
+      existing.max_y = existing.max_y.max(next.max_y);
+    }
+
+    fn collect_scroll_bounds(
+      fragment: &FragmentNode,
+      origin: Point,
+      viewport: Size,
+      treat_as_root: bool,
+      has_fixed_cb_ancestor: bool,
+      out: &mut HashMap<usize, crate::scroll::ScrollBounds>,
+    ) {
+      if let Some(state) = crate::scroll::ScrollChainState::from_fragment(
+        fragment,
+        origin,
+        viewport,
+        treat_as_root,
+        has_fixed_cb_ancestor,
+      ) {
+        if let Some(box_id) = fragment.box_id() {
+          out
+            .entry(box_id)
+            .and_modify(|existing| merge_scroll_bounds(existing, state.bounds))
+            .or_insert(state.bounds);
+        }
+      }
+
+      let establishes_fixed_cb = fragment
+        .style
+        .as_deref()
+        .is_some_and(|style| style.establishes_fixed_containing_block());
+      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+
+      match &fragment.content {
+        FragmentContent::RunningAnchor { snapshot, .. }
+        | FragmentContent::FootnoteAnchor { snapshot } => {
+          let viewport = Size::new(snapshot.bounds.width(), snapshot.bounds.height());
+          collect_scroll_bounds(
+            snapshot,
+            origin,
+            viewport,
+            false,
+            has_fixed_cb_ancestor_for_children,
+            out,
+          );
+        }
+        _ => {}
+      }
+
+      for child in fragment.children.iter() {
+        let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+        let child_viewport = Size::new(child.bounds.width(), child.bounds.height());
+        collect_scroll_bounds(
+          child,
+          child_origin,
+          child_viewport,
+          false,
+          has_fixed_cb_ancestor_for_children,
+          out,
+        );
+      }
+    }
+
+    let viewport = fragments.viewport_size();
+    collect_scroll_bounds(
+      &fragments.root,
+      Point::new(fragments.root.bounds.x(), fragments.root.bounds.y()),
+      viewport,
+      true,
+      false,
+      &mut scroll_bounds_by_box_id,
+    );
+    for extra in &fragments.additional_fragments {
+      let viewport = Size::new(extra.bounds.width(), extra.bounds.height());
+      collect_scroll_bounds(
+        extra,
+        Point::new(extra.bounds.x(), extra.bounds.y()),
+        viewport,
+        false,
+        false,
+        &mut scroll_bounds_by_box_id,
+      );
+    }
   }
 
   fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
@@ -18175,6 +18330,7 @@ fn build_container_query_context(
       containers.insert(
         *styled_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 0.0,
           height: 0.0,
           inline_size: 0.0,
@@ -18183,6 +18339,8 @@ fn build_container_query_context(
           names: style.container_name.clone(),
           font_size: style.font_size,
           styles: Arc::clone(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
     }
@@ -18192,10 +18350,13 @@ fn build_container_query_context(
     node: &BoxNode,
     sizes: &HashMap<usize, (f32, f32)>,
     scrollbar_reservations: &HashMap<usize, ScrollbarReservation>,
+    scroll_bounds_by_box_id: &HashMap<usize, crate::scroll::ScrollBounds>,
+    scroll_state: &ScrollState,
     styles: &HashMap<usize, Arc<ComputedStyle>>,
     containers: &mut HashMap<usize, ContainerQueryInfo>,
     parent_content_width: f32,
     viewport: Size,
+    include_scroll_state: bool,
   ) {
     let (border_box_width, border_box_height) = sizes.get(&node.id).copied().unwrap_or((0.0, 0.0));
     let has_layout_size = sizes.contains_key(&node.id);
@@ -18275,19 +18436,20 @@ fn build_container_query_context(
       percentage_base
     };
 
-    if has_layout_size
-      && matches!(
-        style.container_type,
-        ContainerType::Size | ContainerType::InlineSize
-      )
-    {
+    let scroll_bounds = include_scroll_state
+      .then(|| scroll_bounds_by_box_id.get(&node.id).copied())
+      .flatten();
+    let is_scroll_state_container = include_scroll_state && scroll_bounds.is_some();
+    let is_size_container = matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize);
+
+    if has_layout_size && (is_size_container || is_scroll_state_container) {
       if let Some(styled_id) = styled_id {
         let (content_inline, content_block) = match style.writing_mode {
           WritingMode::HorizontalTb => (content_width, content_height),
           _ => (content_height, content_width),
         };
 
-        if runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
+        if is_size_container && runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
           eprintln!(
             "[cq] box_id={} styled_id={} type={:?} width={:.2} height={:.2} content_width={:.2} content_height={:.2} content_inline={:.2} content_block={:.2}",
             node.id,
@@ -18302,9 +18464,16 @@ fn build_container_query_context(
           );
         }
 
+        let scroll_offset = if include_scroll_state {
+          scroll_state.element_offset(node.id)
+        } else {
+          Point::ZERO
+        };
+
         containers
           .entry(styled_id)
           .and_modify(|entry| {
+            entry.box_id = Some(node.id);
             entry.width = entry.width.max(content_width);
             entry.height = entry.height.max(content_height);
             entry.inline_size = entry.inline_size.max(content_inline);
@@ -18313,8 +18482,11 @@ fn build_container_query_context(
             entry.container_type = style.container_type;
             entry.names = style.container_name.clone();
             entry.styles = Arc::clone(&style_arc);
+            entry.scroll_offset = scroll_offset;
+            entry.scroll_bounds = scroll_bounds;
           })
           .or_insert_with(|| ContainerQueryInfo {
+            box_id: Some(node.id),
             width: content_width,
             height: content_height,
             inline_size: content_inline,
@@ -18323,6 +18495,8 @@ fn build_container_query_context(
             names: style.container_name.clone(),
             font_size: style.font_size,
             styles: Arc::clone(&style_arc),
+            scroll_offset,
+            scroll_bounds,
           });
       }
     }
@@ -18332,10 +18506,13 @@ fn build_container_query_context(
         body,
         sizes,
         scrollbar_reservations,
+        scroll_bounds_by_box_id,
+        scroll_state,
         styles,
         containers,
         child_base,
         viewport,
+        include_scroll_state,
       );
     }
     for child in node.children.iter() {
@@ -18343,10 +18520,13 @@ fn build_container_query_context(
         child,
         sizes,
         scrollbar_reservations,
+        scroll_bounds_by_box_id,
+        scroll_state,
         styles,
         containers,
         child_base,
         viewport,
+        include_scroll_state,
       );
     }
   }
@@ -18355,10 +18535,13 @@ fn build_container_query_context(
     &box_tree.root,
     &sizes,
     &scrollbar_reservations,
+    &scroll_bounds_by_box_id,
+    scroll_state,
     &styles,
     &mut containers,
     viewport.width,
     viewport,
+    include_scroll_state,
   );
 
   ContainerQueryContext {
@@ -20437,8 +20620,16 @@ mod tests {
         vec![],
       ));
 
-    let ctx =
-      super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let ctx = super::build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let info = ctx
       .containers
       .get(&7)
@@ -20558,8 +20749,16 @@ mod tests {
       viewport,
     );
 
-    let ctx =
-      super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let ctx = super::build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let info = ctx
       .containers
       .get(&7)
@@ -21469,6 +21668,7 @@ mod tests {
     let trace = TraceHandle::disabled();
     let _diagnostics_session = DiagnosticsSessionGuard::acquire();
     let mut stats = RenderStatsRecorder::new(DiagnosticsLevel::Basic);
+    let scroll_state = ScrollState::default();
     let artifacts = renderer
       .layout_document_for_media_with_artifacts(
         &dom,
@@ -21476,7 +21676,7 @@ mod tests {
         200,
         MediaType::Screen,
         LayoutDocumentOptions::default(),
-        Point::ZERO,
+        &scroll_state,
         None,
         None,
         &trace,
@@ -21508,6 +21708,7 @@ mod tests {
     let mut renderer = renderer;
     let _diagnostics_session = DiagnosticsSessionGuard::acquire();
     let mut stats = RenderStatsRecorder::new(DiagnosticsLevel::Basic);
+    let scroll_state = ScrollState::default();
     let artifacts = renderer
       .layout_document_for_media_with_artifacts(
         &dom,
@@ -21515,7 +21716,7 @@ mod tests {
         200,
         MediaType::Screen,
         LayoutDocumentOptions::default(),
-        Point::ZERO,
+        &scroll_state,
         None,
         None,
         &trace,
@@ -23384,7 +23585,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     assert!(!cq_ctx.containers.is_empty(), "expected container context");
     let info = cq_ctx.containers.values().next().unwrap();
     eprintln!(
@@ -23477,7 +23687,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     assert!(
       !cq_ctx.containers.is_empty(),
       "expected named container context"
@@ -23543,7 +23762,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -23602,7 +23830,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -23661,7 +23898,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -23721,7 +23967,16 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let scroll_state = ScrollState::default();
+    let cq_ctx = build_container_query_context(
+      &box_tree,
+      &fragments,
+      &styled,
+      &media_ctx,
+      &scroll_state,
+      false,
+      false,
+    );
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -23771,6 +24026,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -23784,6 +24040,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -23792,6 +24049,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -23858,6 +24117,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -23875,6 +24135,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -23883,6 +24144,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -23935,6 +24198,7 @@ mod tests {
       include_opacity: true,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -23945,6 +24209,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -23953,6 +24218,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24012,6 +24279,7 @@ mod tests {
       include_opacity: false,
       include_z_index: true,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24022,6 +24290,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24030,6 +24299,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24090,6 +24361,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24103,6 +24375,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24111,6 +24384,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24171,6 +24446,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24186,6 +24462,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24194,6 +24471,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24262,6 +24541,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24275,6 +24555,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24283,6 +24564,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24345,6 +24628,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24362,6 +24646,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24370,6 +24655,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {
@@ -24421,6 +24708,7 @@ mod tests {
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      include_scroll_state: false,
       properties: Vec::new(),
     };
 
@@ -24438,6 +24726,7 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          box_id: None,
           width: 100.0,
           height: 200.0,
           inline_size: 100.0,
@@ -24446,6 +24735,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::new(style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       );
       ContainerQueryContext {

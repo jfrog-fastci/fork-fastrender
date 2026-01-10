@@ -392,6 +392,8 @@ pub struct CollectedCssMetadata {
   pub needs_container_pass: bool,
   /// True when at least one `@container` rule contains a style query (e.g. `style(--foo: bar)`).
   pub has_container_style_queries: bool,
+  /// True when at least one `@container` rule contains a scroll-state query (e.g. `scroll-state(scrollable)`).
+  pub has_container_scroll_state_queries: bool,
   /// Names of custom properties referenced by style queries (deduplicated across all sheets).
   pub container_style_query_custom_properties: FxHashSet<String>,
   /// Names of computed properties referenced by style queries (deduplicated across all sheets).
@@ -1818,6 +1820,9 @@ fn collect_container_query_metadata(queries: &[ContainerQuery], out: &mut Collec
       ContainerQuery::Style(style_query) => {
         out.has_container_style_queries = true;
         collect_style_query(style_query, out);
+      }
+      ContainerQuery::ScrollState(_) => {
+        out.has_container_scroll_state_queries = true;
       }
       ContainerQuery::Unknown(_) => {}
       ContainerQuery::Not(inner) => {
@@ -3656,7 +3661,9 @@ pub enum ContainerQuery {
   Size(ContainerSizeQuery),
   /// Style queries inspecting computed styles of the query container.
   Style(StyleQueryExpr),
-  /// Unknown or unsupported `<<query-in-parens>>` (e.g. `scroll-state(...)` or `<<general-enclosed>>`).
+  /// Scroll-state queries inspecting scroll container state of the query container.
+  ScrollState(ScrollStateQueryExpr),
+  /// Unknown or unsupported `<<query-in-parens>>` (e.g. `<<general-enclosed>>`).
   ///
   /// Stored as a best-effort serialization of the original tokens for debugging.
   Unknown(String),
@@ -3727,6 +3734,51 @@ pub enum StyleQueryFeature {
   Boolean { name: String },
   /// `<value> <comparison> <value>` range comparisons.
   Range(StyleRange),
+}
+
+/// Scroll-state query expression inside `scroll-state(<scroll-state-query>)`.
+#[derive(Debug, Clone)]
+pub enum ScrollStateQueryExpr {
+  /// Unknown/unsupported clause (e.g. `<<general-enclosed>>`).
+  Unknown,
+  /// A concrete scroll-state feature.
+  Feature(ScrollStateFeature),
+  /// Logical negation.
+  Not(Box<ScrollStateQueryExpr>),
+  /// Logical conjunction.
+  And(Vec<ScrollStateQueryExpr>),
+  /// Logical disjunction.
+  Or(Vec<ScrollStateQueryExpr>),
+}
+
+/// Supported scroll-state query features.
+#[derive(Debug, Clone)]
+pub enum ScrollStateFeature {
+  /// `scrollable` / `scrollable: <direction>`
+  Scrollable {
+    /// When omitted (boolean context), matches when the container is scrollable in any direction.
+    direction: Option<ScrollStateDirection>,
+  },
+  /// Unknown/unsupported feature preserved for forward compatibility.
+  Unknown { name: String, value: Option<String> },
+}
+
+/// Direction/axis keywords accepted by `scroll-state(scrollable: ...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScrollStateDirection {
+  None,
+  Top,
+  Right,
+  Bottom,
+  Left,
+  BlockStart,
+  BlockEnd,
+  InlineStart,
+  InlineEnd,
+  X,
+  Y,
+  Block,
+  Inline,
 }
 
 /// A parsed `<<style-range>>` comparison.

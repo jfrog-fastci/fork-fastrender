@@ -60,6 +60,9 @@ use super::types::StyleQueryFeature;
 use super::types::StyleRange;
 use super::types::StyleRangeOp;
 use super::types::StyleRangeValue;
+use super::types::ScrollStateQueryExpr;
+use super::types::ScrollStateFeature;
+use super::types::ScrollStateDirection;
 use super::types::StyleRule;
 use super::types::StyleSheet;
 use super::types::SupportsCondition;
@@ -1475,6 +1478,9 @@ fn parse_container_query_in_parens<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<ContainerQuery, ParseError<'i, ()>> {
   parser.skip_whitespace();
+  if let Ok(scroll_state) = parser.try_parse(parse_container_scroll_state_function) {
+    return Ok(ContainerQuery::ScrollState(scroll_state));
+  }
   if let Ok(style) = parser.try_parse(parse_container_style_function) {
     return Ok(ContainerQuery::Style(style));
   }
@@ -1546,6 +1552,24 @@ fn parse_container_style_function<'i, 't>(
     nested.reset(&state);
     consume_nested_tokens(nested)?;
     Ok(StyleQueryExpr::Unknown)
+  })
+}
+
+fn parse_container_scroll_state_function<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<ScrollStateQueryExpr, ParseError<'i, ()>> {
+  parser.expect_function_matching("scroll-state")?;
+  parser.parse_nested_block(|nested| {
+    let state = nested.state();
+    if let Ok(expr) = nested.try_parse(parse_scroll_state_query) {
+      nested.skip_whitespace();
+      if nested.is_exhausted() {
+        return Ok(expr);
+      }
+    }
+    nested.reset(&state);
+    consume_nested_tokens(nested)?;
+    Ok(ScrollStateQueryExpr::Unknown)
   })
 }
 
@@ -2071,6 +2095,155 @@ fn parse_style_range<'i, 't>(
     right,
   })
 }
+
+fn normalize_scroll_state_feature_name(name: &str) -> String {
+  name.to_ascii_lowercase()
+}
+
+fn parse_scroll_state_query<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<ScrollStateQueryExpr, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+
+  if parser.try_parse(|p| p.expect_ident_matching("not")).is_ok() {
+    parser.skip_whitespace();
+    let inner = parse_scroll_state_in_parens(parser)?;
+    return Ok(ScrollStateQueryExpr::Not(Box::new(inner)));
+  }
+
+  let state = parser.state();
+  if let Ok(first) = parser.try_parse(parse_scroll_state_in_parens) {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_ident_matching("and")).is_ok() {
+      parser.skip_whitespace();
+      let mut list = vec![first, parse_scroll_state_in_parens(parser)?];
+      loop {
+        parser.skip_whitespace();
+        if parser.try_parse(|p| p.expect_ident_matching("and")).is_ok() {
+          parser.skip_whitespace();
+          list.push(parse_scroll_state_in_parens(parser)?);
+        } else {
+          break;
+        }
+      }
+      return Ok(ScrollStateQueryExpr::And(list));
+    }
+
+    if parser.try_parse(|p| p.expect_ident_matching("or")).is_ok() {
+      parser.skip_whitespace();
+      let mut list = vec![first, parse_scroll_state_in_parens(parser)?];
+      loop {
+        parser.skip_whitespace();
+        if parser.try_parse(|p| p.expect_ident_matching("or")).is_ok() {
+          parser.skip_whitespace();
+          list.push(parse_scroll_state_in_parens(parser)?);
+        } else {
+          break;
+        }
+      }
+      return Ok(ScrollStateQueryExpr::Or(list));
+    }
+
+    return Ok(first);
+  }
+  parser.reset(&state);
+
+  let feature = parse_scroll_state_feature(parser)?;
+  Ok(ScrollStateQueryExpr::Feature(feature))
+}
+
+fn parse_scroll_state_in_parens<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<ScrollStateQueryExpr, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next_including_whitespace()? {
+    Token::ParenthesisBlock => parser.parse_nested_block(|nested| {
+      let state = nested.state();
+      if let Ok(expr) = nested.try_parse(parse_scroll_state_query) {
+        nested.skip_whitespace();
+        if nested.is_exhausted() {
+          return Ok(expr);
+        }
+      }
+      nested.reset(&state);
+      consume_nested_tokens(nested)?;
+      Ok(ScrollStateQueryExpr::Unknown)
+    }),
+    Token::Function(_) | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
+      parser.parse_nested_block(consume_nested_tokens)?;
+      Ok(ScrollStateQueryExpr::Unknown)
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn parse_scroll_state_direction(value: &str) -> Option<ScrollStateDirection> {
+  match trim_ascii_whitespace(value)
+    .to_ascii_lowercase()
+    .as_str()
+  {
+    "none" => Some(ScrollStateDirection::None),
+    "top" => Some(ScrollStateDirection::Top),
+    "right" => Some(ScrollStateDirection::Right),
+    "bottom" => Some(ScrollStateDirection::Bottom),
+    "left" => Some(ScrollStateDirection::Left),
+    "block-start" => Some(ScrollStateDirection::BlockStart),
+    "block-end" => Some(ScrollStateDirection::BlockEnd),
+    "inline-start" => Some(ScrollStateDirection::InlineStart),
+    "inline-end" => Some(ScrollStateDirection::InlineEnd),
+    "x" => Some(ScrollStateDirection::X),
+    "y" => Some(ScrollStateDirection::Y),
+    "block" => Some(ScrollStateDirection::Block),
+    "inline" => Some(ScrollStateDirection::Inline),
+    _ => None,
+  }
+}
+
+fn parse_scroll_state_feature<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<ScrollStateFeature, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let raw_name = match parser.next_including_whitespace()? {
+    Token::Ident(ident) => ident.to_string(),
+    _ => return Err(parser.new_custom_error(())),
+  };
+  let name = normalize_scroll_state_feature_name(&raw_name);
+  parser.skip_whitespace();
+
+  if parser.try_parse(|p| p.expect_colon()).is_ok() {
+    let start = parser.position();
+    consume_nested_tokens(parser)?;
+    let raw_value = trim_ascii_whitespace(parser.slice_from(start));
+    let value = trim_ascii_whitespace_end(raw_value.trim_end_matches(';')).to_string();
+    if value.is_empty() {
+      return Err(parser.new_custom_error(()));
+    }
+
+    if name == "scrollable" {
+      let direction = parse_scroll_state_direction(&value);
+      if let Some(direction) = direction {
+        return Ok(ScrollStateFeature::Scrollable {
+          direction: Some(direction),
+        });
+      }
+    }
+
+    return Ok(ScrollStateFeature::Unknown {
+      name,
+      value: Some(value),
+    });
+  }
+
+  if parser.is_exhausted() {
+    if name == "scrollable" {
+      return Ok(ScrollStateFeature::Scrollable { direction: None });
+    }
+    return Ok(ScrollStateFeature::Unknown { name, value: None });
+  }
+
+  Err(parser.new_custom_error(()))
+}
+
 /// Parse an @starting-style rule which simply wraps a nested rule list.
 fn parse_starting_style_rule<'i, 't>(
   parser: &mut Parser<'i, 't>,

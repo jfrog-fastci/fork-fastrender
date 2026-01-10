@@ -1,5 +1,6 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::{self, DomNode};
+use fastrender::geometry::Point;
 use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
@@ -90,6 +91,7 @@ fn container_size_query_var_resolves_per_container() {
   containers.insert(
     c1_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 200.0,
       height: 300.0,
       inline_size: 200.0,
@@ -98,11 +100,14 @@ fn container_size_query_var_resolves_per_container() {
       names: Vec::new(),
       font_size: 16.0,
       styles: make_container_style(Some("150px")),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   containers.insert(
     c2_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 200.0,
       height: 300.0,
       inline_size: 200.0,
@@ -111,6 +116,8 @@ fn container_size_query_var_resolves_per_container() {
       names: Vec::new(),
       font_size: 16.0,
       styles: make_container_style(Some("250px")),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -154,6 +161,7 @@ fn container_size_query_var_fallback_used_when_missing() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 200.0,
       height: 300.0,
       inline_size: 200.0,
@@ -162,6 +170,8 @@ fn container_size_query_var_fallback_used_when_missing() {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::new(ComputedStyle::default()),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -204,6 +214,7 @@ fn container_size_query_var_missing_without_fallback_is_false() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 200.0,
       height: 300.0,
       inline_size: 200.0,
@@ -212,6 +223,8 @@ fn container_size_query_var_missing_without_fallback_is_false() {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::new(ComputedStyle::default()),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -264,6 +277,7 @@ fn container_size_query_var_rem_uses_root_font_size() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 150.0,
       height: 300.0,
       inline_size: 150.0,
@@ -272,6 +286,8 @@ fn container_size_query_var_rem_uses_root_font_size() {
       names: Vec::new(),
       font_size: style.font_size,
       styles: Arc::clone(&style),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -318,6 +334,7 @@ fn container_size_query_var_orientation_parses_and_matches() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 100.0,
       height: 200.0,
       inline_size: 100.0,
@@ -326,6 +343,8 @@ fn container_size_query_var_orientation_parses_and_matches() {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::clone(&style),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -371,6 +390,7 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 160.0,
       height: 90.0,
       inline_size: 160.0,
@@ -379,6 +399,8 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::clone(&style),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -421,6 +443,7 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: 200.0,
       height: 300.0,
       inline_size: 200.0,
@@ -429,6 +452,8 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
       names: Vec::new(),
       font_size: 16.0,
       styles: make_container_style_with_properties(&[("--min", "150px"), ("--orient", "portrait")]),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {

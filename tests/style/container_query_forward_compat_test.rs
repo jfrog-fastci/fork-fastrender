@@ -1,5 +1,5 @@
 use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{ContainerQuery, CssRule};
+use fastrender::css::types::{ContainerQuery, CssRule, ScrollStateFeature, ScrollStateQueryExpr};
 use fastrender::style::media::MediaContext;
 
 #[test]
@@ -24,10 +24,16 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
     .expect("@container rule retained");
 
   assert_eq!(container_rule.conditions.len(), 1);
-  assert!(matches!(
-    container_rule.conditions.first().and_then(|condition| condition.query.as_ref()),
-    Some(ContainerQuery::Unknown(raw)) if raw.starts_with("scroll-state(")
-  ));
+  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Unknown {
+      name,
+      value,
+    }))) => {
+      assert_eq!(name, "stuck");
+      assert_eq!(value.as_deref(), Some("top"));
+    }
+    other => panic!("expected scroll-state() query to parse, got {other:?}"),
+  }
 
   let keyframes = stylesheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
   assert!(keyframes.iter().any(|kf| kf.name == "spin"));

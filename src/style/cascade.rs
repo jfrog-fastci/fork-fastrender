@@ -28,6 +28,9 @@ use crate::css::types::CssString;
 use crate::css::types::Declaration;
 use crate::css::types::PropertyValue;
 use crate::css::types::ScopeContext;
+use crate::css::types::ScrollStateDirection;
+use crate::css::types::ScrollStateFeature;
+use crate::css::types::ScrollStateQueryExpr;
 use crate::css::types::StyleQueryExpr;
 use crate::css::types::StyleQueryFeature;
 use crate::css::types::StyleRange;
@@ -57,9 +60,10 @@ use crate::dom::SlotAssignment;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::SVG_NAMESPACE;
 use crate::error::Error;
-use crate::geometry::Size;
+use crate::geometry::{Point, Size};
 use crate::render_control::check_active_periodic;
 use crate::render_control::RenderDeadline;
+use crate::scroll::ScrollBounds;
 use crate::style::color::{Color, Rgba, SystemColor};
 use crate::style::custom_properties::CustomPropertyRegistry;
 use crate::style::custom_property_store::CustomPropertyStore;
@@ -431,6 +435,7 @@ fn container_query_matches(
     ContainerQuery::Style(style_query) => {
       eval_style_query(style_query, container, container_parent, ctx)
     }
+    ContainerQuery::ScrollState(scroll_query) => eval_scroll_state_query(scroll_query, container),
     ContainerQuery::Unknown(_) => QueryResult::Unknown,
     ContainerQuery::Not(inner) => container_query_matches(
       container_id,
@@ -1431,6 +1436,181 @@ fn eval_style_query(
       }
       result
     }
+  }
+}
+
+fn eval_scroll_state_query(query: &ScrollStateQueryExpr, container: &ContainerQueryInfo) -> QueryResult {
+  match query {
+    ScrollStateQueryExpr::Unknown => QueryResult::Unknown,
+    ScrollStateQueryExpr::Feature(feature) => eval_scroll_state_feature(feature, container),
+    ScrollStateQueryExpr::Not(inner) => eval_scroll_state_query(inner, container).not(),
+    ScrollStateQueryExpr::And(list) => {
+      let mut result = QueryResult::True;
+      for inner in list {
+        match eval_scroll_state_query(inner, container) {
+          QueryResult::False => {
+            result = QueryResult::False;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::True => {}
+        }
+      }
+      result
+    }
+    ScrollStateQueryExpr::Or(list) => {
+      let mut result = QueryResult::False;
+      for inner in list {
+        match eval_scroll_state_query(inner, container) {
+          QueryResult::True => {
+            result = QueryResult::True;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::False => {}
+        }
+      }
+      result
+    }
+  }
+}
+
+fn eval_scroll_state_feature(feature: &ScrollStateFeature, container: &ContainerQueryInfo) -> QueryResult {
+  match feature {
+    ScrollStateFeature::Scrollable { direction } => {
+      eval_scroll_state_scrollable(*direction, container)
+    }
+    ScrollStateFeature::Unknown { .. } => QueryResult::Unknown,
+  }
+}
+
+fn eval_scroll_state_scrollable(
+  direction: Option<ScrollStateDirection>,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
+  let Some(bounds) = container.scroll_bounds else {
+    // Without scroll bounds we can't reliably determine scrollability. Treat this as "not scrollable"
+    // so scroll-state queries don't spuriously match on containers without layout metadata.
+    return QueryResult::False;
+  };
+
+  let scroll = bounds.clamp(container.scroll_offset);
+
+  let scrollable_overflow = |overflow: Overflow| matches!(overflow, Overflow::Auto | Overflow::Scroll);
+
+  let eps = 1e-6;
+  let axis_scrollable = |min: f32, max: f32| -> Option<bool> {
+    (min.is_finite() && max.is_finite() && min <= max).then_some(max - min > eps)
+  };
+  let can_scroll_towards_min = |pos: f32, min: f32| -> Option<bool> {
+    (pos.is_finite() && min.is_finite()).then_some(pos > min + eps)
+  };
+  let can_scroll_towards_max = |pos: f32, max: f32| -> Option<bool> {
+    (pos.is_finite() && max.is_finite()).then_some(pos < max - eps)
+  };
+
+  let scrollable_x = scrollable_overflow(container.styles.overflow_x)
+    && axis_scrollable(bounds.min_x, bounds.max_x).unwrap_or(false);
+  let scrollable_y = scrollable_overflow(container.styles.overflow_y)
+    && axis_scrollable(bounds.min_y, bounds.max_y).unwrap_or(false);
+  let scrollable_any = scrollable_x || scrollable_y;
+
+  let axis_sides = |inline_axis: bool| {
+    let mode = container.styles.writing_mode;
+    let direction = container.styles.direction;
+    let horizontal = if inline_axis {
+      crate::style::inline_axis_is_horizontal(mode)
+    } else {
+      crate::style::block_axis_is_horizontal(mode)
+    };
+    let positive = if inline_axis {
+      crate::style::inline_axis_positive(mode, direction)
+    } else {
+      crate::style::block_axis_positive(mode)
+    };
+
+    if horizontal {
+      if positive {
+        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      } else {
+        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      }
+    } else if positive {
+      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    } else {
+      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    }
+  };
+
+  let physical_side_matches = |side: crate::style::PhysicalSide| -> Option<bool> {
+    match side {
+      crate::style::PhysicalSide::Top => {
+        if !scrollable_overflow(container.styles.overflow_y) {
+          return Some(false);
+        }
+        can_scroll_towards_min(scroll.y, bounds.min_y)
+      }
+      crate::style::PhysicalSide::Bottom => {
+        if !scrollable_overflow(container.styles.overflow_y) {
+          return Some(false);
+        }
+        can_scroll_towards_max(scroll.y, bounds.max_y)
+      }
+      crate::style::PhysicalSide::Left => {
+        if !scrollable_overflow(container.styles.overflow_x) {
+          return Some(false);
+        }
+        can_scroll_towards_min(scroll.x, bounds.min_x)
+      }
+      crate::style::PhysicalSide::Right => {
+        if !scrollable_overflow(container.styles.overflow_x) {
+          return Some(false);
+        }
+        can_scroll_towards_max(scroll.x, bounds.max_x)
+      }
+    }
+  };
+
+  let direction_matches = |dir: ScrollStateDirection| -> Option<bool> {
+    match dir {
+      ScrollStateDirection::None => Some(!scrollable_any),
+      ScrollStateDirection::Top => physical_side_matches(crate::style::PhysicalSide::Top),
+      ScrollStateDirection::Bottom => physical_side_matches(crate::style::PhysicalSide::Bottom),
+      ScrollStateDirection::Left => physical_side_matches(crate::style::PhysicalSide::Left),
+      ScrollStateDirection::Right => physical_side_matches(crate::style::PhysicalSide::Right),
+      ScrollStateDirection::X => Some(scrollable_x),
+      ScrollStateDirection::Y => Some(scrollable_y),
+      ScrollStateDirection::Inline => {
+        let inline_horizontal =
+          crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+        if inline_horizontal {
+          Some(scrollable_x)
+        } else {
+          Some(scrollable_y)
+        }
+      }
+      ScrollStateDirection::Block => {
+        let block_horizontal =
+          crate::style::block_axis_is_horizontal(container.styles.writing_mode);
+        if block_horizontal {
+          Some(scrollable_x)
+        } else {
+          Some(scrollable_y)
+        }
+      }
+      ScrollStateDirection::InlineStart => physical_side_matches(axis_sides(true).0),
+      ScrollStateDirection::InlineEnd => physical_side_matches(axis_sides(true).1),
+      ScrollStateDirection::BlockStart => physical_side_matches(axis_sides(false).0),
+      ScrollStateDirection::BlockEnd => physical_side_matches(axis_sides(false).1),
+    }
+  };
+
+  match direction {
+    None => QueryResult::from_bool(scrollable_any),
+    Some(dir) => match direction_matches(dir) {
+      Some(value) => QueryResult::from_bool(value),
+      None => QueryResult::Unknown,
+    },
   }
 }
 
@@ -3198,6 +3378,7 @@ fn resolve_style_query_container_query_lengths(
   containers.insert(
     0usize,
     ContainerQueryInfo {
+      box_id: None,
       width: container.width,
       height: container.height,
       inline_size: container.inline_size,
@@ -3206,6 +3387,8 @@ fn resolve_style_query_container_query_lengths(
       names: Vec::new(),
       font_size: container.font_size,
       styles: Arc::clone(&container.styles),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let dummy_ctx = ContainerQueryContext {
@@ -3460,6 +3643,7 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
+    ContainerQuery::ScrollState(_) => CQ_SUPPORT_ALL,
     // Treat unknown/forward-compatible query terms as potentially referencing any container type.
     // This preserves expected OR short-circuit behavior like `(<size-feature>) or <unknown>`,
     // matching when the known branch is true.
@@ -3516,6 +3700,9 @@ fn hash_container_query_fingerprint(state: &mut impl Hasher, query: &ContainerQu
   match query {
     ContainerQuery::Size(size_query) => hash_container_size_query_fingerprint(state, size_query),
     ContainerQuery::Style(style_query) => hash_style_query_expr_fingerprint(state, style_query),
+    ContainerQuery::ScrollState(scroll_query) => {
+      hash_scroll_state_query_expr_fingerprint(state, scroll_query)
+    }
     ContainerQuery::Unknown(raw) => raw.hash(state),
     ContainerQuery::Not(inner) => hash_container_query_fingerprint(state, inner),
     ContainerQuery::And(list) | ContainerQuery::Or(list) => {
@@ -3698,6 +3885,34 @@ fn hash_style_query_feature_fingerprint(state: &mut impl Hasher, feature: &Style
   }
 }
 
+fn hash_scroll_state_query_expr_fingerprint(state: &mut impl Hasher, expr: &ScrollStateQueryExpr) {
+  std::mem::discriminant(expr).hash(state);
+  match expr {
+    ScrollStateQueryExpr::Unknown => {}
+    ScrollStateQueryExpr::Feature(feature) => hash_scroll_state_feature_fingerprint(state, feature),
+    ScrollStateQueryExpr::Not(inner) => hash_scroll_state_query_expr_fingerprint(state, inner),
+    ScrollStateQueryExpr::And(list) | ScrollStateQueryExpr::Or(list) => {
+      list.len().hash(state);
+      for inner in list {
+        hash_scroll_state_query_expr_fingerprint(state, inner);
+      }
+    }
+  }
+}
+
+fn hash_scroll_state_feature_fingerprint(state: &mut impl Hasher, feature: &ScrollStateFeature) {
+  std::mem::discriminant(feature).hash(state);
+  match feature {
+    ScrollStateFeature::Scrollable { direction } => {
+      direction.hash(state);
+    }
+    ScrollStateFeature::Unknown { name, value } => {
+      name.hash(state);
+      value.hash(state);
+    }
+  }
+}
+
 fn hash_style_range_fingerprint(state: &mut impl Hasher, range: &StyleRange) {
   std::mem::discriminant(range).hash(state);
   match range {
@@ -3743,6 +3958,20 @@ fn container_query_cache_revision(
   f32_to_canonical_bits(container.inline_size).hash(&mut hasher);
   f32_to_canonical_bits(container.block_size).hash(&mut hasher);
   f32_to_canonical_bits(container.font_size).hash(&mut hasher);
+  f32_to_canonical_bits(container.scroll_offset.x).hash(&mut hasher);
+  f32_to_canonical_bits(container.scroll_offset.y).hash(&mut hasher);
+  match container.scroll_bounds {
+    Some(bounds) => {
+      1u8.hash(&mut hasher);
+      f32_to_canonical_bits(bounds.min_x).hash(&mut hasher);
+      f32_to_canonical_bits(bounds.min_y).hash(&mut hasher);
+      f32_to_canonical_bits(bounds.max_x).hash(&mut hasher);
+      f32_to_canonical_bits(bounds.max_y).hash(&mut hasher);
+    }
+    None => {
+      0u8.hash(&mut hasher);
+    }
+  }
   std::mem::discriminant(&container.container_type).hash(&mut hasher);
   std::mem::discriminant(&container.styles.writing_mode).hash(&mut hasher);
   (Arc::as_ptr(&container.styles) as usize).hash(&mut hasher);
@@ -10198,6 +10427,10 @@ fn container_query_ancestor_ids_for<'a>(
 /// Captured container size and metadata for container query evaluation.
 #[derive(Debug, Clone)]
 pub struct ContainerQueryInfo {
+  /// Box id for this container's principal box, when available.
+  ///
+  /// This is used by scroll-state container queries to look up element scroll offsets.
+  pub box_id: Option<usize>,
   /// Physical width of the query container's content box.
   pub width: f32,
   /// Physical height of the query container's content box.
@@ -10212,6 +10445,10 @@ pub struct ContainerQueryInfo {
   pub names: Vec<String>,
   pub font_size: f32,
   pub styles: Arc<ComputedStyle>,
+  /// Scroll offset for this container, in CSS pixels.
+  pub scroll_offset: Point,
+  /// Scroll bounds for this container, when it is a scroll container.
+  pub scroll_bounds: Option<ScrollBounds>,
 }
 
 /// Map of styled-node ids to their resolved container query metrics.
@@ -20455,6 +20692,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -20463,6 +20701,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&legacy_first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -20589,6 +20829,7 @@ mod tests {
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -20597,6 +20838,8 @@ mod tests {
           names: Vec::new(),
           font_size: container_first.styles.font_size,
           styles: Arc::clone(&container_first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -20663,6 +20906,7 @@ mod tests {
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -20671,6 +20915,8 @@ mod tests {
           names: Vec::new(),
           font_size: container_first.styles.font_size,
           styles: Arc::clone(&container_first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -20802,6 +21048,7 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -20810,6 +21057,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -20933,6 +21182,7 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -20941,6 +21191,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21102,6 +21354,7 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -21110,6 +21363,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21193,6 +21448,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -21201,6 +21457,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&base.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21264,6 +21522,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: inline_size,
           height: 400.0,
           inline_size,
@@ -21272,6 +21531,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&base.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21367,6 +21628,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: 600.0,
           height: 400.0,
           inline_size: 600.0,
@@ -21375,6 +21637,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&legacy_first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21547,6 +21811,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: 400.0,
           height: 300.0,
           inline_size: 400.0,
@@ -21555,6 +21820,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&first.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21665,6 +21932,7 @@ mod tests {
         (
           1usize,
           ContainerQueryInfo {
+            box_id: None,
             width: 500.0,
             height: 300.0,
             inline_size: 500.0,
@@ -21673,11 +21941,14 @@ mod tests {
             names: Vec::new(),
             font_size: 16.0,
             styles: Arc::clone(&size_style),
+            scroll_offset: Point::ZERO,
+            scroll_bounds: None,
           },
         ),
         (
           2usize,
           ContainerQueryInfo {
+            box_id: None,
             width: 100.0,
             height: 999.0,
             inline_size: 100.0,
@@ -21686,6 +21957,8 @@ mod tests {
             names: Vec::new(),
             font_size: 16.0,
             styles: Arc::clone(&inline_style),
+            scroll_offset: Point::ZERO,
+            scroll_bounds: None,
           },
         ),
       ]),
@@ -21749,6 +22022,7 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          box_id: None,
           width: 300.0,
           height: 100.0,
           // For vertical writing modes, the query container's inline size maps to physical height
@@ -21759,6 +22033,8 @@ mod tests {
           names: Vec::new(),
           font_size: 16.0,
           styles: Arc::clone(&container_style),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       )]),
     };
@@ -21790,6 +22066,7 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 400.0,
         height: 0.0,
         inline_size: 400.0,
@@ -21798,11 +22075,14 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 600.0,
         height: 0.0,
         inline_size: 600.0,
@@ -21811,6 +22091,8 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let ctx = ContainerQueryContext {
@@ -21852,6 +22134,7 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 400.0,
         height: 0.0,
         inline_size: 400.0,
@@ -21860,11 +22143,14 @@ mod tests {
         names: vec!["foo".to_string()],
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 600.0,
         height: 0.0,
         inline_size: 600.0,
@@ -21873,6 +22159,8 @@ mod tests {
         names: vec!["foo".to_string()],
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let ctx = ContainerQueryContext {
@@ -21902,6 +22190,7 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 600.0,
         height: 0.0,
         inline_size: 600.0,
@@ -21910,11 +22199,14 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 800.0,
         height: 0.0,
         inline_size: 800.0,
@@ -21923,6 +22215,8 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let ctx = ContainerQueryContext {
@@ -21952,6 +22246,7 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 600.0,
         height: 800.0,
         inline_size: 600.0,
@@ -21960,11 +22255,14 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 600.0,
         height: 0.0,
         inline_size: 600.0,
@@ -21973,6 +22271,8 @@ mod tests {
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let ctx = ContainerQueryContext {
@@ -32120,6 +32420,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 100.0,
         height: 100.0,
         inline_size: 100.0,
@@ -32128,6 +32429,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32199,6 +32502,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 300.0,
         inline_size: 300.0,
@@ -32207,11 +32511,14 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 100.0,
         inline_size: 300.0,
@@ -32220,6 +32527,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32295,6 +32604,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 300.0,
         inline_size: 300.0,
@@ -32303,11 +32613,14 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 100.0,
         inline_size: 300.0,
@@ -32316,6 +32629,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32391,6 +32706,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 300.0,
         inline_size: 300.0,
@@ -32399,11 +32715,14 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     containers.insert(
       2,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 100.0,
         inline_size: 300.0,
@@ -32412,6 +32731,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32480,6 +32801,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        box_id: None,
         width: 300.0,
         height: 100.0,
         inline_size: 300.0,
@@ -32488,6 +32810,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     );
     let container_ctx = ContainerQueryContext {

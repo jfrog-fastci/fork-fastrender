@@ -1032,6 +1032,10 @@ pub(super) fn prepare_dom_inner(
   let previous_dpr = renderer.device_pixel_ratio;
   let artifacts_result = (|| -> Result<super::LayoutArtifacts> {
     renderer.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+    let scroll_state = ScrollState::from_parts(
+      Point::new(options.scroll_x, options.scroll_y),
+      options.element_scroll_offsets.clone(),
+    );
     renderer.layout_document_for_media_with_artifacts(
       dom,
       layout_width,
@@ -1041,7 +1045,7 @@ pub(super) fn prepare_dom_inner(
         page_stacking: super::PageStacking::Stacked { gap: 0.0 },
         animation_time: options.animation_time,
       },
-      Point::new(options.scroll_x, options.scroll_y),
+      &scroll_state,
       Some(&deadline),
       options.stage_mem_budget_bytes,
       trace,

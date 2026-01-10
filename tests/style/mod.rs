@@ -22,6 +22,7 @@ mod container_query_at_rule_test;
 mod container_query_forward_compat_test;
 mod container_query_pseudo_element_test;
 mod container_query_size_var_test;
+mod container_scroll_state_queries_test;
 mod container_query_units_inline_styles_test;
 mod container_name_parsing_test;
 mod container_query_self_selection_test;

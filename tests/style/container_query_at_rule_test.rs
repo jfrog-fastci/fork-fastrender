@@ -1,5 +1,6 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::{self, DomNode};
+use fastrender::geometry::Point;
 use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
@@ -84,6 +85,7 @@ fn cascade_with_container_styles(
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width,
       height,
       inline_size,
@@ -92,6 +94,8 @@ fn cascade_with_container_styles(
       names,
       font_size: styles.font_size,
       styles,
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -145,6 +149,7 @@ fn cascade_with_custom_container(
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width,
       height,
       inline_size,
@@ -153,6 +158,8 @@ fn cascade_with_custom_container(
       names,
       font_size: styles.font_size,
       styles,
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   );
   let ctx = ContainerQueryContext {
@@ -490,6 +497,7 @@ fn container_query_comma_conditions_select_independent_containers() {
       (
         "outer",
         ContainerQueryInfo {
+          box_id: None,
           width: 500.0,
           height: 300.0,
           inline_size: 500.0,
@@ -498,11 +506,14 @@ fn container_query_comma_conditions_select_independent_containers() {
           names: vec!["card".into()],
           font_size: outer_styles.font_size,
           styles: Arc::clone(&outer_styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       ),
       (
         "inner",
         ContainerQueryInfo {
+          box_id: None,
           width: 0.0,
           height: 0.0,
           inline_size: 0.0,
@@ -511,6 +522,8 @@ fn container_query_comma_conditions_select_independent_containers() {
           names: Vec::new(),
           font_size: inner_styles.font_size,
           styles: Arc::clone(&inner_styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       ),
     ],
@@ -542,6 +555,7 @@ fn container_query_comma_conditions_allow_distinct_names() {
       (
         "foo",
         ContainerQueryInfo {
+          box_id: None,
           width: 300.0,
           height: 300.0,
           inline_size: 300.0,
@@ -550,11 +564,14 @@ fn container_query_comma_conditions_allow_distinct_names() {
           names: vec!["foo".into()],
           font_size: 16.0,
           styles: Arc::new(ComputedStyle::default()),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       ),
       (
         "bar",
         ContainerQueryInfo {
+          box_id: None,
           width: 250.0,
           height: 300.0,
           inline_size: 250.0,
@@ -563,6 +580,8 @@ fn container_query_comma_conditions_allow_distinct_names() {
           names: vec!["bar".into()],
           font_size: 16.0,
           styles: Arc::new(ComputedStyle::default()),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
         },
       ),
     ],
@@ -667,6 +686,7 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -675,6 +695,8 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -701,6 +723,7 @@ fn container_style_query_container_units_with_unknown_block_size_do_not_match() 
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -709,6 +732,8 @@ fn container_style_query_container_units_with_unknown_block_size_do_not_match() 
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -735,6 +760,7 @@ fn container_style_query_cqmin_with_unknown_block_size_do_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -743,6 +769,8 @@ fn container_style_query_cqmin_with_unknown_block_size_do_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -769,6 +797,7 @@ fn container_style_query_zero_container_unit_with_unknown_block_size_matches() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -777,6 +806,8 @@ fn container_style_query_zero_container_unit_with_unknown_block_size_matches() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -803,6 +834,7 @@ fn container_style_query_zero_cqmax_with_unknown_block_size_matches() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -811,6 +843,8 @@ fn container_style_query_zero_cqmax_with_unknown_block_size_matches() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -837,6 +871,7 @@ fn not_container_style_query_with_unknown_block_size_does_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -845,6 +880,8 @@ fn not_container_style_query_with_unknown_block_size_does_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -871,6 +908,7 @@ fn container_style_query_plain_container_units_with_unknown_block_size_do_not_ma
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -879,6 +917,8 @@ fn container_style_query_plain_container_units_with_unknown_block_size_do_not_ma
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -905,6 +945,7 @@ fn container_style_query_plain_calc_cancellation_with_unknown_block_size_matches
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -913,6 +954,8 @@ fn container_style_query_plain_calc_cancellation_with_unknown_block_size_matches
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -939,6 +982,7 @@ fn container_style_query_plain_cqmin_with_unknown_block_size_do_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -947,6 +991,8 @@ fn container_style_query_plain_cqmin_with_unknown_block_size_do_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -973,6 +1019,7 @@ fn not_container_style_query_plain_with_unknown_block_size_does_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -981,6 +1028,8 @@ fn not_container_style_query_plain_with_unknown_block_size_does_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1007,6 +1056,7 @@ fn not_container_style_query_transform_container_units_with_unknown_block_size_d
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1015,6 +1065,8 @@ fn not_container_style_query_transform_container_units_with_unknown_block_size_d
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1041,6 +1093,7 @@ fn not_container_style_query_box_shadow_container_units_with_unknown_block_size_
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1049,6 +1102,8 @@ fn not_container_style_query_box_shadow_container_units_with_unknown_block_size_
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1093,6 +1148,7 @@ fn container_style_query_custom_property_container_units_with_unknown_block_size
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1101,6 +1157,8 @@ fn container_style_query_custom_property_container_units_with_unknown_block_size
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1145,6 +1203,7 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1153,6 +1212,8 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1197,6 +1258,7 @@ fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_ma
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1205,6 +1267,8 @@ fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_ma
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1249,6 +1313,7 @@ fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matc
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1257,6 +1322,8 @@ fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matc
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1283,6 +1350,7 @@ fn container_query_cqmin_with_unknown_block_size_do_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1291,6 +1359,8 @@ fn container_query_cqmin_with_unknown_block_size_do_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1317,6 +1387,7 @@ fn container_query_container_units_with_unknown_block_size_do_not_match() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1325,6 +1396,8 @@ fn container_query_container_units_with_unknown_block_size_do_not_match() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1351,6 +1424,7 @@ fn container_query_zero_container_unit_with_unknown_block_size_matches() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1359,6 +1433,8 @@ fn container_query_zero_container_unit_with_unknown_block_size_matches() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1385,6 +1461,7 @@ fn container_query_zero_cqmax_with_unknown_block_size_matches() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 500.0,
         height: f32::NAN,
         inline_size: 500.0,
@@ -1393,6 +1470,8 @@ fn container_query_zero_cqmax_with_unknown_block_size_matches() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles,
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1561,6 +1640,7 @@ fn container_query_resolves_lh_against_container_line_height() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 70.0,
         height: 100.0,
         inline_size: 70.0,
@@ -1569,6 +1649,8 @@ fn container_query_resolves_lh_against_container_line_height() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles: Arc::clone(&styles),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
@@ -1600,6 +1682,7 @@ fn container_query_resolves_lh_inside_calc_in_size_features() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 70.0,
         height: 100.0,
         inline_size: 70.0,
@@ -1608,6 +1691,8 @@ fn container_query_resolves_lh_inside_calc_in_size_features() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles: Arc::clone(&styles),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );

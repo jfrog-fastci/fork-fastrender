@@ -1,5 +1,6 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::{self, DomNode};
+use fastrender::geometry::Point;
 use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
@@ -68,6 +69,7 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: inline_size,
       height: 300.0,
       inline_size,
@@ -76,6 +78,8 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::new(ComputedStyle::default()),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -118,6 +122,7 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: inline_size,
       height: 300.0,
       inline_size,
@@ -126,6 +131,8 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::new(ComputedStyle::default()),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -168,6 +175,7 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      box_id: None,
       width: inline_size,
       height: 300.0,
       inline_size,
@@ -176,6 +184,8 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
       names: Vec::new(),
       font_size: 16.0,
       styles: Arc::new(ComputedStyle::default()),
+      scroll_offset: Point::ZERO,
+      scroll_bounds: None,
     },
   )]);
   let ctx = ContainerQueryContext {
