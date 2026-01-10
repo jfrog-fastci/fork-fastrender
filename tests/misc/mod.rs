@@ -78,6 +78,7 @@ mod vm_js_new_target_smoke;
 mod vm_js_object_builtins_smoke;
 mod vm_js_optional_chaining_this;
 mod vm_js_promise_smoke;
+mod vm_js_webidl_constructors;
 mod logical_shorthand_parsing_test;
 mod map_hidden;
 mod meta_viewport_test;

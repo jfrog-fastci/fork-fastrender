@@ -4,7 +4,7 @@ use vm_js::{
   PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
-const URLSP_CALL_WITHOUT_NEW_ERROR: &str = "URLSearchParams constructor must be called with new";
+const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
 const ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 
 fn data_desc(value: Value) -> PropertyDescriptor {
@@ -24,14 +24,25 @@ fn proto_method_desc(value: Value) -> PropertyDescriptor {
 }
 
 fn ctor_link_desc(value: Value) -> PropertyDescriptor {
-  // `prototype` and `constructor` links are typically non-enumerable and non-writable. Browsers also
-  // make them non-configurable.
+  // `prototype` links are typically non-enumerable, non-writable, non-configurable.
   PropertyDescriptor {
     enumerable: false,
     configurable: false,
     kind: PropertyKind::Data {
       value,
       writable: false,
+    },
+  }
+}
+
+fn prototype_constructor_link_desc(value: Value) -> PropertyDescriptor {
+  // `prototype.constructor` links are typically non-enumerable, writable, configurable.
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
     },
   }
 }
@@ -140,27 +151,36 @@ fn url_search_params_call_without_new_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError(URLSP_CALL_WITHOUT_NEW_ERROR))
+  Err(VmError::TypeError(ILLEGAL_CONSTRUCTOR_ERROR))
 }
 
 fn url_search_params_construct_native<Host: VmJsBindingsHost + 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
-  let host = downcast_host_mut::<Host>(host)?;
-
   let mut scope = scope.reborrow();
   let params_proto = params_proto_from_callee(&scope, callee)?;
+  // Root across `GetPrototypeFromConstructor` and allocation.
   scope.push_root(Value::Object(params_proto))?;
 
+  // WebIDL constructors use `GetPrototypeFromConstructor(newTarget, defaultProto)` so that
+  // subclassing can override the wrapper's `[[Prototype]]`.
+  //
+  // Note: vm-js's `GetPrototypeFromConstructor` falls back to `defaultProto` when
+  // `newTarget.prototype` is not an object.
+  let proto = vm_js::get_prototype_from_constructor(vm, &mut scope, new_target, params_proto)?;
+  scope.push_root(Value::Object(proto))?;
+
   // Allocate a fresh wrapper and brand it by setting the prototype.
-  let obj = scope.alloc_object_with_prototype(Some(params_proto))?;
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
+
+  let host = downcast_host_mut::<Host>(host)?;
 
   // Match the existing generated binding behavior:
   // - missing/undefined init => empty string
@@ -183,6 +203,30 @@ fn url_search_params_construct_native<Host: VmJsBindingsHost + 'static>(
   )?;
 
   Ok(Value::Object(obj))
+}
+
+fn document_call_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(ILLEGAL_CONSTRUCTOR_ERROR))
+}
+
+fn document_construct_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(ILLEGAL_CONSTRUCTOR_ERROR))
 }
 
 fn url_search_params_append_native<Host: VmJsBindingsHost + 'static>(
@@ -328,7 +372,7 @@ pub fn install_window_bindings<Host: VmJsBindingsHost + 'static>(
   scope.define_property(
     params_proto,
     constructor_key,
-    ctor_link_desc(Value::Object(ctor)),
+    prototype_constructor_link_desc(Value::Object(ctor)),
   )?;
 
   // --- URLSearchParams prototype methods ---
@@ -349,6 +393,41 @@ pub fn install_window_bindings<Host: VmJsBindingsHost + 'static>(
     "get",
     url_search_params_get_native::<Host>,
     1,
+  )?;
+
+  // --- Document prototype ---
+  let document_proto =
+    scope.alloc_object_with_prototype(Some(realm.intrinsics().object_prototype()))?;
+  scope.push_root(Value::Object(document_proto))?;
+
+  // --- Document constructor (illegal constructor) ---
+  let doc_call_id: NativeFunctionId = vm.register_native_call(document_call_native)?;
+  let doc_construct_id: NativeConstructId = vm.register_native_construct(document_construct_native)?;
+
+  let doc_name = scope.alloc_string("Document")?;
+  scope.push_root(Value::String(doc_name))?;
+  let doc_ctor = scope.alloc_native_function(doc_call_id, Some(doc_construct_id), doc_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(doc_ctor, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(doc_ctor))?;
+
+  // Expose `Document` on the global object.
+  let doc_key = alloc_key(&mut scope, "Document")?;
+  scope.define_property(global, doc_key, data_desc(Value::Object(doc_ctor)))?;
+
+  // Wire constructor <-> prototype links.
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  scope.define_property(
+    doc_ctor,
+    prototype_key,
+    ctor_link_desc(Value::Object(document_proto)),
+  )?;
+  let constructor_key = alloc_key(&mut scope, "constructor")?;
+  scope.define_property(
+    document_proto,
+    constructor_key,
+    prototype_constructor_link_desc(Value::Object(doc_ctor)),
   )?;
 
   Ok(())
