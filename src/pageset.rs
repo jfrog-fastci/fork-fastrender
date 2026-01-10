@@ -203,7 +203,12 @@ fn canonicalize_pageset_url(value: &str) -> Option<String> {
   let host = parsed.host_str()?.to_ascii_lowercase();
   let mut out = format!("{scheme}://{host}");
   if let Some(port) = parsed.port() {
-    if parsed.port_or_known_default() != Some(port) {
+    let default_port = match scheme.as_str() {
+      "http" => 80,
+      "https" => 443,
+      _ => port,
+    };
+    if port != default_port {
       out.push_str(&format!(":{port}"));
     }
   }
@@ -416,6 +421,22 @@ mod tests {
     assert_eq!(
       pageset_stem(" https://Example.com./path/ ").as_deref(),
       Some("example.com_path")
+    );
+  }
+
+  #[test]
+  fn canonicalize_pageset_url_preserves_non_default_ports() {
+    assert_eq!(
+      canonicalize_pageset_url("https://EXAMPLE.com:8443/path?x=1").as_deref(),
+      Some("https://example.com:8443/path?x=1")
+    );
+    assert_eq!(
+      canonicalize_pageset_url("https://example.com:443/path").as_deref(),
+      Some("https://example.com/path")
+    );
+    assert_eq!(
+      canonicalize_pageset_url("http://example.com:80/path").as_deref(),
+      Some("http://example.com/path")
     );
   }
 
