@@ -16292,6 +16292,27 @@ fn compute_base_styles<'a>(
     styles.display = Display::None;
   }
 
+  // HTML `<input type="hidden">` elements do not generate boxes, regardless of author CSS.
+  //
+  // Many sites apply broad `input { ... }` rules (including `display`) and rely on hidden controls
+  // staying non-rendered. Treat hidden inputs as forced `display: none` after the cascade so they
+  // cannot accidentally participate in layout.
+  if node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    && matches!(
+      node.get_attribute_ref("type"),
+      Some(t) if t.eq_ignore_ascii_case("hidden")
+    )
+    && matches!(
+      node.namespace(),
+      Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+    )
+  {
+    ua_styles.display = Display::None;
+    styles.display = Display::None;
+  }
+
   // HTML <noscript> elements are only rendered when scripting is disabled for the document.
   //
   // When scripting is enabled, browsers still parse <noscript> in the body, but the element is not
@@ -18513,6 +18534,33 @@ mod tests {
     };
     let styled_hidden_input = apply_styles(&hidden_input_dom, &stylesheet);
     assert_eq!(styled_hidden_input.styles.display, Display::None);
+  }
+
+  #[test]
+  fn hidden_input_does_not_render_even_when_author_sets_display() {
+    let stylesheet = parse_stylesheet(
+      r#"
+        input { display: flex; }
+        input[type="hidden"] { display: flex !important; }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let hidden_input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "hidden".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled_hidden_input = apply_styles(&hidden_input_dom, &stylesheet);
+    assert_eq!(
+      styled_hidden_input.styles.display,
+      Display::None,
+      "HTML input type=hidden should not generate a box regardless of author CSS"
+    );
   }
 
   #[test]

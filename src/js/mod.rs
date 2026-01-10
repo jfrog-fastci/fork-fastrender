@@ -68,6 +68,9 @@ pub mod url_resolve;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
+// Legacy DOM mutation + script preparation helpers.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod fetch;
 pub mod webidl;
 
