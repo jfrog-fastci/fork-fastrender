@@ -5,12 +5,14 @@ use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, JsExecutionOptions, RunLimits,
-  RunAnimationFrameOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
-  ScriptElementSpec, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
-  ScriptType, TaskSource, DocumentLifecycle, DocumentLifecycleHost,
+  CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
+  DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
+  RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec, ScriptId,
+  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
+use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{FetchDestination, FetchRequest};
+use crate::web::events::{Event, EventInit, EventTargetId};
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -533,6 +535,50 @@ impl DocumentLifecycleHost for BrowserTabHost {
     Ok(f(dom))
   }
 
+  fn notify_parsing_completed(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()>
+  where
+    Self: Sized + 'static,
+  {
+    // Mirror the default `DocumentLifecycleHost::notify_parsing_completed` implementation, but gate
+    // the synchronous microtask checkpoint on the JS execution context stack being empty.
+    //
+    // BrowserTab's streaming parser can run re-entrantly (e.g. future `document.write`) outside an
+    // event-loop task turn, so `EventLoop::currently_running_task()` alone is not sufficient to
+    // decide whether it's safe to drain microtasks.
+    let ready_state_changed = self.with_dom_mut(|dom| {
+      if dom.ready_state() == DocumentReadyState::Loading {
+        dom.set_ready_state(DocumentReadyState::Interactive);
+        true
+      } else {
+        false
+      }
+    })?;
+
+    if ready_state_changed {
+      // Fire `readystatechange` whenever `document.readyState` changes.
+      let mut event = Event::new(
+        "readystatechange",
+        EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      event.is_trusted = true;
+      self.dispatch_lifecycle_event(EventTargetId::Document, event)?;
+    }
+
+    self.document_lifecycle_mut().parsing_completed(event_loop)?;
+
+    // If parsing completion is signalled from outside an event-loop task turn, perform a microtask
+    // checkpoint immediately *only* when we are not currently executing JS.
+    if event_loop.currently_running_task().is_none() && self.js_execution_depth.get() == 0 {
+      event_loop.perform_microtask_checkpoint(self)?;
+    }
+
+    Ok(())
+  }
+
   fn dispatch_lifecycle_event(
     &mut self,
     target: crate::web::events::EventTargetId,
@@ -576,7 +622,16 @@ impl BrowserTab {
     &mut self,
     html: &str,
     document_url: Option<&str>,
+    options: &RenderOptions,
   ) -> Result<()> {
+    // `StreamingHtmlParser` cooperatively checks any *active* render deadline via
+    // `check_active_periodic`, but it does not accept `RenderOptions` directly. Install a scoped
+    // deadline so callers can cancel/timeout large HTML parses via `RenderOptions::{timeout,cancel_callback}`.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let _deadline_guard = deadline_enabled.then(|| {
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      DeadlineGuard::install(Some(&deadline))
+    });
     let mut parser = StreamingHtmlParser::new(document_url);
     parser.push_str(html);
     parser.set_eof();
@@ -707,7 +762,7 @@ impl BrowserTab {
       event_loop,
     };
     tab.host.reset_scripting_state(None);
-    tab.parse_html_streaming_and_schedule_scripts(html, None)?;
+    tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     Ok(tab)
   }
 
@@ -767,6 +822,7 @@ impl BrowserTab {
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
 
+    let options_for_parse = options.clone();
     self
       .host
       .document
@@ -774,7 +830,7 @@ impl BrowserTab {
     self.reset_event_loop();
     self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(None);
-    self.parse_html_streaming_and_schedule_scripts(html, None)
+    self.parse_html_streaming_and_schedule_scripts(html, None, &options_for_parse)
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
@@ -991,6 +1047,8 @@ mod tests {
 
   use std::cell::RefCell;
   use std::rc::Rc;
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
 
   struct TestExecutor {
     log: Rc<RefCell<Vec<String>>>,
@@ -1031,6 +1089,22 @@ mod tests {
     Ok((host, EventLoop::new()))
   }
 
+  #[derive(Default)]
+  struct NoopExecutor;
+
+  impl BrowserTabJsExecutor for NoopExecutor {
+    fn execute_classic_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
   #[test]
   fn microtasks_run_at_parser_script_boundaries_when_js_stack_empty() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -1058,6 +1132,51 @@ mod tests {
         "script:A".to_string(),
         "microtask:A".to_string()
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn from_html_streaming_parse_honors_renderoptions_cancel_callback() -> Result<()> {
+    let dom_parse_checks = Arc::new(AtomicUsize::new(0));
+    let dom_parse_checks_for_cb = Arc::clone(&dom_parse_checks);
+    let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(move || {
+      if crate::render_control::active_stage() != Some(crate::error::RenderStage::DomParse) {
+        return false;
+      }
+      // Cancel after several checks so we don't trip during the initial empty document parse.
+      dom_parse_checks_for_cb.fetch_add(1, Ordering::Relaxed) >= 5
+    });
+
+    let mut html = "<!doctype html>".to_string();
+    // Produce enough parser-inserted script boundaries to force multiple streaming `pump` calls (and
+    // therefore multiple deadline checks).
+    for _ in 0..10 {
+      html.push_str("<script>noop</script>");
+    }
+    html.push_str("<p>done</p>");
+
+    let options = RenderOptions::new()
+      .with_viewport(64, 64)
+      .with_cancel_callback(Some(cancel));
+
+    let err = match BrowserTab::from_html(&html, options, NoopExecutor::default()) {
+      Ok(_) => panic!("expected streaming HTML parse to be cancelled"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(
+        err,
+        Error::Render(crate::error::RenderError::Timeout {
+          stage: crate::error::RenderStage::DomParse,
+          ..
+        })
+      ),
+      "expected dom_parse timeout/cancel error; got {err:?}"
+    );
+    assert!(
+      dom_parse_checks.load(Ordering::Relaxed) >= 6,
+      "expected cancel callback to be polled during streaming dom parse"
     );
     Ok(())
   }
@@ -1110,7 +1229,7 @@ mod tests {
 
     // Simulate re-entrant parsing while already in JS execution (e.g. future document.write).
     let outer_guard = JsExecutionGuard::enter(&tab.host.js_execution_depth);
-    tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None)?;
+    tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
 
     // No checkpoint should have run at the script boundary while the JS stack is non-empty.
     assert_eq!(&*log.borrow(), &["script:A".to_string()]);
