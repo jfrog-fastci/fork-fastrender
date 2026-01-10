@@ -67,6 +67,30 @@ fn media_query_calc_percentage_resolves_against_axis() {
   assert!(!MediaContext::screen(100.0, 768.0).evaluate(&query));
 }
 
+#[test]
+fn media_query_values4_font_relative_units_resolve_in_media_context() {
+  // Media queries resolve font-relative lengths against the initial font size/metrics for the
+  // environment. FastRender approximates the newer CSS Values 4 units similarly to the calc() path
+  // (`CalcLength::resolve`) when font metrics are unavailable.
+  let small = MediaContext::screen(100.0, 100.0);
+  let large = MediaContext::screen(200.0, 100.0);
+
+  // 10cap ≈ 10 * 0.7em = 112px with the default 16px base font size.
+  let cap = MediaQuery::parse("(min-width: 10cap)").expect("parse cap media query");
+  assert!(!small.evaluate(&cap));
+  assert!(large.evaluate(&cap));
+
+  // 10rex ≈ 10 * 0.5rem = 80px.
+  let rex = MediaQuery::parse("(min-width: 10rex)").expect("parse rex media query");
+  assert!(!MediaContext::screen(70.0, 100.0).evaluate(&rex));
+  assert!(MediaContext::screen(90.0, 100.0).evaluate(&rex));
+
+  // 5rlh ≈ 5 * 1.2rem = 96px.
+  let rlh = MediaQuery::parse("(min-width: 5rlh)").expect("parse rlh media query");
+  assert!(!MediaContext::screen(80.0, 100.0).evaluate(&rlh));
+  assert!(MediaContext::screen(100.0, 100.0).evaluate(&rlh));
+}
+
 // ============================================================================
 // Responsive Web Design Tests
 // ============================================================================

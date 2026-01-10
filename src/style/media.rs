@@ -3175,7 +3175,8 @@ impl MediaContext {
       LengthUnit::Ch => Some(length.value * (base_font * 0.5)), // Approximate: width of '0'
       // Font-relative units that depend on font metrics (cap-height, ideograph advances, etc.).
       // Media query evaluation does not have access to font tables, so approximate them in terms
-      // of the context's base font size (`em`):
+      // of the context's base font size (`em`). This matches the fallback used by `CalcLength::resolve`
+      // when font metrics are unavailable:
       // - cap/rcap ≈ 0.7em
       // - ic/ric ≈ 1.0em
       // - rex/rch ≈ 0.5em
@@ -3183,8 +3184,7 @@ impl MediaContext {
       LengthUnit::Ic | LengthUnit::Ric => Some(length.value * base_font),
       LengthUnit::Rex | LengthUnit::Rch => Some(length.value * (base_font * 0.5)),
       // Media queries lack access to computed `line-height`; treat `lh`/`rlh` as `normal` (1.2em).
-      LengthUnit::Lh => Some(length.value * (base_font * 1.2)),
-      LengthUnit::Rlh => Some(length.value * (base_font * 1.2)),
+      LengthUnit::Lh | LengthUnit::Rlh => Some(length.value * (base_font * 1.2)),
       // Container query units depend on the nearest query container's content-box size, which is
       // not available in the media query evaluation context. Treat them as unresolved.
       LengthUnit::Cqw
