@@ -508,6 +508,7 @@ impl Bundle {
         .response_referrer_policy
         .as_deref()
         .and_then(ReferrerPolicy::parse_value_list);
+      res.response_headers = doc_meta.response_headers.clone();
       return Ok(res);
     }
 

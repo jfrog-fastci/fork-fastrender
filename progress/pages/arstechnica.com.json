@@ -15,6 +15,31 @@
     "paint": 27.007592375286045
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 390681,
+    "diff_percent": 30.2947,
+    "perceptual": 0.4707,
+    "first_mismatch": {
+      "x": 44,
+      "y": 297,
+      "baseline_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        254,
+        253,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2ae46f536f1ef9725c17630df5b34c6067c0d3f"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,

@@ -17,6 +17,15 @@
     "paint": 12.084077066666666
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 0,
+    "diff_percent": 0.0,
+    "perceptual": 0.0,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2ae46f536f1ef9725c17630df5b34c6067c0d3f"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
