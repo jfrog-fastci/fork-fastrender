@@ -11757,7 +11757,12 @@ fn document_write_impl(
   append_newline: bool,
 ) -> Result<Value, VmError> {
   let max_bytes_per_call = match current_document_write_state_mut() {
-    Some(state) if state.parsing_active() => state.max_bytes_per_call(),
+    Some(state)
+      if state.parsing_active()
+        && crate::html::document_write::current_streaming_parser().is_some() =>
+    {
+      state.max_bytes_per_call()
+    }
     _ => {
       // Deterministic subset of HTML's ignore-destructive-writes behavior:
       // when no streaming parser is active, treat `document.write()` as a no-op instead of

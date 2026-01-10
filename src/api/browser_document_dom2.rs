@@ -581,15 +581,23 @@ impl BrowserDocumentDom2 {
       }));
     };
 
-    // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
-    // `RenderOptions::{timeout,cancel_callback}`.
+    // Prefer an explicitly provided deadline; otherwise fall back to the currently installed
+    // deadline (if any) or this document's configured `RenderOptions::{timeout,cancel_callback}`.
+    //
+    // If an embedding already installed a deadline (e.g. to share a single `RenderDeadline` across
+    // JS + render), avoid installing a fresh deadline here. A fresh deadline would reset the start
+    // time and effectively grant extra time for repaint.
     let _deadline_guard = if let Some(deadline) = deadline {
       Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+    } else if crate::render_control::active_deadline().is_some() {
+      None
     } else {
       let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
       deadline_enabled.then(|| {
-        let options_deadline =
-          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        let options_deadline = crate::render_control::RenderDeadline::new(
+          self.options.timeout,
+          self.options.cancel_callback.clone(),
+        );
         crate::render_control::DeadlineGuard::install(Some(&options_deadline))
       })
     };

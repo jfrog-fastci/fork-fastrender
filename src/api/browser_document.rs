@@ -1050,9 +1050,19 @@ pub(super) fn prepare_dom_inner(
     }));
   }
 
-  let deadline =
-    crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-  let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+  // Prefer an already-installed deadline when present so embeddings can share a *single*
+  // `RenderDeadline` across multiple phases (e.g. JS execution + multi-frame rendering). Installing
+  // a fresh deadline here would reset the start time and effectively grant extra time.
+  //
+  // When no deadline is active, install one unconditionally (even when disabled) to reset the
+  // per-thread interrupt flag for a new render job.
+  let active_deadline = crate::render_control::active_deadline();
+  let deadline = active_deadline.clone().unwrap_or_else(|| {
+    crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone())
+  });
+  let _deadline_guard = active_deadline
+    .is_none()
+    .then(|| crate::render_control::DeadlineGuard::install(Some(&deadline)));
 
   // Ensure cooperative cancellation is observable even if the subsequent stage preamble (base URL
   // / referrer policy extraction) finishes quickly without checking the deadline.

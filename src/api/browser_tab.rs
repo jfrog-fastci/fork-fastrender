@@ -991,11 +991,40 @@ impl BrowserTabHost {
               }
               continue;
             }
+
+            // In real browsers, async external scripts can execute before later parser-inserted
+            // scripts when they load quickly (e.g. from cache). FastRender does not have true
+            // background network concurrency, so we give the event loop a chance to service the
+            // async fetch + execution task before resuming parsing. This keeps deterministic
+            // fixtures (especially `file://` tests) aligned with web semantics.
+            let should_spin_for_async = spec.script_type == ScriptType::Classic
+              && spec.src_attr_present
+              && spec.async_attr
+              && spec
+                .src
+                .as_deref()
+                .filter(|src| !src.is_empty())
+                .is_some_and(|src| {
+                  // Avoid eager network fetches during parsing when the script source is not
+                  // immediately available. Many tests register in-memory script sources *after*
+                  // construction (before running the event loop), so only spin for "fast" sources.
+                  self.external_script_sources.contains_key(src)
+                    || Url::parse(src)
+                      .ok()
+                      .is_some_and(|parsed| parsed.scheme() == "file")
+                });
             let base_url_at_discovery = spec.base_url.clone();
 
-            with_active_streaming_parser(&state.parser, || {
+            let script_id = with_active_streaming_parser(&state.parser, || {
               self.register_and_schedule_script(script, spec, base_url_at_discovery, event_loop)
             })?;
+
+            if should_spin_for_async {
+              // Stop spinning if the script has executed or a navigation request was issued.
+              let _ = event_loop.spin_until(self, self.js_execution_options.event_loop_run_limits, |host| {
+                host.pending_navigation.is_none() && !host.executed.contains(&script_id)
+              })?;
+            }
 
             if self.pending_navigation.is_some() {
               // Abort the current parse/execution; the caller will commit the navigation.
@@ -2518,6 +2547,52 @@ impl BrowserTab {
       }
     }
     Ok(tab)
+  }
+
+  /// Construct a `BrowserTab` from a pre-built renderer instance.
+  ///
+  /// This is primarily used by CLI tools and other embeddings that want to configure the renderer
+  /// (fetcher, runtime toggles, etc) before enabling JS execution via `BrowserTab`.
+  pub fn with_renderer_and_js_execution_options<E>(
+    renderer: super::FastRender,
+    options: RenderOptions,
+    executor: E,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
+
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      trace_handle.clone(),
+      js_execution_options,
+    )?;
+    let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+
+    Ok(Self {
+      trace: trace_handle,
+      trace_output,
+      diagnostics,
+      host,
+      event_loop,
+      pending_frame: None,
+      history: TabHistory::new(),
+    })
   }
 
   pub fn from_html_with_document_url_and_fetcher<E>(

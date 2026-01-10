@@ -203,6 +203,51 @@ html.js-enabled body { background: rgb(0, 255, 0); }
 }
 
 #[test]
+fn js_flag_executes_external_script_with_parse_time_semantics() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  let script_path = tmp.path().join("script.js");
+  fs::write(
+    &script_path,
+    r#"(() => {
+  // This script is loaded via <script src>. It must execute at parse-time (blocking)
+  // before the element below is parsed.
+  const after = document.getElementById("after");
+  document.documentElement.className = after ? "js-saw-after" : "js-no-after";
+})();"#,
+  )
+  .expect("write script fixture");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html class="no-js"><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+html.no-js body { background: rgb(255, 0, 0); }
+html.js-no-after body { background: rgb(0, 0, 255); }
+html.js-saw-after body { background: rgb(0, 255, 0); }
+</style>
+<script src="script.js"></script>
+</head><body><div id="after"></div></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(
+    no_js_pixel,
+    "baseline run should keep the red background from html.no-js",
+  );
+  assert!(
+    js_pixel.0[2] > 200 && js_pixel.0[0] < 80 && js_pixel.0[1] < 80,
+    "JS run should execute the external script at parse time (before #after exists), producing the blue background from html.js-no-after"
+  );
+}
+
+#[test]
 fn js_flag_executes_module_script_and_mutates_dom() {
   let fixture_dir =
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_simple");

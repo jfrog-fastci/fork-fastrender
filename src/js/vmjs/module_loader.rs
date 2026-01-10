@@ -427,7 +427,6 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
           .expect("checked is_some above");
         resolve_module_specifier_with_import_maps(import_map_state, specifier, &base_url_parsed)
       };
-
       return match resolved {
         Ok(url) => Ok(url.to_string()),
         Err(err) => {

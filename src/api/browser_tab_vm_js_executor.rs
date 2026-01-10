@@ -25,6 +25,7 @@ use encoding_rs::UTF_8;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use url::Url;
 use vm_js::{
   HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
   ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey, RealmId, Scope,
@@ -840,8 +841,9 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
     let _ = host_defined;
 
     let base_url = Self::referrer_url_for_resolution(modules, referrer).unwrap_or("about:blank");
-    let base_url =
-      url::Url::parse(base_url).unwrap_or_else(|_| url::Url::parse("about:blank").unwrap());
+    let base_url = Url::parse(base_url).unwrap_or_else(|_| {
+      Url::parse("about:blank").expect("about:blank is a valid URL")
+    });
     let resolved_url = match resolve_module_specifier(self.import_map_state, &module_request.specifier, &base_url) {
       Ok(url) => url.to_string(),
       Err(err) => {
