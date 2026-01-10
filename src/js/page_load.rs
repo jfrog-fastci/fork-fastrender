@@ -2,9 +2,11 @@ use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::{Error, Result};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 use crate::js::{
-  DocumentLifecycle, DocumentLifecycleHost, EventLoop, LoadBlockerKind, ScriptElementSpec,
-  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  DocumentLifecycle, DocumentLifecycleHost, EventLoop, HtmlScriptId, HtmlScriptScheduler,
+  HtmlScriptSchedulerAction, HtmlScriptWork, LoadBlockerKind, ScriptElementSpec, ScriptType,
+  TaskSource,
 };
+use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use html5ever::tree_builder::TreeBuilderOpts;
@@ -28,32 +30,59 @@ impl Drop for JsExecutionGuard {
 /// Script fetch adapter used by [`HtmlLoadOrchestrator`].
 ///
 /// For now this is an extremely small surface: the orchestrator issues start-fetch requests for
-/// external scripts and unit tests drive completion via
-/// [`HtmlLoadOrchestrator::queue_fetch_completed`].
+/// external classic and module scripts and unit tests drive completion via
+/// [`HtmlLoadOrchestrator::queue_fetch_completed`] and
+/// [`HtmlLoadOrchestrator::queue_module_graph_completed`].
 pub trait ScriptFetcher {
-  fn start_fetch(
+  fn start_classic_fetch(
     &mut self,
-    script_id: crate::js::ScriptId,
+    script_id: HtmlScriptId,
     url: &str,
     destination: FetchDestination,
     credentials_mode: FetchCredentialsMode,
+  ) -> Result<()>;
+
+  fn start_module_graph_fetch(
+    &mut self,
+    script_id: HtmlScriptId,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+    element: &ScriptElementSpec,
+  ) -> Result<()>;
+
+  fn start_inline_module_graph_fetch(
+    &mut self,
+    script_id: HtmlScriptId,
+    source_text: &str,
+    base_url: Option<&str>,
+    element: &ScriptElementSpec,
   ) -> Result<()>;
 }
 
 /// Script execution adapter used by [`HtmlLoadOrchestrator`].
 ///
-/// The executor runs classic scripts and may enqueue microtasks via the [`EventLoop`]. For
-/// synchronous (`ExecuteNow`) execution, the orchestrator performs an explicit microtask checkpoint
-/// immediately after this method returns.
+/// The executor runs classic scripts, module scripts, and import map registration, and may enqueue
+/// microtasks via the [`EventLoop`]. For synchronous (`ExecuteNow`) execution, the orchestrator
+/// performs an explicit microtask checkpoint immediately after the call returns.
 pub trait ScriptExecutor<Host> {
-  fn execute(&mut self, source_text: &str, event_loop: &mut EventLoop<Host>) -> Result<()>;
+  fn execute_classic(&mut self, source_text: &str, event_loop: &mut EventLoop<Host>) -> Result<()>;
+
+  fn execute_module(&mut self, source_text: &str, event_loop: &mut EventLoop<Host>) -> Result<()>;
+
+  fn register_import_map(
+    &mut self,
+    source_text: &str,
+    base_url: Option<&str>,
+    event_loop: &mut EventLoop<Host>,
+  ) -> Result<()>;
 }
 
 /// Single-threaded, spec-shaped HTML page-load driver:
 /// streaming parse → script discovery → scheduler actions → event loop tasks.
 ///
-/// This is intentionally minimal: it models only classic scripts and the subset of the HTML script
-/// processing model implemented by [`ScriptScheduler`].
+/// This is intentionally minimal, but models the core HTML script scheduling surface:
+/// classic scripts, module scripts, and import maps, as implemented by [`HtmlScriptScheduler`].
 pub struct HtmlLoadOrchestrator<F, E>
 where
   F: ScriptFetcher,
@@ -66,14 +95,14 @@ where
   eof_sent: bool,
   parser: PausableHtml5everParser<Dom2TreeSink>,
   finished_document: Option<Document>,
-  scheduler: ScriptScheduler<NodeId>,
-  blocked_on: Option<crate::js::ScriptId>,
+  scheduler: HtmlScriptScheduler<NodeId>,
+  blocked_on: Option<HtmlScriptId>,
   parse_task_scheduled: bool,
   fetcher: F,
   executor: E,
-  script_nodes: HashMap<crate::js::ScriptId, NodeId>,
-  deferred_scripts: HashSet<crate::js::ScriptId>,
-  pending_script_load_blockers: HashSet<crate::js::ScriptId>,
+  script_nodes: HashMap<HtmlScriptId, NodeId>,
+  deferred_scripts: HashSet<HtmlScriptId>,
+  pending_script_load_blockers: HashSet<HtmlScriptId>,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
   lifecycle_events: Vec<String>,
@@ -108,7 +137,7 @@ where
       eof_sent: false,
       parser: PausableHtml5everParser::new_document(sink, opts),
       finished_document: None,
-      scheduler: ScriptScheduler::new(),
+      scheduler: HtmlScriptScheduler::new(),
       blocked_on: None,
       parse_task_scheduled: false,
       fetcher,
@@ -266,25 +295,24 @@ where
       return Ok(());
     }
 
-    // This orchestrator models only classic script execution. Import maps are not JavaScript; they
-    // register module specifier mappings for later module resolution when module scripts are
-    // enabled.
-    //
-    // When module scripts are enabled, `type="importmap" src=...` is invalid and should still queue
-    // an `error` event task. Allow that case to flow through the scheduler, but ignore inline import
-    // maps so we don't execute their JSON source as a classic script.
-    if spec.script_type == ScriptType::ImportMap && !spec.src_attr_present {
-      return Ok(());
-    }
     let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
-    let is_deferred = spec.script_type == ScriptType::Classic
-      && spec.src.is_some()
-      && spec.defer_attr
-      && !spec.is_effectively_async();
-    let discovered =
-      self
-        .scheduler
-        .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
+    let is_deferred = match spec.script_type {
+      ScriptType::Classic => {
+        let async_like = spec.async_attr || spec.force_async;
+        spec.parser_inserted && spec.src.is_some() && spec.defer_attr && !async_like
+      }
+      ScriptType::Module => {
+        // HTML: parser-inserted module scripts are deferred by default (unless async).
+        //
+        // Avoid registering invalid `src` module scripts as deferred: they do not fetch/execute and
+        // must not delay `DOMContentLoaded`.
+        spec.parser_inserted && !spec.async_attr && (!spec.src_attr_present || spec.src.is_some())
+      }
+      _ => false,
+    };
+    let discovered = self
+      .scheduler
+      .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
     if discovered.actions.is_empty() {
       return Ok(());
     }
@@ -299,28 +327,22 @@ where
 
   fn build_script_spec(&self, script_node: NodeId) -> Result<ScriptElementSpec> {
     let Some(sink) = self.parser.sink() else {
-      return Err(Error::Other(
-        "page_load: parser sink unavailable".to_string(),
-      ));
+      return Err(Error::Other("page_load: parser sink unavailable".to_string()));
     };
     let doc = sink.document();
     let base = sink.base_url_tracker();
-    Ok(
-      crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
-        &doc,
-        script_node,
-        &base,
-      ),
-    )
+    Ok(crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
+      &doc, script_node, &base,
+    ))
   }
   fn apply_actions(
     &mut self,
-    actions: Vec<ScriptSchedulerAction<NodeId>>,
+    actions: Vec<HtmlScriptSchedulerAction<NodeId>>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     for action in actions {
       match action {
-        ScriptSchedulerAction::StartFetch {
+        HtmlScriptSchedulerAction::StartClassicFetch {
           script_id,
           url,
           destination,
@@ -329,7 +351,7 @@ where
         } => {
           if !self.pending_script_load_blockers.insert(script_id) {
             return Err(Error::Other(format!(
-              "page_load: ScriptScheduler requested StartFetch more than once for script_id={}",
+              "page_load: HtmlScriptScheduler requested StartClassicFetch more than once for script_id={}",
               script_id.as_u64()
             )));
           }
@@ -338,23 +360,89 @@ where
             .register_pending_load_blocker(LoadBlockerKind::Script);
           self
             .fetcher
-            .start_fetch(script_id, &url, destination, credentials_mode)?;
+            .start_classic_fetch(script_id, &url, destination, credentials_mode)?;
         }
-        ScriptSchedulerAction::StartModuleGraphFetch { .. } => {
-          // This orchestrator does not currently support module scripts.
-        }
-        ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
-          self.blocked_on = Some(script_id);
-        }
-        ScriptSchedulerAction::ExecuteNow {
+        HtmlScriptSchedulerAction::StartModuleGraphFetch {
           script_id,
-          source_text,
+          url,
+          destination,
+          element,
           ..
         } => {
-          let exec_result = {
-            let _guard = self.enter_js_execution();
-            let executor = &mut self.executor;
-            executor.execute(&source_text, event_loop)
+          if !self.pending_script_load_blockers.insert(script_id) {
+            return Err(Error::Other(format!(
+              "page_load: HtmlScriptScheduler requested StartModuleGraphFetch more than once for script_id={}",
+              script_id.as_u64()
+            )));
+          }
+          self
+            .lifecycle
+            .register_pending_load_blocker(LoadBlockerKind::Script);
+          let credentials_mode = element
+            .crossorigin
+            .map(|cors_mode| cors_mode.credentials_mode())
+            .unwrap_or(FetchCredentialsMode::SameOrigin);
+          self.fetcher.start_module_graph_fetch(
+            script_id,
+            &url,
+            destination,
+            credentials_mode,
+            &element,
+          )?;
+        }
+        HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
+          script_id,
+          source_text,
+          base_url,
+          element,
+          ..
+        } => {
+          if !self.pending_script_load_blockers.insert(script_id) {
+            return Err(Error::Other(format!(
+              "page_load: HtmlScriptScheduler requested StartInlineModuleGraphFetch more than once for script_id={}",
+              script_id.as_u64()
+            )));
+          }
+          self
+            .lifecycle
+            .register_pending_load_blocker(LoadBlockerKind::Script);
+          self.fetcher.start_inline_module_graph_fetch(
+            script_id,
+            &source_text,
+            base_url.as_deref(),
+            &element,
+          )?;
+        }
+        HtmlScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+          self.blocked_on = Some(script_id);
+        }
+        HtmlScriptSchedulerAction::ExecuteNow {
+          script_id, work, ..
+        } => {
+          let exec_result = match work {
+            HtmlScriptWork::Classic { source_text } => {
+              if let Some(source_text) = source_text {
+                let _guard = self.enter_js_execution();
+                let executor = &mut self.executor;
+                executor.execute_classic(&source_text, event_loop)
+              } else {
+                Ok(())
+              }
+            }
+            HtmlScriptWork::Module { source_text } => {
+              if let Some(source_text) = source_text {
+                let _guard = self.enter_js_execution();
+                let executor = &mut self.executor;
+                executor.execute_module(&source_text, event_loop)
+              } else {
+                Ok(())
+              }
+            }
+            HtmlScriptWork::ImportMap { source_text, base_url } => {
+              let _guard = self.enter_js_execution();
+              let executor = &mut self.executor;
+              executor.register_import_map(&source_text, base_url.as_deref(), event_loop)
+            }
           };
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
@@ -373,15 +461,35 @@ where
           }
           exec_result?;
         }
-        ScriptSchedulerAction::QueueTask {
-          script_id,
-          source_text,
-          ..
+        HtmlScriptSchedulerAction::QueueTask {
+          script_id, work, ..
         } => {
           let is_deferred = self.deferred_scripts.contains(&script_id);
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-            let _guard = host.enter_js_execution();
-            let exec_result = host.executor.execute(&source_text, event_loop);
+            let exec_result = match work {
+              HtmlScriptWork::Classic { source_text } => {
+                if let Some(source_text) = source_text {
+                  let _guard = host.enter_js_execution();
+                  host.executor.execute_classic(&source_text, event_loop)
+                } else {
+                  Ok(())
+                }
+              }
+              HtmlScriptWork::Module { source_text } => {
+                if let Some(source_text) = source_text {
+                  let _guard = host.enter_js_execution();
+                  host.executor.execute_module(&source_text, event_loop)
+                } else {
+                  Ok(())
+                }
+              }
+              HtmlScriptWork::ImportMap { source_text, base_url } => {
+                let _guard = host.enter_js_execution();
+                host
+                  .executor
+                  .register_import_map(&source_text, base_url.as_deref(), event_loop)
+              }
+            };
             if is_deferred {
               host.lifecycle.deferred_script_executed(event_loop)?;
             }
@@ -394,8 +502,11 @@ where
             Ok(())
           })?;
         }
-        ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
-          let type_str = event.as_type_str();
+        HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
+          let type_str = match event {
+            ScriptEventKind::Load => "load",
+            ScriptEventKind::Error => "error",
+          };
           let node_idx = node_id.index();
           event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
             host.script_events.push(format!("{type_str}@{node_idx}"));
@@ -412,12 +523,28 @@ where
   /// In real integrations this is called by the fetch implementation when a response completes.
   pub fn queue_fetch_completed(
     &mut self,
-    script_id: crate::js::ScriptId,
+    script_id: HtmlScriptId,
     source_text: String,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let actions = host.scheduler.fetch_completed(script_id, source_text)?;
+      let actions = host.scheduler.classic_fetch_completed(script_id, source_text)?;
+      host.apply_actions(actions, event_loop)?;
+      Ok(())
+    })?;
+    Ok(())
+  }
+
+  pub fn queue_module_graph_completed(
+    &mut self,
+    script_id: HtmlScriptId,
+    module_source_text: String,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let actions = host
+        .scheduler
+        .module_graph_completed(script_id, module_source_text)?;
       host.apply_actions(actions, event_loop)?;
       Ok(())
     })?;
@@ -433,7 +560,7 @@ where
   /// - and the document `load` event must be allowed to fire once all pending blockers complete.
   pub fn queue_fetch_failed(
     &mut self,
-    script_id: crate::js::ScriptId,
+    script_id: HtmlScriptId,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
@@ -453,23 +580,7 @@ where
         Ok(())
       })?;
 
-      let actions = host.scheduler.fetch_failed(script_id)?;
-
-      if host.blocked_on == Some(script_id) {
-        host.blocked_on = None;
-        host.queue_parse_task(event_loop)?;
-      }
-
-      if host.deferred_scripts.contains(&script_id) {
-        host.lifecycle.deferred_script_executed(event_loop)?;
-      }
-
-      if host.pending_script_load_blockers.remove(&script_id) {
-        host
-          .lifecycle
-          .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
-      }
-
+      let actions = host.scheduler.classic_fetch_failed(script_id)?;
       host.apply_actions(actions, event_loop)?;
       Ok(())
     })?;
@@ -499,18 +610,15 @@ where
     struct NoopInvoker;
 
     impl EventListenerInvoker for NoopInvoker {
-      fn invoke(
-        &mut self,
-        _listener_id: ListenerId,
-        _event: &mut crate::web::events::Event,
-      ) -> std::result::Result<(), DomError> {
+      fn invoke(&mut self, _listener_id: ListenerId, _event: &mut crate::web::events::Event) -> std::result::Result<(), DomError> {
         Ok(())
       }
     }
 
-    let dom = self.finished_document.as_ref().ok_or_else(|| {
-      Error::Other("cannot dispatch lifecycle event before parsing completes".to_string())
-    })?;
+    let dom = self
+      .finished_document
+      .as_ref()
+      .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
     self.lifecycle_events.push(event.type_.clone());
     let mut invoker = NoopInvoker;
     dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
@@ -553,15 +661,40 @@ mod tests {
     Ok(())
   }
 
+  fn spin_until_started_module_fetches(
+    host: &mut TestHost,
+    event_loop: &mut EventLoop<TestHost>,
+    expected: usize,
+  ) -> Result<()> {
+    let outcome = event_loop.spin_until(
+      host,
+      RunLimits {
+        max_tasks: 10_000,
+        max_microtasks: 10_000,
+        max_wall_time: None,
+      },
+      |host| host.fetcher.started_module.len() < expected,
+    )?;
+    if !matches!(outcome, SpinOutcome::ConditionMet) {
+      return Err(crate::error::Error::Other(format!(
+        "event loop became idle before discovering {expected} module fetches (started={})",
+        host.fetcher.started_module.len()
+      )));
+    }
+    Ok(())
+  }
+
   #[derive(Default)]
   struct ManualFetcher {
-    started: Vec<(crate::js::ScriptId, String, FetchDestination, FetchCredentialsMode)>,
+    started: Vec<(HtmlScriptId, String, FetchDestination, FetchCredentialsMode)>,
+    started_module: Vec<(HtmlScriptId, String, FetchDestination, FetchCredentialsMode)>,
+    started_inline_module: Vec<(HtmlScriptId, String, Option<String>)>,
   }
 
   impl ScriptFetcher for ManualFetcher {
-    fn start_fetch(
+    fn start_classic_fetch(
       &mut self,
-      script_id: crate::js::ScriptId,
+      script_id: HtmlScriptId,
       url: &str,
       destination: FetchDestination,
       credentials_mode: FetchCredentialsMode,
@@ -569,6 +702,35 @@ mod tests {
       self
         .started
         .push((script_id, url.to_string(), destination, credentials_mode));
+      Ok(())
+    }
+
+    fn start_module_graph_fetch(
+      &mut self,
+      script_id: HtmlScriptId,
+      url: &str,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
+      _element: &ScriptElementSpec,
+    ) -> Result<()> {
+      self
+        .started_module
+        .push((script_id, url.to_string(), destination, credentials_mode));
+      Ok(())
+    }
+
+    fn start_inline_module_graph_fetch(
+      &mut self,
+      script_id: HtmlScriptId,
+      source_text: &str,
+      base_url: Option<&str>,
+      _element: &ScriptElementSpec,
+    ) -> Result<()> {
+      self.started_inline_module.push((
+        script_id,
+        source_text.to_string(),
+        base_url.map(|s| s.to_string()),
+      ));
       Ok(())
     }
   }
@@ -579,7 +741,7 @@ mod tests {
   }
 
   impl ScriptExecutor<HtmlLoadOrchestrator<ManualFetcher, LoggingExecutor>> for LoggingExecutor {
-    fn execute(
+    fn execute_classic(
       &mut self,
       source_text: &str,
       event_loop: &mut EventLoop<HtmlLoadOrchestrator<ManualFetcher, LoggingExecutor>>,
@@ -588,6 +750,41 @@ mod tests {
       let name = source_text.to_string();
       event_loop.queue_microtask(move |host, _event_loop| {
         host.executor.log.push(format!("microtask:{name}"));
+        Ok(())
+      })?;
+      Ok(())
+    }
+
+    fn execute_module(
+      &mut self,
+      source_text: &str,
+      event_loop: &mut EventLoop<HtmlLoadOrchestrator<ManualFetcher, LoggingExecutor>>,
+    ) -> Result<()> {
+      self.log.push(format!("module:{source_text}"));
+      let name = source_text.to_string();
+      event_loop.queue_microtask(move |host, _event_loop| {
+        host
+          .executor
+          .log
+          .push(format!("microtask:module:{name}"));
+        Ok(())
+      })?;
+      Ok(())
+    }
+
+    fn register_import_map(
+      &mut self,
+      source_text: &str,
+      _base_url: Option<&str>,
+      event_loop: &mut EventLoop<HtmlLoadOrchestrator<ManualFetcher, LoggingExecutor>>,
+    ) -> Result<()> {
+      self.log.push(format!("importmap:{source_text}"));
+      let name = source_text.to_string();
+      event_loop.queue_microtask(move |host, _event_loop| {
+        host
+          .executor
+          .log
+          .push(format!("microtask:importmap:{name}"));
         Ok(())
       })?;
       Ok(())
@@ -622,7 +819,7 @@ mod tests {
   }
 
   #[test]
-  fn inline_importmap_is_ignored_and_does_not_execute_as_classic_script() -> Result<()> {
+  fn inline_importmap_executes_synchronously_and_does_not_use_classic_executor() -> Result<()> {
     let html =
       "<!doctype html><script type=\"importmap\">{\"imports\":{}}</script><script>a</script>".to_string();
     let mut host = TestHost::new(
@@ -636,11 +833,15 @@ mod tests {
  
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
- 
+  
     assert_eq!(
       host.executor.log,
-      vec!["script:a".to_string(), "microtask:a".to_string()],
-      "import maps are not JavaScript and must not execute through the classic-script executor"
+      vec![
+        "importmap:{\"imports\":{}}".to_string(),
+        "microtask:importmap:{\"imports\":{}}".to_string(),
+        "script:a".to_string(),
+        "microtask:a".to_string(),
+      ],
     );
     assert!(
       host.script_events.is_empty(),
@@ -903,6 +1104,86 @@ mod tests {
   }
 
   #[test]
+  fn async_module_script_can_execute_during_parsing_and_does_not_delay_later_inline_classic_script(
+  ) -> Result<()> {
+    let filler = "x".repeat(4096);
+    let html = format!(
+      "<!doctype html><script type=\"module\" async src=a1.js></script><script>final</script><p>{filler}</p>"
+    );
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    spin_until_started_module_fetches(&mut host, &mut event_loop, 1)?;
+    assert_eq!(host.fetcher.started_module.len(), 1);
+    let module_id = host.fetcher.started_module[0].0;
+
+    // Ensure the later inline classic script executes even while the async module script is still
+    // pending.
+    let outcome = event_loop.spin_until(
+      &mut host,
+      RunLimits {
+        max_tasks: 10_000,
+        max_microtasks: 10_000,
+        max_wall_time: None,
+      },
+      |host| !host.executor.log.iter().any(|s| s == "script:final"),
+    )?;
+    assert!(
+      matches!(outcome, SpinOutcome::ConditionMet),
+      "event loop became idle before executing the inline classic script"
+    );
+    assert!(
+      host.finished_document.is_none(),
+      "parsing should still be in progress after the inline script executes"
+    );
+    assert_eq!(
+      host.executor.log,
+      vec!["script:final".to_string(), "microtask:final".to_string(),]
+    );
+
+    // Complete the module graph while parsing is still ongoing. Since this is an async module
+    // script, it should execute as soon as the graph is ready (without waiting for parsing to
+    // complete).
+    host.queue_module_graph_completed(module_id, "a1".to_string(), &mut event_loop)?;
+
+    let outcome = event_loop.spin_until(
+      &mut host,
+      RunLimits {
+        max_tasks: 10_000,
+        max_microtasks: 10_000,
+        max_wall_time: None,
+      },
+      |host| !host.executor.log.iter().any(|s| s == "module:a1"),
+    )?;
+    assert!(
+      matches!(outcome, SpinOutcome::ConditionMet),
+      "event loop became idle before executing the async module script"
+    );
+    assert!(
+      host.finished_document.is_none(),
+      "async module script should be able to execute before parsing completes"
+    );
+
+    assert_eq!(
+      host.executor.log,
+      vec![
+        "script:final".to_string(),
+        "microtask:final".to_string(),
+        "module:a1".to_string(),
+        "microtask:module:a1".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn defer_scripts_execute_after_parsing_completed_in_document_order() -> Result<()> {
     let html = "<!doctype html><script defer src=d1.js></script><script defer src=d2.js></script>"
       .to_string();
@@ -935,6 +1216,112 @@ mod tests {
         "script:d2".to_string(),
         "microtask:d2".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_module_scripts_execute_after_parsing_completed_in_document_order() -> Result<()> {
+    let filler = "x".repeat(4096);
+    let html = format!(
+      "<!doctype html><script type=\"module\" src=m1.js></script><script type=\"module\" src=m2.js></script><p>{filler}</p>"
+    );
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    spin_until_started_module_fetches(&mut host, &mut event_loop, 2)?;
+    assert_eq!(host.fetcher.started_module.len(), 2);
+    assert!(
+      host.finished_document.is_none(),
+      "expected parsing to still be in progress after discovering module scripts"
+    );
+    let m1 = host.fetcher.started_module[0].0;
+    let m2 = host.fetcher.started_module[1].0;
+
+    // Complete out-of-order while parsing is still in progress.
+    host.queue_module_graph_completed(m2, "m2".to_string(), &mut event_loop)?;
+    host.queue_module_graph_completed(m1, "m1".to_string(), &mut event_loop)?;
+
+    // Run tasks until parsing completes, but stop before running the deferred module script tasks.
+    while host.finished_document.is_none() {
+      assert!(
+        event_loop.run_next_task(&mut host)?,
+        "event loop unexpectedly became idle before parsing completed"
+      );
+    }
+
+    assert!(
+      host.executor.log.is_empty(),
+      "parser-inserted non-async module scripts must not execute before parsing completes"
+    );
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.executor.log,
+      vec![
+        "module:m1".to_string(),
+        "microtask:module:m1".to_string(),
+        "module:m2".to_string(),
+        "microtask:module:m2".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn import_map_executes_synchronously_at_script_boundary() -> Result<()> {
+    let html = "<!doctype html><script type=\"importmap\">MAP</script><script>after</script>"
+      .to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.executor.log,
+      vec![
+        "importmap:MAP".to_string(),
+        "microtask:importmap:MAP".to_string(),
+        "script:after".to_string(),
+        "microtask:after".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_classic_script_is_skipped_when_modules_are_supported() -> Result<()> {
+    let html = "<!doctype html><script nomodule>NO</script><script>YES</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.executor.log,
+      vec!["script:YES".to_string(), "microtask:YES".to_string(),]
     );
     Ok(())
   }
@@ -978,8 +1365,7 @@ mod tests {
   }
 
   #[test]
-  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task(
-  ) -> Result<()> {
+  fn microtasks_run_before_parser_inserted_inline_script_boundary_even_inside_parse_task() -> Result<()> {
     let html = "<!doctype html><script>RUN</script>".to_string();
     // Use a large chunk size so the parser hits the </script> boundary within the first parsing
     // task. This reproduces the HTML requirement to perform a microtask checkpoint *mid-task*
@@ -1018,8 +1404,7 @@ mod tests {
   }
 
   #[test]
-  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty(
-  ) -> Result<()> {
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.
@@ -1159,19 +1544,20 @@ mod tests {
       ManualFetcher::default(),
       LoggingExecutor::default(),
     );
-    host.scheduler.set_options(crate::js::JsExecutionOptions {
-      supports_module_scripts: true,
-      ..Default::default()
-    });
     let mut event_loop = EventLoop::<TestHost>::new();
 
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.fetcher.started.is_empty(), "invalid module src must not start a fetch");
+    assert!(host.fetcher.started.is_empty(), "invalid module src must not start a classic fetch");
+    assert!(host.fetcher.started_module.is_empty(), "invalid module src must not start a fetch");
+    assert!(
+      host.fetcher.started_inline_module.is_empty(),
+      "invalid module src must not start an inline module graph fetch"
+    );
     assert!(
       host.executor.log.is_empty(),
-      "module scripts are out-of-scope for execution; invalid src must not run inline"
+      "invalid module src must not fall back to inline execution"
     );
     assert_eq!(host.script_events.len(), 1);
     assert!(host.script_events[0].starts_with("error@"));
@@ -1189,10 +1575,6 @@ mod tests {
       ManualFetcher::default(),
       LoggingExecutor::default(),
     );
-    host.scheduler.set_options(crate::js::JsExecutionOptions {
-      supports_module_scripts: true,
-      ..Default::default()
-    });
     let mut event_loop = EventLoop::<TestHost>::new();
 
     host.start(&mut event_loop)?;
@@ -1200,7 +1582,12 @@ mod tests {
 
     assert!(
       host.fetcher.started.is_empty(),
-      "invalid module src must not start a fetch"
+      "invalid module src must not start a classic fetch"
+    );
+    assert!(host.fetcher.started_module.is_empty(), "invalid module src must not start a fetch");
+    assert!(
+      host.fetcher.started_inline_module.is_empty(),
+      "invalid module src must not start an inline module graph fetch"
     );
     assert!(host.executor.log.is_empty());
     assert_eq!(host.script_events.len(), 1);
