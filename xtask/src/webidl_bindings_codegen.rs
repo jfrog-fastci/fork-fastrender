@@ -2144,15 +2144,9 @@ fn write_dictionary_converter(
 ) -> Result<()> {
   let fn_name = format!("js_to_dict_{}", to_snake_ident(dict_name));
   out.push_str(&format!(
-    "#[allow(dead_code, unused_variables)]\nfn {fn_name}<Host, R>(\n  rt: &mut R,\n  host: &mut Host,\n  value: R::JsValue,\n  allow_missing: bool,\n) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
+    "#[allow(dead_code, unused_variables)]\nfn {fn_name}<Host, R>(\n  rt: &mut R,\n  host: &mut Host,\n  value: R::JsValue,\n) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
   ));
   out.push_str("  let is_missing = rt.is_undefined(value) || rt.is_null(value);\n");
-  out.push_str("  if is_missing && !allow_missing {\n");
-  out.push_str(&format!(
-    "    return Err(rt.throw_type_error(\"expected object for dictionary {}\"));\n",
-    dict_name
-  ));
-  out.push_str("  }\n");
   out.push_str("  if !is_missing && !rt.is_object(value) {\n");
   out.push_str(&format!(
     "    return Err(rt.throw_type_error(\"expected object for dictionary {}\"));\n",
@@ -2396,7 +2390,7 @@ fn emit_conversion_expr_ir_inner(
       }
       match named.kind {
         NamedTypeKind::Dictionary => Ok(format!(
-          "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, false)?",
+          "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
           to_snake_ident(&named.name),
           value_ident = value_ident
         )),
@@ -3492,13 +3486,15 @@ fn emit_conversion_expr_for_optional(
     return emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
   }
 
-  // Dictionary arguments: per WebIDL, `undefined`/`null` are treated as "missing dictionary
-  // argument" only when the argument itself is optional/defaulted. The dictionary conversion helper
-  // is strict by default, so optional/defaulted dictionary arguments must opt into this behaviour.
+  // Dictionary arguments: even when the argument itself is optional/defaulted, WebIDL still runs
+  // dictionary conversion on `undefined`/`null` (treating them as a "missing dictionary object") so
+  // per-member defaulting / required-member checks are applied. Our generic optional/defaulted
+  // argument handling short-circuits `undefined` to the argument default, so dictionary arguments
+  // must bypass that and always go through the dictionary converter.
   if let IdlType::Named(name) = &arg.type_ {
     if resolved.dictionaries.contains_key(name) {
       return format!(
-        "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, true)?",
+        "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
         to_snake_ident(name),
         value_ident = value_ident
       );
@@ -3515,7 +3511,7 @@ fn emit_conversion_expr_for_optional(
       }) {
         let converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
         return format!(
-          "if rt.is_undefined({value}) {{ js_to_dict_{dict}::<Host, R>(rt, host, {value}, true)? }} else {{ {converted} }}",
+          "if rt.is_undefined({value}) {{ js_to_dict_{dict}::<Host, R>(rt, host, {value})? }} else {{ {converted} }}",
           value = value_ident,
           dict = to_snake_ident(dict_name),
           converted = converted
@@ -3729,7 +3725,7 @@ fn emit_conversion_expr(
     IdlType::Named(name) => {
       if resolved.dictionaries.contains_key(name) {
         format!(
-          "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, false)?",
+          "js_to_dict_{}::<Host, R>(rt, host, {value_ident})?",
           to_snake_ident(name)
         )
       } else if let Some(cb) = resolved.callbacks.get(name) {
@@ -3772,7 +3768,7 @@ fn emit_conversion_expr(
           }
           if let (Some(dict_name), true) = (dict, has_boolean) {
             return format!(
-              "{{\n  if rt.is_null({v}) || rt.is_undefined({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v}, true)?\n  }} else if rt.is_object({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v}, false)?\n  }} else {{\n    BindingValue::Bool(rt.to_boolean({v})?)\n  }}\n}}",
+              "{{\n  if rt.is_null({v}) || rt.is_undefined({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v})?\n  }} else if rt.is_object({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v})?\n  }} else {{\n    BindingValue::Bool(rt.to_boolean({v})?)\n  }}\n}}",
               v = value_ident,
               dict = to_snake_ident(dict_name),
             );

@@ -54,15 +54,11 @@ pub mod window {
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
-    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
     let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if is_missing && !allow_missing {
-      return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
-    }
     if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
@@ -129,15 +125,11 @@ pub mod window {
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
-    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
     let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if is_missing && !allow_missing {
-      return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
-    }
     if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
@@ -197,13 +189,13 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
           if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
           } else if rt.is_object(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, false)?
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
           } else {
             BindingValue::Bool(rt.to_boolean(v2)?)
           }
@@ -290,13 +282,13 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+        js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
           if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
           } else if rt.is_object(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, false)?
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
           } else {
             BindingValue::Bool(rt.to_boolean(v2)?)
           }
@@ -1319,15 +1311,11 @@ pub mod worker {
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
-    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
     let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if is_missing && !allow_missing {
-      return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
-    }
     if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary AddEventListenerOptions"));
     }
@@ -1394,15 +1382,11 @@ pub mod worker {
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
-    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
     let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if is_missing && !allow_missing {
-      return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
-    }
     if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary EventListenerOptions"));
     }
@@ -1462,13 +1446,13 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
           if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
           } else if rt.is_object(v2) {
-            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, false)?
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2)?
           } else {
             BindingValue::Bool(rt.to_boolean(v2)?)
           }
@@ -1555,13 +1539,13 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+        js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
       } else {
         {
           if rt.is_null(v2) || rt.is_undefined(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
           } else if rt.is_object(v2) {
-            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, false)?
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2)?
           } else {
             BindingValue::Bool(rt.to_boolean(v2)?)
           }

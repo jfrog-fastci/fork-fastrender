@@ -54,15 +54,11 @@ pub mod window {
     rt: &mut R,
     host: &mut Host,
     value: R::JsValue,
-    allow_missing: bool,
   ) -> Result<BindingValue<R::JsValue>, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   {
     let is_missing = rt.is_undefined(value) || rt.is_null(value);
-    if is_missing && !allow_missing {
-      return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
-    }
     if !is_missing && !rt.is_object(value) {
       return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
     }
@@ -148,11 +144,11 @@ pub mod window {
           let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
           converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
           let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-          converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1, true)? } else { {
+          converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
           if rt.is_null(v1) || rt.is_undefined(v1) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v1, true)?
+            js_to_dict_foo_options::<Host, R>(rt, host, v1)?
           } else if rt.is_object(v1) {
-            js_to_dict_foo_options::<Host, R>(rt, host, v1, false)?
+            js_to_dict_foo_options::<Host, R>(rt, host, v1)?
           } else {
             BindingValue::Bool(rt.to_boolean(v1)?)
           }
@@ -169,11 +165,11 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1, true)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, true)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, false)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else {
               BindingValue::Bool(rt.to_boolean(v1)?)
             }
@@ -187,11 +183,11 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1, true)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, true)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, false)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else {
               BindingValue::Bool(rt.to_boolean(v1)?)
             }
@@ -246,11 +242,11 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1, true)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, true)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, false)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else {
               BindingValue::Bool(rt.to_boolean(v1)?)
             }
@@ -264,11 +260,11 @@ pub mod window {
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
             converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1, true)? } else { {
+            converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             if rt.is_null(v1) || rt.is_undefined(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, true)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else if rt.is_object(v1) {
-              js_to_dict_foo_options::<Host, R>(rt, host, v1, false)?
+              js_to_dict_foo_options::<Host, R>(rt, host, v1)?
             } else {
               BindingValue::Bool(rt.to_boolean(v1)?)
             }
@@ -311,7 +307,7 @@ pub mod window {
       } else {
         rt.js_undefined()
       };
-      converted_args.push(js_to_dict_foo_options::<Host, R>(rt, host, v0, true)?);
+      converted_args.push(js_to_dict_foo_options::<Host, R>(rt, host, v0)?);
       let result = host.call_operation(rt, Some(this), "Foo", "qux", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
     }

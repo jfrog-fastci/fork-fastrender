@@ -137,6 +137,13 @@ fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
   )
   .unwrap();
 
+  // WebIDL dictionaries treat `undefined`/`null` as "missing dictionary object" and apply defaults /
+  // required-member checks, rather than throwing solely due to the dictionary value being missing.
+  assert!(
+    !out.contains("allow_missing: bool"),
+    "dictionary converters should not have an allow_missing flag; missing dictionaries are handled per WebIDL"
+  );
+
   // Default-handling for EventListenerOptions.capture.
   assert!(
     out.contains("out_dict.insert(\"capture\".to_string(), BindingValue::Bool(false))"),
