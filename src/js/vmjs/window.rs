@@ -408,8 +408,42 @@ impl WindowHostState {
     self.js_execution_options
   }
 
-  pub fn resolve_module_integrity_metadata(&self, url: &::url::Url) -> String {
-    crate::js::import_maps::resolve_module_integrity_metadata(&self.import_map_state, url).to_string()
+  pub fn import_map_state(&self) -> &ImportMapState {
+    &self.import_map_state
+  }
+
+  pub fn import_map_state_mut(&mut self) -> &mut ImportMapState {
+    &mut self.import_map_state
+  }
+
+  pub fn register_import_map_string(
+    &mut self,
+    json: &str,
+    base_url: &::url::Url,
+  ) -> std::result::Result<
+    Vec<crate::js::import_maps::ImportMapWarning>,
+    crate::js::import_maps::ImportMapError,
+  > {
+    let mut parse_result = crate::js::import_maps::create_import_map_parse_result(json, base_url);
+    let warnings = std::mem::take(&mut parse_result.warnings);
+    crate::js::import_maps::register_import_map(&mut self.import_map_state, parse_result)?;
+    Ok(warnings)
+  }
+
+  pub fn resolve_module_specifier_with_import_maps(
+    &mut self,
+    specifier: &str,
+    base_url: &::url::Url,
+  ) -> std::result::Result<::url::Url, crate::js::import_maps::ImportMapError> {
+    crate::js::import_maps::resolve_module_specifier(
+      &mut self.import_map_state,
+      specifier,
+      base_url,
+    )
+  }
+
+  pub fn resolve_module_integrity_metadata(&self, url: &::url::Url) -> &str {
+    crate::js::import_maps::resolve_module_integrity_metadata(&self.import_map_state, url)
   }
 
   /// Execute a classic script while integrating Promise jobs into the provided [`EventLoop`]'s
@@ -2287,5 +2321,70 @@ mod tests {
 
     assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod import_map_tests {
+  use super::WindowHostState;
+  use crate::dom2;
+  use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
+  use selectors::context::QuirksMode;
+  use url::Url;
+
+  #[test]
+  fn window_host_state_starts_with_empty_import_map_state() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let host = WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+
+    let state = host.import_map_state();
+    assert!(state.import_map.imports.is_empty());
+    assert!(state.import_map.scopes.is_empty());
+    assert!(state.import_map.integrity.is_empty());
+    assert!(state.resolved_module_set().is_empty());
+  }
+
+  #[test]
+  fn window_host_can_register_import_map_and_resolve_specifier() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+    let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
+
+    let warnings = host
+      .register_import_map_string(r#"{ "imports": { "react": "/vendor/react.js" } }"#, &base_url)
+      .expect("register import map should succeed");
+    assert!(warnings.is_empty(), "expected no warnings, got {warnings:?}");
+    assert!(host.import_map_state().resolved_module_set().is_empty());
+
+    let resolved = host
+      .resolve_module_specifier_with_import_maps("react", &base_url)
+      .expect("resolve should succeed");
+    assert_eq!(
+      resolved,
+      Url::parse("https://example.com/vendor/react.js").expect("parse expected URL")
+    );
+
+    let records = host.import_map_state().resolved_module_set();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+      records[0].serialized_base_url.as_deref(),
+      Some("https://example.com/index.html")
+    );
+    assert_eq!(records[0].specifier, "react");
+    assert_eq!(records[0].as_url_kind, SpecifierAsUrlKind::NotUrl);
+  }
+
+  #[test]
+  fn window_host_register_import_map_propagates_errors() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+    let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
+
+    let err = host
+      .register_import_map_string("{", &base_url)
+      .expect_err("expected invalid JSON to error");
+    assert!(matches!(err, ImportMapError::Json(_)), "unexpected error: {err:?}");
   }
 }
