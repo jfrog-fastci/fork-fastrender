@@ -7245,7 +7245,12 @@ impl DisplayListRenderer {
     let mut paint = tiny_skia::Paint::default();
     set_paint_color(&mut paint, &side.color, opacity);
     paint.blend_mode = blend_mode;
-    paint.anti_alias = true;
+    // For axis-aligned transforms, prefer crisp pixel-snapped solid borders rather than
+    // anti-aliased strokes. This matches the rest of the renderer's rect filling behaviour (e.g.
+    // background fills) and avoids semi-transparent "bleed" when border edges land on fractional
+    // device pixels (common with percentage + centering layouts).
+    let axis_aligned_transform = transform.kx.abs() <= 1e-6 && transform.ky.abs() <= 1e-6;
+    paint.anti_alias = !axis_aligned_transform || !matches!(side.style, CssBorderStyle::Solid);
 
     let mut stroke = Stroke::default();
     stroke.width = side.width;

@@ -7274,6 +7274,9 @@ impl Painter {
     style: CssBorderStyle,
     color: &Rgba,
   ) {
+    // Prefer crisp pixel-snapped solid border strokes over anti-aliased strokes. See the
+    // display-list backend (`DisplayListRenderer::render_border_edge`) for the primary rationale.
+    let anti_alias = !matches!(style, CssBorderStyle::Solid);
     self.paint_border_edge_with_mode(
       edge,
       x1,
@@ -7284,7 +7287,7 @@ impl Painter {
       style,
       color,
       SkiaBlendMode::SourceOver,
-      true,
+      anti_alias,
     );
   }
 

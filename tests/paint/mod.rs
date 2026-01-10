@@ -10,6 +10,7 @@ mod backface_visibility_does_not_create_stacking_context;
 mod abspos_containing_block_rebase_test;
 mod border_dotted;
 mod border_solid_device_snapping;
+mod border_solid_pixel_snapping;
 mod border_image_outset_bounds;
 mod border_triangle;
 mod fieldset_legend_border_gap;
