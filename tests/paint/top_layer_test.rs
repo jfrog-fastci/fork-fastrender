@@ -8,7 +8,7 @@ fn pixel_rgba(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
-  if node.node_type.is_element()
+  if node.is_element()
     && node
       .get_attribute_ref("id")
       .is_some_and(|value| value.eq_ignore_ascii_case(id))
