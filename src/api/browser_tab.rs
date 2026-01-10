@@ -47,6 +47,34 @@ pub trait BrowserTabJsExecutor {
   /// Implementations can use this to reset per-document JS state (e.g. recreate a JS realm with the
   /// updated `document.URL`).
   fn on_navigation_committed(&mut self, _document_url: Option<&str>) {}
+
+  /// Reset the executor's JS state for a new navigation.
+  ///
+  /// Navigation in browsers creates a fresh global object / realm for each new document. Embeddings
+  /// that hold JS runtime state (e.g. `vm-js` realms) should override this to tear down any
+  /// per-document state (including rooted callbacks) and reinitialize against the new document.
+  ///
+  /// The provided [`CurrentScriptStateHandle`] is stable for the lifetime of the tab; it is cleared
+  /// before this hook is invoked.
+  fn reset_for_navigation(
+    &mut self,
+    document_url: Option<&str>,
+    document: &mut BrowserDocumentDom2,
+    current_script: &CurrentScriptStateHandle,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<()> {
+    let _ = (document_url, document, current_script, js_execution_options);
+    Ok(())
+  }
+
+  /// Dispatch a document lifecycle event (e.g. `DOMContentLoaded`, `load`) into the JS environment.
+  ///
+  /// Hosts invoke this hook from their [`DocumentLifecycleHost`] implementation so that JS event
+  /// listeners registered via the executor's DOM bindings can observe lifecycle events.
+  fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: &Event) -> Result<()> {
+    let _ = (target, event);
+    Ok(())
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +110,7 @@ impl Drop for JsExecutionGuard {
 
 pub struct BrowserTabHost {
   trace: TraceHandle,
-  document: BrowserDocumentDom2,
+  document: Box<BrowserDocumentDom2>,
   executor: Box<dyn BrowserTabJsExecutor>,
   current_script: CurrentScriptStateHandle,
   orchestrator: ScriptOrchestrator,
@@ -110,7 +138,7 @@ impl BrowserTabHost {
   ) -> Self {
     Self {
       trace,
-      document,
+      document: Box::new(document),
       executor,
       current_script: CurrentScriptStateHandle::default(),
       orchestrator: ScriptOrchestrator::new(),
@@ -154,8 +182,8 @@ impl BrowserTabHost {
     &mut self,
     document_url: Option<String>,
     document_referrer_policy: ReferrerPolicy,
-  ) {
-    self.current_script = CurrentScriptStateHandle::default();
+  ) -> Result<()> {
+    self.current_script.reset();
     self.orchestrator = ScriptOrchestrator::new();
     self.scheduler = ScriptScheduler::new();
     self.scripts.clear();
@@ -172,6 +200,14 @@ impl BrowserTabHost {
     self.executor.on_navigation_committed(self.document_url.as_deref());
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
+
+    self.executor.reset_for_navigation(
+      self.document_url.as_deref(),
+      &mut self.document,
+      &self.current_script,
+      self.js_execution_options,
+    )?;
+    Ok(())
   }
 
   fn discover_scripts_best_effort(&self, document_url: Option<&str>) -> Vec<(NodeId, ScriptElementSpec)> {
@@ -598,14 +634,14 @@ impl DomHost for BrowserTabHost {
   where
     F: FnOnce(&Document) -> R,
   {
-    <BrowserDocumentDom2 as DomHost>::with_dom(&self.document, f)
+    <BrowserDocumentDom2 as DomHost>::with_dom(self.document.as_ref(), f)
   }
 
   fn mutate_dom<R, F>(&mut self, f: F) -> R
   where
     F: FnOnce(&mut Document) -> (R, bool),
   {
-    <BrowserDocumentDom2 as DomHost>::mutate_dom(&mut self.document, f)
+    <BrowserDocumentDom2 as DomHost>::mutate_dom(self.document.as_mut(), f)
   }
 }
 
@@ -662,27 +698,9 @@ impl DocumentLifecycleHost for BrowserTabHost {
   fn dispatch_lifecycle_event(
     &mut self,
     target: crate::web::events::EventTargetId,
-    mut event: crate::web::events::Event,
+    event: crate::web::events::Event,
   ) -> Result<()> {
-    use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
-
-    struct NoopInvoker;
-
-    impl EventListenerInvoker for NoopInvoker {
-      fn invoke(
-        &mut self,
-        _listener_id: ListenerId,
-        _event: &mut crate::web::events::Event,
-      ) -> std::result::Result<(), DomError> {
-        Ok(())
-      }
-    }
-
-    let dom: &crate::dom2::Document = self.document.dom();
-    let mut invoker = NoopInvoker;
-    dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
-      .map(|_default_not_prevented| ())
-      .map_err(|err| Error::Other(err.to_string()))
+    self.executor.dispatch_lifecycle_event(target, &event)
   }
 
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
@@ -916,10 +934,16 @@ impl BrowserTab {
       .unwrap_or_default();
     tab
       .host
-      .reset_scripting_state(None, document_referrer_policy);
-    let _ = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
+      .reset_scripting_state(None, document_referrer_policy)?;
+    let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
       tab.navigate_to_url(&req.url, options.clone())?;
+    } else {
+      let renderer = tab.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
     }
     Ok(tab)
   }
@@ -961,7 +985,7 @@ impl BrowserTab {
       .unwrap_or_default();
     tab
       .host
-      .reset_scripting_state(None, document_referrer_policy);
+      .reset_scripting_state(None, document_referrer_policy)?;
     tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
@@ -993,13 +1017,31 @@ impl BrowserTab {
     self.host.trace = self.trace.clone();
     let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
       .unwrap_or_default();
+
+    // Clear URL hints so relative resources do not resolve against the previous navigation.
+    {
+      let renderer = self.host.document.renderer_mut();
+      renderer.clear_document_url();
+      renderer.clear_base_url();
+    }
+
     self
       .host
-      .reset_scripting_state(None, document_referrer_policy);
-    let _ = self.parse_html_streaming_and_schedule_scripts(html, None, &options_for_parse)?;
+      .reset_scripting_state(None, document_referrer_policy)?;
+    let base_url = self.parse_html_streaming_and_schedule_scripts(html, None, &options_for_parse)?;
     if let Some(req) = self.host.pending_navigation.take() {
       self.navigate_to_url(&req.url, options_for_parse.clone())?;
+      return Ok(());
     }
+
+    // Update the renderer's base URL hint to match the parse-time base URL after processing the
+    // full document.
+    let renderer = self.host.document.renderer_mut();
+    match base_url {
+      Some(url) => renderer.set_base_url(url),
+      None => renderer.clear_base_url(),
+    }
+
     Ok(())
   }
 
@@ -1056,7 +1098,7 @@ impl BrowserTab {
       self.host.trace = self.trace.clone();
       self
         .host
-        .reset_scripting_state(Some(final_url.clone()), document_referrer_policy);
+        .reset_scripting_state(Some(final_url.clone()), document_referrer_policy)?;
 
       // Avoid installing a nested deadline: the outer guard already enforces the render budget
       // across fetch + parse.
@@ -1106,6 +1148,7 @@ impl BrowserTab {
         Ok(())
       },
     )
+ 
   }
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
@@ -1472,7 +1515,7 @@ mod tests {
       TraceHandle::default(),
       JsExecutionOptions::default(),
     );
-    host.reset_scripting_state(None, ReferrerPolicy::default());
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
   }
 
@@ -1651,7 +1694,7 @@ mod tests {
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
     // Reset scripting state so parsing new HTML will schedule/execute scripts.
-    tab.host.reset_scripting_state(None, ReferrerPolicy::default());
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
     tab.event_loop.queue_microtask({
       let log = Rc::clone(&log);

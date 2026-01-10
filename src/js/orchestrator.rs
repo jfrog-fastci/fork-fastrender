@@ -45,6 +45,16 @@ impl CurrentScriptStateHandle {
   pub fn borrow_mut(&self) -> RefMut<'_, CurrentScriptState> {
     self.0.borrow_mut()
   }
+
+  /// Clears `Document.currentScript` bookkeeping state.
+  ///
+  /// This is intended for navigation/reset: the handle itself is stable and may be cloned into JS
+  /// bindings realms, so callers must not replace the handle when resetting script state.
+  pub fn reset(&self) {
+    let mut state = self.borrow_mut();
+    state.current_script = None;
+    state.previous_current_script.clear();
+  }
 }
 
 impl CurrentScriptState {
