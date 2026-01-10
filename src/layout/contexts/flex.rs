@@ -4183,22 +4183,6 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
     }
-    // Block-level flex containers with `width:auto` fill the available inline space. Enforce that
-    // here (without clamping to the viewport) so explicitly-sized or shrink-to-fit flex containers
-    // can still overflow horizontally.
-    if constraints.used_border_box_width.is_none()
-      && physical_width_is_auto(style)
-      && matches!(style.display, Display::Flex)
-    {
-      if let CrateAvailableSpace::Definite(w) = constraints.available_width {
-        let base = w.max(0.0);
-        let used = self.clamp_border_box_width_to_min_max(box_node, style, &constraints, base)?;
-        fragment.bounds = Rect::new(
-          fragment.bounds.origin,
-          Size::new(used, fragment.bounds.height()),
-        );
-      }
-    }
     // Keep child layout positions intact even when they overflow the container; overflow handling
     // is a paint concern (via overflow clipping). Only sanitize clearly invalid or runaway values.
     if fragment.bounds.width().is_finite() && fragment.bounds.height().is_finite() {
@@ -8699,11 +8683,32 @@ impl FlexFormattingContext {
         .filter(|w| w.is_finite() && *w > rect_eps)
         .or_else(|| constraints.width().filter(|w| w.is_finite() && *w > rect_eps))
     };
+
+    let desired_auto_border_box_width = if physical_width_is_auto(&box_node.style) {
+      if let Some(def_w) = resolved_definite_width() {
+        if constraints.used_border_box_width.is_some() {
+          Some(def_w)
+        } else if matches!(box_node.style.display, Display::Flex) {
+          Some(self.clamp_border_box_width_to_min_max(
+            box_node,
+            &box_node.style,
+            constraints,
+            def_w,
+          )?)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
     // When Taffy collapses the flex container to ~0px (often after a bad intrinsic probe), fall
     // back to the definite available width so children aren't clamped to a 0–1px line.
     if !border_box.width.is_finite() || border_box.width <= rect_eps {
-      if let Some(def_w) = resolved_definite_width() {
-        border_box.width = def_w;
+      if let Some(desired) = desired_auto_border_box_width.or_else(resolved_definite_width) {
+        border_box.width = desired;
       } else if box_node.children.is_empty() {
         // A legitimately empty flex container can resolve to a 0 main size (e.g. a flex item with
         // `width:auto` and no in-flow children). Avoid inflating such boxes to the viewport width
@@ -8719,28 +8724,18 @@ impl FlexFormattingContext {
         border_box.width = self.viewport_size.width;
       }
     }
-    // If the flex container has `width:auto` and Taffy returns a wider size (usually due to an
-    // intrinsic sizing probe), clamp back to the size that the outer formatting context will use
-    // for the container. This keeps the re-laid out children consistent with the final container
-    // size.
+    // When a definite used border-box width is known (either from a parent override or block-level
+    // `width:auto` fill-available sizing), rerun Taffy with an explicit root size so child
+    // coordinates are computed against the final width (avoiding drift when justification or
+    // alignment depends on the main-axis size).
     //
-    // Only apply this clamp when the used size is known (via `used_border_box_width`) or when the
-    // element is a block-level `display:flex` container. Inline-level `display:inline-flex` uses
-    // shrink-to-fit sizing and may legitimately overflow the available width (e.g. due to
+    // Only apply this correction when the used size is known (via `used_border_box_width`) or when
+    // the element is a block-level `display:flex` container. Inline-level `display:inline-flex`
+    // uses shrink-to-fit sizing and may legitimately overflow the available width (e.g. due to
     // `min-width` or unbreakable content), so avoid clamping it here.
-    if physical_width_is_auto(&box_node.style) {
-      if let Some(def_w) = resolved_definite_width() {
-        if constraints.used_border_box_width.is_some() {
-          if border_box.width > def_w + rect_eps {
-            border_box.width = def_w;
-          }
-        } else if matches!(box_node.style.display, Display::Flex) {
-          let clamp_target =
-            self.clamp_border_box_width_to_min_max(box_node, &box_node.style, constraints, def_w)?;
-          if border_box.width > clamp_target + rect_eps {
-            border_box.width = clamp_target;
-          }
-        }
+    if let Some(desired) = desired_auto_border_box_width {
+      if (border_box.width - desired).abs() > rect_eps {
+        border_box.width = desired;
       }
     }
 
