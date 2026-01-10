@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tiny_skia::Pixmap;
 
-const FAST_GAUSS_THRESHOLD_SIGMA: f32 = 4.0;
+const FAST_GAUSS_THRESHOLD_SIGMA: f32 = 5.0;
 const BLUR_DEADLINE_STRIDE: usize = 256;
 const PARALLEL_BLUR_MIN_PIXELS: usize = 512 * 512;
 
@@ -4190,6 +4190,52 @@ mod tests {
       parallel.data(),
       "mixed box/kernel anisotropic blur output mismatch"
     );
+  }
+
+  #[test]
+  fn gaussian_blur_sigma_five_matches_fast_blur_toggle() {
+    // Nginx.org and other pages commonly use `box-shadow: ... 10px ...`, which maps to a gaussian
+    // sigma of 5px. Ensure that sigma uses the exact kernel path even without FASTR_FAST_BLUR so
+    // callers don't need to opt-in to higher-quality blur for typical shadows.
+    let mut base = new_pixmap(37, 41).unwrap();
+    let w = base.width() as usize;
+    let h = base.height() as usize;
+    for y in 0..h {
+      for x in 0..w {
+        // Ensure channels are premultiplied so blur paths can safely clamp to alpha.
+        let a = (((x * 29 + y * 31) % 255) + 1) as u8;
+        let r0 = ((x * 11 + y * 7) % 256) as u8;
+        let g0 = ((x * 5 + y * 13) % 256) as u8;
+        let b0 = ((x * 17 + y * 19) % 256) as u8;
+        let premul = |c: u8| ((c as u16 * a as u16) / 255) as u8;
+        base.pixels_mut()[y * w + x] =
+          PremultipliedColorU8::from_rgba(premul(r0), premul(g0), premul(b0), a).unwrap();
+      }
+    }
+
+    let sigma = 5.0;
+    let out_default = runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())),
+      || {
+        let mut pixmap = base.clone();
+        apply_gaussian_blur(&mut pixmap, sigma).unwrap();
+        pixmap.data().to_vec()
+      },
+    );
+
+    let out_fast = runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FAST_BLUR".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let mut pixmap = base.clone();
+        apply_gaussian_blur(&mut pixmap, sigma).unwrap();
+        pixmap.data().to_vec()
+      },
+    );
+
+    assert_eq!(out_default, out_fast, "sigma=5 blur path mismatch");
   }
 
   #[test]

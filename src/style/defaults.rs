@@ -103,21 +103,63 @@ fn trim_ascii_whitespace_html(value: &str) -> &str {
 pub fn parse_dimension_attribute(dim_str: &str) -> Option<Length> {
   let dim_str = trim_ascii_whitespace_html(dim_str);
 
+  if dim_str.is_empty() {
+    return None;
+  }
+
+  fn parse_number_prefix(s: &str) -> Option<f32> {
+    let s = trim_ascii_whitespace_html(s);
+    if s.is_empty() {
+      return None;
+    }
+
+    // HTML "dimension attribute" parsing in the wild commonly accepts a `px` suffix (e.g. `90px`)
+    // even though the content attribute is defined as a number. Browsers parse the numeric prefix
+    // and ignore the rest; do the same for presentational hints.
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut saw_digit = false;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if b.is_ascii_digit() {
+        saw_digit = true;
+        i += 1;
+        continue;
+      }
+      if b == b'.' {
+        i += 1;
+        continue;
+      }
+      break;
+    }
+
+    if !saw_digit || i == 0 {
+      return None;
+    }
+
+    s[..i].parse::<f32>().ok()
+  }
+
   // Handle percentage like "85%"
   if dim_str.ends_with('%') {
-    if let Ok(value) =
-      trim_ascii_whitespace_html(&dim_str[..dim_str.len() - 1]).parse::<f32>()
-    {
+    let raw = trim_ascii_whitespace_html(&dim_str[..dim_str.len() - 1]);
+    let value = raw.parse::<f32>().ok().or_else(|| parse_number_prefix(raw))?;
+    if value.is_finite() && value >= 0.0 {
       return Some(Length::percent(value));
     }
+    return None;
   }
 
   // Handle pixels (just a number like "18")
   if let Ok(value) = dim_str.parse::<f32>() {
-    return Some(Length::px(value));
+    if value.is_finite() && value >= 0.0 {
+      return Some(Length::px(value));
+    }
+    return None;
   }
 
-  None
+  let value = parse_number_prefix(dim_str)?;
+  (value.is_finite() && value >= 0.0).then_some(Length::px(value))
 }
 
 /// Parse HTML bgcolor attribute
@@ -274,6 +316,13 @@ mod tests {
       parse_dimension_attribute(&format!("{nbsp}18")).is_none(),
       "NBSP must not be treated as ASCII whitespace"
     );
+  }
+
+  #[test]
+  fn parse_dimension_attribute_accepts_px_suffix() {
+    assert_eq!(parse_dimension_attribute("90px"), Some(Length::px(90.0)));
+    assert_eq!(parse_dimension_attribute("  50px "), Some(Length::px(50.0)));
+    assert_eq!(parse_dimension_attribute("85%"), Some(Length::percent(85.0)));
   }
 
   #[test]
