@@ -215,6 +215,28 @@ fn var_destructuring_pattern_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn switch_case_list_instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // `switch` statements can contain many case clauses, and instantiation passes may need to walk the
+  // clause list even when the case bodies are empty. Ensure that large clause lists are budgeted.
+  let mut src = String::from("if(false){ switch(0){");
+  for i in 0..5000 {
+    write!(src, "case {i}:").unwrap();
+  }
+  src.push_str("} }");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn var_declarator_list_evaluation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
