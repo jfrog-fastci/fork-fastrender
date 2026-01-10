@@ -390,6 +390,8 @@ The classic-script architecture above deliberately isolates:
 Modules/import maps extend the same pipeline by adding new “prepare” + “execute” branches:
 
 - `ScriptType::Module` and `ScriptType::ImportMap` already exist in `src/js/mod.rs`.
+- Import maps should be implemented as a standalone spec-mapped module (parse/register/merge/resolve)
+  and then used by module script loading: [`docs/import_maps.md`](import_maps.md).
 - The `ScriptScheduler` should become a dispatcher that:
   - runs import map registration at the correct point (before module graph resolution),
   - builds/fetches module graphs using host hooks,
