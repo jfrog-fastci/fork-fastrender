@@ -1,0 +1,36 @@
+{
+    "name": "NDTV",
+    "gcm_sender_id": "12823388802",
+    "short_name": "NDTV",
+    "icons": [{
+            "src": "./static/images/pwa/128x128.png",
+            "type": "image/png",
+            "sizes": "128x128"
+        }, {
+            "src": "./static/images/pwa/144x144.png",
+            "type": "image/png",
+            "sizes": "144x144"
+        }, {
+            "src": "./static/images/pwa/192x192.png",
+            "type": "image/png",
+            "sizes": "192x192"
+        }, {
+            "src": "./static/images/pwa/256x256.png",
+            "type": "image/png",
+            "sizes": "256x256"
+        }, {
+            "src": "./static/images/pwa/512x512.png",
+            "type": "image/png",
+            "sizes": "512x512"
+         }, {
+			"purpose": "maskable",
+			"sizes": "192x192",
+			"src": "./static/images/pwa/maskable_icon.png",
+			"type": "image/png"
+		}],
+    "start_url": "/?utm_source=web_app_manifest",
+    "display": "standalone",
+    "orientation": "portrait",
+    "background_color": "#e3eef9",
+    "theme_color": "#e3eef9"
+}

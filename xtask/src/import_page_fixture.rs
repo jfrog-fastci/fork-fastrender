@@ -1,10 +1,9 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use fastrender::css::loader::resolve_href;
-use fastrender::resource::bundle::{Bundle, BundledFetcher, BundledResourceInfo};
+use fastrender::resource::bundle::{Bundle, BundledResourceInfo};
 use fastrender::resource::is_data_url;
 use fastrender::resource::FetchedResource;
-use fastrender::resource::ResourceFetcher;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -101,11 +100,20 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
     Url::parse(&document_base).context("failed to parse document base URL from bundle")?;
   let effective_base = find_base_url(&document_html, &document_base_url);
 
-  let fetcher = BundledFetcher::new(bundle);
   let mut catalog = AssetCatalog::new(args.allow_missing);
+  // `bundle_page fetch` records additional synthetic manifest keys for `Vary`-partitioned resources
+  // (e.g. `...@@fastr:bundle:vary_v1@@<key>`). These are lookup keys for the bundle fetcher and are
+  // **not** fetchable URLs.
+  //
+  // The capture code always includes the base URL entry as well (pointing at the same bytes), so
+  // skip the synthetic Vary keys to avoid importing duplicate assets.
+  const BUNDLE_VARY_KEY_SENTINEL: &str = "@@fastr:bundle:vary_v1@@";
   for (url, info) in &manifest.resources {
-    let resource = fetcher
-      .fetch(url)
+    if url.contains(BUNDLE_VARY_KEY_SENTINEL) {
+      continue;
+    }
+    let resource = bundle
+      .fetch_manifest_entry(url)
       .with_context(|| format!("failed to read bundled resource for {}", url))?;
     catalog.add_resource(url, info, &resource)?;
   }
@@ -251,24 +259,48 @@ impl AssetCatalog {
     self
       .url_to_filename
       .insert(url.to_string(), filename.clone());
+    if let Some((without_fragment, _)) = url.split_once('#') {
+      self
+        .url_to_filename
+        .entry(without_fragment.to_string())
+        .or_insert_with(|| filename.clone());
+    }
     let decoded_url = decode_html_entities_if_needed(url);
     if decoded_url.as_ref() != url {
       self
         .url_to_filename
         .entry(decoded_url.to_string())
         .or_insert_with(|| filename.clone());
+      if let Some((without_fragment, _)) = decoded_url.as_ref().split_once('#') {
+        self
+          .url_to_filename
+          .entry(without_fragment.to_string())
+          .or_insert_with(|| filename.clone());
+      }
     }
     if let Some(final_url) = &info.final_url {
       self
         .url_to_filename
         .entry(final_url.clone())
         .or_insert_with(|| filename.clone());
+      if let Some((without_fragment, _)) = final_url.split_once('#') {
+        self
+          .url_to_filename
+          .entry(without_fragment.to_string())
+          .or_insert_with(|| filename.clone());
+      }
       let decoded_final = decode_html_entities_if_needed(final_url);
       if decoded_final.as_ref() != final_url {
         self
           .url_to_filename
           .entry(decoded_final.to_string())
           .or_insert_with(|| filename.clone());
+        if let Some((without_fragment, _)) = decoded_final.as_ref().split_once('#') {
+          self
+            .url_to_filename
+            .entry(without_fragment.to_string())
+            .or_insert_with(|| filename.clone());
+        }
       }
     }
     Ok(())

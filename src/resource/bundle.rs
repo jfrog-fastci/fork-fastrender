@@ -430,6 +430,73 @@ impl Bundle {
     (&self.manifest.document, Arc::clone(&self.document_bytes))
   }
 
+  /// Fetch a resource by its manifest key.
+  ///
+  /// Bundles may store synthetic manifest keys (e.g. request-partitioned resources or
+  /// `Vary`-partitioned variants) that are not real URLs. This helper accepts those keys and
+  /// returns the exact bytes stored in the bundle.
+  ///
+  /// Unlike [`BundledFetcher`], this does **not** enforce replay-safety checks for unhandled
+  /// `Vary` headers. It is intended for offline tooling (such as fixture importers) that needs to
+  /// read captured bytes verbatim.
+  pub fn fetch_manifest_entry(&self, key: &str) -> Result<FetchedResource> {
+    let doc_final_url = if self.manifest.document.final_url.is_empty() {
+      self.manifest.original_url.clone()
+    } else {
+      self.manifest.document.final_url.clone()
+    };
+    if key == self.manifest.original_url || key == doc_final_url {
+      let (doc_meta, bytes) = self.document();
+      let bytes = clone_bytes_fallible(&bytes, "bundle document bytes")?;
+      let mut res = FetchedResource::with_final_url(
+        bytes,
+        doc_meta.content_type.clone(),
+        Some(doc_final_url),
+      );
+      res.nosniff = doc_meta.nosniff;
+      res.status = doc_meta.status;
+      res.etag = doc_meta.etag.clone();
+      res.last_modified = doc_meta.last_modified.clone();
+      res.vary = doc_meta.vary.clone();
+      res.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
+      res.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+      res.response_referrer_policy = doc_meta
+        .response_referrer_policy
+        .as_deref()
+        .and_then(ReferrerPolicy::parse_value_list);
+      return Ok(res);
+    }
+
+    if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(key) {
+      if let Some(bucket) = self.vary_bucket_for_url(base_url) {
+        if let Some(resource) = bucket.variants.get(vary_key) {
+          return resource.as_fetched();
+        }
+        return Err(Error::Other(format!(
+          "Resource not found in bundle (no matching Vary variant): {}",
+          key
+        )));
+      }
+    }
+
+    if let Some(resource) = self.resource_for_url(key) {
+      return resource.as_fetched();
+    }
+
+    // Bundles are meant to be replayable without network access, but data: URLs encode their
+    // payload in the URL itself. Decode them directly so bundles don't need to persist huge
+    // `data:` strings in the manifest for correctness.
+    if key
+      .get(..5)
+      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+      .unwrap_or(false)
+    {
+      return super::data_url::decode_data_url(key);
+    }
+
+    Err(Error::Other(format!("Resource not found in bundle: {}", key)))
+  }
+
   fn load_directory(dir: &Path) -> Result<Self> {
     let manifest_path = dir.join(BUNDLE_MANIFEST);
     let manifest_bytes = read_file_fallible(&manifest_path).map_err(|e| {

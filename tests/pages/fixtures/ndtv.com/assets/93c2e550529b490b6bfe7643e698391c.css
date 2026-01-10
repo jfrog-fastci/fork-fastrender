@@ -1,0 +1,43 @@
+/*
+ * The Typekit service used to deliver this font or fonts for use on websites
+ * is provided by Adobe and is subject to these Terms of Use
+ * http://www.adobe.com/products/eulas/tou_typekit. For font license
+ * information, see the list below.
+ *
+ * miller-headline:
+ *   - http://typekit.com/eulas/00000000000000007736b591
+ *   - http://typekit.com/eulas/00000000000000007736b58d
+ *   - http://typekit.com/eulas/00000000000000007736b58e
+ *   - http://typekit.com/eulas/00000000000000007736b594
+ *
+ * © 2009-2026 Adobe Systems Incorporated. All Rights Reserved.
+ */
+/*{"last_published":"2023-04-25 18:36:47 UTC"}*/
+
+@import url("e63211fe21c870f5536abd877317c3a4.css");
+
+@font-face {
+font-family:"miller-headline";
+src:url("7428891466ad7a2fb5e40c780c02f3f8.bin") format("woff2"),url("3bf9906535bfc01525877e0f5a3a2af8.bin") format("woff"),url("b471c6fe00a1b6eb67e53b7a5fc1f9ba.bin") format("opentype");
+font-display:swap;font-style:normal;font-weight:600;font-stretch:normal;
+}
+
+@font-face {
+font-family:"miller-headline";
+src:url("304644b18f58e85cfafac7daf0bffcd3.bin") format("woff2"),url("d3c3f3971b6d871d870a1cda2a8ff3ef.bin") format("woff"),url("fa882f1183be69896e54b62ef2bf1280.bin") format("opentype");
+font-display:swap;font-style:normal;font-weight:700;font-stretch:normal;
+}
+
+@font-face {
+font-family:"miller-headline";
+src:url("374f7f08a335b4f9ef416b77c02cb95a.bin") format("woff2"),url("b3c451d8ef5405328a9ad6bea429fc01.bin") format("woff"),url("22f7268961cb62bc4ab2e7cf877f1cee.bin") format("opentype");
+font-display:swap;font-style:normal;font-weight:400;font-stretch:normal;
+}
+
+@font-face {
+font-family:"miller-headline";
+src:url("b2ff7fce7e3fc370bb5ead15af6723e7.bin") format("woff2"),url("faaefbfb01010056fd12339fa870afd7.bin") format("woff"),url("d7b3844f9b70486cf1d91b7537f442c5.bin") format("opentype");
+font-display:swap;font-style:normal;font-weight:300;font-stretch:normal;
+}
+
+.tk-miller-headline { font-family: "miller-headline",serif; }
