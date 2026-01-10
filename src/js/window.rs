@@ -1029,6 +1029,27 @@ mod tests {
   }
 
   #[test]
+  fn headers_for_each_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      var h = new Headers([['a', '1']]);
+      h.forEach(() => { globalThis.__host_ok = recordHost(); });
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_drains_promise_jobs_at_microtask_checkpoint() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
