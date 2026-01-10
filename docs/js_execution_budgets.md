@@ -37,6 +37,21 @@ The HTML event loop model implemented in `src/js/event_loop.rs` has two kinds of
 
 These are configured via [`fastrender::js::JsExecutionOptions`].
 
+### Deterministic stepping for test harnesses / embeddings
+
+Some embeddings (notably the offline WPT DOM runner) need to drive the host event loop in **small,
+budgeted steps** to avoid unbounded microtask loops while still remaining deterministic.
+
+FastRender exposes a stateful stepping API for this use-case:
+
+- [`fastrender::js::RunState`] (counters + limits, reusable across calls)
+- [`fastrender::js::EventLoop::perform_microtask_checkpoint_limited`]
+- [`fastrender::js::EventLoop::run_next_task_limited`]
+
+Unlike the unbounded helpers (`perform_microtask_checkpoint`, `run_next_task`), these limited
+variants stop with a [`fastrender::js::RunUntilIdleStopReason`] when budgets are exhausted **without
+dropping the next queued task/microtask** (limits are enforced before popping).
+
 ## 4) VM budgets (instruction / heap / stack)
 
 Some limits must be enforced inside the JS VM:
