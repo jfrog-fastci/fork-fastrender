@@ -168,6 +168,17 @@ fn array_prototype_filter_works() {
 }
 
 #[test]
+fn array_prototype_reduce_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var s=a.reduce(function(acc,x){return acc+x;}); var b=[]; b.length=3; b[1]=2; b[2]=4; var t=b.reduce(function(acc,x){return acc+x;}); var ok=false; try { [].reduce(function(a,b){return a+b;}); } catch(e) { ok = e.name === "TypeError"; } s===6 && t===6 && ok && Array.prototype.reduce.call("ab", function(acc,x){return acc+x;}, "") === "ab""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt

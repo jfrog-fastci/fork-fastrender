@@ -4109,6 +4109,122 @@ pub fn array_prototype_filter(
   Ok(Value::Object(out))
 }
 
+/// `Array.prototype.reduce` (ECMA-262) (minimal).
+pub fn array_prototype_reduce(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.reduce callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  let intr = require_intrinsics(vm)?;
+  let acc_holder = scope.alloc_object()?;
+  scope.push_root(Value::Object(acc_holder))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(acc_holder, Some(intr.object_prototype()))?;
+
+  let acc_sym = scope.alloc_symbol(Some("vm-js.internal.ArrayReduceAccumulator"))?;
+  let acc_key = PropertyKey::from_symbol(acc_sym);
+
+  let has_initial = args.len() > 1;
+  let mut k = 0usize;
+  let mut accumulator: Value;
+
+  if has_initial {
+    accumulator = args[1];
+  } else {
+    // Find the first present element.
+    loop {
+      if k >= len {
+        return Err(VmError::TypeError(
+          "Reduce of empty array with no initial value",
+        ));
+      }
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let mut iter_scope = scope.reborrow();
+      let key_s = iter_scope.alloc_string(&k.to_string())?;
+      let key = PropertyKey::from_string(key_s);
+      if iter_scope.ordinary_has_property(obj, key)? {
+        accumulator =
+          iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+        k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        break;
+      }
+      k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    }
+  }
+
+  // Root the accumulator value by storing it on a rooted helper object. This keeps it live even if
+  // the callback returns a freshly allocated object/string and subsequent operations trigger GC.
+  scope.define_property(
+    acc_holder,
+    acc_key,
+    data_desc(accumulator, /* writable */ true, /* enumerable */ false, /* configurable */ false),
+  )?;
+
+  for idx in k..len {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&idx.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.ordinary_has_property(obj, key)? {
+      continue;
+    }
+
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let call_args = [accumulator, value, Value::Number(idx as f64), Value::Object(obj)];
+    accumulator = vm.call_with_host_and_hooks(
+      host,
+      &mut iter_scope,
+      hooks,
+      callback,
+      Value::Undefined,
+      &call_args,
+    )?;
+
+    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      acc_holder,
+      acc_key,
+      accumulator,
+      Value::Object(acc_holder),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.reduce failed"));
+    }
+  }
+
+  Ok(accumulator)
+}
+
 /// `Array.prototype.reverse` (ECMA-262) (minimal).
 pub fn array_prototype_reverse(
   vm: &mut Vm,
