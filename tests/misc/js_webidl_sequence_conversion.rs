@@ -55,13 +55,37 @@ fn make_numeric_iterable(rt: &mut VmJsRuntime, values: Vec<Value>) -> Result<Val
       rt.with_stack_roots(&[result_obj], |rt| {
         let done_key = rt.property_key_from_str("done")?;
         if i >= values_for_next.len() {
-          rt.define_data_property(result_obj, done_key, Value::Bool(true), true)?;
+          webidl_js_runtime::JsRuntime::define_data_property(
+            rt,
+            result_obj,
+            done_key,
+            Value::Bool(true),
+            true,
+          )?;
           let value_key = rt.property_key_from_str("value")?;
-          rt.define_data_property(result_obj, value_key, Value::Undefined, true)?;
+          webidl_js_runtime::JsRuntime::define_data_property(
+            rt,
+            result_obj,
+            value_key,
+            Value::Undefined,
+            true,
+          )?;
         } else {
-          rt.define_data_property(result_obj, done_key, Value::Bool(false), true)?;
+          webidl_js_runtime::JsRuntime::define_data_property(
+            rt,
+            result_obj,
+            done_key,
+            Value::Bool(false),
+            true,
+          )?;
           let value_key = rt.property_key_from_str("value")?;
-          rt.define_data_property(result_obj, value_key, values_for_next[i], true)?;
+          webidl_js_runtime::JsRuntime::define_data_property(
+            rt,
+            result_obj,
+            value_key,
+            values_for_next[i],
+            true,
+          )?;
           idx_for_next.set(i + 1);
         }
         Ok(())
@@ -71,7 +95,7 @@ fn make_numeric_iterable(rt: &mut VmJsRuntime, values: Vec<Value>) -> Result<Val
 
     rt.with_stack_roots(&[iterator_obj, next_fn], |rt| {
       let next_key = rt.property_key_from_str("next")?;
-      rt.define_data_property(iterator_obj, next_key, next_fn, true)
+      webidl_js_runtime::JsRuntime::define_data_property(rt, iterator_obj, next_key, next_fn, true)
     })?;
 
     // Root `iterator_obj` by storing it on the iterable object (host closures do not participate in
@@ -79,12 +103,24 @@ fn make_numeric_iterable(rt: &mut VmJsRuntime, values: Vec<Value>) -> Result<Val
     let iterable_obj = rt.alloc_object_value()?;
     rt.with_stack_roots(&[iterable_obj, iterator_obj], |rt| {
       let iter_holder_key = rt.property_key_from_str("_iter")?;
-      rt.define_data_property(iterable_obj, iter_holder_key, iterator_obj, false)?;
+      webidl_js_runtime::JsRuntime::define_data_property(
+        rt,
+        iterable_obj,
+        iter_holder_key,
+        iterator_obj,
+        false,
+      )?;
 
       let iterator_getter = rt.alloc_function_value(move |_rt, _this, _args| Ok(iterator_obj))?;
       rt.with_stack_roots(&[iterable_obj, iterator_getter], |rt| {
-        let iterator_sym = rt.symbol_iterator()?;
-        rt.define_data_property(iterable_obj, iterator_sym, iterator_getter, true)?;
+        let iterator_sym = webidl_js_runtime::WebIdlJsRuntime::symbol_iterator(rt)?;
+        webidl_js_runtime::JsRuntime::define_data_property(
+          rt,
+          iterable_obj,
+          iterator_sym,
+          iterator_getter,
+          true,
+        )?;
         Ok(())
       })?;
 
@@ -160,7 +196,10 @@ fn generated_bindings_convert_sequence_long_from_iterable() -> Result<(), VmErro
   let _func_root = rt.heap_mut().add_root(func)?;
 
   let iterable = make_numeric_iterable(&mut rt, vec![Value::Number(1.0), Value::Number(2.0)])?;
-  rt.with_host_context(&mut host, |rt| rt.call(func, rt.js_undefined(), &[iterable]))?;
+  rt.with_host_context(&mut host, |rt| {
+    let this = rt.js_undefined();
+    rt.call(func, this, &[iterable])
+  })?;
 
   assert!(host.called.get());
   let received = host.received.borrow().clone();
@@ -189,7 +228,10 @@ fn generated_bindings_enforce_max_sequence_length() -> Result<(), VmError> {
 
   let iterable = make_numeric_iterable(&mut rt, vec![Value::Number(1.0), Value::Number(2.0)])?;
   let err = rt
-    .with_host_context(&mut host, |rt| rt.call(func, rt.js_undefined(), &[iterable]))
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[iterable])
+    })
     .expect_err("expected conversion to throw");
   assert_eq!(thrown_error_name(&mut rt, err)?, "RangeError");
   assert!(!host.called.get(), "host should not be called on conversion error");

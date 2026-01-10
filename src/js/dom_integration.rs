@@ -223,6 +223,7 @@ mod tests {
     ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent, ScriptElementSpec,
     ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
+  use crate::resource::FetchDestination;
 
   struct TestHost {
     dom: Document,
@@ -262,12 +263,12 @@ mod tests {
   impl ScriptLoader for TestHost {
     type Handle = u32;
 
-    fn load_blocking(&mut self, url: &str) -> Result<String> {
+    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
       self.started_loads.push(url.to_string());
       Ok(String::new())
     }
 
-    fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
       self.started_loads.push(url.to_string());
       let handle = self.next_handle;
       self.next_handle = self.next_handle.wrapping_add(1);

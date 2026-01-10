@@ -5,7 +5,7 @@ use crate::js::orchestrator::{CurrentScriptHost, CurrentScriptStateHandle};
 use crate::js::script_scheduler::ScriptId;
 use crate::js::streaming_pipeline::{ClassicScriptPipeline, ClassicScriptPipelineHost, ParseBudget};
 use crate::js::{EventLoop, ScriptType};
-use crate::resource::{FetchedResource, FetchContextKind, ResourceFetcher};
+use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -17,7 +17,8 @@ use std::sync::Arc;
 /// completions via [`ClassicScriptFetcher::poll_complete`].
 pub trait ClassicScriptFetcher {
   /// Start fetching an external script URL.
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()>;
+  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination)
+    -> Result<()>;
 
   /// Poll the next completed fetch, returning `(script_id, source_text)`.
   ///
@@ -43,17 +44,18 @@ impl ResourceFetcherClassicScriptFetcher {
     }
   }
 
-  fn fetch_text(&self, url: &str) -> Result<String> {
+  fn fetch_text(&self, url: &str, destination: FetchDestination) -> Result<String> {
     let res: FetchedResource = self
       .fetcher
-      .fetch_with_context(FetchContextKind::Other, url)?;
+      .fetch_with_request(FetchRequest::new(url, destination))?;
+    ensure_script_mime_sane(&res, url)?;
     Ok(String::from_utf8_lossy(&res.bytes).into_owned())
   }
 }
 
 impl ClassicScriptFetcher for ResourceFetcherClassicScriptFetcher {
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()> {
-    let text = self.fetch_text(url)?;
+  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination) -> Result<()> {
+    let text = self.fetch_text(url, destination)?;
     self.completed.push_back((script_id, text));
     Ok(())
   }
@@ -114,7 +116,12 @@ where
   F: ClassicScriptFetcher + 'static,
   E: ClassicScriptExecutor<Self> + 'static,
 {
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()> {
+  fn start_fetch(
+    &mut self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+  ) -> Result<()> {
     if self.in_flight_fetches.contains_key(&script_id) {
       return Err(Error::Other(format!(
         "duplicate script fetch request (script_id={})",
@@ -122,7 +129,7 @@ where
       )));
     }
     self.in_flight_fetches.insert(script_id, url.to_string());
-    self.fetcher.start_fetch(script_id, url)
+    self.fetcher.start_fetch(script_id, url, destination)
   }
 
   fn execute_script(

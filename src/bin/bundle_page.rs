@@ -26,10 +26,10 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   canonicalize_vary_header_value, compute_vary_key_for_request, ensure_font_mime_sane,
-  ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
+  ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane, ensure_stylesheet_mime_sane,
   offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, CorsMode,
-  DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest,
-  FetchedResource, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+  ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
   DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
@@ -138,7 +138,8 @@ fn default_credentials_mode_for_destination(destination: FetchDestination) -> Fe
     FetchDestination::Fetch
     | FetchDestination::Font
     | FetchDestination::ImageCors
-    | FetchDestination::StyleCors => FetchCredentialsMode::SameOrigin,
+    | FetchDestination::StyleCors
+    | FetchDestination::ScriptCors => FetchCredentialsMode::SameOrigin,
     _ => FetchCredentialsMode::Include,
   }
 }
@@ -2260,6 +2261,9 @@ fn crawl_document(
       FetchDestination::Style | FetchDestination::StyleCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_stylesheet_mime_sane(&res, &url))
       }
+      FetchDestination::Script | FetchDestination::ScriptCors => {
+        ensure_http_success(&res, &url).and_then(|_| ensure_script_mime_sane(&res, &url))
+      }
       FetchDestination::Font => {
         ensure_http_success(&res, &url).and_then(|_| ensure_font_mime_sane(&res, &url))
       }
@@ -2269,7 +2273,6 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
-      FetchDestination::Script | FetchDestination::ScriptCors => ensure_http_success(&res, &url),
       FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
         ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {

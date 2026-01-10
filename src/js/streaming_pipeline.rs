@@ -16,6 +16,7 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
+use crate::resource::FetchDestination;
 
 use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
@@ -81,7 +82,8 @@ pub trait ClassicScriptPipelineHost: CurrentScriptHost + DomHost + Sized + 'stat
   ///
   /// Tests typically record the request and call [`ClassicScriptPipeline::on_fetch_completed`]
   /// manually.
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()>;
+  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination)
+    -> Result<()>;
 
   /// Execute a script block.
   ///
@@ -406,8 +408,13 @@ impl ClassicScriptPipelineState {
   ) -> Result<()> {
     for action in actions {
       match action {
-        ScriptSchedulerAction::StartFetch { script_id, url, .. } => {
-          host.start_fetch(script_id, &url)?;
+        ScriptSchedulerAction::StartFetch {
+          script_id,
+          url,
+          destination,
+          ..
+        } => {
+          host.start_fetch(script_id, &url, destination)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_parser_on = Some(script_id);
@@ -709,7 +716,7 @@ mod tests {
   struct Host {
     dom: Document,
     current_script: CurrentScriptStateHandle,
-    started_fetches: Vec<(ScriptId, String)>,
+    started_fetches: Vec<(ScriptId, String, FetchDestination)>,
     log: Vec<String>,
     assert_dom_state_on_execute: Option<Box<dyn Fn(&Document)>>,
   }
@@ -750,8 +757,15 @@ mod tests {
   }
 
   impl ClassicScriptPipelineHost for Host {
-    fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()> {
-      self.started_fetches.push((script_id, url.to_string()));
+    fn start_fetch(
+      &mut self,
+      script_id: ScriptId,
+      url: &str,
+      destination: FetchDestination,
+    ) -> Result<()> {
+      self
+        .started_fetches
+        .push((script_id, url.to_string(), destination));
       Ok(())
     }
 
@@ -1032,7 +1046,7 @@ mod tests {
     p.finish_input()?;
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
-    let (_id, url) = &host.started_fetches[0];
+    let (_id, url, _dest) = &host.started_fetches[0];
     assert_eq!(url, "https://ex/a.js");
     Ok(())
   }

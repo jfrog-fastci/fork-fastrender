@@ -19,7 +19,8 @@ use super::ResourceFetcher;
 use super::ResourcePolicy;
 use super::MAX_ALIAS_HOPS;
 use super::{
-  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
+  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
+  ensure_stylesheet_mime_sane,
 };
 use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage, ResourceError};
@@ -3622,9 +3623,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Image | FetchContextKind::ImageCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_image_mime_sane(&res, url))
             }
-            FetchContextKind::Other | FetchContextKind::Document | FetchContextKind::Iframe => {
-              Ok(())
-            }
+            FetchContextKind::Other => match request.destination {
+              super::FetchDestination::Script | super::FetchDestination::ScriptCors => {
+                ensure_http_success(&res, url).and_then(|_| ensure_script_mime_sane(&res, url))
+              }
+              _ => Ok(()),
+            },
+            FetchContextKind::Document | FetchContextKind::Iframe => Ok(()),
           };
 
           if let Err(err) = sanity_check {

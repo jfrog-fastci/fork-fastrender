@@ -19,6 +19,9 @@ pub use crate::js::webidl_runtime_vmjs::{
   NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
 };
 
+#[deprecated(note = "Use fastrender::js::webidl::legacy::VmJsRuntime instead.")]
+pub use legacy::VmJsRuntime;
+
 /// Legacy bindings runtime that operates on a heap-only value model.
 ///
 /// This runtime cannot execute author scripts and exists only as a temporary compatibility layer

@@ -180,11 +180,19 @@ impl FixtureHost {
 impl ScriptLoader for FixtureHost {
   type Handle = usize;
 
-  fn load_blocking(&mut self, url: &str) -> Result<String> {
+  fn load_blocking(
+    &mut self,
+    url: &str,
+    _destination: fastrender::resource::FetchDestination,
+  ) -> Result<String> {
     read_script_source(url)
   }
 
-  fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+  fn start_load(
+    &mut self,
+    url: &str,
+    _destination: fastrender::resource::FetchDestination,
+  ) -> Result<Self::Handle> {
     if self.handles_by_url.contains_key(url) {
       return Err(Error::Other(format!(
         "duplicate start_load call for script URL {url:?}"

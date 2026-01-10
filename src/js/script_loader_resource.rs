@@ -1,6 +1,6 @@
 use crate::error::{Error, ResourceError, Result};
 use crate::js::ScriptLoader;
-use crate::resource::ResourceFetcher;
+use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher};
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -9,7 +9,7 @@ const DEFAULT_MAX_WORKERS: usize = 8;
 
 #[derive(Debug)]
 struct WorkerState {
-  queue: VecDeque<(u64, String)>,
+  queue: VecDeque<(u64, FetchDestination, String)>,
   shutdown: bool,
 }
 
@@ -73,8 +73,9 @@ impl<F: ResourceFetcher + 'static> ResourceScriptLoader<F> {
     }
   }
 
-  fn fetch_and_decode(fetcher: &F, url: &str) -> Result<String> {
-    let res = fetcher.fetch(url)?;
+  fn fetch_and_decode(fetcher: &F, destination: FetchDestination, url: &str) -> Result<String> {
+    let res = fetcher.fetch_with_request(FetchRequest::new(url, destination))?;
+    ensure_script_mime_sane(&res, url)?;
     String::from_utf8(res.bytes).map_err(|source| {
       Error::Resource(
         ResourceError::new(url, "script response was not valid UTF-8").with_source(source),
@@ -89,7 +90,7 @@ fn script_loader_thread_main<F: ResourceFetcher + 'static>(
   completion_tx: mpsc::Sender<(u64, Result<String>)>,
 ) {
   loop {
-    let (handle, url) = {
+    let (handle, destination, url) = {
       let (lock, cv) = &*state;
       let mut st = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
       while st.queue.is_empty() && !st.shutdown {
@@ -104,7 +105,7 @@ fn script_loader_thread_main<F: ResourceFetcher + 'static>(
       entry
     };
 
-    let result = ResourceScriptLoader::<F>::fetch_and_decode(&fetcher, &url);
+    let result = ResourceScriptLoader::<F>::fetch_and_decode(&fetcher, destination, &url);
     let _ = completion_tx.send((handle, result));
   }
 }
@@ -112,11 +113,11 @@ fn script_loader_thread_main<F: ResourceFetcher + 'static>(
 impl<F: ResourceFetcher + 'static> ScriptLoader for ResourceScriptLoader<F> {
   type Handle = u64;
 
-  fn load_blocking(&mut self, url: &str) -> Result<String> {
-    Self::fetch_and_decode(&self.fetcher, url)
+  fn load_blocking(&mut self, url: &str, destination: FetchDestination) -> Result<String> {
+    Self::fetch_and_decode(&self.fetcher, destination, url)
   }
 
-  fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+  fn start_load(&mut self, url: &str, destination: FetchDestination) -> Result<Self::Handle> {
     let handle = self.next_handle;
     self.next_handle += 1;
 
@@ -127,7 +128,7 @@ impl<F: ResourceFetcher + 'static> ScriptLoader for ResourceScriptLoader<F> {
         "start_load called after ResourceScriptLoader shutdown".to_string(),
       ));
     }
-    st.queue.push_back((handle, url.to_string()));
+    st.queue.push_back((handle, destination, url.to_string()));
     cv.notify_one();
 
     Ok(handle)
@@ -262,8 +263,8 @@ mod tests {
 
     let mut loader = ResourceScriptLoader::with_max_workers(fetcher, 2);
 
-    let h1 = loader.start_load("a.js")?;
-    let h2 = loader.start_load("b.js")?;
+    let h1 = loader.start_load("a.js", FetchDestination::Script)?;
+    let h2 = loader.start_load("b.js", FetchDestination::Script)?;
 
     // b.js should complete first.
     let (got_handle, got_source) = loop {
@@ -296,7 +297,7 @@ mod tests {
     fetcher.insert("bad.js", vec![0xFF, 0xFE, 0xFD]);
     let mut loader = ResourceScriptLoader::with_max_workers(fetcher, 1);
 
-    let _handle = loader.start_load("bad.js")?;
+    let _handle = loader.start_load("bad.js", FetchDestination::Script)?;
 
     let err = loop {
       match loader.poll_complete() {
@@ -323,7 +324,7 @@ mod tests {
     let release = fetcher.gate("blocked.js");
 
     let mut loader = ResourceScriptLoader::with_max_workers(ArcFetcher(fetcher.clone()), 1);
-    let _handle = loader.start_load("blocked.js")?;
+    let _handle = loader.start_load("blocked.js", FetchDestination::Script)?;
 
     // Ensure the worker thread has started fetching and is now blocked.
     started_rx.recv().unwrap();

@@ -2,6 +2,7 @@ use fastrender::js::{
   parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher, CurrentScriptHost,
   DomHost, EventLoop, ScriptId, ScriptType,
 };
+use fastrender::resource::FetchDestination;
 use fastrender::{dom2, Error, Result};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -33,7 +34,17 @@ impl FakeFetcher {
 }
 
 impl ClassicScriptFetcher for FakeFetcher {
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str) -> Result<()> {
+  fn start_fetch(
+    &mut self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+  ) -> Result<()> {
+    assert_eq!(
+      destination,
+      FetchDestination::Script,
+      "classic <script src> fetches should use FetchDestination::Script"
+    );
     self.started_urls.borrow_mut().push(url.to_string());
     self.started_by_url.insert(url.to_string(), script_id);
     Ok(())

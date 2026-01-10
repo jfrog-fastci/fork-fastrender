@@ -5,6 +5,7 @@ use crate::js::{
   DocumentLifecycle, DocumentLifecycleHost, EventLoop, ScriptElementSpec, ScriptScheduler,
   ScriptSchedulerAction, ScriptType, TaskSource,
 };
+use crate::resource::FetchDestination;
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
@@ -30,7 +31,12 @@ impl Drop for JsExecutionGuard {
 /// external scripts and unit tests drive completion via
 /// [`HtmlLoadOrchestrator::queue_fetch_completed`].
 pub trait ScriptFetcher {
-  fn start_fetch(&mut self, script_id: crate::js::ScriptId, url: &str) -> Result<()>;
+  fn start_fetch(
+    &mut self,
+    script_id: crate::js::ScriptId,
+    url: &str,
+    destination: FetchDestination,
+  ) -> Result<()>;
 }
 
 /// Script execution adapter used by [`HtmlLoadOrchestrator`].
@@ -275,8 +281,13 @@ where
   ) -> Result<()> {
     for action in actions {
       match action {
-        ScriptSchedulerAction::StartFetch { script_id, url, .. } => {
-          self.fetcher.start_fetch(script_id, &url)?;
+        ScriptSchedulerAction::StartFetch {
+          script_id,
+          url,
+          destination,
+          ..
+        } => {
+          self.fetcher.start_fetch(script_id, &url, destination)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_on = Some(script_id);
@@ -422,12 +433,17 @@ mod tests {
 
   #[derive(Default)]
   struct ManualFetcher {
-    started: Vec<(crate::js::ScriptId, String)>,
+    started: Vec<(crate::js::ScriptId, String, FetchDestination)>,
   }
 
   impl ScriptFetcher for ManualFetcher {
-    fn start_fetch(&mut self, script_id: crate::js::ScriptId, url: &str) -> Result<()> {
-      self.started.push((script_id, url.to_string()));
+    fn start_fetch(
+      &mut self,
+      script_id: crate::js::ScriptId,
+      url: &str,
+      destination: FetchDestination,
+    ) -> Result<()> {
+      self.started.push((script_id, url.to_string(), destination));
       Ok(())
     }
   }
@@ -497,7 +513,7 @@ mod tests {
 
     assert_eq!(host.executor.log, Vec::<String>::new());
     assert_eq!(host.fetcher.started.len(), 1);
-    let (blocking_id, _) = host.fetcher.started[0].clone();
+    let (blocking_id, _, _) = host.fetcher.started[0].clone();
     assert_eq!(host.blocked_on, Some(blocking_id));
 
     host.queue_fetch_completed(blocking_id, "ext-a".to_string(), &mut event_loop)?;
@@ -625,7 +641,7 @@ mod tests {
       .fetcher
       .started
       .iter()
-      .map(|(_, url)| url.as_str())
+      .map(|(_, url, _)| url.as_str())
       .collect();
     assert_eq!(
       urls,
@@ -765,11 +781,7 @@ mod tests {
     host.start(&mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert_eq!(
-      host.fetcher.started,
-      Vec::<(crate::js::ScriptId, String)>::new(),
-      "invalid src must not start a fetch"
-    );
+    assert!(host.fetcher.started.is_empty(), "invalid src must not start a fetch");
     assert_eq!(
       host.executor.log,
       Vec::<String>::new(),

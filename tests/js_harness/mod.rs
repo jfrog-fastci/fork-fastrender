@@ -624,7 +624,11 @@ impl DomHost for HostState {
 impl ScriptLoader for HostState {
   type Handle = usize;
 
-  fn load_blocking(&mut self, url: &str) -> Result<String> {
+  fn load_blocking(
+    &mut self,
+    url: &str,
+    _destination: fastrender::resource::FetchDestination,
+  ) -> Result<String> {
     self
       .loader
       .sources
@@ -633,7 +637,11 @@ impl ScriptLoader for HostState {
       .ok_or_else(|| Error::Other(format!("no registered script source for url={url}")))
   }
 
-  fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+  fn start_load(
+    &mut self,
+    url: &str,
+    _destination: fastrender::resource::FetchDestination,
+  ) -> Result<Self::Handle> {
     let handle = self.loader.next_handle;
     self.loader.next_handle += 1;
     self

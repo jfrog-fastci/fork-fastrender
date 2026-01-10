@@ -1041,7 +1041,7 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
-      Self::Script | Self::ScriptCors | Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
+      Self::Font | Self::Script | Self::ScriptCors | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
     }
   }
 
@@ -1079,7 +1079,7 @@ impl FetchDestination {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
       Self::Font | Self::ImageCors | Self::StyleCors | Self::ScriptCors | Self::Fetch => "cors",
-      Self::Style | Self::Script | Self::Image | Self::Other => "no-cors",
+      Self::Style | Self::Image | Self::Script | Self::Other => "no-cors",
     }
   }
 
@@ -1132,6 +1132,9 @@ pub(crate) fn http_browser_request_profile_for_url(url: &str) -> FetchDestinatio
   match ext {
     None => FetchDestination::Document,
     Some(ext) if ext.eq_ignore_ascii_case("css") => FetchDestination::Style,
+    Some(ext) if ext.eq_ignore_ascii_case("js") || ext.eq_ignore_ascii_case("mjs") => {
+      FetchDestination::Script
+    }
     Some(ext)
       if ext.eq_ignore_ascii_case("woff")
         || ext.eq_ignore_ascii_case("woff2")
@@ -1316,6 +1319,9 @@ impl<'a> FetchRequest<'a> {
   ///   initiated via HTML CORS settings attributes (e.g. `<link rel=stylesheet crossorigin>` /
   ///   `<img crossorigin>`). The default/empty keyword corresponds to the `"anonymous"` state,
   ///   which maps to `same-origin` credentials.
+  /// - [`FetchDestination::ScriptCors`] is a CORS-mode request initiated via a `<script crossorigin>`
+  ///   settings attribute. The default/empty keyword corresponds to the `"anonymous"` state, which
+  ///   maps to `same-origin` credentials.
   /// - [`FetchDestination::Font`] requests are fetched in `cors` mode and default to `same-origin`
   ///   credentials, matching the CSS font fetch algorithms used by browsers.
   /// - Other destinations keep the historical default.
@@ -2877,6 +2883,16 @@ fn mime_is_svg(mime: &str) -> bool {
   starts_with_ignore_ascii_case(trim_http_whitespace(mime), "image/svg")
 }
 
+fn mime_is_javascript(mime: &str) -> bool {
+  let mime = trim_http_whitespace(mime);
+  mime.eq_ignore_ascii_case("application/javascript")
+    || mime.eq_ignore_ascii_case("text/javascript")
+    || mime.eq_ignore_ascii_case("application/ecmascript")
+    || mime.eq_ignore_ascii_case("text/ecmascript")
+    || mime.eq_ignore_ascii_case("application/x-ecmascript")
+    || mime.eq_ignore_ascii_case("application/x-javascript")
+}
+
 fn url_looks_like_suffix(url: &str, suffix: &str) -> bool {
   let url = url_without_query_fragment(url);
   ends_with_ignore_ascii_case(url, suffix)
@@ -3109,6 +3125,62 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
       "unexpected markup response body",
     ));
   }
+  Ok(())
+}
+
+/// Best-effort MIME sanity check for fetched scripts.
+///
+/// When enabled, prevents obvious non-script responses (notably bot-mitigation HTML pages) from
+/// being treated as executable JavaScript.
+///
+/// This intentionally mirrors the "be strict about `nosniff`, otherwise just catch obvious cases"
+/// approach used by [`ensure_stylesheet_mime_sane`].
+pub fn ensure_script_mime_sane(resource: &FetchedResource, requested_url: &str) -> Result<()> {
+  if !strict_mime_checks_enabled() || resource.status.is_none() {
+    return Ok(());
+  }
+
+  if resource.nosniff {
+    let content_type = resource
+      .content_type
+      .as_deref()
+      .map(trim_http_whitespace)
+      .filter(|ct| !ct.is_empty())
+      .ok_or_else(|| {
+        response_resource_error(
+          resource,
+          requested_url,
+          "X-Content-Type-Options: nosniff blocked script with missing content-type",
+        )
+      })?;
+    let mime = content_type_mime(content_type);
+    if !mime_is_javascript(mime) {
+      return Err(response_resource_error(
+        resource,
+        requested_url,
+        format!(
+          "X-Content-Type-Options: nosniff blocked script with unexpected content-type {mime}"
+        ),
+      ));
+    }
+  }
+
+  if let Some(content_type) = resource.content_type.as_deref() {
+    let mime = content_type_mime(content_type);
+    if mime_is_html(mime)
+      || starts_with_ignore_ascii_case(mime, "image/")
+      || starts_with_ignore_ascii_case(mime, "font/")
+      || starts_with_ignore_ascii_case(mime, "audio/")
+      || starts_with_ignore_ascii_case(mime, "video/")
+    {
+      return Err(response_resource_error(
+        resource,
+        requested_url,
+        format!("unexpected content-type {mime}"),
+      ));
+    }
+  }
+
   Ok(())
 }
 
@@ -4012,8 +4084,8 @@ fn build_http_header_pairs<'a>(
         || profile == FetchDestination::StyleCors
         || profile == FetchDestination::ScriptCors
       {
-        // For CORS-mode image/stylesheet requests, always send an `Origin` header. When a client
-        // origin isn't available, fall back to using the target origin as a best-effort
+        // For CORS-mode image/stylesheet/script requests, always send an `Origin` header. When a
+        // client origin isn't available, fall back to using the target origin as a best-effort
         // approximation.
         if let Some(parsed) = parsed_target_url.as_ref() {
           if let Some((origin, _)) = profile.origin_and_referer(parsed) {
@@ -12185,6 +12257,55 @@ mod tests {
     assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("empty"));
     assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("no-cors"));
     assert_eq!(header_value(&headers, "Origin"), None);
+  }
+
+  #[test]
+  fn http_headers_script_profile_sets_script_dest_and_no_cors_mode() {
+    let client_origin =
+      origin_from_url("https://client.example.com/page.html").expect("client origin");
+    let req = FetchRequest::new("https://cdn.other.com/app.js", FetchDestination::Script)
+      .with_client_origin(&client_origin);
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    assert_eq!(header_value(&headers, "Accept"), Some("*/*"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("script"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("no-cors"));
+    assert_eq!(header_value(&headers, "Origin"), None);
+  }
+
+  #[test]
+  fn http_headers_script_cors_profile_sets_script_dest_and_cors_mode() {
+    let client_origin =
+      origin_from_url("https://client.example.com/page.html").expect("client origin");
+    let req = FetchRequest::new("https://cdn.other.com/app.js", FetchDestination::ScriptCors)
+      .with_client_origin(&client_origin);
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    assert_eq!(header_value(&headers, "Accept"), Some("*/*"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("script"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("cors"));
+    assert_eq!(
+      header_value(&headers, "Origin"),
+      Some("https://client.example.com")
+    );
   }
 
   #[test]

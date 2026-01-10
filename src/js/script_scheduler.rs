@@ -1,5 +1,6 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
+use crate::resource::FetchDestination;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -39,12 +40,12 @@ pub trait ScriptLoader {
   /// Load the script resource synchronously.
   ///
   /// Used for parser-blocking external scripts.
-  fn load_blocking(&mut self, url: &str) -> Result<String>;
+  fn load_blocking(&mut self, url: &str, destination: FetchDestination) -> Result<String>;
 
   /// Start loading the script resource in a non-blocking way.
   ///
   /// Used for async and defer scripts.
-  fn start_load(&mut self, url: &str) -> Result<Self::Handle>;
+  fn start_load(&mut self, url: &str, destination: FetchDestination) -> Result<Self::Handle>;
 
   /// Poll for the next completed non-blocking script load.
   ///
@@ -191,11 +192,16 @@ where
       })?;
       return Ok(());
     };
+    let destination = if spec.crossorigin.is_some() {
+      FetchDestination::ScriptCors
+    } else {
+      FetchDestination::Script
+    };
 
     // Async takes priority over defer. Also: non-parser-inserted external scripts are (roughly)
     // async by default; defer is only meaningful for parser-inserted scripts.
     if spec.async_attr || !spec.parser_inserted {
-      let handle = host.start_load(src_url)?;
+      let handle = host.start_load(src_url, destination)?;
       if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
@@ -206,7 +212,7 @@ where
     }
 
     if spec.defer_attr {
-      let handle = host.start_load(src_url)?;
+      let handle = host.start_load(src_url, destination)?;
       if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
         return Err(Error::Other(format!(
           "Script loader returned a duplicate handle: {handle:?}"
@@ -225,7 +231,7 @@ where
     if spec.parser_inserted && self.js_execution_depth.get() == 0 {
       event_loop.perform_microtask_checkpoint(host)?;
     }
-    let script_text = host.load_blocking(src_url)?;
+    let script_text = host.load_blocking(src_url, destination)?;
     self
       .options
       .check_script_source(&script_text, &format!("source=external url={src_url}"))?;
@@ -392,6 +398,7 @@ pub enum ScriptSchedulerAction<NodeId> {
     script_id: ScriptId,
     node_id: NodeId,
     url: String,
+    destination: FetchDestination,
   },
   /// Block the HTML parser until the referenced script has executed.
   ///
@@ -567,10 +574,16 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
+          let destination = if element.crossorigin.is_some() {
+            FetchDestination::ScriptCors
+          } else {
+            FetchDestination::Script
+          };
           actions.push(ScriptSchedulerAction::StartFetch {
             script_id: id,
             node_id: node_id.clone(),
             url,
+            destination,
           });
 
           // Only parser-inserted blocking scripts are allowed to block parsing.
@@ -819,7 +832,7 @@ mod tests {
   impl ScriptLoader for TestHost {
     type Handle = usize;
 
-    fn load_blocking(&mut self, url: &str) -> Result<String> {
+    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
       self
         .loader
         .blocking_sources
@@ -828,7 +841,7 @@ mod tests {
         .ok_or_else(|| crate::error::Error::Other(format!("no blocking source for url={url}")))
     }
 
-    fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
       let handle = self.loader.next_handle;
       self.loader.next_handle += 1;
       self.loader.handles_by_url.insert(url.to_string(), handle);
@@ -1305,7 +1318,7 @@ mod state_machine_tests {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
     host: Host,
-    started_fetches: Vec<(ScriptId, u32, String)>,
+    started_fetches: Vec<(ScriptId, u32, String, FetchDestination)>,
     blocked_parser_on: Option<ScriptId>,
   }
 
@@ -1327,8 +1340,11 @@ mod state_machine_tests {
             script_id,
             node_id,
             url,
+            destination,
           } => {
-            self.started_fetches.push((script_id, node_id, url));
+            self
+              .started_fetches
+              .push((script_id, node_id, url, destination));
           }
           ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
             self.blocked_parser_on = Some(script_id);
@@ -1529,7 +1545,12 @@ mod state_machine_tests {
     assert_eq!(h.blocked_parser_on, Some(blocking_id));
     assert_eq!(
       h.started_fetches,
-      vec![(blocking_id, 1u32, "https://example.com/a.js".to_string())]
+      vec![(
+        blocking_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::Script,
+      )]
     );
 
     // Parser cannot progress to the next `<script>` until the blocking script fetch completes and

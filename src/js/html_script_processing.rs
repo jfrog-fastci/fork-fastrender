@@ -272,13 +272,18 @@ where
   Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
     + 'static,
 {
-  let mut start_fetches: Vec<(ScriptId, String)> = Vec::new();
+  let mut start_fetches: Vec<(ScriptId, String, crate::resource::FetchDestination)> = Vec::new();
   let mut blocking: HashSet<ScriptId> = HashSet::new();
 
   for action in actions {
     match action {
-      ScriptSchedulerAction::StartFetch { script_id, url, .. } => {
-        start_fetches.push((script_id, url));
+      ScriptSchedulerAction::StartFetch {
+        script_id,
+        url,
+        destination,
+        ..
+      } => {
+        start_fetches.push((script_id, url, destination));
       }
       ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
         blocking.insert(script_id);
@@ -310,9 +315,9 @@ where
     }
   }
 
-  for (script_id, url) in start_fetches {
+  for (script_id, url, destination) in start_fetches {
     if blocking.contains(&script_id) {
-      let source_text = loader.load_blocking(&url)?;
+      let source_text = loader.load_blocking(&url, destination)?;
       let actions = scheduler.fetch_completed(script_id, source_text)?;
       apply_actions(
         scheduler,
@@ -326,7 +331,7 @@ where
         actions,
       )?;
     } else {
-      let handle = loader.start_load(&url)?;
+      let handle = loader.start_load(&url, destination)?;
       if pending_fetches.insert(handle, script_id).is_some() {
         return Err(Error::Other(format!(
           "Script loader returned duplicate handle {handle:?} for url={url}"
@@ -578,7 +583,11 @@ mod tests {
   impl ScriptLoader for ManualLoader {
     type Handle = usize;
 
-    fn load_blocking(&mut self, url: &str) -> Result<String> {
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: crate::resource::FetchDestination,
+    ) -> Result<String> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {
         log.borrow_mut().push(format!("load_blocking:{url}"));
@@ -590,7 +599,11 @@ mod tests {
         .ok_or_else(|| Error::Other(format!("no script source for blocking url={url}")))
     }
 
-    fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: crate::resource::FetchDestination,
+    ) -> Result<Self::Handle> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {
         log.borrow_mut().push(format!("start_load:{url}"));

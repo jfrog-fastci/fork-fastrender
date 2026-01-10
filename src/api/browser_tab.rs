@@ -756,8 +756,13 @@ impl BrowserTabHost {
         break;
       }
       match action {
-        ScriptSchedulerAction::StartFetch { script_id, url, .. } => {
-          self.start_fetch(script_id, url, event_loop)?;
+        ScriptSchedulerAction::StartFetch {
+          script_id,
+          url,
+          destination,
+          ..
+        } => {
+          self.start_fetch(script_id, url, destination, event_loop)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           if self.executed.contains(&script_id) {
@@ -948,6 +953,7 @@ impl BrowserTabHost {
     &mut self,
     script_id: ScriptId,
     url: String,
+    destination: FetchDestination,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     if let Some(csp) = self.csp.as_ref() {
@@ -982,7 +988,7 @@ impl BrowserTabHost {
       .is_some_and(|entry| entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr);
 
     if is_blocking {
-      match self.fetch_script_source(script_id, &url) {
+      match self.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
           let actions = self.scheduler.fetch_completed(script_id, source)?;
           self.apply_scheduler_actions(actions, event_loop)?;
@@ -996,8 +1002,9 @@ impl BrowserTabHost {
       return Ok(());
     }
 
+    let destination = destination;
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      match host.fetch_script_source(script_id, &url) {
+      match host.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
           let actions = host.scheduler.fetch_completed(script_id, source)?;
           host.apply_scheduler_actions(actions, event_loop)?;
@@ -1013,7 +1020,12 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn fetch_script_source(&self, script_id: ScriptId, url: &str) -> Result<String> {
+  fn fetch_script_source(
+    &self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+  ) -> Result<String> {
     let mut span = self.trace.span("js.script.fetch", "js");
     span.arg_u64("script_id", script_id.as_u64());
     span.arg_str("url", url);
@@ -1044,12 +1056,6 @@ impl BrowserTabHost {
     }
 
     let fetcher = self.document.fetcher();
-    let is_cors = spec.crossorigin.is_some();
-    let destination = if is_cors {
-      FetchDestination::ScriptCors
-    } else {
-      FetchDestination::Script
-    };
     let mut req = FetchRequest::new(url, destination);
     if let Some(referrer) = self.document_url.as_deref() {
       req = req.with_referrer_url(referrer);
@@ -1072,6 +1078,7 @@ impl BrowserTabHost {
     )?;
 
     crate::resource::ensure_http_success(&resource, url)?;
+    crate::resource::ensure_script_mime_sane(&resource, url)?;
     if let Some(cors_mode) = spec.crossorigin {
       if crate::resource::cors_enforcement_enabled() {
         crate::resource::ensure_cors_allows_origin(
@@ -1087,7 +1094,6 @@ impl BrowserTabHost {
         Error::Other(format!("SRI blocked script {url}: {message}"))
       })?;
     }
-
     Ok(String::from_utf8_lossy(&resource.bytes).to_string())
   }
 }
@@ -2071,6 +2077,8 @@ mod tests {
   use std::rc::Rc;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
+
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use vm_js::Value;
 
   use tempfile::tempdir;
@@ -2113,6 +2121,89 @@ mod tests {
     );
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
+  }
+
+  #[test]
+  fn external_script_fetch_uses_script_destinations() -> Result<()> {
+    #[derive(Default)]
+    struct DestinationRecordingFetcher {
+      calls: Arc<Mutex<Vec<(String, FetchDestination)>>>,
+    }
+
+    impl ResourceFetcher for DestinationRecordingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Err(Error::Other("unexpected call to ResourceFetcher::fetch".to_string()))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .expect("calls lock")
+          .push((req.url.to_string(), req.destination));
+
+        let body = match req.url {
+          "https://example.com/a.js" => "A",
+          "https://example.com/b.js" => "B",
+          _ => "",
+        };
+        let mut res =
+          FetchedResource::new(body.as_bytes().to_vec(), Some("application/javascript".to_string()));
+        // Mirror HTTP fetches so downstream validations (status/CORS) remain deterministic.
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        // Allow CORS-mode scripts to pass enforcement if enabled.
+        res.access_control_allow_origin = Some("*".to_string());
+        res.access_control_allow_credentials = true;
+        Ok(res)
+      }
+    }
+
+    let calls: Arc<Mutex<Vec<(String, FetchDestination)>>> = Arc::new(Mutex::new(Vec::new()));
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(DestinationRecordingFetcher {
+      calls: Arc::clone(&calls),
+    });
+
+    let renderer = crate::FastRender::builder().fetcher(fetcher).build()?;
+    let document = BrowserDocumentDom2::new(
+      renderer,
+      r#"<!doctype html>
+        <script src="https://example.com/a.js"></script>
+        <script src="https://example.com/b.js" crossorigin></script>"#,
+      RenderOptions::default(),
+    )?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(
+      Some("https://example.com/doc.html".to_string()),
+      ReferrerPolicy::default(),
+    )?;
+    let mut event_loop = EventLoop::new();
+
+    let mut discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
+    assert_eq!(discovered.len(), 2);
+    for (node_id, spec) in discovered.drain(..) {
+      let base_url_at_discovery = spec.base_url.clone();
+      host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    }
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let mut calls = calls.lock().expect("calls lock").clone();
+    // Ignore any incidental requests and focus on `<script src>` fetches.
+    calls.retain(|(url, _)| url.ends_with(".js"));
+    calls.sort_by(|(a, _), (b, _)| a.cmp(b));
+    assert_eq!(
+      calls,
+      vec![
+        ("https://example.com/a.js".to_string(), FetchDestination::Script),
+        ("https://example.com/b.js".to_string(), FetchDestination::ScriptCors),
+      ]
+    );
+    Ok(())
   }
 
   #[derive(Default)]
