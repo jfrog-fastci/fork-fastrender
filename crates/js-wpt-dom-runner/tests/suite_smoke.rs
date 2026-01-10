@@ -132,6 +132,61 @@ fn suite_event_loop_tests_pass() {
 }
 
 #[test]
+fn suite_url_test_passes_or_is_skipped_depending_on_backend() {
+  let corpus_root = corpus_root();
+
+  let backend = backend_quickjs_or_vmjs();
+  let report = run_suite(&SuiteConfig {
+    wpt_root: corpus_root.clone(),
+    manifest_path: corpus_root.join("expectations.toml"),
+    shard: None,
+    filter: Some("url/urlsearchparams-live.window.js".to_string()),
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    fail_on: FailOn::New,
+    backend,
+  })
+  .expect("run suite");
+
+  assert_eq!(report.summary.total, 1, "expected a single URL test result");
+  assert_eq!(report.summary.failed, 0);
+  assert_eq!(report.summary.timed_out, 0);
+  assert_eq!(report.summary.errored, 0);
+  assert!(
+    report.summary.mismatches.is_none(),
+    "url suite should have no mismatches: {report:#?}"
+  );
+
+  let urlsearchparams_live = report
+    .results
+    .iter()
+    .find(|r| r.id == "url/urlsearchparams-live.window.js")
+    .expect("missing url/urlsearchparams-live.window.js");
+
+  match backend {
+    BackendSelection::VmJs => {
+      assert_eq!(
+        urlsearchparams_live.outcome,
+        TestOutcome::Passed,
+        "urlsearchparams-live should pass under vm-js: {urlsearchparams_live:#?}"
+      );
+      assert_eq!(report.summary.passed, 1);
+      assert_eq!(report.summary.skipped, 0);
+    }
+    BackendSelection::QuickJs => {
+      assert_eq!(
+        urlsearchparams_live.outcome,
+        TestOutcome::Skipped,
+        "urlsearchparams-live should be skipped under QuickJS: {urlsearchparams_live:#?}"
+      );
+      assert_eq!(report.summary.passed, 0);
+      assert_eq!(report.summary.skipped, 1);
+    }
+    BackendSelection::Auto => unreachable!("suite smoke should never use BackendSelection::Auto"),
+  }
+}
+
+#[test]
 #[cfg(feature = "vmjs")]
 fn suite_events_tests_pass() {
   let corpus_root = corpus_root();
