@@ -213,6 +213,13 @@ Behavior summary:
   map (i.e. `Option<Url> = None`).
 * Sorting is done in **descending UTF-16 code unit order**, so resolution can be implemented with
   “first match wins” iteration later.
+* JSON object key order and duplicate keys:
+  * Input JSON is parsed into an order-preserving representation (matching the spec’s use of
+    “ordered maps”).
+  * Repeated top-level keys (e.g. multiple `"imports"` properties) are handled as “last one wins”
+    (`parse_import_map_string` consults the last occurrence).
+  * Repeated keys inside `"imports"`/`"scopes"` are resolved after normalization; the last occurrence
+    wins.
 
 ### 2) Create/register parse result (spec concept; not implemented yet)
 
