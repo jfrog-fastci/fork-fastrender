@@ -98,3 +98,54 @@ fn non_strict_assignment_to_non_writable_property_is_silent() {
     .unwrap();
   assert_eq!(value, Value::Number(1.0));
 }
+
+#[test]
+fn strict_method_call_on_primitive_preserves_primitive_this() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        String.prototype.t = function () { "use strict"; return typeof this; };
+        ("a").t()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "string");
+}
+
+#[test]
+fn strict_getter_on_primitive_preserves_primitive_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        Object.defineProperty(String.prototype, "g", {
+          get: function () { "use strict"; return typeof this; },
+        });
+        ("a").g
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "string");
+}
+
+#[test]
+fn strict_assignment_to_primitive_property_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        "use strict";
+        try { ("a").x = 1; "no"; } catch(e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn non_strict_assignment_to_primitive_property_is_silent() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"("a").x = 1; ("a").x === undefined"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

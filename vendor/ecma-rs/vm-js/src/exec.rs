@@ -889,7 +889,12 @@ struct Evaluator<'a> {
 #[derive(Clone, Copy, Debug)]
 enum Reference<'a> {
   Binding(&'a str),
-  Property { object: GcObject, key: PropertyKey },
+  /// A property reference.
+  ///
+  /// Note: per ECMA-262, the reference stores the *base value* (which may be a primitive). Property
+  /// access/assignment performs `ToObject(base)` for the actual `[[Get]]`/`[[Set]]` operation but
+  /// uses the original base value as the `receiver` / call `this` binding.
+  Property { base: Value, key: PropertyKey },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3056,16 +3061,13 @@ impl<'a> Evaluator<'a> {
       return Ok(Value::Undefined);
     }
 
-    // `MemberExpression` uses `ToObject` on non-nullish primitives.
+    // `MemberExpression` creates a property reference for any non-nullish base value. The actual
+    // `ToObject` coercion happens when the reference is dereferenced (`GetValue` / `PutValue`) so
+    // the original base value can be preserved as the call/receiver `this`.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let object = self.to_object_operator(&mut key_scope, base)?;
-    key_scope.push_root(Value::Object(object))?;
     let key_s = key_scope.alloc_string(&expr.right)?;
-    let reference = Reference::Property {
-      object,
-      key: PropertyKey::from_string(key_s),
-    };
+    let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
     self.get_value_from_reference(&mut key_scope, &reference)
   }
 
@@ -3079,16 +3081,15 @@ impl<'a> Evaluator<'a> {
       return Ok(Value::Undefined);
     }
 
-    // `ComputedMemberExpression` uses `ToObject` on non-nullish primitives and `ToPropertyKey` on
-    // the member value, both of which may allocate and trigger GC.
+    // `ComputedMemberExpression` performs `ToPropertyKey` on the member expression (which may
+    // allocate and invoke user code) before the base is coerced via `ToObject` when the reference
+    // is dereferenced.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let object = self.to_object_operator(&mut key_scope, base)?;
-    key_scope.push_root(Value::Object(object))?;
     let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
     key_scope.push_root(member_value)?;
     let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-    let reference = Reference::Property { object, key };
+    let reference = Reference::Property { base, key };
     self.get_value_from_reference(&mut key_scope, &reference)
   }
 
@@ -3105,13 +3106,18 @@ impl<'a> Evaluator<'a> {
           return Err(VmError::Unimplemented("optional chaining member access"));
         }
         let base = self.eval_expr(scope, &member.stx.left)?;
+        if is_nullish(base) {
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Cannot convert undefined or null to object",
+          )?);
+        }
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         Ok(Reference::Property {
-          object,
+          base,
           key: PropertyKey::from_string(key_s),
         })
       }
@@ -3124,26 +3130,36 @@ impl<'a> Evaluator<'a> {
         let base = self.eval_expr(scope, &member.stx.object)?;
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        Ok(Reference::Property { object, key })
+        if is_nullish(base) {
+          return Err(throw_type_error(
+            self.vm,
+            &mut key_scope,
+            "Cannot convert undefined or null to object",
+          )?);
+        }
+        Ok(Reference::Property { base, key })
       }
       _ => Err(VmError::Unimplemented("expression is not a reference")),
     }
   }
 
   fn root_reference(&self, scope: &mut Scope<'_>, reference: &Reference<'_>) -> Result<(), VmError> {
-    let Reference::Property { object, key } = *reference else {
+    let Reference::Property { base, key } = *reference else {
       return Ok(());
     };
-    scope.push_root(Value::Object(object))?;
-    match key {
-      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
-    };
+    // Root both base and key together so a GC triggered by root-stack growth cannot collect the
+    // not-yet-pushed entry.
+    let roots = [
+      base,
+      match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      },
+    ];
+    scope.push_roots(&roots)?;
     Ok(())
   }
 
@@ -3160,10 +3176,13 @@ impl<'a> Evaluator<'a> {
           Err(throw_reference_error(self.vm, scope, &msg)?)
         }
       },
-      Reference::Property { object, key } => {
+      Reference::Property { base, key } => {
         let mut get_scope = scope.reborrow();
         self.root_reference(&mut get_scope, reference)?;
-        get_scope.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, Value::Object(object))
+        let object = self.to_object_operator(&mut get_scope, base)?;
+        // Root the boxed object so host hooks/accessors can allocate freely.
+        get_scope.push_root(Value::Object(object))?;
+        get_scope.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
       }
     }
   }
@@ -3176,13 +3195,22 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     match *reference {
       Reference::Binding(name) => self.env.set(self.vm, scope, name, value, self.strict),
-      Reference::Property { object, key } => {
-        let ok =
-          scope.ordinary_set_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, value, Value::Object(object))?;
+      Reference::Property { base, key } => {
+        let mut set_scope = scope.reborrow();
+        self.root_reference(&mut set_scope, reference)?;
+        // Root `value` across `ToObject(base)` in case boxing triggers a GC.
+        set_scope.push_root(value)?;
+        let object = self.to_object_operator(&mut set_scope, base)?;
+        set_scope.push_root(Value::Object(object))?;
+        let ok = set_scope.ordinary_set_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, value, base)?;
         if ok {
           Ok(())
         } else if self.strict {
-          Err(throw_type_error(self.vm, scope, "Cannot assign to read-only property")?)
+          Err(throw_type_error(
+            self.vm,
+            &mut set_scope,
+            "Cannot assign to read-only property",
+          )?)
         } else {
           // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
           Ok(())
@@ -3421,18 +3449,14 @@ impl<'a> Evaluator<'a> {
           return Ok(Value::Undefined);
         }
 
-        // Optional chaining member access uses `ToObject` on non-nullish primitives.
+        // Optional chaining member access: evaluate the property reference, preserving the base
+        // value for the call `this`.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property {
-          object,
-          key: PropertyKey::from_string(key_s),
-        };
+        let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, Value::Object(object))
+        (callee_value, base)
       }
       Expr::ComputedMember(member) if member.stx.optional_chaining => {
         let base = self.eval_expr(scope, &member.stx.object)?;
@@ -3440,23 +3464,22 @@ impl<'a> Evaluator<'a> {
           return Ok(Value::Undefined);
         }
 
-        // Optional chaining computed member access uses `ToObject` on non-nullish primitives and
-        // `ToPropertyKey` on the member value, both of which may allocate and trigger GC.
+        // Optional chaining computed member access: `ToPropertyKey` on the member value may
+        // allocate and invoke user code. Only if the base is non-nullish do we proceed to
+        // dereference the property reference.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property { object, key };
+        let reference = Reference::Property { base, key };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, Value::Object(object))
+        (callee_value, base)
       }
       Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
         let reference = self.eval_reference(scope, &expr.function)?;
         let this_value = match reference {
-          Reference::Property { object, .. } => Value::Object(object),
+          Reference::Property { base, .. } => base,
           _ => Value::Undefined,
         };
 
@@ -4157,13 +4180,19 @@ impl<'a> Evaluator<'a> {
         Expr::Member(_) | Expr::ComputedMember(_) => {
           let reference = self.eval_reference(scope, &expr.argument)?;
           match reference {
-            Reference::Property { object, key } => Ok(Value::Bool(scope.ordinary_delete_with_host_and_hooks(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              object,
-              key,
-            )?)),
+            Reference::Property { base, key } => {
+              let mut del_scope = scope.reborrow();
+              self.root_reference(&mut del_scope, &reference)?;
+              let object = self.to_object_operator(&mut del_scope, base)?;
+              del_scope.push_root(Value::Object(object))?;
+              Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                object,
+                key,
+              )?))
+            }
             // Deleting bindings (`delete x`) is handled above.
             Reference::Binding(_) => Ok(Value::Bool(false)),
           }
@@ -4359,18 +4388,13 @@ impl<'a> Evaluator<'a> {
           return Ok(Value::Undefined);
         }
 
-        // Optional chaining member call uses `ToObject` on non-nullish primitives.
+        // Optional chaining member call: preserve the base value for the call `this` binding.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property {
-          object,
-          key: PropertyKey::from_string(key_s),
-        };
+        let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, Value::Object(object))
+        (callee_value, base)
       }
       Expr::ComputedMember(member) if member.stx.optional_chaining => {
         let base = self.eval_expr(scope, &member.stx.object)?;
@@ -4378,23 +4402,21 @@ impl<'a> Evaluator<'a> {
           return Ok(Value::Undefined);
         }
 
-        // Optional chaining computed-member call uses `ToObject` on non-nullish primitives and
-        // `ToPropertyKey` on the member value, both of which may allocate and trigger GC.
+        // Optional chaining computed-member call: `ToPropertyKey` may allocate and invoke user
+        // code. Only if the base is non-nullish do we dereference the property reference.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let object = self.to_object_operator(&mut key_scope, base)?;
-        key_scope.push_root(Value::Object(object))?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property { object, key };
+        let reference = Reference::Property { base, key };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, Value::Object(object))
+        (callee_value, base)
       }
       Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
         let reference = self.eval_reference(scope, &expr.callee)?;
         let this_value = match reference {
-          Reference::Property { object, .. } => Value::Object(object),
+          Reference::Property { base, .. } => base,
           _ => Value::Undefined,
         };
 

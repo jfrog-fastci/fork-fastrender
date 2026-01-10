@@ -52,10 +52,10 @@ fn computed_member_get_set() {
 #[test]
 fn computed_member_object_key_get_set() {
   let mut rt = new_runtime();
-  let err = rt
+  let value = rt
     .exec_script(r#"var o = {}; var k = {}; o[k] = 4; o[k]"#)
-    .unwrap_err();
-  assert!(matches!(err, VmError::Unimplemented(_)));
+    .unwrap();
+  assert_eq!(value, Value::Number(4.0));
 }
 
 #[test]
