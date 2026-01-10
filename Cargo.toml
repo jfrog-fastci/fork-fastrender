@@ -16,8 +16,8 @@ members = [
   "crates/webidl-js-runtime",
   "crates/webidl-vm-js",
 ]
-# Keep legacy QuickJS crates in the workspace for now, but exclude them from the default
-# workspace build so `cargo build/test` stays vm-js-only unless explicitly requested.
+# Keep legacy QuickJS crates in the workspace for now, but exclude them from the default workspace
+# build so `cargo build/test` stays vm-js-only unless explicitly requested.
 default-members = [
   ".",
   "xtask",

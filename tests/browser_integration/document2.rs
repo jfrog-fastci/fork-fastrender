@@ -99,8 +99,8 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
   Ok(())
 }
 
-#[test]
 #[cfg(feature = "quickjs")]
+#[test]
 fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
