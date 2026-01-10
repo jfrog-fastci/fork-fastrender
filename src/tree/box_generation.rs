@@ -2778,7 +2778,7 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
 ///
 /// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
 pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
-  use crate::style::types::{BackgroundImage, ClipPath};
+  use crate::style::types::{BackgroundImage, ClipPath, FilterFunction};
 
   fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
     let bytes = value.as_bytes();
@@ -2886,6 +2886,16 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         .filter(|id| !id.is_empty())
       {
         out.insert(id.to_string());
+      }
+    }
+    for func in styled.styles.filter.iter() {
+      if let FilterFunction::Url(src) = func {
+        if let Some(id) = trim_ascii_whitespace(src)
+          .strip_prefix('#')
+          .filter(|id| !id.is_empty())
+        {
+          out.insert(id.to_string());
+        }
       }
     }
     for child in &styled.children {

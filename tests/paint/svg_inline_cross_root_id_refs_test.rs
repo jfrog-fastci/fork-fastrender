@@ -155,3 +155,36 @@ fn inline_svg_paint_server_from_document_css_resolves_across_roots() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn inline_svg_filter_url_from_document_css_resolves_across_roots() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body{margin:0;background:white}
+        svg{display:block}
+        .shape { filter: url(#recolor); }
+      </style>
+      <svg style="display:none" width="0" height="0">
+        <defs>
+          <filter id="recolor">
+            <feFlood flood-color="rgb(0,255,0)" result="flood"/>
+            <feComposite in="flood" in2="SourceAlpha" operator="in"/>
+          </filter>
+        </defs>
+      </svg>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect class="shape" x="0" y="0" width="20" height="20" fill="rgb(255,0,0)"/>
+      </svg>
+      "##;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
+      assert_eq!(pixel(&pixmap, 10, 10), [0, 255, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
