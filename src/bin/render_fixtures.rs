@@ -370,6 +370,28 @@ fn fixture_runtime_toggles(patch_html_for_chrome_baseline: bool) -> RuntimeToggl
   RuntimeToggles::from_map(raw)
 }
 
+fn build_fixture_render_config(
+  viewport: (u32, u32),
+  dpr: f32,
+  font_config: FontConfig,
+  patch_html_for_chrome_baseline: bool,
+) -> fastrender::api::FastRenderConfig {
+  let resource_policy = ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false);
+  fastrender::api::FastRenderConfig::new()
+    .with_default_viewport(viewport.0, viewport.1)
+    .with_device_pixel_ratio(dpr)
+    // Headless Chrome (used by `xtask chrome-baseline-fixtures`) does not honor `<meta name="viewport">`
+    // directives on desktop. Rendering fixtures with meta viewport enabled can therefore change the
+    // effective zoom/DPR and even the output image dimensions, making Chrome-vs-FastRender diffs
+    // unusable.
+    .with_meta_viewport(false)
+    .with_resource_policy(resource_policy)
+    .with_font_sources(font_config)
+    .with_runtime_toggles(fixture_runtime_toggles(patch_html_for_chrome_baseline))
+}
+
 fn run(cli: Cli) -> io::Result<()> {
   if cli.jobs == 0 {
     return Err(io::Error::new(
@@ -479,16 +501,12 @@ fn run(cli: Cli) -> io::Result<()> {
     config
   };
 
-  let resource_policy = ResourcePolicy::default()
-    .allow_http(false)
-    .allow_https(false);
-  let render_config = fastrender::api::FastRenderConfig::new()
-    .with_default_viewport(cli.viewport.0, cli.viewport.1)
-    .with_device_pixel_ratio(cli.dpr)
-    .with_meta_viewport(true)
-    .with_resource_policy(resource_policy)
-    .with_font_sources(font_config.clone())
-    .with_runtime_toggles(fixture_runtime_toggles(cli.patch_html_for_chrome_baseline));
+  let render_config = build_fixture_render_config(
+    cli.viewport,
+    cli.dpr,
+    font_config.clone(),
+    cli.patch_html_for_chrome_baseline,
+  );
 
   let render_pool = FastRenderPool::with_config(
     FastRenderPoolConfig::new()
@@ -1931,6 +1949,15 @@ mod tests {
   }
 
   #[test]
+  fn build_fixture_render_config_disables_meta_viewport() {
+    let font_config = FontConfig::new()
+      .with_system_fonts(true)
+      .with_bundled_fonts(true);
+    let config = build_fixture_render_config((1040, 1240), 1.0, font_config, true);
+    assert!(!config.apply_meta_viewport);
+  }
+
+  #[test]
   fn lock_mutex_is_poison_tolerant() {
     let mutex = Mutex::new(0u32);
     let _ = std::panic::catch_unwind(|| {
@@ -2294,6 +2321,7 @@ mod tests {
       jobs: 1,
       viewport: (1, 1),
       dpr: 1.0,
+      animation_time: AnimationTimeArgs::default(),
       media: MediaTypeArg::Screen,
       fit_canvas_to_content: false,
       timeout: 1,
@@ -2305,6 +2333,10 @@ mod tests {
       fail_on_nondeterminism: false,
       save_variants: true,
       reset_paint_scratch: false,
+      patch_html_for_chrome_baseline: false,
+      allow_animations: false,
+      allow_dark_mode: false,
+      force_light_mode: false,
     };
 
     write_nondeterminism_outputs(out_dir, stem, &mut state, &cli).expect("write variants");

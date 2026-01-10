@@ -4085,6 +4085,18 @@ mod tests {
   }
 
   #[test]
+  fn test_canvas_alpha_rounding_matches_expected_blend() {
+    // `rgba(0,0,0,0.3)` composited over opaque white should round to 178 rather than 179.
+    // This is sensitive to how alpha floats are quantized to u8 before passing to tiny-skia.
+    let mut canvas = Canvas::new(10, 10, Rgba::WHITE).unwrap();
+    let rect = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    canvas.draw_rect(rect, Rgba::new(0, 0, 0, 0.3));
+
+    let pixmap = canvas.into_pixmap();
+    assert_eq!(pixel(&pixmap, 5, 5), (178, 178, 178, 255));
+  }
+
+  #[test]
   fn test_canvas_draw_rect() {
     let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
     let rect = Rect::from_xywh(10.0, 10.0, 20.0, 20.0);

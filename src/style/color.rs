@@ -514,7 +514,7 @@ impl Rgba {
 
   /// Converts to an array [r, g, b, a] for rendering
   pub fn to_array(self) -> [u8; 4] {
-    [self.r, self.g, self.b, (self.a * 255.0) as u8]
+    [self.r, self.g, self.b, self.alpha_u8()]
   }
 
   /// Returns the alpha component as a u8 (0-255)
@@ -522,7 +522,8 @@ impl Rgba {
   /// Useful for APIs that expect u8 alpha like tiny-skia.
   #[inline]
   pub fn alpha_u8(self) -> u8 {
-    (self.a * 255.0) as u8
+    let alpha = if self.a.is_finite() { self.a } else { 0.0 };
+    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
   }
 
   /// Creates an Rgba from r, g, b, a where alpha is u8 (0-255)
@@ -3575,6 +3576,22 @@ mod tests {
     assert!(Rgba::BLACK.is_opaque());
     assert!(!Rgba::TRANSPARENT.is_opaque());
     assert!(!Rgba::new(0, 0, 0, 0.5).is_opaque());
+  }
+
+  #[test]
+  fn test_rgba_alpha_u8_rounds() {
+    assert_eq!(Rgba::new(0, 0, 0, 0.0).alpha_u8(), 0);
+    assert_eq!(Rgba::new(0, 0, 0, 1.0).alpha_u8(), 255);
+    assert_eq!(Rgba::new(0, 0, 0, 0.5).alpha_u8(), 128);
+    assert_eq!(Rgba::new(0, 0, 0, 0.3).alpha_u8(), 77);
+
+    // Clamp non-[0,1] values.
+    assert_eq!(Rgba::new(0, 0, 0, -1.0).alpha_u8(), 0);
+    assert_eq!(Rgba::new(0, 0, 0, 2.0).alpha_u8(), 255);
+
+    // Treat NaN/infinite alpha as fully transparent.
+    assert_eq!(Rgba::new(0, 0, 0, f32::NAN).alpha_u8(), 0);
+    assert_eq!(Rgba::new(0, 0, 0, f32::INFINITY).alpha_u8(), 0);
   }
 
   // Hsla tests
