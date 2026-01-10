@@ -1738,19 +1738,6 @@ fn placeholder_resource(
       Some("text/css".to_string()),
       Some(url.to_string()),
     ),
-    FetchDestination::Script | FetchDestination::ScriptCors => {
-      let mut res = FetchedResource::with_final_url(
-        b"/* missing */".to_vec(),
-        Some("text/javascript".to_string()),
-        Some(url.to_string()),
-      );
-      if destination == FetchDestination::ScriptCors {
-        // CORS-mode scripts expect `Access-Control-Allow-Origin` when CORS enforcement is enabled.
-        res.access_control_allow_origin = Some(allow_origin.clone());
-        res.access_control_allow_credentials = true;
-      }
-      res
-    }
     FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
       FetchedResource::with_final_url(
         b"<!doctype html><html></html>".to_vec(),
@@ -2536,8 +2523,7 @@ fn crawl_document(
       }
       FetchDestination::Other
       | FetchDestination::Fetch
-      | FetchDestination::Script
-      | FetchDestination::ScriptCors => Ok(()),
+      => Ok(()),
     };
     if let Err(err) = validation {
       handle_crawl_failure(
