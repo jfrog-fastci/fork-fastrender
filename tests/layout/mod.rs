@@ -250,6 +250,7 @@ mod table_fragmentation;
 mod table_row_group_breaks;
 mod table_large_layout;
 mod table_percentage_padding;
+mod table_row_break_before_after;
 mod table_row_group_reorder_rowspan;
 mod table_rowspan_zero;
 mod table_visibility_collapse_layout;

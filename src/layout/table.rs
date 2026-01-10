@@ -7921,16 +7921,16 @@ impl FormattingContext for TableFormattingContext {
     }
 
     // Rows
-    for (idx, row) in row_styles.into_iter().enumerate() {
-      if let Some((row_id, style)) = row {
-        let style = strip_borders_cached(&style, &mut stripped_border_cache);
+    for (idx, row) in row_styles.iter().enumerate() {
+      if let Some((row_id, style)) = row.as_ref() {
+        let style = strip_borders_cached(style, &mut stripped_border_cache);
         let top = row_offsets.get(idx).copied().unwrap_or(0.0);
         let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
         let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
         fragments.push(FragmentNode::new_with_style(
           rect,
           FragmentContent::Block {
-            box_id: Some(row_id),
+            box_id: Some(*row_id),
           },
           Vec::new(),
           style,
@@ -7945,6 +7945,23 @@ impl FormattingContext for TableFormattingContext {
       marker_style.display = Display::TableRow;
       marker_style.writing_mode = table_root_style.writing_mode;
       marker_style.direction = table_root_style.direction;
+      if let Some((_, row_style)) = row_styles.get(idx).and_then(|entry| entry.as_ref()) {
+        marker_style.break_before = row_style.break_before;
+        marker_style.break_after = row_style.break_after;
+        marker_style.break_inside = row_style.break_inside;
+        marker_style.orphans = row_style.orphans;
+        marker_style.widows = row_style.widows;
+      }
+      marker_style.reset_background_to_initial();
+      marker_style.border_top_width = Length::px(0.0);
+      marker_style.border_right_width = Length::px(0.0);
+      marker_style.border_bottom_width = Length::px(0.0);
+      marker_style.border_left_width = Length::px(0.0);
+      marker_style.border_top_style = BorderStyle::None;
+      marker_style.border_right_style = BorderStyle::None;
+      marker_style.border_bottom_style = BorderStyle::None;
+      marker_style.border_left_style = BorderStyle::None;
+      marker_style.box_shadow.clear();
       let rect = Rect::from_xywh(content_origin_x, *offset, content_width, height);
       fragments.push(FragmentNode::new_with_style(
         rect,
