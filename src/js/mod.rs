@@ -40,7 +40,6 @@ pub mod dom2_bindings;
 //
 // This is not part of the canonical `vm-js` WindowRealm pipeline, but remains useful while bindings
 // and streaming execution are still being integrated.
-#[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 pub mod clock;
 pub mod document_lifecycle;
