@@ -338,6 +338,91 @@ fn dynamic_import_rejects_when_options_not_object() -> Result<(), VmError> {
 }
 
 #[test]
+fn dynamic_import_rejects_when_with_not_object() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let mut host = TestHostHooks::new();
+
+  let promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js', { with: 1 })")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(host.pending_count(), 0, "host loader should not be invoked");
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  let Value::Object(err_obj) = reason else {
+    panic!("promise rejection reason should be an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  let Some(desc) = scope.heap().object_get_own_property(err_obj, &name_key)? else {
+    panic!("TypeError should have a 'name' property");
+  };
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("TypeError.name should be a data property");
+  };
+  let Value::String(name) = value else {
+    panic!("TypeError.name should be a string");
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
+
+  drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_rejects_when_attribute_value_not_string() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let mut host = TestHostHooks::new();
+
+  // Even though the host supports no import attributes, the attribute value type check happens
+  // before the supported-key check.
+  let promise_value =
+    rt.exec_script_with_hooks(&mut host, "import('./m.js', { with: { type: 1 } })")?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(host.pending_count(), 0, "host loader should not be invoked");
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  let Value::Object(err_obj) = reason else {
+    panic!("promise rejection reason should be an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  let Some(desc) = scope.heap().object_get_own_property(err_obj, &name_key)? else {
+    panic!("TypeError should have a 'name' property");
+  };
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("TypeError.name should be a data property");
+  };
+  let Value::String(name) = value else {
+    panic!("TypeError.name should be a string");
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
+
+  drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_rejects_unsupported_import_attributes() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   let mut host = TestHostHooks::new();
