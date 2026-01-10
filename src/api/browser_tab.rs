@@ -1091,7 +1091,11 @@ impl BrowserTabHost {
         //
         // Per HTML, a stylesheet only blocks parser-inserted scripts when it applies to the
         // document. In particular, non-matching `media=` stylesheets must not block scripts and can
-        // be skipped entirely for now.
+        // be skipped.
+        //
+        // Note: link node ids are produced by the streaming parser's live DOM. The host `dom2`
+        // document is only synchronized at script-yield points, so consult the parser document for
+        // `media=` matching before deciding whether to load/block.
         let pending_stylesheet_links = state.parser.take_pending_stylesheet_links();
         if !pending_stylesheet_links.is_empty() {
           if let Some(doc) = state.parser.document() {

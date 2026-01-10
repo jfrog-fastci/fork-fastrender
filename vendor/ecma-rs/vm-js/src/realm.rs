@@ -362,10 +362,12 @@ impl Realm {
 
 impl Drop for Realm {
   fn drop(&mut self) {
-    debug_assert!(
-      self.torn_down,
-      "Realm dropped without calling teardown(); this can leak persistent GC roots if the Heap is reused"
-    );
+    if !std::thread::panicking() {
+      debug_assert!(
+        self.torn_down,
+        "Realm dropped without calling teardown(); this can leak persistent GC roots if the Heap is reused"
+      );
+    }
   }
 }
 

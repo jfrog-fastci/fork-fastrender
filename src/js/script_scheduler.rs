@@ -1022,6 +1022,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         // Even when module execution is disabled, HTML still requires that an empty/invalid `src`
         // attribute queues an `error` event task (and the element must not fall back to inline
         // execution).
+        //
+        // Keep this check outside the `supports_module_scripts` gate so hosts that ignore module
+        // scripts still get the correct error behavior.
         if element.src_attr_present && element.src.as_deref().filter(|s| !s.is_empty()).is_none() {
           actions.push(ScriptSchedulerAction::QueueScriptEventTask {
             script_id: id,

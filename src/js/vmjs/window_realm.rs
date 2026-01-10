@@ -17175,7 +17175,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -17234,7 +17234,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -17284,7 +17284,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -17311,7 +17311,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 

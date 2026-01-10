@@ -277,7 +277,12 @@ impl ScriptOrchestrator {
     // as meaning "no style/layout invalidation required".
     host
       .mutate_dom(|dom| (dom.set_script_already_started(script, true), false))
-      .map_err(|err| Error::Other(err.to_string()))?;
+      .map_err(|err| {
+        Error::Other(format!(
+          "failed to set script_already_started for node {}: {err}",
+          script.index()
+        ))
+      })?;
 
     let new_current_script = match script_type {
       ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
