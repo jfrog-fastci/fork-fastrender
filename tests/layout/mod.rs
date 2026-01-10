@@ -130,6 +130,7 @@ mod grid_calc_length_font_relative;
 mod grid_forced_breaks;
 mod grid_fragmentation;
 mod grid_fragmentation_writing_mode;
+mod grid_column_numeric;
 mod grid_intrinsic_definite_height;
 mod grid_intrinsic_sizing_keywords;
 mod grid_item_margin_collapse;
