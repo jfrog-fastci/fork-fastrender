@@ -8,7 +8,10 @@ use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings,
-  url_resolve::{resolve_url, UrlResolveError},
+  import_maps::{
+    create_import_map_parse_result, register_import_map, resolve_module_specifier, ImportMapError,
+    ImportMapState, ImportMapWarningKind,
+  },
   CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec,
   WindowFetchBindings, WindowFetchEnv,
 };
@@ -27,7 +30,7 @@ use vm_js::{
 };
 
 use super::BrowserDocumentDom2;
-use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
+use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRenderDiagnostics};
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
 ///
@@ -39,6 +42,7 @@ pub struct VmJsBrowserTabExecutor {
   fetch_bindings: Option<WindowFetchBindings>,
   module_graph: Option<ModuleGraph>,
   module_map: HashMap<String, ModuleId>,
+  import_map_state: ImportMapState,
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
   pending_navigation: Option<LocationNavigationRequest>,
@@ -52,6 +56,7 @@ impl VmJsBrowserTabExecutor {
       fetch_bindings: None,
       module_graph: None,
       module_map: HashMap::new(),
+      import_map_state: ImportMapState::new_empty(),
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
       pending_navigation: None,
@@ -122,6 +127,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.realm = None;
     self.module_graph = None;
     self.module_map.clear();
+    self.import_map_state = ImportMapState::new_empty();
     self.js_execution_options = js_execution_options;
     self.inline_module_id_counter = 0;
 
@@ -312,6 +318,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       fetcher: document.fetcher(),
       max_script_bytes: self.js_execution_options.max_script_bytes,
       module_map: &mut self.module_map,
+      import_map_state: &mut self.import_map_state,
     };
 
     let result: std::result::Result<(), VmError> = with_event_loop(event_loop, || {
@@ -378,6 +385,40 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         } else {
           Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
+      }
+    }
+  }
+
+  fn execute_import_map_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    _current_script: Option<crate::dom2::NodeId>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let base_url = spec.base_url.as_deref().unwrap_or("about:blank");
+    let base_url =
+      url::Url::parse(base_url).unwrap_or_else(|_| url::Url::parse("about:blank").unwrap());
+
+    let result = create_import_map_parse_result(script_text, &base_url);
+
+    if let Some(diag) = self.diagnostics.as_ref() {
+      for warning in &result.warnings {
+        diag.record_console_message(
+          ConsoleMessageLevel::Warn,
+          format_import_map_warning(&warning.kind),
+        );
+      }
+    }
+
+    match register_import_map(&mut self.import_map_state, result) {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        if let Some(diag) = self.diagnostics.as_ref() {
+          diag.record_js_exception(format_import_map_error(&err), None);
+        }
+        Ok(())
       }
     }
   }
@@ -477,6 +518,40 @@ fn synthesize_inline_module_url(base_url: &str, inline_id: &str) -> String {
   }
 }
 
+fn format_import_map_warning(kind: &ImportMapWarningKind) -> String {
+  let message = match kind {
+    ImportMapWarningKind::UnknownTopLevelKey { key } => format!("unknown top-level key {key:?}"),
+    ImportMapWarningKind::EmptySpecifierKey => "empty specifier key".to_string(),
+    ImportMapWarningKind::AddressNotString { specifier_key } => {
+      format!("address for specifier key {specifier_key:?} was not a string")
+    }
+    ImportMapWarningKind::AddressInvalid { specifier_key, address } => {
+      format!("invalid address {address:?} for specifier key {specifier_key:?}")
+    }
+    ImportMapWarningKind::TrailingSlashMismatch { specifier_key, address } => {
+      format!("trailing-slash mismatch for {specifier_key:?} -> {address:?}")
+    }
+    ImportMapWarningKind::ScopePrefixNotParseable { prefix } => {
+      format!("scope prefix {prefix:?} was not parseable")
+    }
+    ImportMapWarningKind::IntegrityKeyFailedToResolve { key } => {
+      format!("integrity key {key:?} failed to resolve to a URL-like specifier")
+    }
+    ImportMapWarningKind::IntegrityValueNotString { key } => {
+      format!("integrity value for {key:?} was not a string")
+    }
+  };
+
+  format!("importmap: {message}")
+}
+
+fn format_import_map_error(err: &ImportMapError) -> String {
+  match err {
+    ImportMapError::Json(err) => format!("SyntaxError: {err}"),
+    ImportMapError::TypeError(message) => format!("TypeError: {message}"),
+  }
+}
+
 fn ensure_promise_fulfilled(heap: &vm_js::Heap, promise: Value) -> std::result::Result<(), VmError> {
   let Value::Object(promise_obj) = promise else {
     return Err(VmError::InvariantViolation("expected a Promise object"));
@@ -498,6 +573,7 @@ struct ModuleLoaderHooks<'a> {
   fetcher: Arc<dyn ResourceFetcher>,
   max_script_bytes: usize,
   module_map: &'a mut HashMap<String, ModuleId>,
+  import_map_state: &'a mut ImportMapState,
 }
 
 impl ModuleLoaderHooks<'_> {
@@ -515,25 +591,6 @@ impl ModuleLoaderHooks<'_> {
         .and_then(|m| m.source.as_ref())
         .map(|s| s.name.as_ref()),
       _ => None,
-    }
-  }
-
-  fn resolve_module_specifier_without_import_maps(
-    specifier: &str,
-    base_url: &str,
-  ) -> std::result::Result<String, String> {
-    let allowed_relative =
-      specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
-    if allowed_relative {
-      return resolve_url(specifier, Some(base_url)).map_err(|err| err.to_string());
-    }
-
-    match resolve_url(specifier, None) {
-      Ok(abs) => Ok(abs),
-      Err(UrlResolveError::RelativeUrlWithoutBase) => Err(format!(
-        "unsupported bare module specifier {specifier:?} (import maps are not yet supported)"
-      )),
-      Err(err) => Err(err.to_string()),
     }
   }
 
@@ -692,9 +749,15 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
     let _ = host_defined;
 
     let base_url = Self::referrer_url_for_resolution(modules, referrer).unwrap_or("about:blank");
-    let resolved_url = match Self::resolve_module_specifier_without_import_maps(&module_request.specifier, base_url) {
-      Ok(url) => url,
-      Err(message) => {
+    let base_url =
+      url::Url::parse(base_url).unwrap_or_else(|_| url::Url::parse("about:blank").unwrap());
+    let resolved_url = match resolve_module_specifier(self.import_map_state, &module_request.specifier, &base_url) {
+      Ok(url) => url.to_string(),
+      Err(err) => {
+        let message = match err {
+          ImportMapError::TypeError(message) => message,
+          ImportMapError::Json(err) => err.to_string(),
+        };
         let err_value = Self::throw_type_error(vm, scope, &message)?;
         vm.finish_loading_imported_module(
           scope,

@@ -62,6 +62,24 @@ pub trait BrowserTabJsExecutor {
     ))
   }
 
+  /// Process an inline `<script type="importmap">` script.
+  ///
+  /// HTML import maps are not JavaScript; they register/merge into per-document import map state
+  /// used by subsequent module resolution.
+  ///
+  /// The default implementation is a no-op so non-module JS backends can ignore import maps.
+  fn execute_import_map_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let _ = (script_text, spec, current_script, document, event_loop);
+    Ok(())
+  }
+
   /// Returns and clears any navigation request emitted by the JS embedding (for example via
   /// `window.location.href = ...`).
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -1318,10 +1336,12 @@ impl BrowserTabHost {
       }
       ScriptType::ImportMap | ScriptType::Unknown => false,
     };
-    let should_check_inline_source =
-      !spec_for_table.src_attr_present
-        && matches!(spec_for_table.script_type, ScriptType::Classic | ScriptType::Module)
-        && (spec_for_table.script_type == ScriptType::Module || !nomodule_blocked);
+    let should_check_inline_source = !spec_for_table.src_attr_present
+      && matches!(
+        spec_for_table.script_type,
+        ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
+      )
+      && !(spec_for_table.script_type == ScriptType::Classic && nomodule_blocked);
     if should_check_inline_source {
       self
         .js_execution_options
@@ -1351,7 +1371,10 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
-    if matches!(spec_for_table.script_type, ScriptType::Classic | ScriptType::Module)
+    if matches!(
+      spec_for_table.script_type,
+      ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
+    )
       && !spec_for_table.src_attr_present
     {
       self
@@ -1421,6 +1444,9 @@ impl BrowserTabHost {
           ..
         } => {
           let entry = self.scripts.get(&script_id).cloned();
+          let should_checkpoint = entry
+            .as_ref()
+            .is_some_and(|entry| matches!(entry.spec.script_type, ScriptType::Classic | ScriptType::Module));
           if let Some(csp) = self.csp.as_ref() {
             let is_inline_classic = entry.as_ref().is_some_and(|entry| {
               entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
@@ -1512,7 +1538,7 @@ impl BrowserTabHost {
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
           // microtasks until the outermost script returns.
-          if self.js_execution_depth.get() == 0 {
+          if should_checkpoint && self.js_execution_depth.get() == 0 {
             event_loop.perform_microtask_checkpoint(self)?;
           }
 
@@ -1697,7 +1723,14 @@ impl BrowserTabHost {
             document.as_mut(),
             self.event_loop,
           ),
-          ScriptType::ImportMap | ScriptType::Unknown => Ok(()),
+          ScriptType::ImportMap => executor.execute_import_map_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::Unknown => Ok(()),
         });
         if let Some(req) = executor.take_navigation_request() {
           *pending_navigation = Some(req);
@@ -7036,6 +7069,40 @@ html, body { margin: 0; padding: 0; }
       dom.get_attribute(body, "data-top-level-this-undefined")
         .expect("get_attribute should succeed"),
       Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn import_maps_remap_bare_specifiers_in_module_scripts() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    // Map a bare specifier to a self-contained `data:` module to avoid network dependencies.
+    let mapped = "data:text/javascript,export%20default%20123%3B";
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &format!(
+        r#"<!doctype html><body>
+          <script type="importmap">{{"imports":{{"react":"{mapped}"}}}}</script>
+          <script type="module">
+            import x from "react";
+            document.body.setAttribute("data-importmap", String(x));
+          </script>
+        </body>"#
+      ),
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-importmap")
+        .expect("get_attribute should succeed"),
+      Some("123")
     );
     Ok(())
   }

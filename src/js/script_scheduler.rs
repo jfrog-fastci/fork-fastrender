@@ -449,7 +449,6 @@ where
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
-/// - Import map processing (`type="importmap"`).
 /// - CSP, stylesheet-blocking scripts, and `document.write`.
 ///
 /// ## Orchestrator contract
@@ -850,6 +849,23 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             script_id: id,
             node_id,
             event: ScriptElementEvent::Error,
+          });
+          return Ok(DiscoveredScript { id, actions });
+        }
+
+        // Inline import maps are processed synchronously when parser-inserted; dynamically inserted
+        // import maps execute as tasks (mirroring classic-script async-by-default behavior).
+        if element.parser_inserted {
+          actions.push(ScriptSchedulerAction::ExecuteNow {
+            script_id: id,
+            node_id,
+            source_text: element.inline_text,
+          });
+        } else {
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id: id,
+            node_id,
+            source_text: element.inline_text,
           });
         }
         return Ok(DiscoveredScript { id, actions });
