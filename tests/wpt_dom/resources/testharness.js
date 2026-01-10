@@ -3,7 +3,7 @@
 // The upstream `testharness.js` is large; FastRender only needs a small, spec-shaped subset:
 //
 // - synchronous tests (`test`)
-// - async tests (`async_test`) with `t.done()` and `t.step_func_done(cb)`
+// - async tests (`async_test`) with `t.done()`, `t.step_func(cb)`, and `t.step_func_done(cb)`
 // - promise tests (`promise_test`)
 // - reporter callbacks (`add_result_callback`, `add_completion_callback`)
 //
@@ -222,6 +222,7 @@ function async_test(fn, name) {
   // Assign methods without relying on function expressions (the minimal vm-js backend only supports
   // arrow functions as expressions).
   t.done = __async_test_done;
+  t.step_func = __async_test_step_func;
   t.step_func_done = __async_test_step_func_done;
   //
   if (typeof fn === "function") {
@@ -276,6 +277,32 @@ function __async_test_done() {
   __check_complete();
 }
 //
+var __step_func_test = null;
+var __step_func_callback = null;
+//
+function __async_test_step_func(cb) {
+  __step_func_test = this;
+  __step_func_callback = cb;
+  return __async_test_step_func_wrapper;
+}
+//
+function __async_test_step_func_wrapper(a0, a1, a2, a3) {
+  var t = __step_func_test;
+  if (!t || t._done === true) return;
+  //
+  try {
+    if (typeof __step_func_callback === "function") {
+      __step_func_callback(a0, a1, a2, a3);
+    } else {
+      __fail_test_record(t, Error("step_func: callback is not callable"));
+      t.done();
+    }
+  } catch (e) {
+    __fail_test_record(t, e);
+    t.done();
+  }
+}
+//
 var __step_func_done_test = null;
 var __step_func_done_callback = null;
 //
@@ -323,4 +350,3 @@ function __promise_test_rejected(reason) {
   __report_test_result(t);
   __check_complete();
 }
-
