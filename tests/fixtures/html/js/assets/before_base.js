@@ -1,2 +1,2 @@
 globalThis.__before = true;
-setClass("root", "before");
+document.getElementById("root").className = "before";

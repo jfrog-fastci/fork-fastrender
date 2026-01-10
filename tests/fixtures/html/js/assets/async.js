@@ -1,1 +1,1 @@
-setClass("root", "on");
+document.getElementById("root").className = "on";

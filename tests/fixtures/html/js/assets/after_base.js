@@ -1,5 +1,5 @@
 if (globalThis.__before) {
-  setClass("root", "after");
+  document.getElementById("root").className = "after";
 } else {
-  setClass("root", "off");
+  document.getElementById("root").className = "off";
 }

@@ -12,9 +12,8 @@
   <body>
     <div id="box"></div>
     <script>
-      // The integration test harness provides a minimal JS binding: `setClass(id, className)`.
       // This script must run and mutate the DOM before the final frame is rendered.
-      setClass("root", "on");
+      document.getElementById("root").className = "on";
     </script>
   </body>
 </html>

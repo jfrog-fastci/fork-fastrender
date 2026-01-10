@@ -1,2 +1,2 @@
 globalThis.__step = "one";
-setClass("root", "step1");
+document.getElementById("root").className = "step1";

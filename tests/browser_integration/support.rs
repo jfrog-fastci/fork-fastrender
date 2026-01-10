@@ -206,6 +206,40 @@ impl TempSite {
   }
 }
 
+/// `ResourceFetcher` implementation that only supports `file://` URLs.
+///
+/// This is useful for integration tests that want to exercise the production resource-fetch surface
+/// (e.g. script loading) while remaining fully offline.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FileResourceFetcher;
+
+impl fastrender::resource::ResourceFetcher for FileResourceFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    let parsed = url::Url::parse(url)
+      .map_err(|err| fastrender::Error::Other(format!("invalid URL {url:?}: {err}")))?;
+    if parsed.scheme() != "file" {
+      return Err(fastrender::Error::Other(format!(
+        "FileResourceFetcher only supports file:// URLs; got scheme={} url={url:?}",
+        parsed.scheme()
+      )));
+    }
+    let path = parsed.to_file_path().map_err(|()| {
+      fastrender::Error::Other(format!("failed to convert file:// URL to path: {url:?}"))
+    })?;
+    let bytes = std::fs::read(&path).map_err(|err| {
+      fastrender::Error::Other(format!(
+        "failed to read file:// fixture resource {}: {err}",
+        path.display()
+      ))
+    })?;
+    Ok(fastrender::resource::FetchedResource::with_final_url(
+      bytes,
+      None,
+      Some(url.to_string()),
+    ))
+  }
+}
+
 /// Sample an RGBA pixel from a pixmap.
 ///
 /// Panics with a helpful error message if the coordinates are out of bounds.
