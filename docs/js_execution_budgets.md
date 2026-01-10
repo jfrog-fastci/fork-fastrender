@@ -50,11 +50,16 @@ Some limits must be enforced inside the JS VM:
 `WindowHost`/`WindowRealm`), these are enforced:
 
 - `max_instruction_count` → per-run `vm_js::Budget::fuel`
+- per-run wall-time deadline → minimum of:
+  - the remaining time in the active root [`crate::render_control::RenderDeadline`] (when configured)
+  - `JsExecutionOptions.event_loop_run_limits.max_wall_time`
 - `max_vm_heap_bytes` → `vm_js::HeapLimits` (hard heap cap)
 - `max_stack_depth` → `vm_js::VmOptions::max_stack_depth`
 
-FastRender applies a fresh per-run `vm-js` budget at the entry to script/callback execution (for
-example, `WindowRealm::exec_script*`), so an infinite loop like `for(;;){}` cannot run unbounded.
+FastRender applies a fresh `vm_js::Budget` at each JS entrypoint (scripts, callbacks, and Promise
+jobs) using [`JsExecutionOptions::vm_js_budget_now`]. Entry points call `vm.tick()` once before
+running user code so that already-expired deadlines are observed immediately and loops like
+`for(;;){}` cannot run unbounded.
 
 ## How to think about layering
 

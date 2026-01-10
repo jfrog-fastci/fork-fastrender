@@ -30,9 +30,9 @@ use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYie
 use fastrender::image_output::encode_image;
 use fastrender::js::{
   CurrentScriptHost, DomHost, EventLoop, MicrotaskCheckpointLimitedOutcome, ModuleGraphLoader,
-  RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome, RunUntilIdleStopReason,
-  ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
-  WindowHostState,
+  JsExecutionOptions, RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
+  ScriptType, TaskSource, WindowHostState,
 };
 use fastrender::js::import_maps::{
   create_import_map_parse_result, register_import_map, ImportMapState,
@@ -61,8 +61,7 @@ use std::sync::mpsc::channel;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
-use vm_js::Budget;
+use std::time::Duration;
 use selectors::context::QuirksMode;
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_JS_MAX_TASKS: usize = 1024;
@@ -73,41 +72,16 @@ const DEFAULT_JS_MAX_SCRIPT_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone, Copy)]
 struct JsCliConfig {
   enabled: bool,
-  max_tasks: usize,
-  max_microtasks: usize,
-  max_wall_ms: u64,
-  max_script_bytes: usize,
+  options: JsExecutionOptions,
 }
 
 impl JsCliConfig {
   fn run_limits(&self) -> RunLimits {
-    RunLimits {
-      max_tasks: self.max_tasks,
-      max_microtasks: self.max_microtasks,
-      max_wall_time: (self.max_wall_ms > 0).then(|| Duration::from_millis(self.max_wall_ms)),
-    }
+    self.options.event_loop_run_limits
   }
-}
 
-const DEFAULT_JS_FUEL: u64 = 5_000_000;
-const DEFAULT_JS_CHECK_TIME_EVERY: u32 = 100;
-
-fn js_budget_for_script(run_limits: RunLimits) -> Budget {
-  let render_remaining =
-    fastrender::render_control::root_deadline().and_then(|deadline| deadline.remaining_timeout());
-
-  let deadline_duration = match (run_limits.max_wall_time, render_remaining) {
-    (Some(a), Some(b)) => Some(a.min(b)),
-    (Some(a), None) => Some(a),
-    (None, Some(b)) => Some(b),
-    (None, None) => None,
-  };
-  let deadline = deadline_duration.and_then(|d| Instant::now().checked_add(d));
-
-  Budget {
-    fuel: Some(DEFAULT_JS_FUEL),
-    deadline,
-    check_time_every: DEFAULT_JS_CHECK_TIME_EVERY,
+  fn max_script_bytes(&self) -> usize {
+    self.options.max_script_bytes
   }
 }
 
@@ -403,7 +377,13 @@ fn render_page(
     let mut event_loop = EventLoop::<WindowHostState>::new();
     let clock = event_loop.clock();
     let dom2 = Dom2Document::new(QuirksMode::NoQuirks);
-    let mut host = match WindowHostState::new_with_fetcher_and_clock(dom2, base_hint.clone(), fetcher.clone(), clock) {
+    let mut host = match WindowHostState::new_with_fetcher_and_clock_and_options(
+      dom2,
+      base_hint.clone(),
+      fetcher.clone(),
+      clock,
+      js.options,
+    ) {
       Ok(host) => host,
       Err(err) => {
         log(&format!(
@@ -414,11 +394,7 @@ fn render_page(
     };
 
     let run_limits = js.run_limits();
-    let max_script_bytes = if js.max_script_bytes == 0 {
-      usize::MAX
-    } else {
-      js.max_script_bytes
-    };
+    let max_script_bytes = js.max_script_bytes();
     let js_execution_depth: std::rc::Rc<std::cell::Cell<usize>> =
       std::rc::Rc::new(std::cell::Cell::new(0));
     let orchestrator = std::rc::Rc::new(std::cell::RefCell::new(ScriptOrchestrator::new()));
@@ -592,19 +568,12 @@ fn render_page(
                           {
                             let window = host.window_mut();
                             window.reset_interrupt();
-                            window.vm_mut().set_budget(js_budget_for_script(run_limits));
                           }
                           let result = host.exec_script_with_name_in_event_loop(
                             event_loop,
                             script_name.clone(),
                             bundle_text,
                           );
-                          {
-                            let window = host.window_mut();
-                            window
-                              .vm_mut()
-                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                          }
                           result.map(|_| ())
                         })();
 
@@ -657,19 +626,12 @@ fn render_page(
                         {
                           let window = host.window_mut();
                           window.reset_interrupt();
-                          window.vm_mut().set_budget(js_budget_for_script(run_limits));
                         }
                         let result = host.exec_script_with_name_in_event_loop(
                           event_loop,
                           script_name.clone(),
                           bundle_text,
                         );
-                        {
-                          let window = host.window_mut();
-                          window
-                            .vm_mut()
-                            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                        }
                         result.map(|_| ())
                       })();
 
@@ -782,7 +744,6 @@ fn render_page(
                         name: Arc<str>,
                         source_text: &'a str,
                         event_loop: &'a mut EventLoop<WindowHostState>,
-                        run_limits: RunLimits,
                       }
 
                       impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
@@ -800,19 +761,12 @@ fn render_page(
                           {
                             let window = host.window_mut();
                             window.reset_interrupt();
-                            window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                           }
                           let result = host.exec_script_with_name_in_event_loop(
                             self.event_loop,
                             self.name.clone(),
                             Arc::from(self.source_text),
                           );
-                          {
-                            let window = host.window_mut();
-                            window
-                              .vm_mut()
-                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                          }
 
                           result.map(|_| ())
                         }
@@ -824,7 +778,6 @@ fn render_page(
                         name: name.clone(),
                         source_text: &source_text,
                         event_loop: &mut event_loop,
-                        run_limits,
                       };
                       let exec_result = orchestrator
                         .borrow_mut()
@@ -889,7 +842,6 @@ fn render_page(
                             name: Arc<str>,
                             source_text: Arc<str>,
                             event_loop: &'a mut EventLoop<WindowHostState>,
-                            run_limits: RunLimits,
                           }
                           impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                             fn execute_script(
@@ -905,19 +857,12 @@ fn render_page(
                               {
                                 let window = host.window_mut();
                                 window.reset_interrupt();
-                                window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                               }
                               let result = host.exec_script_with_name_in_event_loop(
                                 self.event_loop,
                                 self.name.clone(),
                                 self.source_text.clone(),
                               );
-                              {
-                                let window = host.window_mut();
-                                window
-                                  .vm_mut()
-                                  .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                              }
                               result.map(|_| ())
                             }
                           }
@@ -926,7 +871,6 @@ fn render_page(
                             name: name.clone(),
                             source_text: source_text.clone(),
                             event_loop,
-                            run_limits,
                           };
                           let exec_result = orchestrator
                             .borrow_mut()
@@ -1057,7 +1001,6 @@ fn render_page(
                               name: Arc<str>,
                               source_text: Arc<str>,
                               event_loop: &'a mut EventLoop<WindowHostState>,
-                              run_limits: RunLimits,
                             }
                             impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                               fn execute_script(
@@ -1073,19 +1016,12 @@ fn render_page(
                                 {
                                   let window = host.window_mut();
                                   window.reset_interrupt();
-                                  window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                                 }
                                 let result = host.exec_script_with_name_in_event_loop(
                                   self.event_loop,
                                   self.name.clone(),
                                   self.source_text.clone(),
                                 );
-                                {
-                                  let window = host.window_mut();
-                                  window
-                                    .vm_mut()
-                                    .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                                }
                                 result.map(|_| ())
                               }
                             }
@@ -1094,7 +1030,6 @@ fn render_page(
                               name: name.clone(),
                               source_text: Arc::from(source_text),
                               event_loop,
-                              run_limits,
                             };
                             let _ = orchestrator
                               .borrow_mut()
@@ -1115,7 +1050,6 @@ fn render_page(
                             name: Arc<str>,
                             source_text: Arc<str>,
                             event_loop: &'a mut EventLoop<WindowHostState>,
-                            run_limits: RunLimits,
                           }
                           impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                             fn execute_script(
@@ -1131,19 +1065,12 @@ fn render_page(
                               {
                                 let window = host.window_mut();
                                 window.reset_interrupt();
-                                window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                               }
                               let result = host.exec_script_with_name_in_event_loop(
                                 self.event_loop,
                                 self.name.clone(),
                                 self.source_text.clone(),
                               );
-                              {
-                                let window = host.window_mut();
-                                window
-                                  .vm_mut()
-                                  .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                              }
                               result.map(|_| ())
                             }
                           }
@@ -1151,7 +1078,6 @@ fn render_page(
                             name: name.clone(),
                             source_text: source_text.clone(),
                             event_loop,
-                            run_limits,
                           };
                           orchestrator
                             .borrow_mut()
@@ -1428,19 +1354,12 @@ fn render_page(
                       {
                         let window = host.window_mut();
                         window.reset_interrupt();
-                        window.vm_mut().set_budget(js_budget_for_script(run_limits));
                       }
                       let result = host.exec_script_with_name_in_event_loop(
                         event_loop,
                         script_name.clone(),
                         bundle_text,
                       );
-                      {
-                        let window = host.window_mut();
-                        window
-                          .vm_mut()
-                          .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                      }
                       result.map(|_| ())
                     })();
 
@@ -1487,19 +1406,12 @@ fn render_page(
                     {
                       let window = host.window_mut();
                       window.reset_interrupt();
-                      window.vm_mut().set_budget(js_budget_for_script(run_limits));
                     }
                     let result = host.exec_script_with_name_in_event_loop(
                       event_loop,
                       script_name.clone(),
                       bundle_text,
                     );
-                    {
-                      let window = host.window_mut();
-                      window
-                        .vm_mut()
-                        .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                    }
                     result.map(|_| ())
                   })();
 
@@ -1600,7 +1512,6 @@ fn render_page(
                       name: Arc<str>,
                       source_text: &'a str,
                       event_loop: &'a mut EventLoop<WindowHostState>,
-                      run_limits: RunLimits,
                     }
                     impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                       fn execute_script(
@@ -1617,19 +1528,12 @@ fn render_page(
                         {
                           let window = host.window_mut();
                           window.reset_interrupt();
-                          window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                         }
                         let result = host.exec_script_with_name_in_event_loop(
                           self.event_loop,
                           self.name.clone(),
                           Arc::from(self.source_text),
                         );
-                        {
-                          let window = host.window_mut();
-                          window
-                            .vm_mut()
-                            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                        }
 
                         result.map(|_| ())
                       }
@@ -1641,7 +1545,6 @@ fn render_page(
                       name: name.clone(),
                       source_text: &source_text,
                       event_loop: &mut event_loop,
-                      run_limits,
                     };
                     let exec_result = orchestrator
                       .borrow_mut()
@@ -1693,7 +1596,6 @@ fn render_page(
                         name: Arc<str>,
                         source_text: Arc<str>,
                         event_loop: &'a mut EventLoop<WindowHostState>,
-                        run_limits: RunLimits,
                       }
                       impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                         fn execute_script(
@@ -1709,19 +1611,12 @@ fn render_page(
                           {
                             let window = host.window_mut();
                             window.reset_interrupt();
-                            window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                           }
                           let result = host.exec_script_with_name_in_event_loop(
                             self.event_loop,
                             self.name.clone(),
                             self.source_text.clone(),
                           );
-                          {
-                            let window = host.window_mut();
-                            window
-                              .vm_mut()
-                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                          }
                           result.map(|_| ())
                         }
                       }
@@ -1730,7 +1625,6 @@ fn render_page(
                         name: name.clone(),
                         source_text: source_text.clone(),
                         event_loop,
-                        run_limits,
                       };
                       let exec_result = orchestrator
                         .borrow_mut()
@@ -1833,7 +1727,6 @@ fn render_page(
                           name: Arc<str>,
                           source_text: Arc<str>,
                           event_loop: &'a mut EventLoop<WindowHostState>,
-                          run_limits: RunLimits,
                         }
                         impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                           fn execute_script(
@@ -1849,19 +1742,12 @@ fn render_page(
                             {
                               let window = host.window_mut();
                               window.reset_interrupt();
-                              window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                             }
                             let result = host.exec_script_with_name_in_event_loop(
                               self.event_loop,
                               self.name.clone(),
                               self.source_text.clone(),
                             );
-                            {
-                              let window = host.window_mut();
-                              window
-                                .vm_mut()
-                                .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                            }
                             result.map(|_| ())
                           }
                         }
@@ -1870,7 +1756,6 @@ fn render_page(
                           name: name.clone(),
                           source_text: Arc::from(source_text),
                           event_loop,
-                          run_limits,
                         };
                         let _ = orchestrator
                           .borrow_mut()
@@ -1891,7 +1776,6 @@ fn render_page(
                         name: Arc<str>,
                         source_text: Arc<str>,
                         event_loop: &'a mut EventLoop<WindowHostState>,
-                        run_limits: RunLimits,
                       }
                       impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
                         fn execute_script(
@@ -1907,19 +1791,12 @@ fn render_page(
                           {
                             let window = host.window_mut();
                             window.reset_interrupt();
-                            window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
                           }
                           let result = host.exec_script_with_name_in_event_loop(
                             self.event_loop,
                             self.name.clone(),
                             self.source_text.clone(),
                           );
-                          {
-                            let window = host.window_mut();
-                            window
-                              .vm_mut()
-                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                          }
                           result.map(|_| ())
                         }
                       }
@@ -1927,7 +1804,6 @@ fn render_page(
                         name: name.clone(),
                         source_text: source_text.clone(),
                         event_loop,
-                        run_limits,
                       };
                       orchestrator
                         .borrow_mut()
@@ -2065,53 +1941,44 @@ fn render_page(
           let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
           let source_text: Arc<str> = Arc::from(source_text);
           let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
-          if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-            let _guard = JsExecutionGuard::enter(&js_execution_depth);
-            struct Adapter<'a> {
-              name: Arc<str>,
-              source_text: Arc<str>,
-              event_loop: &'a mut EventLoop<WindowHostState>,
-              run_limits: RunLimits,
-            }
-            impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
-              fn execute_script(
-                &mut self,
+           if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+             let _guard = JsExecutionGuard::enter(&js_execution_depth);
+             struct Adapter<'a> {
+               name: Arc<str>,
+               source_text: Arc<str>,
+               event_loop: &'a mut EventLoop<WindowHostState>,
+             }
+             impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+               fn execute_script(
+                 &mut self,
                 host: &mut WindowHostState,
                 _orchestrator: &mut ScriptOrchestrator,
                 _script: fastrender::dom2::NodeId,
                 script_type: ScriptType,
               ) -> Result<()> {
-                if script_type != ScriptType::Classic {
-                  return Ok(());
-                }
-                {
-                  let window = host.window_mut();
-                  window.reset_interrupt();
-                  window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
-                }
-                let result = host.exec_script_with_name_in_event_loop(
-                  self.event_loop,
-                  self.name.clone(),
-                  self.source_text.clone(),
-                );
-                {
-                  let window = host.window_mut();
-                  window
-                    .vm_mut()
-                    .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                }
-                result.map(|_| ())
-              }
-            }
-            let mut adapter = Adapter {
-              name: name.clone(),
-              source_text: source_text.clone(),
-              event_loop,
-              run_limits,
-            };
-            orchestrator
-              .borrow_mut()
-              .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter)
+                 if script_type != ScriptType::Classic {
+                   return Ok(());
+                 }
+                 {
+                   let window = host.window_mut();
+                   window.reset_interrupt();
+                 }
+                 let result = host.exec_script_with_name_in_event_loop(
+                   self.event_loop,
+                   self.name.clone(),
+                   self.source_text.clone(),
+                 );
+                 result.map(|_| ())
+               }
+             }
+             let mut adapter = Adapter {
+               name: name.clone(),
+               source_text: source_text.clone(),
+               event_loop,
+             };
+             orchestrator
+               .borrow_mut()
+               .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter)
               .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
           }) {
             log(&format!("JavaScript: failed to queue deferred script task: {err}"));
@@ -2125,7 +1992,13 @@ fn render_page(
     if scripts_queued > 0 {
       log(&format!(
         "JavaScript: queued {scripts_queued} task(s) (max_tasks={} max_microtasks={} max_wall_ms={} max_script_bytes={})",
-        run_limits.max_tasks, run_limits.max_microtasks, js.max_wall_ms, max_script_bytes
+        run_limits.max_tasks,
+        run_limits.max_microtasks,
+        run_limits
+          .max_wall_time
+          .map(|d| d.as_millis())
+          .unwrap_or(0),
+        max_script_bytes
       ));
     }
 
@@ -2393,17 +2266,14 @@ fn try_main(args: Args) -> Result<()> {
   if args.js.max_script_bytes.is_none() {
     js_options.max_script_bytes = DEFAULT_JS_MAX_SCRIPT_BYTES;
   }
+  // Treat `--js-max-script-bytes 0` as "unbounded" (disables the script size limit).
+  if js_options.max_script_bytes == 0 {
+    js_options.max_script_bytes = usize::MAX;
+  }
 
   let js = JsCliConfig {
     enabled: args.js_enabled,
-    max_tasks: js_options.event_loop_run_limits.max_tasks,
-    max_microtasks: js_options.event_loop_run_limits.max_microtasks,
-    max_wall_ms: js_options
-      .event_loop_run_limits
-      .max_wall_time
-      .map(|d| d.as_millis().try_into().unwrap_or(u64::MAX))
-      .unwrap_or(0),
-    max_script_bytes: js_options.max_script_bytes,
+    options: js_options,
   };
 
   thread::Builder::new()
