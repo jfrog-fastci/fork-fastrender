@@ -122,6 +122,19 @@ struct GraphLoadingStateInner {
   host_defined: HostDefined,
 }
 
+impl Drop for GraphLoadingStateInner {
+  fn drop(&mut self) {
+    // Avoid panicking from a destructor while unwinding (that would abort).
+    if std::thread::panicking() {
+      return;
+    }
+    debug_assert!(
+      self.promise_roots.is_none(),
+      "GraphLoadingState dropped with leaked persistent roots; ensure the graph-loading promise is settled"
+    );
+  }
+}
+
 /// Opaque token representing the spec's `GraphLoadingState` record.
 ///
 /// This is an engine-owned continuation state used by *static module loading* and passed through
