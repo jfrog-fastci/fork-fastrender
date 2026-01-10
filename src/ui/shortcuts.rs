@@ -64,6 +64,8 @@ pub enum Key {
   V,
   W,
   X,
+  Insert,
+  Delete,
   Tab,
   Left,
   Right,
@@ -181,6 +183,20 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::Num0, _) if cmd => Some(ShortcutAction::ZoomReset),
 
     // Clipboard.
+    // Windows/Linux also support the "IBM Common User Access" variants:
+    // - Ctrl+Insert = Copy
+    // - Shift+Delete = Cut
+    // - Shift+Insert = Paste
+    // Keep these separate from the `cmd` mapping so they do not fire on unrelated modifier combos.
+    (Key::Insert, Modifiers { ctrl: true, shift: false, alt: false, meta: false }) => {
+      Some(ShortcutAction::Copy)
+    }
+    (Key::Delete, Modifiers { ctrl: false, shift: true, alt: false, meta: false }) => {
+      Some(ShortcutAction::Cut)
+    }
+    (Key::Insert, Modifiers { ctrl: false, shift: true, alt: false, meta: false }) => {
+      Some(ShortcutAction::Paste)
+    }
     (Key::C, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Copy),
     (Key::X, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Cut),
     (Key::V, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::Paste),
@@ -266,6 +282,39 @@ mod tests {
         "expected Ctrl+{n} to map to ActivateTabNumber({n})"
       );
     }
+  }
+
+  #[test]
+  fn shift_insert_pastes() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Insert, Modifiers::new(false, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Paste)
+    );
+  }
+
+  #[test]
+  fn ctrl_insert_copies() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Insert, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Copy)
+    );
+  }
+
+  #[test]
+  fn shift_delete_cuts() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Delete, Modifiers::new(false, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Cut)
+    );
   }
 
   #[test]

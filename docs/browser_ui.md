@@ -120,6 +120,9 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
 | Ctrl/Cmd+X (page focus) | Cut selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
 | Ctrl/Cmd+V (page focus) | Paste OS clipboard text into the focused page `<input>`/`<textarea>` |
+| Ctrl+Insert (page focus, Win/Linux) | Copy selection from the focused page `<input>`/`<textarea>` |
+| Shift+Insert (page focus, Win/Linux) | Paste OS clipboard text into the focused page `<input>`/`<textarea>` |
+| Shift+Delete (page focus, Win/Linux) | Cut selection from the focused page `<input>`/`<textarea>` |
 
 ## Code layout
 
