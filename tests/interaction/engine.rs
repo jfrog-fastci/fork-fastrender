@@ -10,7 +10,6 @@ use fastrender::interaction::InteractionEngine;
 use fastrender::interaction::KeyAction;
 use fastrender::Length;
 use fastrender::scroll::ScrollState;
-use fastrender::ui::messages::{PointerButton, PointerModifiers};
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::ComputedStyle;
 use fastrender::style::types::Appearance;
@@ -25,6 +24,8 @@ use fastrender::tree::box_tree::SelectControl;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::tree::fragment_tree::FragmentTree;
+use fastrender::ui::messages::PointerButton;
+use fastrender::ui::messages::PointerModifiers;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use url::Url;
@@ -201,7 +202,7 @@ fn radio_click_is_scoped_to_nearest_form() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -288,13 +289,19 @@ fn hover_chain_applies_to_ancestors() {
       &ScrollState::default(),
       Point::new(15.0, 15.0),
     ),
-    "pointer_move should set hover attrs"
+    "pointer_move should set hover state"
   );
+  let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
+    let node_id = node_id(&dom, id);
     assert_eq!(
-      attr_value(&dom, id, "data-fastr-hover").as_deref(),
-      Some("true"),
+      state.is_hovered(node_id),
+      true,
       "{id} should be hovered"
+    );
+    assert!(
+      !has_attr(&dom, id, "data-fastr-hover"),
+      "{id} must not have a data-fastr-hover attribute"
     );
   }
 
@@ -306,12 +313,18 @@ fn hover_chain_applies_to_ancestors() {
       &ScrollState::default(),
       Point::new(150.0, 150.0)
     ),
-    "moving off target should clear hover attrs"
+    "moving off target should clear hover state"
   );
+  let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
+    let node_id = node_id(&dom, id);
+    assert!(
+      !state.is_hovered(node_id),
+      "{id} hover should be cleared"
+    );
     assert!(
       !has_attr(&dom, id, "data-fastr-hover"),
-      "{id} hover should be cleared"
+      "{id} must not have a data-fastr-hover attribute"
     );
   }
 }
@@ -374,13 +387,19 @@ fn active_chain_sets_on_down_and_clears_on_up() {
       &ScrollState::default(),
       Point::new(15.0, 15.0),
     ),
-    "pointer_down should set active attrs"
+    "pointer_down should set active state"
   );
+  let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
+    let node_id = node_id(&dom, id);
     assert_eq!(
-      attr_value(&dom, id, "data-fastr-active").as_deref(),
-      Some("true"),
+      state.is_active(node_id),
+      true,
       "{id} should be active"
+    );
+    assert!(
+      !has_attr(&dom, id, "data-fastr-active"),
+      "{id} must not have a data-fastr-active attribute"
     );
   }
 
@@ -391,17 +410,23 @@ fn active_chain_sets_on_down_and_clears_on_up() {
     &ScrollState::default(),
     Point::new(15.0, 15.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
   assert!(changed);
   assert_eq!(action, InteractionAction::None);
 
+  let state = engine.interaction_state();
   for id in ["inner", "outer", "body", "html"] {
+    let node_id = node_id(&dom, id);
+    assert!(
+      !state.is_active(node_id),
+      "{id} active should be cleared"
+    );
     assert!(
       !has_attr(&dom, id, "data-fastr-active"),
-      "{id} active should be cleared"
+      "{id} must not have a data-fastr-active attribute"
     );
   }
 }
@@ -452,7 +477,7 @@ fn link_click_emits_navigation_with_resolved_url() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -463,10 +488,8 @@ fn link_click_emits_navigation_with_resolved_url() {
       href: "https://example.com/base/foo".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
 #[test]
@@ -499,6 +522,7 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
 
   let body_dom_id = node_id(&dom, "body");
   let img_dom_id = node_id(&dom, "img");
+  let area_dom_id = node_id(&dom, "area");
 
   let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   img_box.styled_node_id = Some(img_dom_id);
@@ -536,7 +560,7 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
     &ScrollState::default(),
     Point::new(65.0, 65.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -546,10 +570,8 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
       href: "https://example.com/base/foo".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "area", "data-fastr-visited").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().is_visited_link(area_dom_id));
+  assert!(!has_attr(&dom, "area", "data-fastr-visited"));
 }
 
 #[test]
@@ -608,7 +630,7 @@ fn anchor_activation_appends_ismap_coordinates() {
     &ScrollState::default(),
     Point::new(75.0, 95.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -618,10 +640,8 @@ fn anchor_activation_appends_ismap_coordinates() {
       href: "https://example.com/base/foo?15,35".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
 #[test]
@@ -670,7 +690,7 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -681,10 +701,8 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     .unwrap()
     .to_string();
   assert_eq!(action, InteractionAction::Navigate { href: expected });
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
 #[test]
@@ -734,7 +752,7 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -745,10 +763,8 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     .unwrap()
     .to_string();
   assert_eq!(action, InteractionAction::Navigate { href: expected });
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().is_visited_link(link_dom_id));
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
 #[test]
@@ -801,7 +817,7 @@ fn checkbox_click_toggles_checked_attribute() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -816,11 +832,9 @@ fn checkbox_click_toggles_checked_attribute() {
     "pointer_up may emit FocusChanged or Navigate"
   );
   assert!(has_attr(&dom, "cb", "checked"));
-  assert_eq!(
-    attr_value(&dom, "cb", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "clicking a checkbox should focus it"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(cb_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "cb", "data-fastr-focus"));
 }
 
 #[test]
@@ -907,7 +921,7 @@ fn range_drag_ignores_sentinel_pointer_positions() {
     &ScrollState::default(),
     Point::new(-1.0, -1.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/",
     "https://example.com/",
   );
@@ -955,10 +969,9 @@ fn cancelled_click_does_not_blur_focused_control() {
   let mut engine = InteractionEngine::new();
   let (changed, _action) = engine.focus_node_id(&mut dom, Some(txt_dom_id), false);
   assert!(changed, "expected focus_node_id to set focus flags");
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(txt_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
 
   engine.pointer_down(
     &mut dom,
@@ -977,15 +990,14 @@ fn cancelled_click_does_not_blur_focused_control() {
     &ScrollState::default(),
     Point::new(150.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/",
     "https://example.com/",
   );
   assert_eq!(action, InteractionAction::None);
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(txt_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
 }
 
 #[test]
@@ -1037,7 +1049,7 @@ fn space_key_toggles_focused_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1050,11 +1062,9 @@ fn space_key_toggles_focused_checkbox() {
     !has_attr(&dom, "cb", "checked"),
     "space should uncheck the focused checkbox"
   );
-  assert_eq!(
-    attr_value(&dom, "cb", "data-fastr-focus-visible").as_deref(),
-    Some("true"),
-    "keyboard interaction should set focus-visible"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(cb_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "cb", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -1114,7 +1124,7 @@ fn space_key_activates_focused_radio() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1135,11 +1145,9 @@ fn space_key_activates_focused_radio() {
     !has_attr(&dom, "r2", "checked"),
     "other radios in the group should remain unchecked"
   );
-  assert_eq!(
-    attr_value(&dom, "r1", "data-fastr-focus-visible").as_deref(),
-    Some("true"),
-    "keyboard interaction should set focus-visible"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(r1_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "r1", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -1187,7 +1195,7 @@ fn enter_key_on_focused_link_emits_navigation() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1265,7 +1273,7 @@ fn label_click_activates_associated_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1280,11 +1288,9 @@ fn label_click_activates_associated_checkbox() {
     "pointer_up may emit FocusChanged or Navigate"
   );
   assert!(has_attr(&dom, "cb", "checked"));
-  assert_eq!(
-    attr_value(&dom, "cb", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "clicking a label should focus the associated checkbox"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(cb_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "cb", "data-fastr-focus"));
 }
 
 #[test]
@@ -1303,6 +1309,7 @@ fn label_for_ignores_non_form_control_target() {
   )]);
 
   let label_dom_id = node_id(&dom, "lbl");
+  let anchor_dom_id = node_id(&dom, "x");
 
   let mut label_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
   label_box.styled_node_id = Some(label_dom_id);
@@ -1337,7 +1344,7 @@ fn label_for_ignores_non_form_control_target() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1346,14 +1353,10 @@ fn label_for_ignores_non_form_control_target() {
     !matches!(action, InteractionAction::Navigate { .. }),
     "label[for] should only resolve to labelable form controls"
   );
-  assert!(
-    !has_attr(&dom, "x", "data-fastr-visited"),
-    "label click must not mark an unrelated anchor as visited"
-  );
-  assert!(
-    attr_value(&dom, "x", "data-fastr-focus").is_none(),
-    "label click must not focus an unrelated anchor"
-  );
+  assert!(!engine.interaction_state().is_visited_link(anchor_dom_id));
+  assert_ne!(engine.interaction_state().focused, Some(anchor_dom_id));
+  assert!(!has_attr(&dom, "x", "data-fastr-visited"));
+  assert!(!has_attr(&dom, "x", "data-fastr-focus"));
 }
 
 #[test]
@@ -1416,7 +1419,7 @@ fn label_for_does_not_cross_shadow_root_boundary() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1473,7 +1476,7 @@ fn radio_click_checks_and_focuses() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1486,11 +1489,9 @@ fn radio_click_checks_and_focuses() {
     "pointer_up may emit FocusChanged"
   );
   assert!(has_attr(&dom, "r", "checked"), "radio should be checked");
-  assert_eq!(
-    attr_value(&dom, "r", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "clicking a radio should focus it"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(radio_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "r", "data-fastr-focus"));
 }
 
 #[test]
@@ -1553,16 +1554,14 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "input should be focused after click"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
 
   // Click outside any focusable element to blur.
   engine.pointer_down(
@@ -1579,7 +1578,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &ScrollState::default(),
     Point::new(5.0, 60.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1589,10 +1588,9 @@ fn clicking_outside_focusable_blurs_current_focus() {
     InteractionAction::FocusChanged { node_id: None },
     "blurring should emit FocusChanged(None)"
   );
-  assert!(
-    !has_attr(&dom, "txt", "data-fastr-focus"),
-    "input focus should be cleared after clicking outside"
-  );
+  assert_eq!(engine.interaction_state().focused, None);
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
 }
 
 #[test]
@@ -1650,7 +1648,7 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1662,14 +1660,9 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     ),
     "pointer_up may emit FocusChanged"
   );
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert!(
-    !has_attr(&dom, "txt", "data-fastr-focus-visible"),
-    "pointer focus should not set focus-visible"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
   assert!(
     !has_attr(&dom, "txt", "data-fastr-user-validity"),
     "focus should not flip user validity"
@@ -1680,10 +1673,9 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     "text_input should mutate the DOM"
   );
   assert_eq!(attr_value(&dom, "txt", "value").as_deref(), Some("abc"));
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
   assert_eq!(
     attr_value(&dom, "txt", "data-fastr-user-validity").as_deref(),
     Some("true")
@@ -1756,7 +1748,7 @@ fn submit_click_navigates_and_marks_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -1867,7 +1859,7 @@ fn submit_button_click_submits_get_form_with_query_and_submitter() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -1946,7 +1938,7 @@ fn submit_click_navigates_with_get_query_and_encodes_space_as_plus() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2033,7 +2025,7 @@ fn submit_click_sanitizes_input_values() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -2104,7 +2096,7 @@ fn submit_click_strips_action_fragment() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -2179,7 +2171,7 @@ fn submit_click_uses_form_attr_idref_owner() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2258,7 +2250,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2346,7 +2338,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2445,7 +2437,7 @@ fn submit_click_includes_selected_select_option_in_query() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2527,7 +2519,7 @@ fn submit_click_single_select_prefers_last_selected_option_in_tree_order() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2599,7 +2591,7 @@ fn submit_click_includes_form_associated_control_outside_form_in_query() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2677,7 +2669,7 @@ fn submit_click_prefers_select_option_value_attribute_over_text_content() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2748,7 +2740,7 @@ fn submit_click_defaults_action_to_document_url_when_action_is_missing() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2871,7 +2863,7 @@ fn select_listbox_click_marks_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 25.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -2954,15 +2946,16 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-hover").as_deref(),
-    Some("true"),
+  assert!(
+    engine.interaction_state().is_hovered(link_dom_id),
     "link should be hovered through overlay"
   );
   assert!(
-    !has_attr(&dom, "overlay", "data-fastr-hover"),
+    !engine.interaction_state().is_hovered(overlay_dom_id),
     "overlay should not be hovered"
   );
+  assert!(!has_attr(&dom, "link", "data-fastr-hover"));
+  assert!(!has_attr(&dom, "overlay", "data-fastr-hover"));
 
   engine.pointer_down(
     &mut dom,
@@ -2978,7 +2971,7 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/",
     "https://example.com/",
   );
@@ -3051,7 +3044,7 @@ fn form_submit_get_builds_expected_url() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -3126,7 +3119,7 @@ fn form_submit_get_skips_unchecked_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -3207,7 +3200,7 @@ fn form_submit_get_includes_checked_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -3363,7 +3356,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -3375,15 +3368,10 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
       control: expected_control.clone(),
     }
   );
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "clicking a select should focus it"
-  );
-  assert!(
-    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
-    "pointer focus should not set focus-visible"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(select_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -3436,15 +3424,13 @@ fn inert_link_does_not_navigate() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://example.com/",
     "https://example.com/",
   );
   assert_eq!(action, InteractionAction::None);
-  assert!(
-    !has_attr(&dom, "link", "data-fastr-visited"),
-    "inert link should not be marked visited"
-  );
+  assert!(!engine.interaction_state().is_visited_link(link_dom_id));
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
 #[test]
@@ -3497,7 +3483,7 @@ fn disabled_checkbox_does_not_toggle_checked() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -3563,7 +3549,7 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -3656,7 +3642,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -3679,7 +3665,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &ScrollState::default(),
     Point::new(5.0, 45.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -3760,26 +3746,28 @@ fn tab_key_traverses_focusable_elements_in_dom_order_and_wraps() {
       engine.key_action(&mut dom, KeyAction::Tab),
       "tab should move focus"
     );
+    let expected_dom_id = node_id(&dom, expected);
     assert_eq!(
-      attr_value(&dom, expected, "data-fastr-focus").as_deref(),
-      Some("true"),
+      engine.interaction_state().focused,
+      Some(expected_dom_id),
       "{expected} should be focused"
     );
-    assert_eq!(
-      attr_value(&dom, expected, "data-fastr-focus-visible").as_deref(),
-      Some("true"),
+    assert!(
+      engine.interaction_state().focus_visible,
       "{expected} should be focus-visible (keyboard modality)"
     );
+    assert!(!has_attr(&dom, expected, "data-fastr-focus"));
+    assert!(!has_attr(&dom, expected, "data-fastr-focus-visible"));
 
     if let Some(prev_id) = prev {
-      assert!(
-        !has_attr(&dom, prev_id, "data-fastr-focus"),
+      let prev_dom_id = node_id(&dom, prev_id);
+      assert_ne!(
+        engine.interaction_state().focused,
+        Some(prev_dom_id),
         "{prev_id} focus should be cleared"
       );
-      assert!(
-        !has_attr(&dom, prev_id, "data-fastr-focus-visible"),
-        "{prev_id} focus-visible should be cleared"
-      );
+      assert!(!has_attr(&dom, prev_id, "data-fastr-focus"));
+      assert!(!has_attr(&dom, prev_id, "data-fastr-focus-visible"));
     }
 
     for skipped in [
@@ -3791,10 +3779,13 @@ fn tab_key_traverses_focusable_elements_in_dom_order_and_wraps() {
       "a_skip",
       "ta_inert",
     ] {
-      assert!(
-        !has_attr(&dom, skipped, "data-fastr-focus"),
+      let skipped_dom_id = node_id(&dom, skipped);
+      assert_ne!(
+        engine.interaction_state().focused,
+        Some(skipped_dom_id),
         "{skipped} must be skipped by tab traversal"
       );
+      assert!(!has_attr(&dom, skipped, "data-fastr-focus"));
     }
 
     prev = Some(expected);
@@ -3874,26 +3865,28 @@ fn shift_tab_key_traverses_focusable_elements_in_reverse_dom_order_and_wraps() {
       engine.key_action(&mut dom, KeyAction::ShiftTab),
       "shift+tab should move focus"
     );
+    let expected_dom_id = node_id(&dom, expected);
     assert_eq!(
-      attr_value(&dom, expected, "data-fastr-focus").as_deref(),
-      Some("true"),
+      engine.interaction_state().focused,
+      Some(expected_dom_id),
       "{expected} should be focused"
     );
-    assert_eq!(
-      attr_value(&dom, expected, "data-fastr-focus-visible").as_deref(),
-      Some("true"),
+    assert!(
+      engine.interaction_state().focus_visible,
       "{expected} should be focus-visible (keyboard modality)"
     );
+    assert!(!has_attr(&dom, expected, "data-fastr-focus"));
+    assert!(!has_attr(&dom, expected, "data-fastr-focus-visible"));
 
     if let Some(prev_id) = prev {
-      assert!(
-        !has_attr(&dom, prev_id, "data-fastr-focus"),
+      let prev_dom_id = node_id(&dom, prev_id);
+      assert_ne!(
+        engine.interaction_state().focused,
+        Some(prev_dom_id),
         "{prev_id} focus should be cleared"
       );
-      assert!(
-        !has_attr(&dom, prev_id, "data-fastr-focus-visible"),
-        "{prev_id} focus-visible should be cleared"
-      );
+      assert!(!has_attr(&dom, prev_id, "data-fastr-focus"));
+      assert!(!has_attr(&dom, prev_id, "data-fastr-focus-visible"));
     }
 
     for skipped in [
@@ -3905,10 +3898,13 @@ fn shift_tab_key_traverses_focusable_elements_in_reverse_dom_order_and_wraps() {
       "a_skip",
       "ta_inert",
     ] {
-      assert!(
-        !has_attr(&dom, skipped, "data-fastr-focus"),
+      let skipped_dom_id = node_id(&dom, skipped);
+      assert_ne!(
+        engine.interaction_state().focused,
+        Some(skipped_dom_id),
         "{skipped} must be skipped by tab traversal"
       );
+      assert!(!has_attr(&dom, skipped, "data-fastr-focus"));
     }
 
     prev = Some(expected);
@@ -4036,7 +4032,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &ScrollState::default(),
     Point::new(5.0, 15.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4047,11 +4043,9 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
       node_id: Some(select_dom_id)
     }
   );
-  assert_eq!(
-    attr_value(&dom, "s", "data-fastr-focus").as_deref(),
-    Some("true"),
-    "clicking a select should focus it"
-  );
+  assert_eq!(engine.interaction_state().focused, Some(select_dom_id));
+  assert!(!engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "s", "data-fastr-focus"));
 
   assert!(
     !has_attr(&dom, "o1", "selected"),
@@ -4079,7 +4073,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &ScrollState::default(),
     Point::new(5.0, 25.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4205,7 +4199,7 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
     &ScrollState::default(),
     Point::new(5.0, 15.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4343,7 +4337,7 @@ fn listbox_select_click_in_blank_area_is_noop() {
     &ScrollState::default(),
     Point::new(5.0, 35.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4485,7 +4479,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     &ScrollState::default(),
     Point::new(5.0, 15.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4514,7 +4508,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     &ScrollState::default(),
     Point::new(5.0, 15.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4555,9 +4549,18 @@ fn select_keyboard_navigation_without_box_tree_changes_selection_and_skips_disab
   let mut engine = InteractionEngine::new();
   engine.focus_node_id(&mut dom, Some(select_dom_id), false);
 
+  assert_eq!(engine.interaction_state().focused, Some(select_dom_id));
+  assert!(
+    !engine.interaction_state().focus_visible,
+    "focus should not initially be focus-visible (simulating a pointer focus)"
+  );
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-focus"),
+    "focus must not be represented via DOM attrs"
+  );
   assert!(
     !has_attr(&dom, "s", "data-fastr-focus-visible"),
-    "focus should not initially be focus-visible (simulating a pointer focus)"
+    "focus-visible must not be represented via DOM attrs"
   );
   assert!(has_attr(&dom, "o1", "selected"));
 
@@ -4565,10 +4568,14 @@ fn select_keyboard_navigation_without_box_tree_changes_selection_and_skips_disab
     engine.key_activate(&mut dom, KeyAction::ArrowDown, "https://x/", "https://x/");
   assert!(changed);
   assert_eq!(action, InteractionAction::None);
-  assert_eq!(
-    attr_value(&dom, "s", "data-fastr-focus-visible").as_deref(),
-    Some("true"),
+  assert_eq!(engine.interaction_state().focused, Some(select_dom_id));
+  assert!(
+    engine.interaction_state().focus_visible,
     "keyboard interaction should set focus-visible"
+  );
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-focus-visible"),
+    "focus-visible must not be represented via DOM attrs"
   );
 
   // ArrowDown should skip disabled options.
@@ -4707,7 +4714,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
     &scroll,
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -4746,14 +4753,17 @@ fn focused_link_enter_activates_navigation_and_marks_visited() {
       href: "https://example.com/base/foo".to_string()
     }
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
-    Some("true")
+  assert_eq!(engine.interaction_state().focused, Some(link_id));
+  assert!(
+    engine.interaction_state().is_visited_link(link_id),
+    "Enter on a focused link should mark it visited"
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
-    Some("true")
+  assert!(
+    engine.interaction_state().focus_visible,
+    "keyboard interaction should set focus-visible"
   );
+  assert!(!has_attr(&dom, "link", "data-fastr-visited"));
+  assert!(!has_attr(&dom, "link", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -4785,15 +4795,12 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
       node_id: Some(link_id)
     }
   );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(link_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "link", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "link", "data-fastr-focus-visible"));
   assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
 
   let (_, action) =
     engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
@@ -4804,14 +4811,11 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
     }
   );
   assert!(!has_attr(&dom, "link", "data-fastr-focus"));
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "txt", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert!(!has_attr(&dom, "link", "data-fastr-focus-visible"));
+  assert_eq!(engine.interaction_state().focused, Some(input_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus-visible"));
 
   // Wrap at the end.
   let (_, action) =
@@ -4822,6 +4826,7 @@ fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
       node_id: Some(link_id)
     }
   );
+  assert_eq!(engine.interaction_state().focused, Some(link_id));
 }
 
 #[test]
@@ -4854,10 +4859,9 @@ fn focused_checkbox_space_toggles_checked() {
     attr_value(&dom, "cb", "data-fastr-user-validity").as_deref(),
     Some("true")
   );
-  assert_eq!(
-    attr_value(&dom, "cb", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(cb_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "cb", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -5110,7 +5114,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &ScrollState::default(),
     Point::new(0.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5125,7 +5129,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &ScrollState::default(),
     Point::new(56.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5140,7 +5144,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &ScrollState::default(),
     Point::new(100.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5304,14 +5308,16 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
   engine.focus_node_id(&mut dom, Some(select_dom_id), false);
 
   assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-focus").as_deref(),
-    Some("true"),
+    engine.interaction_state().focused,
+    Some(select_dom_id),
     "select should be focused"
   );
   assert!(
-    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
+    !engine.interaction_state().focus_visible,
     "pointer focus should not set focus-visible"
   );
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
 
   // Home should jump to the first enabled <option> (o1), skipping disabled o0.
   assert!(
@@ -5322,11 +5328,11 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
   assert!(!has_attr(&dom, "o2", "selected"));
   assert!(!has_attr(&dom, "o0", "selected"));
   assert!(!has_attr(&dom, "o3", "selected"));
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
-    Some("true"),
+  assert!(
+    engine.interaction_state().focus_visible,
     "keyboard interaction should set focus-visible"
   );
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
 
   // End should jump to the last enabled <option> (o2), skipping disabled optgroup option o3.
   assert!(
@@ -5371,11 +5377,11 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_dom_fallback() {
   engine.key_action(&mut dom, KeyAction::Home);
   assert!(has_attr(&dom, "o1", "selected"));
   assert!(!has_attr(&dom, "o2", "selected"));
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
-    Some("true"),
+  assert!(
+    engine.interaction_state().focus_visible,
     "keyboard interaction should set focus-visible"
   );
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
 
   engine.key_action(&mut dom, KeyAction::End);
   assert!(has_attr(&dom, "o2", "selected"));
@@ -5464,7 +5470,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     &ScrollState::default(),
     Point::new(100.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5484,7 +5490,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     &ScrollState::default(),
     Point::new(100.0, 50.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5539,7 +5545,7 @@ fn range_click_focuses_input() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5551,14 +5557,16 @@ fn range_click_focuses_input() {
     "pointer_up may emit FocusChanged"
   );
   assert_eq!(
-    attr_value(&dom, "r", "data-fastr-focus").as_deref(),
-    Some("true"),
+    engine.interaction_state().focused,
+    Some(range_dom_id),
     "clicking a range input should focus it"
   );
   assert!(
-    !has_attr(&dom, "r", "data-fastr-focus-visible"),
+    !engine.interaction_state().focus_visible,
     "pointer focus should not set focus-visible"
   );
+  assert!(!has_attr(&dom, "r", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "r", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -5607,7 +5615,7 @@ fn tabindex_zero_element_click_focuses_without_focus_visible() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5617,14 +5625,13 @@ fn tabindex_zero_element_click_focuses_without_focus_visible() {
     InteractionAction::None => {}
     other => panic!("unexpected pointer_up action: {other:?}"),
   }
-  assert_eq!(
-    attr_value(&dom, "t", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(dom_id));
   assert!(
-    !has_attr(&dom, "t", "data-fastr-focus-visible"),
+    !engine.interaction_state().focus_visible,
     "pointer focus should not set focus-visible"
   );
+  assert!(!has_attr(&dom, "t", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "t", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -5682,72 +5689,55 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(
-    attr_value(&dom, "first", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(first_dom_id));
   assert!(
-    !has_attr(&dom, "first", "data-fastr-focus-visible"),
+    !engine.interaction_state().focus_visible,
     "pointer focus should not set focus-visible"
   );
+  assert!(!has_attr(&dom, "first", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "first", "data-fastr-focus-visible"));
 
   // Tab sequence: first -> textarea -> link -> tabindex=0 div -> last button -> wrap to first.
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "ta", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "ta", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "ta")));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "ta", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "ta", "data-fastr-focus-visible"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "link")));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "link", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "link", "data-fastr-focus-visible"));
 
   assert!(
     engine.key_action(&mut dom, KeyAction::Tab),
     "should skip tabindex=-1, disabled and inert descendants"
   );
-  assert_eq!(
-    attr_value(&dom, "tabbed", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "tabbed")));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "tabbed", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "tabbed", "data-fastr-focus-visible"));
   assert!(!has_attr(&dom, "skip", "data-fastr-focus"));
   assert!(!has_attr(&dom, "disabled", "data-fastr-focus"));
   assert!(!has_attr(&dom, "inert-input", "data-fastr-focus"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "last", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "last", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(node_id(&dom, "last")));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "last", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "last", "data-fastr-focus-visible"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "first", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "first", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(first_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "first", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "first", "data-fastr-focus-visible"));
 }
 
 #[test]
@@ -5766,33 +5756,25 @@ fn tab_focuses_first_focusable_element_when_nothing_focused() {
     )],
   )]);
 
+  let btn_dom_id = node_id(&dom, "btn");
+  let inp_dom_id = node_id(&dom, "inp");
+
   let mut engine = InteractionEngine::new();
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "btn", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(btn_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "btn", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "btn", "data-fastr-focus-visible"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(inp_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "inp", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "inp", "data-fastr-focus-visible"));
 
   // Wrap at the end.
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(btn_dom_id));
 }
 
 #[test]
@@ -5928,7 +5910,7 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     PointerButton::Primary,
-    PointerModifiers::NONE,
+    PointerModifiers::default(),
     "https://x/",
     "https://x/",
   );
@@ -5944,9 +5926,11 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
   }
 
   assert!(
-    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
+    !engine.interaction_state().focus_visible,
     "pointer focus should not set focus-visible"
   );
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
 
   assert!(has_attr(&dom, "o1", "selected"));
   assert!(!has_attr(&dom, "o2", "selected"));
@@ -5955,10 +5939,8 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
   assert!(!has_attr(&dom, "o5", "selected"));
 
   assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
-  assert_eq!(
-    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "sel", "data-fastr-focus-visible"));
   assert!(!has_attr(&dom, "o1", "selected"));
   assert!(!has_attr(&dom, "o2", "selected"));
   assert!(has_attr(&dom, "o3", "selected"));
@@ -5996,34 +5978,26 @@ fn shift_tab_focuses_last_focusable_element_when_nothing_focused() {
     )],
   )]);
 
+  let btn_dom_id = node_id(&dom, "btn");
+  let inp_dom_id = node_id(&dom, "inp");
+
   let mut engine = InteractionEngine::new();
   assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(inp_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "inp", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "inp", "data-fastr-focus-visible"));
 
   // Traverse backward.
   assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
-  assert_eq!(
-    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "btn", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(btn_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "btn", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "btn", "data-fastr-focus-visible"));
 
   // Wrap backward.
   assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(inp_dom_id));
 }
 
 #[test]
@@ -6042,20 +6016,16 @@ fn tab_focuses_area_href_elements() {
     )],
   )]);
 
+  let area_dom_id = node_id(&dom, "area");
+  let input_dom_id = node_id(&dom, "inp");
+
   let mut engine = InteractionEngine::new();
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "area", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
-  assert_eq!(
-    attr_value(&dom, "area", "data-fastr-focus-visible").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(area_dom_id));
+  assert!(engine.interaction_state().focus_visible);
+  assert!(!has_attr(&dom, "area", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "area", "data-fastr-focus-visible"));
 
   assert!(engine.key_action(&mut dom, KeyAction::Tab));
-  assert_eq!(
-    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
-    Some("true")
-  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
 }

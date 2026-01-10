@@ -2,6 +2,9 @@ use fastrender::animation;
 use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
+use fastrender::interaction::InteractionEngine;
+use fastrender::geometry::Point;
+use fastrender::scroll::ScrollState;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::types::BorderStyle;
@@ -917,10 +920,18 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
       .with_animation_time(0.0),
   )?;
 
-  doc.render_frame()?;
-  assert!(set_attr(&mut doc, "box", "data-fastr-hover", "true"));
+  let mut interaction = InteractionEngine::new();
+  let scroll = ScrollState::default();
+
+  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
+  // Hover the box to start the transition at t=0.
+  doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let changed =
+      interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, Point::new(10.0, 10.0));
+    (changed, ())
+  })?;
   // Keep time at t=0 so this frame records the transition start time.
-  doc.render_frame()?;
+  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
 
   let prepared = doc.prepared().expect("prepared");
   let box_id = box_id_by_element_id(prepared, "box");
@@ -941,8 +952,12 @@ fn transition_parameters_from_after_change_style_control_started_transition() ->
 
   // Start the reverse transition at t=2000ms.
   doc.set_animation_time_ms(2000.0);
-  assert!(remove_attr(&mut doc, "box", "data-fastr-hover"));
-  doc.render_frame()?;
+  doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let changed =
+      interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, Point::new(150.0, 150.0));
+    (changed, ())
+  })?;
+  doc.render_frame_with_scroll_state_and_interaction_state(Some(interaction.interaction_state()))?;
 
   let prepared = doc.prepared().expect("prepared");
   let box_id = box_id_by_element_id(prepared, "box");

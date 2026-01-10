@@ -18,6 +18,7 @@ use crate::error::{RenderStage, Result};
 use crate::geometry::Size;
 use crate::html::image_attrs;
 use crate::html::images::is_supported_image_mime;
+use crate::interaction::InteractionState;
 use crate::render_control::check_active_periodic;
 use crate::resource::ReferrerPolicy;
 use crate::style::color::Rgba;
@@ -445,6 +446,7 @@ fn collect_box_generation_prepass<'a>(
 fn build_box_tree_root(
   styled: &StyledNode,
   options: &BoxGenerationOptions,
+  interaction_state: Option<&InteractionState>,
   deadline_counter: &mut usize,
 ) -> Result<BoxNode> {
   // The styled tree's root is the document node, but the document element (<html>) establishes the
@@ -485,6 +487,7 @@ fn build_box_tree_root(
     svg_document_css.embedded_style_element.as_ref(),
     &mut picture_sources,
     options,
+    interaction_state,
     deadline_counter,
     &mut roots,
   );
@@ -552,8 +555,16 @@ pub fn generate_box_tree_with_options(
   styled: &StyledNode,
   options: &BoxGenerationOptions,
 ) -> Result<BoxTree> {
+  generate_box_tree_with_options_and_interaction_state(styled, options, None)
+}
+
+pub(crate) fn generate_box_tree_with_options_and_interaction_state(
+  styled: &StyledNode,
+  options: &BoxGenerationOptions,
+  interaction_state: Option<&InteractionState>,
+) -> Result<BoxTree> {
   let mut deadline_counter = 0usize;
-  let mut root = build_box_tree_root(styled, options, &mut deadline_counter)?;
+  let mut root = build_box_tree_root(styled, options, interaction_state, &mut deadline_counter)?;
   propagate_root_axes_from_root_element(styled, &mut root);
   Ok(BoxTree::new(root))
 }
@@ -603,10 +614,18 @@ pub fn generate_box_tree_with_anonymous_fixup_with_options(
   styled: &StyledNode,
   options: &BoxGenerationOptions,
 ) -> Result<BoxTree> {
+  generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(styled, options, None)
+}
+
+pub(crate) fn generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(
+  styled: &StyledNode,
+  options: &BoxGenerationOptions,
+  interaction_state: Option<&InteractionState>,
+) -> Result<BoxTree> {
   let timings_enabled = runtime::runtime_toggles().truthy("FASTR_RENDER_TIMINGS");
   let mut deadline_counter = 0usize;
   let build_start = timings_enabled.then(Instant::now);
-  let root = build_box_tree_root(styled, options, &mut deadline_counter)?;
+  let root = build_box_tree_root(styled, options, interaction_state, &mut deadline_counter)?;
   if let Some(start) = build_start {
     eprintln!("timing:box_gen_build_root {:?}", start.elapsed());
   }
@@ -4026,6 +4045,7 @@ fn generate_boxes_for_styled_into(
   svg_document_css_style_element: Option<&Arc<str>>,
   picture_sources: &mut PictureSourceLookup,
   options: &BoxGenerationOptions,
+  interaction_state: Option<&InteractionState>,
   deadline_counter: &mut usize,
   out: &mut Vec<BoxNode>,
 ) -> Result<()> {
@@ -4330,11 +4350,8 @@ fn generate_boxes_for_styled_into(
         // and native painting. (HTML <button> is intentionally *not* a replaced box so its
         // descendants can participate in layout, e.g. inline-flex icon+text buttons.)
         let mut appearance_none_form_control: Option<FormControl> = None;
-        if let Some(form_control) = create_form_control_replaced(styled) {
-          if !matches!(
-            form_control.appearance,
-            crate::style::types::Appearance::None
-          ) {
+        if let Some(form_control) = create_form_control_replaced(styled, interaction_state) {
+          if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
             // Form controls short-circuit box generation as replaced elements, but we still need to
             // honor authored ::before/::after pseudo-elements so real-world patterns like styled
             // search icons render. To keep layout complexity manageable, only attach out-of-flow
@@ -6326,7 +6343,10 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
   }
 }
 
-fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
+fn create_form_control_replaced(
+  styled: &StyledNode,
+  interaction_state: Option<&InteractionState>,
+) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
   let appearance = styled.styles.appearance.clone();
 
@@ -6361,24 +6381,13 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       .get_attribute_ref("data-fastr-inert")
       .map(|v| v.eq_ignore_ascii_case("true"))
       .unwrap_or(false);
-  let focus_flag = styled
-    .node
-    .get_attribute_ref("data-fastr-focus")
-    .map(|v| v.eq_ignore_ascii_case("true"))
-    .unwrap_or(false);
-  let focus_visible_flag = styled
-    .node
-    .get_attribute_ref("data-fastr-focus-visible")
-    .map(|v| v.eq_ignore_ascii_case("true"))
-    .unwrap_or(false);
-  let mut focused = (focus_flag || focus_visible_flag) && !inert;
-  let mut focus_visible = focus_visible_flag && !inert;
-  if !focused {
-    focus_visible = false;
-  }
-  if disabled {
-    focused = false;
-    focus_visible = false;
+  let mut focused = false;
+  let mut focus_visible = false;
+  if !inert && !disabled {
+    if let Some(state) = interaction_state {
+      focused = state.is_focused(styled.node_id);
+      focus_visible = focused && state.focus_visible;
+    }
   }
   let textarea_value = tag.eq_ignore_ascii_case("textarea").then(|| {
     crate::dom::textarea_current_value_from_text_content(&styled.node, collect_text_content(styled))
@@ -6665,9 +6674,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       };
 
     let ime_preedit = match &control {
-      FormControlKind::Text { .. } => styled
-        .node
-        .get_attribute_ref("data-fastr-ime-preedit")
+      FormControlKind::Text { .. } => interaction_state
+        .and_then(|state| state.ime_preedit_for(styled.node_id))
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string()),
       _ => None,
@@ -6754,9 +6762,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required,
       invalid,
-      ime_preedit: styled
-        .node
-        .get_attribute_ref("data-fastr-ime-preedit")
+      ime_preedit: interaction_state
+        .and_then(|state| state.ime_preedit_for(styled.node_id))
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string()),
     })
@@ -9120,7 +9127,7 @@ mod tests {
     ];
     select.children = vec![option];
 
-    let control = create_form_control_replaced(&select)
+    let control = create_form_control_replaced(&select, None)
       .expect("select should generate a form control")
       .control;
     let FormControlKind::Select(select) = &control else {
@@ -9150,7 +9157,7 @@ mod tests {
   fn new_form_control_input_types_are_identified() {
     let html = "<html><body>
       <input type=\"password\" value=\"abc\">
-      <input type=\"number\" value=\"5\" data-fastr-focus=\"true\" data-fastr-focus-visible=\"true\">
+      <input type=\"number\" value=\"5\">
       <input type=\"number\" value=\"abc\" placeholder=\"invalid number\">
       <input type=\"number\" value=\"abc\" required placeholder=\"required invalid number\">
       <input type=\"color\" value=\"#00ff00\">
@@ -9170,14 +9177,44 @@ mod tests {
       <input type=\"number\" size=\"7\" placeholder=\"sized number\">
       <input type=\"checkbox\" indeterminate=\"true\">
       <input type=\"file\" value=\"C:\\\\fakepath\\\\hello.txt\">
-      <input type=\"foo\" placeholder=\"mystery\" data-fastr-focus-visible=\"true\">
+      <input type=\"foo\" placeholder=\"mystery\">
       <input type=\"mystery\" value=\"abc\" placeholder=\"ph\" size=\"7\">
       <input size=\"5\" value=\"sized\">
       <textarea rows=\"4\" cols=\"10\">hi</textarea>
     </body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
-    let box_tree = generate_box_tree(&styled);
+    let focus_id = {
+      let mut stack: Vec<&StyledNode> = vec![&styled];
+      let mut found = None;
+      while let Some(node) = stack.pop() {
+        let is_number = node
+          .node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+          && node
+            .node
+            .get_attribute_ref("type")
+            .is_some_and(|t| t.eq_ignore_ascii_case("number"))
+          && node.node.get_attribute_ref("value") == Some("5");
+        if is_number {
+          found = Some(node.node_id);
+          break;
+        }
+        stack.extend(node.children.iter());
+      }
+      found.expect("focused number input should exist in styled tree")
+    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(focus_id);
+    interaction_state.focus_visible = true;
+    interaction_state.focus_chain = vec![focus_id];
+    let box_tree = generate_box_tree_with_options_and_interaction_state(
+      &styled,
+      &BoxGenerationOptions::default(),
+      Some(&interaction_state),
+    )
+    .expect("box generation failed");
 
     fn collect_controls(node: &BoxNode, out: &mut Vec<FormControl>) {
       if let BoxType::Replaced(repl) = &node.box_type {
@@ -14945,7 +14982,7 @@ mod tests {
     let mut select = styled_element("select");
     select.children = vec![first, second];
 
-    let control = create_form_control_replaced(&select).expect("select form control");
+    let control = create_form_control_replaced(&select, None).expect("select form control");
     assert!(!control.invalid);
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
@@ -15027,7 +15064,7 @@ mod tests {
     set_attr(&mut select, "required", "");
     select.children = vec![placeholder, enabled];
 
-    let control = create_form_control_replaced(&select).expect("select form control");
+    let control = create_form_control_replaced(&select, None).expect("select form control");
     assert!(control.required);
     assert!(control.invalid);
     let FormControlKind::Select(select) = &control.control else {
@@ -15067,7 +15104,7 @@ mod tests {
 
     let mut dropdown_size0 = styled_element("select");
     set_attr(&mut dropdown_size0, "size", "0");
-    let control = create_form_control_replaced(&dropdown_size0).expect("select form control");
+    let control = create_form_control_replaced(&dropdown_size0, None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15076,7 +15113,7 @@ mod tests {
 
     let mut multi_default = styled_element("select");
     set_attr(&mut multi_default, "multiple", "");
-    let control = create_form_control_replaced(&multi_default).expect("select form control");
+    let control = create_form_control_replaced(&multi_default, None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15086,7 +15123,7 @@ mod tests {
     let mut multi_invalid = styled_element("select");
     set_attr(&mut multi_invalid, "multiple", "");
     set_attr(&mut multi_invalid, "size", "abc");
-    let control = create_form_control_replaced(&multi_invalid).expect("select form control");
+    let control = create_form_control_replaced(&multi_invalid, None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };
@@ -15096,7 +15133,7 @@ mod tests {
     let mut multi_size3 = styled_element("select");
     set_attr(&mut multi_size3, "multiple", "");
     set_attr(&mut multi_size3, "size", "3");
-    let control = create_form_control_replaced(&multi_size3).expect("select form control");
+    let control = create_form_control_replaced(&multi_size3, None).expect("select form control");
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select control kind");
     };

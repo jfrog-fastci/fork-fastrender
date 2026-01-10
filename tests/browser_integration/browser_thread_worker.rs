@@ -56,13 +56,13 @@ fn pointer_move_sets_hover_and_repaints() {
       <html>
         <head>
           <style>
-            html, body { margin: 0; padding: 0; }
-            #box { width:64px; height:64px; background: rgb(255, 0, 0); }
-            #box[data-fastr-hover="true"] { background: rgb(0, 255, 0); }
-          </style>
-        </head>
-        <body>
-          <div id="box"></div>
+             html, body { margin: 0; padding: 0; }
+             #box { width:64px; height:64px; background: rgb(255, 0, 0); }
+            #box:hover { background: rgb(0, 255, 0); }
+           </style>
+         </head>
+         <body>
+           <div id="box"></div>
         </body>
       </html>
     "#,

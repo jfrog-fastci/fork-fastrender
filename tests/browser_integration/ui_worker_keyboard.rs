@@ -95,13 +95,13 @@ fn make_test_page() -> (tempfile::TempDir, String) {
           input[value="abc"] + #box { background: rgb(0,0,255); }
           input[value="ab"] + #box { background: rgb(0,255,0); }
 
-          /* Keep the background color reserved for input value assertions; use an outline to
-             indicate focus-visible and sample pixels outside the box. */
-          input[data-fastr-focus-visible="true"] + #box { outline: 4px solid rgb(255,255,0); }
-        </style>
-      </head>
-      <body>
-        <input id="txt" value="abc" />
+           /* Keep the background color reserved for input value assertions; use an outline to
+              indicate focus-visible and sample pixels outside the box. */
+          input:focus-visible + #box { outline: 4px solid rgb(255,255,0); }
+         </style>
+       </head>
+       <body>
+         <input id="txt" value="abc" />
         <div id="box"></div>
       </body>
     </html>
@@ -172,19 +172,63 @@ fn make_tab_traversal_page() -> (tempfile::TempDir, String) {
             background: rgb(0,0,0);
           }
 
-          /* Focus should set a deterministic marker color. */
-          #a[data-fastr-focus="true"] ~ #status { background: rgb(255,0,0); }
-          #b[data-fastr-focus="true"] ~ #status { background: rgb(0,0,255); }
+           /* Focus should set a deterministic marker color. */
+          #a:focus ~ #status { background: rgb(255,0,0); }
+          #b:focus ~ #status { background: rgb(0,0,255); }
 
-          /* Focus-visible should override focus when keyboard traversal is used. */
-          #a[data-fastr-focus-visible="true"] ~ #status { background: rgb(255,0,255); }
-          #b[data-fastr-focus-visible="true"] ~ #status { background: rgb(0,255,255); }
+           /* Focus-visible should override focus when keyboard traversal is used. */
+          #a:focus-visible ~ #status { background: rgb(255,0,255); }
+          #b:focus-visible ~ #status { background: rgb(0,255,255); }
+         </style>
+       </head>
+       <body>
+         <input id="a" value="a" />
+        <input id="b" value="b" />
+        <div id="status"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = format!("file://{}/index.html", dir.path().display());
+  (dir, url)
+}
+
+fn make_focus_attr_regression_page() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+
+          #txt {
+            position: absolute;
+            left: 0;
+            top: 80px;
+            width: 140px;
+            height: 24px;
+          }
+
+          #marker {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 64px;
+            height: 64px;
+            background: rgb(0,0,255);
+          }
+
+          /* Real focus should win. */
+          #txt:focus + #marker { background: rgb(0,255,0); }
+
+          /* This should NEVER match; the engine must not inject data-fastr-focus. */
+          #txt[data-fastr-focus] + #marker { background: rgb(255,0,0); }
         </style>
       </head>
       <body>
-        <input id="a" value="a" />
-        <input id="b" value="b" />
-        <div id="status"></div>
+        <input id="txt" value="x" />
+        <div id="marker"></div>
       </body>
     </html>
   "#;
@@ -292,6 +336,48 @@ fn delete_edits_focused_input_selection_and_repaints() {
     .expect("Delete");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 0));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn focus_does_not_inject_data_fastr_focus_attribute() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_focus_attr_regression_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-focus-regression").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // Marker should start blue.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  // Click the input to focus it.
+  ui_tx
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerDown");
+  ui_tx
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerUp");
+  // Consume PointerDown + PointerUp repaints.
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+
+  // Focus should make the marker green. If the renderer injected `data-fastr-focus`, the red rule
+  // (declared later) would override.
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 0));
 
   drop(ui_tx);
   join.join().expect("join ui worker");

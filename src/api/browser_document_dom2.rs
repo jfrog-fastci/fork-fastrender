@@ -683,7 +683,7 @@ impl BrowserDocumentDom2 {
         ));
         let (prev_self, prev_image, prev_layout_image, prev_font) =
           renderer.push_resource_context(context);
-        let result = prepare_dom_inner(renderer, renderer_dom_ref, options.clone(), trace_handle);
+        let result = prepare_dom_inner(renderer, renderer_dom_ref, options.clone(), trace_handle, None);
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
         trace.finalize(result)

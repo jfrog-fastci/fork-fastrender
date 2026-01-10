@@ -1,8 +1,9 @@
 use fastrender::api::{FastRender, RenderOptions};
-use fastrender::dom::{DomNode, DomNodeType};
+use fastrender::dom::{enumerate_dom_ids, DomNode, DomNodeType};
 use fastrender::error::Result;
+use fastrender::interaction::InteractionState;
 use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType};
-use fastrender::{BoxNode, BoxType};
+use fastrender::{BoxNode, BoxType, BrowserDocument};
 
 fn find_node_mut<'a>(
   node: &'a mut DomNode,
@@ -13,6 +14,18 @@ fn find_node_mut<'a>(
   }
   for child in node.children.iter_mut() {
     if let Some(found) = find_node_mut(child, predicate) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_node<'a>(node: &'a DomNode, predicate: &impl Fn(&DomNode) -> bool) -> Option<&'a DomNode> {
+  if predicate(node) {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_node(child, predicate) {
       return Some(found);
     }
   }
@@ -58,23 +71,27 @@ fn find_first_form_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
 
 #[test]
 fn prepare_dom_with_options_round_trips_focus_state() -> Result<()> {
-  let mut renderer = FastRender::new()?;
-  let mut dom = renderer.parse_html(r#"<input id="target" type="text" />"#)?;
-
-  let input = find_node_mut(&mut dom, &|node| {
+  let renderer = FastRender::new()?;
+  let html = r#"<input id="target" type="text" />"#;
+  let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+  let ids = enumerate_dom_ids(doc.dom());
+  let input = find_node(doc.dom(), &|node| {
     node
       .tag_name()
       .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-      && node
-        .get_attribute_ref("id")
-        .is_some_and(|id| id == "target")
+      && node.get_attribute_ref("id").is_some_and(|id| id == "target")
   })
   .expect("input element");
-  set_attribute(input, "data-fastr-focus", "true");
+  let input_id = *ids.get(&(input as *const DomNode)).expect("node id");
 
-  let report = renderer.prepare_dom_with_options(dom, None, RenderOptions::new().with_viewport(64, 64))?;
+  let interaction_state = InteractionState {
+    focused: Some(input_id),
+    ..InteractionState::default()
+  };
+  let _frame = doc.render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))?;
+  let prepared = doc.prepared().expect("prepared");
   let control =
-    find_first_form_control(&report.document.box_tree().root).expect("form control replaced box");
+    find_first_form_control(&prepared.box_tree().root).expect("form control replaced box");
   assert!(control.focused);
   Ok(())
 }
@@ -104,4 +121,3 @@ fn prepare_dom_with_options_round_trips_text_value_attribute() -> Result<()> {
   }
   Ok(())
 }
-

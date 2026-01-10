@@ -153,6 +153,7 @@ use crate::resource::{
   FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
   ResourcePolicy,
 };
+use crate::interaction::InteractionState;
 use crate::scroll::ScrollState;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
@@ -6414,6 +6415,7 @@ impl FastRender {
           );
           self.layout_document_for_media_with_artifacts(
             &dom,
+            None,
             layout_width,
             layout_height,
             options.media_type,
@@ -6704,6 +6706,7 @@ impl FastRender {
       let layout_artifacts = self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
+        None,
         layout_width,
         layout_height,
         media_type,
@@ -7230,7 +7233,7 @@ impl FastRender {
       }
 
       let accessibility = if capture_accessibility {
-        Some(crate::accessibility::build_accessibility_tree(&styled_tree))
+        Some(crate::accessibility::build_accessibility_tree(&styled_tree, None))
       } else {
         None
       };
@@ -7434,6 +7437,7 @@ impl FastRender {
       );
       self.layout_document_for_media_with_artifacts(
         dom,
+        None,
         layout_width,
         layout_height,
         options.media_type,
@@ -7730,6 +7734,7 @@ impl FastRender {
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
+        None,
         layout_width,
         layout_height,
         options.media_type,
@@ -8026,6 +8031,7 @@ impl FastRender {
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
+        None,
         layout_width,
         layout_height,
         options.media_type,
@@ -10160,7 +10166,20 @@ impl FastRender {
     height: u32,
   ) -> Result<AccessibilityNode> {
     let options = RenderOptions::new().with_viewport(width, height);
-    self.accessibility_tree_with_options(dom, options)
+    self.accessibility_tree_with_options_and_interaction_state(dom, options, None)
+  }
+
+  /// Computes the accessibility tree for the given document while supplying internal interaction
+  /// state (focus/visited/etc.).
+  pub fn accessibility_tree_with_interaction_state(
+    &mut self,
+    dom: &DomNode,
+    width: u32,
+    height: u32,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<AccessibilityNode> {
+    let options = RenderOptions::new().with_viewport(width, height);
+    self.accessibility_tree_with_options_and_interaction_state(dom, options, interaction_state)
   }
 
   /// Computes the accessibility tree for a parsed document using render options.
@@ -10168,6 +10187,17 @@ impl FastRender {
     &mut self,
     dom: &DomNode,
     options: RenderOptions,
+  ) -> Result<AccessibilityNode> {
+    self.accessibility_tree_with_options_and_interaction_state(dom, options, None)
+  }
+
+  /// Computes the accessibility tree for a parsed document using render options while supplying
+  /// internal interaction state (focus/visited/etc.).
+  pub fn accessibility_tree_with_options_and_interaction_state(
+    &mut self,
+    dom: &DomNode,
+    options: RenderOptions,
+    interaction_state: Option<&InteractionState>,
   ) -> Result<AccessibilityNode> {
     let toggles = self.resolve_runtime_toggles(&options);
     let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
@@ -10221,7 +10251,7 @@ impl FastRender {
         }
       }
 
-      let result = self.accessibility_tree_with_options_for_dom(dom, options);
+      let result = self.accessibility_tree_with_options_for_dom(dom, options, interaction_state);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       result
     })
@@ -10292,7 +10322,7 @@ impl FastRender {
         }
       }
 
-      let result = self.accessibility_tree_with_options_for_dom(&dom, options);
+      let result = self.accessibility_tree_with_options_for_dom(&dom, options, None);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       result
     })
@@ -10379,7 +10409,7 @@ impl FastRender {
         }
       }
 
-      let result = self.accessibility_tree_with_options_for_dom(&dom, options);
+      let result = self.accessibility_tree_with_options_for_dom(&dom, options, None);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       result
     })
@@ -10389,6 +10419,7 @@ impl FastRender {
     &mut self,
     dom: &DomNode,
     options: RenderOptions,
+    interaction_state: Option<&InteractionState>,
   ) -> Result<AccessibilityNode> {
     let (width, height) = options
       .viewport
@@ -10406,6 +10437,7 @@ impl FastRender {
     }
 
     let result = (|| -> Result<AccessibilityNode> {
+      let interaction_state = interaction_state.cloned();
       let requested_viewport = Size::new(width as f32, height as f32);
       let meta_viewport = if self.apply_meta_viewport {
         crate::html::viewport::extract_viewport_with_deadline(dom)?
@@ -10475,7 +10507,8 @@ impl FastRender {
         let handle = std::thread::Builder::new()
           .name("fastr-accessibility".to_string())
           .stack_size(8 * 1024 * 1024)
-          .spawn_scoped(scope, || {
+          .spawn_scoped(scope, move || {
+            let interaction_state = interaction_state.as_ref();
             let mut local_media_query_cache = MediaQueryCache::default();
             let styled_tree = match PreparedCascade::new_for_style_set(
               dom_for_style,
@@ -10485,15 +10518,22 @@ impl FastRender {
               None,
               Some(&mut local_media_query_cache),
               meta_color_scheme.clone(),
-              false,
-              crate::style::cascade::CascadeOptions::default(),
-            ) {
-              Ok(mut prepared) => prepared
-                .apply(target_fragment.as_deref(), None, None, None, None)
-                .unwrap_or_else(|_| {
-                  apply_style_set_with_media_target_and_imports_cached(
-                    dom_for_style,
-                    &style_set,
+                false,
+                crate::style::cascade::CascadeOptions::default(),
+              ) {
+                Ok(mut prepared) => prepared
+                  .apply(
+                    target_fragment.as_deref(),
+                    interaction_state,
+                    None,
+                    None,
+                    None,
+                    None,
+                  )
+                  .unwrap_or_else(|_| {
+                    apply_style_set_with_media_target_and_imports_cached(
+                      dom_for_style,
+                      &style_set,
                     &media_ctx,
                     target_fragment.as_deref(),
                     None,
@@ -10518,7 +10558,7 @@ impl FastRender {
               ),
             };
 
-            crate::accessibility::build_accessibility_tree(&styled_tree)
+            crate::accessibility::build_accessibility_tree(&styled_tree, interaction_state)
           })
           .map_err(|e| {
             Error::Render(RenderError::InvalidParameters {
@@ -10708,6 +10748,7 @@ impl FastRender {
       let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
+        None,
         width,
         height,
         media_type,
@@ -10799,6 +10840,7 @@ impl FastRender {
       let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
+        None,
         width,
         height,
         media_type,
@@ -10819,6 +10861,7 @@ impl FastRender {
   fn layout_document_for_media_with_artifacts(
     &mut self,
     dom: &DomNode,
+    interaction_state: Option<&InteractionState>,
     width: u32,
     height: u32,
     media_type: MediaType,
@@ -10846,6 +10889,7 @@ impl FastRender {
       return runtime::with_runtime_toggles(runtime_toggles, || {
         self.layout_document_for_media_with_artifacts_impl(
           dom,
+          interaction_state,
           width,
           height,
           media_type,
@@ -10862,6 +10906,7 @@ impl FastRender {
 
     self.layout_document_for_media_with_artifacts_impl(
       dom,
+      interaction_state,
       width,
       height,
       media_type,
@@ -10878,6 +10923,7 @@ impl FastRender {
   fn layout_document_for_media_with_artifacts_impl(
     &mut self,
     dom: &DomNode,
+    interaction_state: Option<&InteractionState>,
     width: u32,
     height: u32,
     media_type: MediaType,
@@ -10913,6 +10959,7 @@ impl FastRender {
               );
             self.layout_document_for_media_with_artifacts_inner(
               dom,
+              interaction_state,
               width,
               height,
               media_type,
@@ -10941,6 +10988,7 @@ impl FastRender {
 
     self.layout_document_for_media_with_artifacts_inner(
       dom,
+      interaction_state,
       width,
       height,
       media_type,
@@ -10957,6 +11005,7 @@ impl FastRender {
   fn layout_document_for_media_with_artifacts_inner(
     &mut self,
     dom: &DomNode,
+    interaction_state: Option<&InteractionState>,
     width: u32,
     height: u32,
     media_type: MediaType,
@@ -10991,6 +11040,7 @@ impl FastRender {
       self.layout_document_for_media_with_artifacts_owned(
         dom_with_state,
         needs_top_layer_state,
+        interaction_state,
         width,
         height,
         media_type,
@@ -11009,6 +11059,7 @@ impl FastRender {
     &mut self,
     mut dom_with_state: DomNode,
     mut needs_top_layer_state: bool,
+    interaction_state: Option<&InteractionState>,
     width: u32,
     height: u32,
     media_type: MediaType,
@@ -11028,6 +11079,7 @@ impl FastRender {
       return self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
         needs_top_layer_state,
+        interaction_state,
         base_width,
         base_height,
         base_width,
@@ -11049,6 +11101,7 @@ impl FastRender {
       let artifacts = self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
         needs_top_layer_state,
+        interaction_state,
         candidate_width,
         candidate_height,
         base_width,
@@ -11115,6 +11168,7 @@ impl FastRender {
     self.layout_document_for_media_with_artifacts_owned_single_pass(
       dom_with_state,
       needs_top_layer_state,
+      interaction_state,
       candidate_width,
       candidate_height,
       base_width,
@@ -11135,6 +11189,7 @@ impl FastRender {
     &mut self,
     mut dom_with_state: DomNode,
     needs_top_layer_state: bool,
+    interaction_state: Option<&InteractionState>,
     width: u32,
     height: u32,
     viewport_fixed_width: u32,
@@ -11329,7 +11384,14 @@ impl FastRender {
           true,
           crate::style::cascade::CascadeOptions::default(),
         )?;
-        prepared.apply(target_fragment.as_deref(), None, None, None, deadline)
+        prepared.apply(
+          target_fragment.as_deref(),
+          interaction_state,
+          None,
+          None,
+          None,
+          deadline,
+        )
       })()
       .ok()
     } else {
@@ -11349,7 +11411,14 @@ impl FastRender {
         false,
         crate::style::cascade::CascadeOptions::default(),
       )?;
-      let styled_tree = prepared.apply(target_fragment.as_deref(), None, None, None, deadline)?;
+      let styled_tree = prepared.apply(
+        target_fragment.as_deref(),
+        interaction_state,
+        None,
+        None,
+        None,
+        deadline,
+      )?;
       (prepared, styled_tree)
     };
     if let Some(starting_tree) = starting_tree {
@@ -11566,9 +11635,10 @@ impl FastRender {
     record_stage(StageHeartbeat::BoxTree);
     let mut box_tree = {
       let _span = trace.span("box_gen", "layout");
-      crate::tree::box_generation::generate_box_tree_with_anonymous_fixup_with_options(
+      crate::tree::box_generation::generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(
         &styled_tree,
         &box_gen_options,
+        interaction_state,
       )?
     };
     if let Some(start) = box_gen_start {
@@ -12046,6 +12116,7 @@ impl FastRender {
         let previous_styled_tree = styled_tree;
         let new_styled_tree = prepared_cascade.apply(
           target_fragment.as_deref(),
+          interaction_state,
           Some(&container_ctx),
           container_scope.as_ref(),
           reuse_map.as_ref(),
@@ -12111,9 +12182,10 @@ impl FastRender {
           let container_box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
           record_stage(StageHeartbeat::BoxTree);
           box_tree =
-            crate::tree::box_generation::generate_box_tree_with_anonymous_fixup_with_options(
+            crate::tree::box_generation::generate_box_tree_with_anonymous_fixup_with_options_and_interaction_state(
               &styled_tree,
               &box_gen_options,
+              interaction_state,
             )?;
           self.resolve_replaced_intrinsic_sizes_for_media(
             &mut box_tree.root,
@@ -12517,6 +12589,7 @@ impl FastRender {
       let scroll_state = ScrollState::default();
       let artifacts_result = self.layout_document_for_media_with_artifacts(
         dom,
+        None,
         width,
         height,
         MediaType::Screen,

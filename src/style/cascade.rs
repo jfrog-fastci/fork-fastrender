@@ -61,6 +61,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom::SVG_NAMESPACE;
 use crate::error::Error;
 use crate::geometry::{Point, Size};
+use crate::interaction::InteractionState;
 use crate::render_control::check_active_periodic;
 use crate::render_control::RenderDeadline;
 use crate::scroll::ScrollBounds;
@@ -4476,10 +4477,6 @@ fn log_cascade_profile(elapsed_ms: f64) {
   );
 }
 
-static UA_LINK_VISITED_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_LINK_ACTIVE_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_LINK_HOVER_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_LINK_FOCUS_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_BDI_LTR_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_BDI_RTL_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_BDO_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
@@ -10834,6 +10831,19 @@ pub fn apply_styles(dom: &DomNode, stylesheet: &StyleSheet) -> StyledNode {
   apply_styles_with_target(dom, stylesheet, None)
 }
 
+/// Apply styles to a DOM tree with an optional [`InteractionState`].
+///
+/// This is primarily intended for tests that need to exercise dynamic pseudo-class matching
+/// (`:hover`, `:active`, `:focus`, etc.) without relying on legacy, DOM-visible `data-fastr-*`
+/// attributes.
+pub fn apply_styles_with_interaction_state(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  interaction_state: Option<&InteractionState>,
+) -> StyledNode {
+  apply_styles_with_target_and_interaction_state(dom, stylesheet, None, interaction_state)
+}
+
 /// Apply styles with an explicit target fragment for :target matching.
 pub fn apply_styles_with_target(
   dom: &DomNode,
@@ -10843,6 +10853,23 @@ pub fn apply_styles_with_target(
   // Use default desktop viewport
   let media_ctx = MediaContext::screen(1200.0, 800.0);
   apply_styles_with_media_and_target(dom, stylesheet, &media_ctx, target_fragment)
+}
+
+/// Apply styles with an explicit target fragment and an optional [`InteractionState`].
+pub fn apply_styles_with_target_and_interaction_state(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  target_fragment: Option<&str>,
+  interaction_state: Option<&InteractionState>,
+) -> StyledNode {
+  let media_ctx = MediaContext::screen(1200.0, 800.0);
+  apply_styles_with_media_target_and_interaction_state(
+    dom,
+    stylesheet,
+    &media_ctx,
+    target_fragment,
+    interaction_state,
+  )
 }
 
 /// Apply styles to a DOM tree with a specific media context
@@ -10855,6 +10882,51 @@ pub fn apply_styles_with_media(
   media_ctx: &MediaContext,
 ) -> StyledNode {
   apply_styles_with_media_and_target(dom, stylesheet, media_ctx, None)
+}
+
+/// Apply styles with a specific media context, optional target fragment, and optional
+/// [`InteractionState`].
+pub fn apply_styles_with_media_target_and_interaction_state(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  media_ctx: &MediaContext,
+  target_fragment: Option<&str>,
+  interaction_state: Option<&InteractionState>,
+) -> StyledNode {
+  // Match the behaviour of `apply_styles_with_media_and_target` by collecting shadow-root style
+  // sheets from `<style>` tags under each shadow root. Tests that use shadow DOM often pass an empty
+  // document stylesheet and rely on these internal style tags.
+  let ids = enumerate_dom_ids(dom);
+  let shadow_sheets = match collect_shadow_stylesheets_by_host_id(dom, &ids) {
+    Ok(sheets) => sheets,
+    Err(_) => return fallback_styled_tree(dom),
+  };
+  let mut style_set = crate::style::style_set::StyleSet::from_document(stylesheet.clone());
+  style_set.shadows = shadow_sheets;
+  let Ok(mut prepared) = PreparedCascade::new_for_style_set(
+    dom,
+    &style_set,
+    media_ctx,
+    None,
+    None,
+    None,
+    None,
+    false,
+    CascadeOptions::default(),
+  ) else {
+    return fallback_styled_tree(dom);
+  };
+
+  prepared
+    .apply(
+      target_fragment,
+      interaction_state,
+      None,
+      None,
+      None,
+      None,
+    )
+    .unwrap_or_else(|_| fallback_styled_tree(dom))
 }
 
 pub fn apply_styles_with_media_and_target(
@@ -11078,6 +11150,7 @@ fn explain_property_for_node_with_prepared(
         ancestor_node,
         &prepared.rule_scopes,
         scope_host,
+        None,
         &mut prepared.selector_caches,
         &mut prepared.scratch,
         &mut prepared.inline_style_decls,
@@ -11117,6 +11190,7 @@ fn explain_property_for_node_with_prepared(
     node,
     &prepared.rule_scopes,
     scope_host,
+    None,
     &mut prepared.selector_caches,
     &mut prepared.scratch,
     &ancestors,
@@ -12179,6 +12253,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         dom,
         &rule_scopes,
         None,
+        None,
         &mut selector_caches,
         &mut scratch,
         &mut inline_style_decls,
@@ -12971,6 +13046,7 @@ impl<'a> PreparedCascade<'a> {
   pub(crate) fn apply(
     &mut self,
     target_fragment: Option<&str>,
+    interaction_state: Option<&InteractionState>,
     container_ctx: Option<&ContainerQueryContext>,
     container_scope: Option<&HashSet<usize>>,
     reuse_map: Option<&HashMap<usize, *const StyledNode>>,
@@ -13006,6 +13082,7 @@ impl<'a> PreparedCascade<'a> {
           self.dom,
           &self.rule_scopes,
           None,
+          interaction_state,
           &mut self.selector_caches,
           &mut self.scratch,
           &mut self.inline_style_decls,
@@ -13208,6 +13285,7 @@ fn apply_style_set_with_media_target_and_imports_cached_with_deadline_impl(
 
   prepared.apply(
     target_fragment,
+    None,
     container_ctx,
     container_scope,
     reuse_map,
@@ -13283,8 +13361,7 @@ fn ua_default_rules(
     None => return rules,
   };
   // UA default rules should participate in the same tree-scope-prefixed layer ordering as UA
-  // stylesheet rules so higher-order UA defaults (e.g. link pseudo-state overrides) can outrank
-  // baseline UA stylesheet declarations.
+  // stylesheet rules so higher-order UA defaults can outrank baseline UA stylesheet declarations.
   let layer_order = layer_order.clone();
 
   let mut add_rule = |decls: Cow<'static, [Declaration]>, order: usize| {
@@ -13298,68 +13375,7 @@ fn ua_default_rules(
     });
   };
 
-  if tag.eq_ignore_ascii_case("a")
-    || tag.eq_ignore_ascii_case("area")
-    || tag.eq_ignore_ascii_case("link")
-  {
-    if node.get_attribute_ref("href").is_some() {
-      let is_true = |name: &str| {
-        node
-          .get_attribute_ref(name)
-          .map(|v| v.eq_ignore_ascii_case("true"))
-          .unwrap_or(false)
-      };
-      let specificity = (1 << 10) + 1; // tag selector + pseudo-class weight
-      let base_order = 1000;
-
-      if is_true("data-fastr-visited") {
-        rules.push(MatchedRule {
-          origin: StyleOrigin::UserAgent,
-          specificity,
-          order: base_order + 1,
-          layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_VISITED_DECLS, "color: VisitedText;"),
-          starting_style: false,
-        });
-      }
-
-      if is_true("data-fastr-active") {
-        rules.push(MatchedRule {
-          origin: StyleOrigin::UserAgent,
-          specificity,
-          order: base_order + 2,
-          layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_ACTIVE_DECLS, "color: ActiveText;"),
-          starting_style: false,
-        });
-      }
-
-      if is_true("data-fastr-hover") {
-        rules.push(MatchedRule {
-          origin: StyleOrigin::UserAgent,
-          specificity,
-          order: base_order + 3,
-          layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_HOVER_DECLS, "color: ActiveText;"),
-          starting_style: false,
-        });
-      }
-
-      if is_true("data-fastr-focus") {
-        rules.push(MatchedRule {
-          origin: StyleOrigin::UserAgent,
-          specificity,
-          order: base_order + 4,
-          layer_order: layer_order.clone(),
-          declarations: cached_declarations(
-            &UA_LINK_FOCUS_DECLS,
-            "outline: 1px dotted CanvasText; outline-offset: 2px;",
-          ),
-          starting_style: false,
-        });
-      }
-    }
-  } else if tag.eq_ignore_ascii_case("bdi") && node.get_attribute_ref("dir").is_none() {
+  if tag.eq_ignore_ascii_case("bdi") && node.get_attribute_ref("dir").is_none() {
     let resolved = resolve_first_strong_direction(node).map(|d| match d {
       TextDirection::Ltr => crate::style::types::Direction::Ltr,
       TextDirection::Rtl => crate::style::types::Direction::Rtl,
@@ -14225,6 +14241,7 @@ fn match_exported_pseudo_part_rules<'a>(
   query_ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   scopes: &'a RuleScopes<'a>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   dom_maps: &DomMaps,
@@ -14381,6 +14398,7 @@ fn match_exported_pseudo_part_rules<'a>(
         );
         context.extra_data = ShadowMatchData {
           shadow_host: None,
+          interaction_state,
           slot_map,
           part_export_map: None,
           deadline_error: None,
@@ -14595,6 +14613,7 @@ fn match_part_rules_internal<'a>(
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &'a ElementAttrCache,
+  interaction_state: Option<&'a InteractionState>,
   slot_map_for_host: &dyn Fn(usize) -> Option<&'a SlotAssignmentMap<'a>>,
   current_slot_map: Option<&SlotAssignmentMap<'a>>,
   pseudo: Option<&PseudoElement>,
@@ -14751,6 +14770,7 @@ fn match_part_rules_internal<'a>(
         };
         context.extra_data = ShadowMatchData {
           shadow_host: None,
+          interaction_state,
           slot_map,
           part_export_map: None,
           deadline_error: None,
@@ -15004,6 +15024,7 @@ fn match_part_rules<'a>(
   ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   scopes: &'a RuleScopes<'a>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   dom_maps: &DomMaps,
@@ -15031,6 +15052,7 @@ fn match_part_rules<'a>(
     dom_maps,
     sibling_cache,
     element_attr_cache,
+    interaction_state,
     slot_map_for_host,
     current_slot_map,
     None,
@@ -15045,6 +15067,7 @@ fn match_part_pseudo_rules<'a>(
   query_ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   scopes: &'a RuleScopes<'a>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   dom_maps: &DomMaps,
@@ -15067,6 +15090,7 @@ fn match_part_pseudo_rules<'a>(
     dom_maps,
     sibling_cache,
     element_attr_cache,
+    interaction_state,
     slot_map_for_host,
     current_slot_map,
     Some(pseudo),
@@ -15081,6 +15105,7 @@ fn match_slotted_pseudo_rules<'a>(
   query_ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   scopes: &'a RuleScopes<'a>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   dom_maps: &DomMaps,
@@ -15153,6 +15178,7 @@ fn match_slotted_pseudo_rules<'a>(
   );
   context.extra_data = ShadowMatchData {
     shadow_host: None,
+    interaction_state,
     slot_map,
     part_export_map: None,
     deadline_error: None,
@@ -15393,6 +15419,7 @@ fn collect_matching_rules<'a>(
   node: &DomNode,
   scopes: &'a RuleScopes<'a>,
   scope_host: Option<usize>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -15426,6 +15453,7 @@ fn collect_matching_rules<'a>(
     slot_assignment,
     current_slot_map,
     Some(element_attr_cache),
+    interaction_state,
     sibling_cache,
     false,
     false,
@@ -15451,6 +15479,7 @@ fn collect_matching_rules<'a>(
       slot_assignment,
       base_slot_map,
       Some(element_attr_cache),
+      interaction_state,
       sibling_cache,
       allow_shadow_host,
       false,
@@ -15478,6 +15507,7 @@ fn collect_matching_rules<'a>(
           slot_assignment,
           current_slot_map,
           Some(element_attr_cache),
+          interaction_state,
           sibling_cache,
           false,
           false,
@@ -15504,6 +15534,7 @@ fn collect_matching_rules<'a>(
         slot_assignment,
         host_slot_map,
         Some(element_attr_cache),
+        interaction_state,
         sibling_cache,
         true,
         true,
@@ -15530,6 +15561,7 @@ fn collect_matching_rules<'a>(
           slot_assignment,
           scopes.slot_maps.get(&slot.shadow_root_id),
           Some(element_attr_cache),
+          interaction_state,
           sibling_cache,
           true,
           false,
@@ -15548,6 +15580,7 @@ fn collect_matching_rules<'a>(
     ancestor_ids,
     container_ctx,
     scopes,
+    interaction_state,
     selector_caches,
     scratch,
     dom_maps,
@@ -15564,6 +15597,7 @@ fn collect_pseudo_matching_rules<'a>(
   node: &DomNode,
   scopes: &'a RuleScopes<'a>,
   scope_host: Option<usize>,
+  interaction_state: Option<&'a InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -15606,6 +15640,7 @@ fn collect_pseudo_matching_rules<'a>(
     Some(&dom_maps.id_map),
     Some(element_attr_cache),
     Some(&dom_maps.form_validity_index),
+    interaction_state,
     sibling_cache,
     pseudo,
     false,
@@ -15631,6 +15666,7 @@ fn collect_pseudo_matching_rules<'a>(
       Some(&dom_maps.id_map),
       Some(element_attr_cache),
       Some(&dom_maps.form_validity_index),
+      interaction_state,
       sibling_cache,
       pseudo,
       allow_shadow_host,
@@ -15659,6 +15695,7 @@ fn collect_pseudo_matching_rules<'a>(
           Some(&dom_maps.id_map),
           Some(element_attr_cache),
           Some(&dom_maps.form_validity_index),
+          interaction_state,
           sibling_cache,
           pseudo,
           false,
@@ -15687,6 +15724,7 @@ fn collect_pseudo_matching_rules<'a>(
       Some(&dom_maps.id_map),
       Some(element_attr_cache),
       Some(&dom_maps.form_validity_index),
+      interaction_state,
       sibling_cache,
       pseudo,
       true,
@@ -15704,6 +15742,7 @@ fn collect_pseudo_matching_rules<'a>(
     ancestor_ids,
     container_ctx,
     scopes,
+    interaction_state,
     selector_caches,
     scratch,
     dom_maps,
@@ -15723,6 +15762,7 @@ fn collect_pseudo_matching_rules<'a>(
     ancestor_ids,
     container_ctx,
     scopes,
+    interaction_state,
     selector_caches,
     scratch,
     dom_maps,
@@ -15741,6 +15781,7 @@ fn collect_pseudo_matching_rules<'a>(
     ancestor_ids,
     container_ctx,
     scopes,
+    interaction_state,
     selector_caches,
     scratch,
     dom_maps,
@@ -15775,6 +15816,7 @@ fn compute_base_styles<'a>(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
@@ -15961,6 +16003,7 @@ fn compute_base_styles<'a>(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -16390,6 +16433,7 @@ fn apply_styles_internal(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
@@ -16426,6 +16470,7 @@ fn apply_styles_internal(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     inline_style_decls,
@@ -16465,6 +16510,7 @@ fn compute_pseudo_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -16526,6 +16572,7 @@ fn compute_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -16562,6 +16609,7 @@ fn compute_pseudo_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -16591,6 +16639,7 @@ fn compute_pseudo_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -16627,6 +16676,7 @@ fn compute_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -16667,6 +16717,7 @@ fn compute_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -16695,6 +16746,7 @@ fn compute_pseudo_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -16734,6 +16786,7 @@ fn compute_pseudo_styles(
         node,
         rule_scopes,
         scope_host,
+        interaction_state,
         selector_caches,
         scratch,
         ancestors,
@@ -16765,6 +16818,7 @@ fn compute_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -16790,6 +16844,7 @@ fn compute_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -16947,6 +17002,7 @@ fn compute_form_control_pseudo_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -16986,6 +17042,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17017,6 +17074,7 @@ fn compute_form_control_pseudo_styles(
         node,
         rule_scopes,
         scope_host,
+        interaction_state,
         selector_caches,
         scratch,
         ancestors,
@@ -17042,6 +17100,7 @@ fn compute_form_control_pseudo_styles(
         node,
         rule_scopes,
         scope_host,
+        interaction_state,
         selector_caches,
         scratch,
         ancestors,
@@ -17073,6 +17132,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17107,6 +17167,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17137,6 +17198,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17167,6 +17229,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17197,6 +17260,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17227,6 +17291,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17257,6 +17322,7 @@ fn compute_form_control_pseudo_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,
@@ -17326,6 +17392,7 @@ fn apply_styles_internal_with_ancestors<'a>(
   node: &'a DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
@@ -17444,6 +17511,7 @@ fn apply_styles_internal_with_ancestors<'a>(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     inline_style_decls,
@@ -17474,6 +17542,7 @@ fn apply_styles_internal_with_ancestors<'a>(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       inline_style_decls,
@@ -17636,15 +17705,16 @@ fn apply_styles_internal_with_ancestors<'a>(
         if let Some(cached) = shared {
           (FrameBase::Shared { cached }, None)
         } else {
-          let base = Box::new(compute_base_styles(
-            child,
-            rule_scopes,
-            child_scope,
-            selector_caches,
-            scratch,
-            inline_style_decls,
-            inheritance_parent_styles,
-            inheritance_parent_ua_styles,
+           let base = Box::new(compute_base_styles(
+             child,
+             rule_scopes,
+             child_scope,
+             interaction_state,
+             selector_caches,
+             scratch,
+             inline_style_decls,
+             inheritance_parent_styles,
+             inheritance_parent_ua_styles,
             inheritance_root_font_size,
             inheritance_ua_root_font_size,
             viewport,
@@ -17683,15 +17753,16 @@ fn apply_styles_internal_with_ancestors<'a>(
                 start_parent_root_font_size = start_parent_styles.root_font_size;
               }
             }
-            Some(Box::new(compute_base_styles(
-              child,
-              rule_scopes,
-              child_scope,
-              selector_caches,
-              scratch,
-              inline_style_decls,
-              start_parent_styles,
-              inheritance_parent_ua_styles,
+             Some(Box::new(compute_base_styles(
+               child,
+               rule_scopes,
+               child_scope,
+               interaction_state,
+               selector_caches,
+               scratch,
+               inline_style_decls,
+               start_parent_styles,
+               inheritance_parent_ua_styles,
               start_parent_root_font_size,
               inheritance_ua_root_font_size,
               viewport,
@@ -17845,6 +17916,7 @@ fn apply_styles_internal_with_ancestors<'a>(
           node,
           rule_scopes,
           scope_host,
+          interaction_state,
           selector_caches,
           scratch,
           ancestors.as_slice(),
@@ -17879,6 +17951,7 @@ fn apply_styles_internal_with_ancestors<'a>(
           node,
           rule_scopes,
           scope_host,
+          interaction_state,
           selector_caches,
           scratch,
           ancestors.as_slice(),
@@ -17981,6 +18054,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         node,
         rule_scopes,
         scope_host,
+        interaction_state,
         selector_caches,
         scratch,
         ancestors.as_slice(),
@@ -18429,6 +18503,40 @@ mod tests {
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
   }
 
+  fn apply_styles_with_media_and_interaction_state(
+    dom: &DomNode,
+    stylesheet: &StyleSheet,
+    media_ctx: &MediaContext,
+    interaction_state: Option<&InteractionState>,
+  ) -> StyledNode {
+    let style_set = crate::style::style_set::StyleSet::from_document(stylesheet.clone());
+    let mut prepared = PreparedCascade::new_for_style_set(
+      dom,
+      &style_set,
+      media_ctx,
+      None,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .unwrap_or_else(|_| panic!("failed to prepare cascade"));
+
+    prepared
+      .apply(None, interaction_state, None, None, None, None)
+      .unwrap_or_else(|_| fallback_styled_tree(dom))
+  }
+
+  fn apply_styles_with_interaction_state(
+    dom: &DomNode,
+    stylesheet: &StyleSheet,
+    interaction_state: Option<&InteractionState>,
+  ) -> StyledNode {
+    let media_ctx = MediaContext::screen(1200.0, 800.0);
+    apply_styles_with_media_and_interaction_state(dom, stylesheet, &media_ctx, interaction_state)
+  }
+
   #[test]
   fn non_ascii_whitespace_attr_truthy_value_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
@@ -18822,18 +18930,21 @@ mod tests {
     )
     .expect("parse stylesheet");
 
-    let focused_empty_input = DomNode {
+      let focused_empty_input = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("placeholder".to_string(), "Search…".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
       },
       children: vec![],
     };
-    let styled_focused = apply_styles(&focused_empty_input, &stylesheet);
+    let interaction_state = InteractionState {
+      focused: Some(1),
+      focus_chain: vec![1],
+      ..InteractionState::default()
+    };
+    let styled_focused =
+      apply_styles_with_interaction_state(&focused_empty_input, &stylesheet, Some(&interaction_state));
     assert_eq!(
       styled_focused.styles.opacity, 1.0,
       "vendor placeholder selectors should not affect the input element opacity"
@@ -20242,6 +20353,7 @@ mod tests {
     );
     ctx.extra_data = ShadowMatchData {
       shadow_host: None,
+      interaction_state: None,
       slot_map: None,
       part_export_map: None,
       deadline_error: None,
@@ -20932,10 +21044,10 @@ mod tests {
     )
     .expect("build prepared cascade");
     let prepared_first = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("prepared first cascade");
     let prepared_second = prepared
-      .apply(None, Some(&container_ctx), None, None, None)
+      .apply(None, None, Some(&container_ctx), None, None, None)
       .expect("prepared second cascade");
 
     assert_styled_trees_equal(&legacy_first, &prepared_first);
@@ -21222,7 +21334,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let first = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("first cascade");
 
     let slot_first = find_styled_node_by_id(&first, "slot").expect("slot node");
@@ -21275,6 +21387,7 @@ mod tests {
 
     let second = prepared
       .apply(
+        None,
         None,
         Some(&container_ctx),
         Some(&container_scope),
@@ -21367,7 +21480,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let first = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("first cascade");
 
     let slot_first = find_styled_node_by_id(&first, "slot").expect("slot node");
@@ -21412,6 +21525,7 @@ mod tests {
 
     let second = prepared
       .apply(
+        None,
         None,
         Some(&container_ctx),
         Some(&container_scope),
@@ -21879,10 +21993,10 @@ mod tests {
     )
     .expect("build prepared cascade");
     let prepared_first = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("prepared first cascade");
     let prepared_second = prepared
-      .apply(None, Some(&container_ctx), None, None, None)
+      .apply(None, None, Some(&container_ctx), None, None, None)
       .expect("prepared second cascade");
 
     assert_styled_trees_equal(&legacy_first, &prepared_first);
@@ -21945,7 +22059,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let mut styled = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("base cascade");
     attach_starting_styles(&mut styled, &starting_tree);
 
@@ -21968,7 +22082,7 @@ mod tests {
     // descendants to reuse cached subtrees.
     let container_scope = HashSet::from([1usize]);
     let recascaded = prepared
-      .apply(None, None, Some(&container_scope), Some(&reuse_map), None)
+      .apply(None, None, None, Some(&container_scope), Some(&reuse_map), None)
       .expect("scoped recascade");
 
     assert!(
@@ -25871,7 +25985,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let styled = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("apply cascade");
 
     assert_eq!(
@@ -25954,7 +26068,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let styled = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("apply cascade");
 
     assert_eq!(
@@ -26063,7 +26177,7 @@ mod tests {
     )
     .expect("build prepared cascade");
     let styled = prepared
-      .apply(None, None, None, None, None)
+      .apply(None, None, None, None, None, None)
       .expect("apply cascade");
 
     assert_eq!(
@@ -28875,10 +28989,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
           node_type: DomNodeType::Element {
             tag_name: "input".to_string(),
             namespace: HTML_NAMESPACE.to_string(),
-            attributes: vec![
-              ("type".to_string(), "text".to_string()),
-              ("data-fastr-focus".to_string(), "true".to_string()),
-            ],
+            attributes: vec![("type".to_string(), "text".to_string())],
           },
           children: vec![],
         }],
@@ -28888,7 +28999,17 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let stylesheet =
       parse_stylesheet("html { color-scheme: light dark; } body { margin: 0; }").unwrap();
     let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Dark);
-    let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+    let interaction_state = InteractionState {
+      focused: Some(3),
+      focus_chain: vec![3, 2, 1],
+      ..InteractionState::default()
+    };
+    let styled = apply_styles_with_media_and_interaction_state(
+      &dom,
+      &stylesheet,
+      &media,
+      Some(&interaction_state),
+    );
     let body = styled.children.first().expect("body");
     let input = body.children.first().expect("input");
 
@@ -28918,7 +29039,6 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
             namespace: HTML_NAMESPACE.to_string(),
             attributes: vec![
               ("type".to_string(), "text".to_string()),
-              ("data-fastr-focus".to_string(), "true".to_string()),
               (
                 "style".to_string(),
                 "outline: 1px solid rgb(10, 20, 30);".to_string(),
@@ -28933,7 +29053,17 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let stylesheet =
       parse_stylesheet("html { color-scheme: light dark; } body { margin: 0; }").unwrap();
     let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Dark);
-    let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+    let interaction_state = InteractionState {
+      focused: Some(3),
+      focus_chain: vec![3, 2, 1],
+      ..InteractionState::default()
+    };
+    let styled = apply_styles_with_media_and_interaction_state(
+      &dom,
+      &stylesheet,
+      &media,
+      Some(&interaction_state),
+    );
     let body = styled.children.first().expect("body");
     let input = body.children.first().expect("input");
 
@@ -31618,30 +31748,30 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-visited".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
 
-    let styled_visited = apply_styles(&visited, &StyleSheet::new());
+    let mut interaction_state = InteractionState::default();
+    interaction_state.visited_links.insert(1);
+    let styled_visited = apply_styles_with_interaction_state(&visited, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_visited.styles.color, Rgba::new(85, 26, 139, 1.0));
 
     let active = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-active".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
 
-    let styled_active = apply_styles(&active, &StyleSheet::new());
+    let interaction_state = InteractionState {
+      active_chain: vec![1],
+      ..InteractionState::default()
+    };
+    let styled_active = apply_styles_with_interaction_state(&active, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_active.styles.color, Rgba::new(255, 0, 0, 1.0));
   }
 
@@ -31651,30 +31781,33 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-hover".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
 
-    let styled_hover = apply_styles(&hover, &StyleSheet::new());
+    let interaction_state = InteractionState {
+      hover_chain: vec![1],
+      ..InteractionState::default()
+    };
+    let styled_hover = apply_styles_with_interaction_state(&hover, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_hover.styles.color, Rgba::new(255, 0, 0, 1.0));
 
     let focus = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
 
-    let styled_focus = apply_styles(&focus, &StyleSheet::new());
+    let interaction_state = InteractionState {
+      focused: Some(1),
+      focus_chain: vec![1],
+      ..InteractionState::default()
+    };
+    let styled_focus = apply_styles_with_interaction_state(&focus, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_focus.styles.outline_style, OutlineStyle::Dotted);
     assert_eq!(styled_focus.styles.outline_width, Length::px(1.0));
   }
@@ -32279,6 +32412,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       None,
       0,
       &[],
+      None,
       None,
       None,
       None,
@@ -33608,6 +33742,7 @@ fn find_matching_rules<'a>(
   slot_assignment: &SlotAssignment,
   slot_map: Option<&'a SlotAssignmentMap<'a>>,
   element_attr_cache: Option<&'a ElementAttrCache>,
+  interaction_state: Option<&'a InteractionState>,
   sibling_cache: &SiblingListCache,
   allow_shadow_host: bool,
   featureless_subject: bool,
@@ -33718,6 +33853,7 @@ fn find_matching_rules<'a>(
   );
   context.extra_data = ShadowMatchData {
     shadow_host: None,
+    interaction_state,
     slot_map,
     part_export_map: None,
     deadline_error: None,
@@ -34352,6 +34488,7 @@ fn find_pseudo_element_rules<'a>(
   node_to_id: Option<&HashMap<*const DomNode, usize>>,
   element_attr_cache: Option<&'a ElementAttrCache>,
   form_validity_index: Option<&FormValidityIndex>,
+  interaction_state: Option<&'a InteractionState>,
   sibling_cache: &SiblingListCache,
   pseudo: &PseudoElement,
   allow_shadow_host: bool,
@@ -34435,6 +34572,7 @@ fn find_pseudo_element_rules<'a>(
   );
   context.extra_data = ShadowMatchData {
     shadow_host: None,
+    interaction_state,
     slot_map,
     part_export_map: None,
     deadline_error: None,
@@ -38141,6 +38279,7 @@ fn compute_pseudo_element_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -38182,6 +38321,7 @@ fn compute_pseudo_element_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -38460,6 +38600,7 @@ fn compute_first_line_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -38496,6 +38637,7 @@ fn compute_first_line_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -38616,6 +38758,7 @@ fn compute_first_letter_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -38652,6 +38795,7 @@ fn compute_first_letter_styles(
     node,
     rule_scopes,
     scope_host,
+    interaction_state,
     selector_caches,
     scratch,
     ancestors,
@@ -38774,6 +38918,7 @@ fn compute_marker_styles(
   node: &DomNode,
   rule_scopes: &RuleScopes<'_>,
   scope_host: Option<usize>,
+  interaction_state: Option<&InteractionState>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
@@ -38817,6 +38962,7 @@ fn compute_marker_styles(
       node,
       rule_scopes,
       scope_host,
+      interaction_state,
       selector_caches,
       scratch,
       ancestors,

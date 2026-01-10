@@ -200,9 +200,9 @@ pub struct FormControl {
   pub file_selector_button_style: Option<Arc<ComputedStyle>>,
   /// Whether the control is disabled
   pub disabled: bool,
-  /// Whether the control is focused (data-fastr-focus hint)
+  /// Whether the control is focused.
   pub focused: bool,
-  /// Whether the control is focus-visible (data-fastr-focus-visible hint)
+  /// Whether the control is focus-visible.
   pub focus_visible: bool,
   /// Whether the control is marked as required
   pub required: bool,

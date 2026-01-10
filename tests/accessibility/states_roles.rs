@@ -1,5 +1,7 @@
 use fastrender::accessibility::{AccessibilityNode, CheckState, PressedState};
 use fastrender::api::FastRender;
+use fastrender::dom::{enumerate_dom_ids, DomNode};
+use fastrender::interaction::InteractionState;
 
 fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
   if node.id.as_deref() == Some(id) {
@@ -11,6 +13,16 @@ fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a Accessibi
     }
   }
   None
+}
+
+fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value.eq_ignore_ascii_case(id))
+  {
+    return Some(node);
+  }
+  node.children.iter().find_map(|child| find_dom_by_id(child, id))
 }
 
 #[test]
@@ -35,14 +47,19 @@ fn aria_state_flags_cover_common_controls() {
         <button id="aria-disabled" aria-disabled="true">Blocked</button>
         <button id="native-disabled" disabled>Native</button>
         <input id="required-invalid" aria-required="true" aria-invalid="true" />
-        <a id="visited" href="#" data-fastr-visited="true">Visited</a>
+        <a id="visited" href="#">Visited</a>
       </body>
     </html>
   "##;
 
   let dom = renderer.parse_html(html).expect("parse");
+  let ids = enumerate_dom_ids(&dom);
+  let visited = find_dom_by_id(&dom, "visited").expect("visited link");
+  let visited_id = *ids.get(&(visited as *const DomNode)).expect("node id");
+  let mut interaction_state = InteractionState::default();
+  interaction_state.visited_links.insert(visited_id);
   let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");
 
   let pressed = find_by_id(&tree, "pressed").expect("pressed button");
@@ -112,26 +129,33 @@ fn native_single_select_last_selected_wins() {
 }
 
 #[test]
-fn focus_states_use_data_fastr_hints() {
+fn focus_states_use_interaction_state_hints() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
       <body>
-        <input
-          id="focused"
-          type="text"
-          data-fastr-focus="true"
-          data-fastr-focus-visible="true"
-        />
-        <input id="focus-only" type="text" data-fastr-focus="true" />
-        <input id="visible-only" type="text" data-fastr-focus-visible="true" />
+        <input id="focused" type="text" />
+        <input id="focus-only" type="text" />
+        <input id="visible-only" type="text" />
       </body>
     </html>
   "##;
 
   let dom = renderer.parse_html(html).expect("parse");
+  let ids = enumerate_dom_ids(&dom);
+  let focused = find_dom_by_id(&dom, "focused").expect("focused input");
+  let focused_id = *ids.get(&(focused as *const DomNode)).expect("node id");
+  let focus_only = find_dom_by_id(&dom, "focus-only").expect("focus-only input");
+  let focus_only_id = *ids.get(&(focus_only as *const DomNode)).expect("node id");
+
+  let interaction_state = InteractionState {
+    focused: Some(focused_id),
+    focus_visible: true,
+    focus_chain: vec![focused_id],
+    ..InteractionState::default()
+  };
   let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");
 
   let focused = find_by_id(&tree, "focused").expect("focused input");
@@ -139,12 +163,25 @@ fn focus_states_use_data_fastr_hints() {
   assert!(focused.states.focus_visible);
 
   let focus_only = find_by_id(&tree, "focus-only").expect("focus-only input");
-  assert!(focus_only.states.focused);
+  assert!(!focus_only.states.focused);
   assert!(!focus_only.states.focus_visible);
 
   let visible_only = find_by_id(&tree, "visible-only").expect("visible-only input");
   assert!(!visible_only.states.focused);
   assert!(!visible_only.states.focus_visible);
+
+  let interaction_state = InteractionState {
+    focused: Some(focus_only_id),
+    focus_visible: false,
+    focus_chain: vec![focus_only_id],
+    ..InteractionState::default()
+  };
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
+    .expect("accessibility tree");
+  let focus_only = find_by_id(&tree, "focus-only").expect("focus-only input");
+  assert!(focus_only.states.focused);
+  assert!(!focus_only.states.focus_visible);
 }
 
 #[test]

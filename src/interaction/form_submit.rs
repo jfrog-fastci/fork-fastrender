@@ -405,7 +405,7 @@ fn entry_value_for_urlencoded(entry: &FormDataEntry) -> &str {
 fn collect_form_entries(
   index: &DomIndex<'_>,
   form_node_id: usize,
-  submitter_node_id: usize,
+  submitter_node_id: Option<usize>,
   out: &mut Vec<FormDataEntry>,
 ) -> Option<()> {
   // Spec-ish: successful controls are collected in tree order (document order), including form-
@@ -572,21 +572,23 @@ fn collect_form_entries(
     }
   }
 
-  // Include submitter name/value pair if it has a name.
-  let submitter = index.node(submitter_node_id)?;
-  if is_disabled_or_inert(index, submitter_node_id) {
-    return None;
-  }
-  if let Some(name) = submitter
-    .get_attribute_ref("name")
-    .map(trim_ascii_whitespace)
-    .filter(|name| !name.is_empty())
-  {
-    let value = submitter.get_attribute_ref("value").unwrap_or("");
-    out.push(FormDataEntry::Text {
-      name: name.to_string(),
-      value: value.to_string(),
-    });
+  if let Some(submitter_node_id) = submitter_node_id {
+    // Include submitter name/value pair if it has a name.
+    let submitter = index.node(submitter_node_id)?;
+    if is_disabled_or_inert(index, submitter_node_id) {
+      return None;
+    }
+    if let Some(name) = submitter
+      .get_attribute_ref("name")
+      .map(trim_ascii_whitespace)
+      .filter(|name| !name.is_empty())
+    {
+      let value = submitter.get_attribute_ref("value").unwrap_or("");
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value: value.to_string(),
+      });
+    }
   }
 
   Some(())
@@ -678,13 +680,18 @@ fn action_url_for_submission(
   let action_attr = submitter
     .get_attribute_ref("formaction")
     .map(trim_ascii_whitespace)
-    .filter(|action| !action.is_empty())
-    .or_else(|| {
-      form
-        .get_attribute_ref("action")
-        .map(trim_ascii_whitespace)
-        .filter(|action| !action.is_empty())
-    });
+    .filter(|action| !action.is_empty());
+  match action_attr {
+    Some(action) => resolve_url(base_url, action),
+    None => action_url_for_form(form, document_url, base_url),
+  }
+}
+
+fn action_url_for_form(form: &DomNode, document_url: &str, base_url: &str) -> Option<String> {
+  let action_attr = form
+    .get_attribute_ref("action")
+    .map(trim_ascii_whitespace)
+    .filter(|action| !action.is_empty());
 
   match action_attr {
     Some(action) => resolve_url(base_url, action),
@@ -705,10 +712,7 @@ fn method_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmissionM
     .get_attribute_ref("formmethod")
     .map(FormSubmissionMethod::parse)
     .unwrap_or_else(|| {
-      form
-        .get_attribute_ref("method")
-        .map(FormSubmissionMethod::parse)
-        .unwrap_or(FormSubmissionMethod::Get)
+      method_for_form(form)
     })
 }
 
@@ -717,11 +721,22 @@ fn enctype_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmission
     .get_attribute_ref("formenctype")
     .map(FormSubmissionEnctype::parse)
     .unwrap_or_else(|| {
-      form
-        .get_attribute_ref("enctype")
-        .map(FormSubmissionEnctype::parse)
-        .unwrap_or(FormSubmissionEnctype::UrlEncoded)
+      enctype_for_form(form)
     })
+}
+
+fn method_for_form(form: &DomNode) -> FormSubmissionMethod {
+  form
+    .get_attribute_ref("method")
+    .map(FormSubmissionMethod::parse)
+    .unwrap_or(FormSubmissionMethod::Get)
+}
+
+fn enctype_for_form(form: &DomNode) -> FormSubmissionEnctype {
+  form
+    .get_attribute_ref("enctype")
+    .map(FormSubmissionEnctype::parse)
+    .unwrap_or(FormSubmissionEnctype::UrlEncoded)
 }
 
 /// Compute an HTML form submission request for the given submit button/input.
@@ -762,11 +777,80 @@ pub fn form_submission(
   url.set_fragment(None);
 
   let mut entries: Vec<FormDataEntry> = Vec::new();
-  collect_form_entries(&index, form_id, submitter_node_id, &mut entries)?;
+  collect_form_entries(&index, form_id, Some(submitter_node_id), &mut entries)?;
 
   match method {
     FormSubmissionMethod::Get => {
       // GET submissions set the query to the encoded form data.
+      let query = serialize_urlencoded(&entries)?;
+      if query.is_empty() {
+        url.set_query(None);
+      } else {
+        url.set_query(Some(&query));
+      }
+
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: Vec::new(),
+        body: None,
+      })
+    }
+    FormSubmissionMethod::Post => {
+      let (body, content_type) = match enctype {
+        FormSubmissionEnctype::UrlEncoded => {
+          let encoded = serialize_urlencoded(&entries)?;
+          (encoded.into_bytes(), "application/x-www-form-urlencoded".to_string())
+        }
+        FormSubmissionEnctype::MultipartFormData => {
+          let (body, boundary) = serialize_multipart_form_data(&entries);
+          (body, format!("multipart/form-data; boundary={boundary}"))
+        }
+        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+      };
+
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: vec![("Content-Type".to_string(), content_type)],
+        body: Some(body),
+      })
+    }
+  }
+}
+
+/// Compute an HTML form submission request for the given `<form>` without a submitter.
+///
+/// This is used for implicit submissions (e.g. pressing Enter in a text input when the form has no
+/// submit button). Since there is no submitter, submitter-specific overrides (e.g. `formaction`) do
+/// not apply and no submitter name/value pair is included in the form data set.
+pub fn form_submission_without_submitter(
+  dom: &DomNode,
+  form_node_id: usize,
+  document_url: &str,
+  base_url: &str,
+) -> Option<FormSubmission> {
+  let index = DomIndex::new(dom);
+  let form = index.node(form_node_id)?;
+  if !is_form(form) {
+    return None;
+  }
+  if is_disabled_or_inert(&index, form_node_id) {
+    return None;
+  }
+
+  let method = method_for_form(form);
+  let enctype = enctype_for_form(form);
+
+  let action_url = action_url_for_form(form, document_url, base_url)?;
+  let mut url = Url::parse(&action_url).ok()?;
+  url.set_fragment(None);
+
+  let mut entries: Vec<FormDataEntry> = Vec::new();
+  collect_form_entries(&index, form_node_id, None, &mut entries)?;
+
+  match method {
+    FormSubmissionMethod::Get => {
       let query = serialize_urlencoded(&entries)?;
       if query.is_empty() {
         url.set_query(None);

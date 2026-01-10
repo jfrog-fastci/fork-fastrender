@@ -1,5 +1,7 @@
 use fastrender::accessibility::{AccessibilityNode, CheckState, PressedState};
 use fastrender::api::{FastRender, RenderOptions};
+use fastrender::dom::{enumerate_dom_ids, DomNode};
+use fastrender::interaction::InteractionState;
 use serde_json::{json, Value};
 use std::fs;
 
@@ -50,6 +52,16 @@ fn find_path<'a>(node: &'a AccessibilityNode, id: &str) -> Option<Vec<&'a Access
     }
   }
   None
+}
+
+fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value.eq_ignore_ascii_case(id))
+  {
+    return Some(node);
+  }
+  node.children.iter().find_map(|child| find_dom_by_id(child, id))
 }
 
 fn render_accessibility_json(html: &str) -> Value {
@@ -142,14 +154,19 @@ fn accessibility_roles_and_states_basic() {
       <body>
         <button id="btn">Press me</button>
         <input id="check" type="checkbox" checked aria-label="Check me" />
-        <a id="link" href="#" data-fastr-visited="true">Go</a>
+        <a id="link" href="#">Go</a>
         <img id="logo" src="example.png" alt="Logo text" />
       </body>
     </html>
   "##;
   let dom = renderer.parse_html(html).expect("parse");
+  let ids = enumerate_dom_ids(&dom);
+  let link = find_dom_by_id(&dom, "link").expect("link element");
+  let link_id = *ids.get(&(link as *const DomNode)).expect("node id");
+  let mut interaction_state = InteractionState::default();
+  interaction_state.visited_links.insert(link_id);
   let tree = renderer
-    .accessibility_tree(&dom, 800, 600)
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");
 
   let btn = find_by_id(&tree, "btn").expect("button node");

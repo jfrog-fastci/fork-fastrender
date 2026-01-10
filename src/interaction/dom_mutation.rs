@@ -137,44 +137,6 @@ pub fn set_bool_attr(node: &mut DomNode, name: &str, enabled: bool) -> bool {
   }
 }
 
-pub fn set_hover(node: &mut DomNode, enabled: bool) {
-  if enabled {
-    let _ = set_attr(node, "data-fastr-hover", "true");
-  } else {
-    let _ = remove_attr(node, "data-fastr-hover");
-  }
-}
-
-pub fn set_active(node: &mut DomNode, enabled: bool) {
-  if enabled {
-    let _ = set_attr(node, "data-fastr-active", "true");
-  } else {
-    let _ = remove_attr(node, "data-fastr-active");
-  }
-}
-
-pub fn set_focus(node: &mut DomNode, focused: bool, focus_visible: bool) {
-  if focused {
-    let _ = set_attr(node, "data-fastr-focus", "true");
-    if focus_visible {
-      let _ = set_attr(node, "data-fastr-focus-visible", "true");
-    } else {
-      let _ = remove_attr(node, "data-fastr-focus-visible");
-    }
-  } else {
-    let _ = remove_attr(node, "data-fastr-focus");
-    let _ = remove_attr(node, "data-fastr-focus-visible");
-  }
-}
-
-pub fn set_visited(node: &mut DomNode, enabled: bool) {
-  if enabled {
-    let _ = set_attr(node, "data-fastr-visited", "true");
-  } else {
-    let _ = remove_attr(node, "data-fastr-visited");
-  }
-}
-
 pub fn mark_user_validity(node: &mut DomNode) -> bool {
   set_attr(node, "data-fastr-user-validity", "true")
 }

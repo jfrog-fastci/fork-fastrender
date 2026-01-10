@@ -9398,6 +9398,7 @@ fn build_dynamic_script_spec(
     src_attr_present,
     inline_text,
     async_attr,
+    force_async: dom.node(script).script_force_async,
     defer_attr,
     nomodule_attr,
     crossorigin,
@@ -9405,7 +9406,6 @@ fn build_dynamic_script_spec(
     integrity,
     referrer_policy,
     parser_inserted: false,
-    force_async: dom.node(script).script_force_async,
     node_id: Some(script),
     script_type: super::determine_script_type_dom2(dom, script),
   }

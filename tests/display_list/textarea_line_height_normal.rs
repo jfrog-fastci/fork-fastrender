@@ -1,7 +1,19 @@
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FastRenderConfig};
+use fastrender::dom::{enumerate_dom_ids, DomNode};
+use fastrender::interaction::InteractionState;
+use fastrender::{BrowserDocument, FastRender, FastRenderConfig, RenderOptions};
 use std::collections::HashMap;
 use tiny_skia::Pixmap;
+
+fn find_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value.eq_ignore_ascii_case(id))
+  {
+    return Some(node);
+  }
+  node.children.iter().find_map(|child| find_by_id(child, id))
+}
 
 fn count_red(pixmap: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
   let mut total = 0usize;
@@ -59,12 +71,22 @@ fn display_list_textarea_line_height_normal_positions_caret_using_font_metrics()
       @font-face{font-family:\"VarMVAR\";src:url(\"tests/fixtures/fonts/mvar-metrics-test.ttf\") format(\"truetype\");font-weight:100 900;}\
       html,body{margin:0;background:black;}\
     </style>\
-    <textarea data-fastr-focus=\"true\" style=\"display:block;margin:0;width:220px;height:65px;min-height:0;box-sizing:content-box;border:0;padding:0;background:black;color:rgb(0,255,0);caret-color:rgb(255,0,0);font-family:'VarMVAR';font-size:50px;font-weight:900;font-variation-settings:'wght' 900;line-height:normal;\">A\n</textarea>";
+    <textarea id=\"target\" style=\"display:block;margin:0;width:220px;height:65px;min-height:0;box-sizing:content-box;border:0;padding:0;background:black;color:rgb(0,255,0);caret-color:rgb(255,0,0);font-family:'VarMVAR';font-size:50px;font-weight:900;font-variation-settings:'wght' 900;line-height:normal;\">A\n</textarea>";
 
-  let mut renderer = FastRender::with_config(config).expect("create renderer");
-  let pixmap = renderer
-    .render_html(html, 240, 120)
-    .expect("render textarea");
+  let renderer = FastRender::with_config(config).expect("create renderer");
+  let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(240, 120))
+    .expect("create BrowserDocument");
+  let ids = enumerate_dom_ids(doc.dom());
+  let node = find_by_id(doc.dom(), "target").expect("target textarea");
+  let node_id = *ids.get(&(node as *const DomNode)).expect("node id");
+  let interaction_state = InteractionState {
+    focused: Some(node_id),
+    ..InteractionState::default()
+  };
+  let pixmap = doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
+    .expect("render textarea")
+    .pixmap;
 
   let Some((_min_x, min_y, _max_x, _max_y)) = red_bounds(&pixmap) else {
     panic!("expected caret to paint in red pixels");

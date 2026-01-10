@@ -3380,10 +3380,13 @@ impl BrowserRuntime {
     // in-flight work.
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+      let interaction_state = Some(tab.interaction.interaction_state());
       if force {
-        doc.render_frame_with_scroll_state().map(Some)
+        doc
+          .render_frame_with_scroll_state_and_interaction_state(interaction_state)
+          .map(Some)
       } else {
-        doc.render_if_needed_with_scroll_state()
+        doc.render_if_needed_with_scroll_state_and_interaction_state(interaction_state)
       }
     };
 

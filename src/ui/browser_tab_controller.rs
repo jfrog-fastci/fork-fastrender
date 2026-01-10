@@ -868,14 +868,19 @@ impl BrowserTabController {
   }
 
   fn paint_if_needed(&mut self) -> Result<Vec<WorkerToUi>> {
-    let Some(frame) = self.document.render_if_needed_with_scroll_state()? else {
+    let Some(frame) = self
+      .document
+      .render_if_needed_with_scroll_state_and_interaction_state(Some(self.interaction.interaction_state()))?
+    else {
       return Ok(Vec::new());
     };
     Ok(self.emit_frame(frame))
   }
 
   fn force_repaint(&mut self) -> Result<Vec<WorkerToUi>> {
-    let frame = self.document.render_frame_with_scroll_state()?;
+    let frame = self
+      .document
+      .render_frame_with_scroll_state_and_interaction_state(Some(self.interaction.interaction_state()))?;
     Ok(self.emit_frame(frame))
   }
 

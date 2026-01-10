@@ -5497,34 +5497,15 @@ impl<'a> ElementRef<'a> {
     self
   }
 
-  fn visited_flag(&self) -> bool {
-    self
-      .node
-      .get_attribute_ref("data-fastr-visited")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
-  }
-
-  fn active_flag(&self) -> bool {
-    if self.inert_flag() {
-      return false;
+  fn resolved_node_id(
+    &self,
+    context: &selectors::matching::MatchingContext<FastRenderSelectorImpl>,
+  ) -> Option<usize> {
+    if self.node_id != 0 {
+      Some(self.node_id)
+    } else {
+      context.extra_data.node_id_for(self.node)
     }
-    self
-      .node
-      .get_attribute_ref("data-fastr-active")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
-  }
-
-  fn hover_flag(&self) -> bool {
-    if self.inert_flag() {
-      return false;
-    }
-    self
-      .node
-      .get_attribute_ref("data-fastr-hover")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
   }
 
   fn node_is_inert(node: &DomNode) -> bool {
@@ -5546,52 +5527,6 @@ impl<'a> ElementRef<'a> {
       .all_ancestors
       .iter()
       .any(|ancestor| Self::node_is_inert(ancestor))
-  }
-
-  fn node_focus_flag(node: &DomNode) -> bool {
-    if Self::node_is_inert(node) {
-      return false;
-    }
-    if let DomNodeType::Element { namespace, .. } = &node.node_type {
-      if namespace == SVG_NAMESPACE {
-        let focusable = node
-          .get_attribute_ref("focusable")
-          .map(|v| v.eq_ignore_ascii_case("true"))
-          .unwrap_or(false);
-        if !focusable {
-          return false;
-        }
-      }
-    } else {
-      return false;
-    }
-
-    node
-      .get_attribute_ref("data-fastr-focus")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
-  }
-
-  fn focus_flag(&self) -> bool {
-    if self.inert_flag() {
-      return false;
-    }
-    Self::node_focus_flag(self.node)
-  }
-
-  fn focus_visible_flag(&self) -> bool {
-    if self.inert_flag() {
-      return false;
-    }
-    if !Self::node_focus_flag(self.node) {
-      return false;
-    }
-
-    self
-      .node
-      .get_attribute_ref("data-fastr-focus-visible")
-      .map(|v| v.eq_ignore_ascii_case("true"))
-      .unwrap_or(false)
   }
 
   fn user_validity_flag(&self) -> bool {
@@ -5651,48 +5586,6 @@ impl<'a> ElementRef<'a> {
       pushed = true;
     }
     pushed
-  }
-
-  fn subtree_contains_focus(&self, slot_map: Option<&SlotAssignmentMap<'_>>) -> bool {
-    if self.inert_flag() {
-      return false;
-    }
-    Self::node_or_descendant_has_focus(self.node, slot_map)
-  }
-
-  fn node_or_descendant_has_focus(
-    node: &DomNode,
-    slot_map: Option<&SlotAssignmentMap<'_>>,
-  ) -> bool {
-    let mut stack: Vec<&DomNode> = vec![node];
-    let mut visited = slot_map.is_some().then(HashSet::new);
-
-    while let Some(current) = stack.pop() {
-      if Self::node_is_inert(current) {
-        continue;
-      }
-      if let (Some(map), Some(ref mut seen)) = (slot_map, visited.as_mut()) {
-        if let Some(id) = map.node_id(current) {
-          if !seen.insert(id) {
-            continue;
-          }
-        }
-      }
-      if Self::node_focus_flag(current) {
-        return true;
-      }
-
-      let assigned_children_pushed =
-        Self::push_assigned_slot_nodes(current, slot_map, visited.as_ref(), &mut stack);
-
-      if !assigned_children_pushed {
-        for child in current.traversal_children().iter().rev() {
-          stack.push(child);
-        }
-      }
-    }
-
-    false
   }
 
   fn subtree_has_content(node: &DomNode) -> bool {
@@ -7696,10 +7589,112 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::MozUiInvalid | PseudoClass::MozFocusring => false,
       PseudoClass::Autofill => false,
       // Interactive pseudo-classes (not supported in static rendering)
-      PseudoClass::Hover => self.hover_flag(),
-      PseudoClass::Focus => self.focus_flag(),
-      PseudoClass::FocusWithin => self.subtree_contains_focus(_context.extra_data.slot_map),
-      PseudoClass::FocusVisible => self.focus_visible_flag(),
+      PseudoClass::Hover => {
+        if self.inert_flag() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        state.is_hovered(node_id)
+      }
+      PseudoClass::Focus => {
+        if self.inert_flag() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        if !state.is_focused(node_id) {
+          return false;
+        }
+        // SVG elements are only focusable when the `focusable=true` attribute is present.
+        if let DomNodeType::Element { namespace, .. } = &self.node.node_type {
+          if namespace == SVG_NAMESPACE {
+            return self
+              .node
+              .get_attribute_ref("focusable")
+              .map(|v| v.eq_ignore_ascii_case("true"))
+              .unwrap_or(false);
+          }
+        }
+        true
+      }
+      PseudoClass::FocusWithin => {
+        if self.inert_flag() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        if state.is_focus_within(node_id) {
+          return true;
+        }
+
+        // `:focus-within` operates on the *flat tree*. When a focused node is slotted into a shadow
+        // tree, the slot element (and its ancestors in that shadow tree) should match `:focus-within`.
+        //
+        // This is critical for selectors like `#wrap:focus-within` when `#wrap` contains a `<slot>`
+        // and the focused element lives in light DOM.
+        let Some(slot_map) = _context.extra_data.slot_map else {
+          return false;
+        };
+        for focused_chain_id in state.focus_chain.iter() {
+          let Some(slot) = slot_map.node_to_slot.get(focused_chain_id) else {
+            continue;
+          };
+          if node_id == slot.slot_node_id {
+            return true;
+          }
+          if let Some(ancestors) = slot_map.slot_ancestors.get(&slot.slot_node_id) {
+            if ancestors
+              .iter()
+              .filter_map(|ancestor| slot_map.node_id(ancestor))
+              .any(|id| id == node_id)
+            {
+              return true;
+            }
+          }
+        }
+        false
+      }
+      PseudoClass::FocusVisible => {
+        if self.inert_flag() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        if !state.focus_visible {
+          return false;
+        }
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        if !state.is_focused(node_id) {
+          return false;
+        }
+        // SVG elements are only focusable when the `focusable=true` attribute is present.
+        if let DomNodeType::Element { namespace, .. } = &self.node.node_type {
+          if namespace == SVG_NAMESPACE {
+            return self
+              .node
+              .get_attribute_ref("focusable")
+              .map(|v| v.eq_ignore_ascii_case("true"))
+              .unwrap_or(false);
+          }
+        }
+        true
+      }
       PseudoClass::Fullscreen => false,
       PseudoClass::Open => {
         if self
@@ -7716,10 +7711,43 @@ impl<'a> Element for ElementRef<'a> {
       }
       PseudoClass::Modal => dialog_state(self.node).is_some_and(|(_, modal)| modal),
       PseudoClass::PopoverOpen => popover_open(self.node),
-      PseudoClass::Active => self.active_flag(),
+      PseudoClass::Active => {
+        if self.inert_flag() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        state.is_active(node_id)
+      }
       PseudoClass::Checked => self.is_checked(),
-      PseudoClass::Link => self.is_link() && !self.visited_flag(),
-      PseudoClass::Visited => self.is_link() && self.visited_flag(),
+      PseudoClass::Link => {
+        if !self.is_link() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return true;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return true;
+        };
+        !state.is_visited_link(node_id)
+      }
+      PseudoClass::Visited => {
+        if !self.is_link() {
+          return false;
+        }
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        state.is_visited_link(node_id)
+      }
       PseudoClass::Vendor(_) => false,
     }
   }
@@ -8895,6 +8923,7 @@ mod tests {
   use crate::css::selectors::build_relative_selectors;
   use crate::css::selectors::PseudoClassParser;
   use crate::css::selectors::ShadowMatchData;
+  use crate::interaction::InteractionState;
   use crate::render_control::{with_deadline, RenderDeadline};
   use cssparser::{Parser, ParserInput};
   use selectors::context::QuirksMode;
@@ -9829,6 +9858,38 @@ mod tests {
     );
     context.extra_data = ShadowMatchData::for_document().with_sibling_cache(&sibling_cache);
     let element_ref = ElementRef::with_ancestors(node, ancestors);
+    element_ref.match_non_ts_pseudo_class(pseudo, &mut context)
+  }
+
+  fn matches_with_interaction(
+    node: &DomNode,
+    ancestors: &[&DomNode],
+    pseudo: &PseudoClass,
+    interaction_state: &InteractionState,
+  ) -> bool {
+    let root = ancestors.first().copied().unwrap_or(node);
+    let node_to_id = enumerate_dom_ids(root);
+    let node_id = node_to_id
+      .get(&(node as *const DomNode))
+      .copied()
+      .unwrap_or(0);
+    let mut caches = SelectorCaches::default();
+    let cache_epoch = next_selector_cache_epoch();
+    caches.set_epoch(cache_epoch);
+    let sibling_cache = SiblingListCache::new(cache_epoch);
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_sibling_cache(&sibling_cache)
+      .with_node_to_id(Some(&node_to_id))
+      .with_interaction_state(Some(interaction_state));
+    let element_ref = ElementRef::with_ancestors(node, ancestors).with_node_id(node_id);
     element_ref.match_non_ts_pseudo_class(pseudo, &mut context)
   }
 
@@ -12925,22 +12986,22 @@ mod tests {
       },
       children: vec![],
     };
-    assert!(matches(&unvisited, &[], &PseudoClass::Link));
-    assert!(!matches(&unvisited, &[], &PseudoClass::Visited));
+    let state = InteractionState::default();
+    assert!(matches_with_interaction(&unvisited, &[], &PseudoClass::Link, &state));
+    assert!(!matches_with_interaction(&unvisited, &[], &PseudoClass::Visited, &state));
 
     let visited = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-visited".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
-    assert!(!matches(&visited, &[], &PseudoClass::Link));
-    assert!(matches(&visited, &[], &PseudoClass::Visited));
+    let mut visited_state = InteractionState::default();
+    visited_state.visited_links.insert(1);
+    assert!(!matches_with_interaction(&visited, &[], &PseudoClass::Link, &visited_state));
+    assert!(matches_with_interaction(&visited, &[], &PseudoClass::Visited, &visited_state));
   }
 
   #[test]
@@ -12954,22 +13015,22 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&unvisited, &[], &PseudoClass::AnyLink));
-    assert!(matches(&unvisited, &[], &PseudoClass::Link));
-    assert!(!matches(&unvisited, &[], &PseudoClass::Visited));
+    let state = InteractionState::default();
+    assert!(matches_with_interaction(&unvisited, &[], &PseudoClass::Link, &state));
+    assert!(!matches_with_interaction(&unvisited, &[], &PseudoClass::Visited, &state));
 
     let visited = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "A".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-visited".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
-    assert!(!matches(&visited, &[], &PseudoClass::Link));
-    assert!(matches(&visited, &[], &PseudoClass::Visited));
+    let mut visited_state = InteractionState::default();
+    visited_state.visited_links.insert(1);
+    assert!(!matches_with_interaction(&visited, &[], &PseudoClass::Link, &visited_state));
+    assert!(matches_with_interaction(&visited, &[], &PseudoClass::Visited, &visited_state));
   }
 
   #[test]
@@ -12988,14 +13049,13 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-active".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
-    assert!(matches(&active, &[], &PseudoClass::Active));
+    let mut state = InteractionState::default();
+    state.active_chain = vec![1];
+    assert!(matches_with_interaction(&active, &[], &PseudoClass::Active, &state));
   }
 
   #[test]
@@ -13004,29 +13064,28 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-hover".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
-    assert!(matches(&hover, &[], &PseudoClass::Hover));
-    assert!(!matches(&hover, &[], &PseudoClass::Focus));
+    let mut hover_state = InteractionState::default();
+    hover_state.hover_chain = vec![1];
+    assert!(matches_with_interaction(&hover, &[], &PseudoClass::Hover, &hover_state));
+    assert!(!matches_with_interaction(&hover, &[], &PseudoClass::Focus, &hover_state));
 
     let focus = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("href".to_string(), "https://example.com".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("href".to_string(), "https://example.com".to_string())],
       },
       children: vec![],
     };
-    assert!(!matches(&focus, &[], &PseudoClass::Hover));
-    assert!(matches(&focus, &[], &PseudoClass::Focus));
+    let mut focus_state = InteractionState::default();
+    focus_state.focused = Some(1);
+    focus_state.focus_chain = vec![1];
+    assert!(!matches_with_interaction(&focus, &[], &PseudoClass::Hover, &focus_state));
+    assert!(matches_with_interaction(&focus, &[], &PseudoClass::Focus, &focus_state));
   }
 
   #[test]
@@ -13050,12 +13109,15 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "svg".to_string(),
         namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![("data-fastr-focus".to_string(), "true".to_string())],
+        attributes: vec![],
       },
       children: vec![],
     };
     assert!(matches(&svg, &[], &PseudoClass::Hover) == false);
-    assert!(!matches(&svg, &[], &PseudoClass::Focus));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    assert!(!matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
   }
 
   #[test]
@@ -13064,14 +13126,14 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "svg".to_string(),
         namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![
-          ("focusable".to_string(), "true".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("focusable".to_string(), "true".to_string())],
       },
       children: vec![],
     };
-    assert!(matches(&svg, &[], &PseudoClass::Focus));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    assert!(matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
   }
 
   #[test]
@@ -13080,15 +13142,15 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "svg".to_string(),
         namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![
-          ("focusable".to_string(), "false".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("focusable".to_string(), "false".to_string())],
       },
       children: vec![],
     };
 
-    assert!(!matches(&svg, &[], &PseudoClass::Focus));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    assert!(!matches_with_interaction(&svg, &[], &PseudoClass::Focus, &state));
   }
 
   #[test]
@@ -13097,12 +13159,15 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![("data-fastr-focus".to_string(), "true".to_string())],
+        attributes: vec![],
       },
       children: vec![],
     };
 
-    assert!(matches(&focused, &[], &PseudoClass::FocusWithin));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    assert!(matches_with_interaction(&focused, &[], &PseudoClass::FocusWithin, &state));
   }
 
   #[test]
@@ -13120,14 +13185,18 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "button".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![("data-fastr-focus".to_string(), "true".to_string())],
+        attributes: vec![],
       },
       children: vec![],
     };
 
     parent.children.push(child);
 
-    assert!(matches(&parent, &[], &PseudoClass::FocusWithin));
+    let mut state = InteractionState::default();
+    // pre-order ids: parent=1, child=2
+    state.focused = Some(2);
+    state.focus_chain = vec![2, 1];
+    assert!(matches_with_interaction(&parent, &[], &PseudoClass::FocusWithin, &state));
   }
 
   #[test]
@@ -13145,14 +13214,15 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "svg".to_string(),
         namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![("data-fastr-focus".to_string(), "true".to_string())],
+        attributes: vec![],
       },
       children: vec![],
     };
 
     parent.children.push(svg_unfocusable);
 
-    assert!(!matches(&parent, &[], &PseudoClass::FocusWithin));
+    let state = InteractionState::default();
+    assert!(!matches_with_interaction(&parent, &[], &PseudoClass::FocusWithin, &state));
 
     let mut parent_focusable = DomNode {
       node_type: DomNodeType::Element {
@@ -13167,17 +13237,23 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "svg".to_string(),
         namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![
-          ("focusable".to_string(), "true".to_string()),
-          ("data-fastr-focus".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("focusable".to_string(), "true".to_string())],
       },
       children: vec![],
     };
 
     parent_focusable.children.push(svg_focusable);
 
-    assert!(matches(&parent_focusable, &[], &PseudoClass::FocusWithin));
+    let mut focus_state = InteractionState::default();
+    // parent=1, svg=2
+    focus_state.focused = Some(2);
+    focus_state.focus_chain = vec![2, 1];
+    assert!(matches_with_interaction(
+      &parent_focusable,
+      &[],
+      &PseudoClass::FocusWithin,
+      &focus_state
+    ));
   }
 
   #[test]
@@ -13186,15 +13262,16 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "button".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("data-fastr-focus".to_string(), "true".to_string()),
-          ("data-fastr-focus-visible".to_string(), "true".to_string()),
-        ],
+        attributes: vec![],
       },
       children: vec![],
     };
 
-    assert!(matches(&dom, &[], &PseudoClass::FocusVisible));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    state.focus_visible = true;
+    assert!(matches_with_interaction(&dom, &[], &PseudoClass::FocusVisible, &state));
   }
 
   #[test]
@@ -13203,12 +13280,16 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "button".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![("data-fastr-focus".to_string(), "true".to_string())],
+        attributes: vec![],
       },
       children: vec![],
     };
 
-    assert!(!matches(&dom, &[], &PseudoClass::FocusVisible));
+    let mut state = InteractionState::default();
+    state.focused = Some(1);
+    state.focus_chain = vec![1];
+    state.focus_visible = false;
+    assert!(!matches_with_interaction(&dom, &[], &PseudoClass::FocusVisible, &state));
   }
 
   #[test]

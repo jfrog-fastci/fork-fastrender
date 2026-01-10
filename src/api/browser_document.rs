@@ -2,6 +2,7 @@ use crate::animation::TransitionState;
 use crate::dom::DomNode;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
+use crate::interaction::InteractionState;
 use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
@@ -304,7 +305,7 @@ impl BrowserDocument {
         ));
         let (prev_self, prev_image, prev_layout_image, prev_font) =
           renderer.push_resource_context(context);
-        let result = prepare_dom_inner(renderer, &dom, options.clone(), trace_handle);
+        let result = prepare_dom_inner(renderer, &dom, options.clone(), trace_handle, None);
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
         trace.finalize(result)
@@ -723,21 +724,13 @@ impl BrowserDocument {
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
   pub fn render_if_needed(&mut self) -> Result<Option<super::Pixmap>> {
-    Ok(
-      self
-        .render_if_needed_with_scroll_state()?
-        .map(|frame| frame.pixmap),
-    )
+    self.render_if_needed_with_interaction_state(None)
   }
 
   /// Renders a new frame if anything has been invalidated since the last successful frame,
   /// returning the pixmap plus the effective scroll state used during painting.
   pub fn render_if_needed_with_scroll_state(&mut self) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() {
-      return Ok(None);
-    }
-    let frame = self.render_frame_with_scroll_state()?;
-    Ok(Some(frame))
+    self.render_if_needed_with_scroll_state_and_interaction_state(None)
   }
 
   /// Renders a new frame if anything has been invalidated since the last successful frame,
@@ -750,11 +743,7 @@ impl BrowserDocument {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() && self.prepared.is_some() {
-      return Ok(None);
-    }
-    let frame = self.render_frame_with_deadlines(paint_deadline)?;
-    Ok(Some(frame))
+    self.render_if_needed_with_deadlines_and_interaction_state(paint_deadline, None)
   }
 
   /// Renders one frame.
@@ -762,7 +751,7 @@ impl BrowserDocument {
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
-    Ok(self.render_frame_with_scroll_state()?.pixmap)
+    Ok(self.render_frame_with_scroll_state_and_interaction_state(None)?.pixmap)
   }
 
   /// Renders one frame, applying an optional deadline to the *paint* phase.
@@ -773,21 +762,79 @@ impl BrowserDocument {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
+    self.render_frame_with_deadlines_and_interaction_state(paint_deadline, None)
+  }
+
+  /// Renders one frame, returning the pixmap plus the effective scroll state used during painting.
+  ///
+  /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
+  /// cached layout artifacts.
+  pub fn render_frame_with_scroll_state(&mut self) -> Result<super::PaintedFrame> {
+    self.render_frame_with_deadlines_and_interaction_state(None, None)
+  }
+
+  /// Like [`BrowserDocument::render_if_needed`](Self::render_if_needed), but supplies internal
+  /// interaction state used for pseudo-class matching and form-control paint hints.
+  pub fn render_if_needed_with_interaction_state(
+    &mut self,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<Option<super::Pixmap>> {
+    Ok(
+      self
+        .render_if_needed_with_scroll_state_and_interaction_state(interaction_state)?
+        .map(|frame| frame.pixmap),
+    )
+  }
+
+  /// Like [`BrowserDocument::render_if_needed_with_scroll_state`](Self::render_if_needed_with_scroll_state),
+  /// but supplies internal interaction state used for pseudo-class matching and form-control paint hints.
+  pub fn render_if_needed_with_scroll_state_and_interaction_state(
+    &mut self,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<Option<super::PaintedFrame>> {
+    if !self.is_dirty() {
+      return Ok(None);
+    }
+    let frame = self.render_frame_with_scroll_state_and_interaction_state(interaction_state)?;
+    Ok(Some(frame))
+  }
+
+  /// Like [`BrowserDocument::render_if_needed_with_deadlines`](Self::render_if_needed_with_deadlines),
+  /// but supplies internal interaction state used for pseudo-class matching and form-control paint hints.
+  pub fn render_if_needed_with_deadlines_and_interaction_state(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<Option<super::PaintedFrame>> {
+    if !self.is_dirty() && self.prepared.is_some() {
+      return Ok(None);
+    }
+    let frame = self.render_frame_with_deadlines_and_interaction_state(paint_deadline, interaction_state)?;
+    Ok(Some(frame))
+  }
+
+  /// Like [`BrowserDocument::render_frame_with_deadlines`](Self::render_frame_with_deadlines), but supplies
+  /// internal interaction state used for pseudo-class matching and form-control paint hints.
+  pub fn render_frame_with_deadlines_and_interaction_state(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<super::PaintedFrame> {
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
     }
 
     let needs_layout = self.style_dirty || self.layout_dirty;
-      if needs_layout {
-        let prev_prepared = self.prepared.take();
-        let mut prepared = match self.prepare_dom_with_options() {
-          Ok(prepared) => prepared,
-          Err(err) => {
-            self.prepared = prev_prepared;
-            return Err(err);
-          }
-        };
+    if needs_layout {
+      let prev_prepared = self.prepared.take();
+      let mut prepared = match self.prepare_dom_with_options_and_interaction_state(interaction_state) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
 
       let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
@@ -831,12 +878,13 @@ impl BrowserDocument {
     Ok(frame)
   }
 
-  /// Renders one frame, returning the pixmap plus the effective scroll state used during painting.
-  ///
-  /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
-  /// cached layout artifacts.
-  pub fn render_frame_with_scroll_state(&mut self) -> Result<super::PaintedFrame> {
-    self.render_frame_with_deadlines(None)
+  /// Like [`BrowserDocument::render_frame_with_scroll_state`](Self::render_frame_with_scroll_state), but supplies
+  /// internal interaction state used for pseudo-class matching and form-control paint hints.
+  pub fn render_frame_with_scroll_state_and_interaction_state(
+    &mut self,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<super::PaintedFrame> {
+    self.render_frame_with_deadlines_and_interaction_state(None, interaction_state)
   }
 
   /// Paints the most recently laid-out document without re-running style/layout.
@@ -917,6 +965,13 @@ impl BrowserDocument {
   }
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
+    self.prepare_dom_with_options_and_interaction_state(None)
+  }
+
+  fn prepare_dom_with_options_and_interaction_state(
+    &mut self,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<PreparedDocument> {
     let options = self.options.clone();
     let dom = &self.dom;
     let document_url = self.document_url.clone();
@@ -952,7 +1007,7 @@ impl BrowserDocument {
       ));
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         renderer.push_resource_context(context);
-      let result = prepare_dom_inner(renderer, dom, options.clone(), trace_handle);
+      let result = prepare_dom_inner(renderer, dom, options.clone(), trace_handle, interaction_state);
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
@@ -984,6 +1039,7 @@ pub(super) fn prepare_dom_inner(
   dom: &DomNode,
   options: RenderOptions,
   trace: &crate::debug::trace::TraceHandle,
+  interaction_state: Option<&InteractionState>,
 ) -> Result<PreparedDocument> {
   let (width, height) = options
     .viewport
@@ -1042,6 +1098,7 @@ pub(super) fn prepare_dom_inner(
     );
     renderer.layout_document_for_media_with_artifacts(
       dom,
+      interaction_state,
       layout_width,
       layout_height,
       options.media_type,

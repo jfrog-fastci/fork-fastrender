@@ -9,6 +9,7 @@ use crate::dom::ElementAttrCache;
 use crate::dom::SelectorBloomStore;
 use crate::dom::SiblingListCache;
 use crate::error::RenderError;
+use crate::interaction::InteractionState;
 use crate::style::normalize_language_tag;
 use cssparser::ParseError;
 use cssparser::Parser;
@@ -48,6 +49,8 @@ pub struct FastRenderSelectorImpl;
 pub struct ShadowMatchData<'a> {
   /// The shadow host for the stylesheet being matched, or None for document styles.
   pub shadow_host: Option<OpaqueElement>,
+  /// Internal interaction state for the current document/tab.
+  pub interaction_state: Option<&'a InteractionState>,
   /// Mapping from slot elements to their assigned nodes for ::slotted() resolution.
   pub slot_map: Option<&'a SlotAssignmentMap<'a>>,
   /// Exported part mappings for resolving ::part() across shadow boundaries.
@@ -79,6 +82,7 @@ impl<'a> Default for ShadowMatchData<'a> {
   fn default() -> Self {
     Self {
       shadow_host: None,
+      interaction_state: None,
       slot_map: None,
       part_export_map: None,
       deadline_error: None,
@@ -102,6 +106,11 @@ impl<'a> ShadowMatchData<'a> {
       shadow_host: Some(shadow_host),
       ..Self::default()
     }
+  }
+
+  pub fn with_interaction_state(mut self, interaction_state: Option<&'a InteractionState>) -> Self {
+    self.interaction_state = interaction_state;
+    self
   }
 
   pub fn with_slot_map(mut self, slot_map: &'a SlotAssignmentMap<'a>) -> Self {

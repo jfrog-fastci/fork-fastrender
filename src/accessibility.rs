@@ -1,4 +1,5 @@
 use crate::dom::{forms_validation, DomNode, DomNodeType, ElementRef, HTML_NAMESPACE};
+use crate::interaction::InteractionState;
 use crate::style::cascade::StyledNode;
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
@@ -160,7 +161,10 @@ pub struct AccessibilityNode {
 }
 
 /// Build an accessibility tree from a styled DOM.
-pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
+pub fn build_accessibility_tree(
+  root: &StyledNode,
+  interaction_state: Option<&InteractionState>,
+) -> AccessibilityNode {
   let mut lookup = HashMap::new();
   build_styled_lookup(root, &mut lookup);
   let mut hidden = HashMap::new();
@@ -204,6 +208,7 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
     labels,
     lookup,
     validation_dom,
+    interaction_state,
   };
 
   let mut ancestors: Vec<&DomNode> = Vec::new();
@@ -235,7 +240,7 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
 
 /// Serialize the accessibility tree to JSON for snapshot tests.
 pub fn accessibility_tree_json(root: &StyledNode) -> serde_json::Value {
-  serde_json::to_value(build_accessibility_tree(root)).unwrap_or(serde_json::Value::Null)
+  serde_json::to_value(build_accessibility_tree(root, None)).unwrap_or(serde_json::Value::Null)
 }
 
 fn build_styled_lookup<'a>(node: &'a StyledNode, out: &mut HashMap<usize, &'a StyledNode>) {
@@ -346,7 +351,7 @@ impl ValidationDomIndex {
   }
 }
 
-struct BuildContext<'a> {
+struct BuildContext<'a, 'state> {
   hidden: HashMap<usize, bool>,
   aria_hidden: HashMap<usize, bool>,
   node_scope: HashMap<usize, usize>,
@@ -354,6 +359,7 @@ struct BuildContext<'a> {
   labels: HashMap<usize, Vec<usize>>,
   lookup: HashMap<usize, &'a StyledNode>,
   validation_dom: Option<ValidationDomIndex>,
+  interaction_state: Option<&'state InteractionState>,
 }
 
 #[derive(Clone, Copy)]
@@ -364,7 +370,7 @@ enum TextAlternativeMode {
   Referenced,
 }
 
-impl<'a> BuildContext<'a> {
+impl<'a, 'state> BuildContext<'a, 'state> {
   fn is_hidden(&self, node: &StyledNode) -> bool {
     *self.hidden.get(&node.node_id).unwrap_or(&false)
   }
@@ -661,9 +667,9 @@ fn clone_dom_subtree(node: &StyledNode) -> DomNode {
   root
 }
 
-fn build_nodes<'a>(
+fn build_nodes<'a, 'state>(
   node: &'a StyledNode,
-  ctx: &BuildContext<'a>,
+  ctx: &BuildContext<'a, 'state>,
   ancestors: &mut Vec<&'a DomNode>,
   styled_ancestors: &mut Vec<&'a StyledNode>,
 ) -> Vec<AccessibilityNode> {
@@ -757,7 +763,7 @@ fn build_nodes<'a>(
 
       let checked = compute_checked(node, role.as_deref(), &element_ref);
       let selected = compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
-      let pressed = compute_pressed(node, role.as_deref());
+      let pressed = compute_pressed(node, role.as_deref(), ctx);
       let busy = attr_truthy(&node.node, "aria-busy");
       let modal = compute_modal(&node.node);
       let current = parse_aria_current(&node.node);
@@ -767,11 +773,16 @@ fn build_nodes<'a>(
       let live = parse_aria_live(&node.node);
       let atomic = parse_bool_attr(&node.node, "aria-atomic");
       let relevant = parse_aria_relevant(&node.node);
-      let visited =
-        role.as_deref() == Some("link") && attr_truthy(&node.node, "data-fastr-visited");
+      let visited = role.as_deref() == Some("link")
+        && ctx
+          .interaction_state
+          .is_some_and(|state| state.is_visited_link(node.node_id));
       let focusable = compute_focusable(&node.node, role.as_deref(), disabled);
-      let focused = !disabled && attr_truthy(&node.node, "data-fastr-focus");
-      let focus_visible = focused && attr_truthy(&node.node, "data-fastr-focus-visible");
+      let focused = !disabled
+        && ctx
+          .interaction_state
+          .is_some_and(|state| state.is_focused(node.node_id));
+      let focus_visible = focused && ctx.interaction_state.is_some_and(|state| state.focus_visible);
       let readonly = compute_readonly(&node.node, role.as_deref(), &element_ref);
       let value = compute_value(node, role.as_deref(), &element_ref, ctx);
       let level = compute_level(&node.node, role.as_deref());
@@ -987,7 +998,7 @@ fn collect_labels(
   labels
 }
 
-fn is_decorative_img(node: &StyledNode, ctx: &BuildContext) -> bool {
+fn is_decorative_img(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> bool {
   let Some(tag) = node.node.tag_name().map(|t| t.to_ascii_lowercase()) else {
     return false;
   };
@@ -1668,7 +1679,7 @@ fn role_allows_name_from_content(role: Option<&str>, tag: Option<&str>) -> bool 
 /// Computation algorithm (https://www.w3.org/TR/accname-1.2/#computation).
 fn compute_name(
   node: &StyledNode,
-  ctx: &BuildContext,
+  ctx: &BuildContext<'_, '_>,
   allow_name_from_content: bool,
 ) -> Option<String> {
   let mut visited = HashSet::new();
@@ -1680,9 +1691,9 @@ fn compute_name(
   )
 }
 
-fn native_name_from_html<'a>(
+fn native_name_from_html<'a, 'state>(
   node: &'a StyledNode,
-  ctx: &BuildContext<'a>,
+  ctx: &BuildContext<'a, 'state>,
   visited: &mut HashSet<usize>,
   mode: TextAlternativeMode,
 ) -> Option<String> {
@@ -1699,9 +1710,9 @@ fn native_name_from_html<'a>(
   }
 }
 
-fn first_child_with_tag<'a>(
+fn first_child_with_tag<'a, 'state>(
   node: &'a StyledNode,
-  ctx: &BuildContext<'a>,
+  ctx: &BuildContext<'a, 'state>,
   tag: &str,
   require_visible: bool,
   mode: TextAlternativeMode,
@@ -2529,8 +2540,8 @@ fn resolve_idref(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> O
     .map(|value| value.to_string())
 }
 
-fn resolve_idref_target<'a>(
-  ctx: &BuildContext<'a>,
+fn resolve_idref_target<'a, 'state>(
+  ctx: &BuildContext<'a, 'state>,
   origin: &StyledNode,
   attr_value: &str,
 ) -> Option<&'a StyledNode> {
@@ -3041,12 +3052,16 @@ fn compute_selected(
   None
 }
 
-fn compute_pressed(node: &StyledNode, role: Option<&str>) -> Option<PressedState> {
+fn compute_pressed(node: &StyledNode, role: Option<&str>, ctx: &BuildContext<'_, '_>) -> Option<PressedState> {
   if let Some(state) = parse_pressed_state(&node.node, "aria-pressed") {
     return Some(state);
   }
 
-  if role == Some("button") && attr_truthy(&node.node, "data-fastr-active") {
+  if role == Some("button")
+    && ctx
+      .interaction_state
+      .is_some_and(|state| state.is_active(node.node_id))
+  {
     return Some(PressedState::True);
   }
 

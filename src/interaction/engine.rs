@@ -20,10 +20,11 @@ use std::sync::Arc;
 
 use super::dom_mutation;
 use super::fragment_geometry::content_rect_for_border_rect;
-use super::form_submit::{form_submission, FormSubmission, FormSubmissionMethod};
+use super::form_submit::{form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod};
 use super::hit_test::hit_test_dom;
 use super::image_maps;
 use super::resolve_url;
+use super::state::{ImePreeditState, InteractionState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModality {
@@ -69,13 +70,10 @@ pub enum KeyAction {
 
 #[derive(Debug, Clone)]
 pub struct InteractionEngine {
-  hover_chain: Vec<usize>,
-  active_chain: Vec<usize>,
+  state: InteractionState,
   pointer_down_target: Option<usize>,
   range_drag: Option<RangeDragState>,
   text_drag: Option<TextDragState>,
-  focused: Option<usize>,
-  ime_composition: Option<ImeCompositionState>,
   text_edit: Option<TextEditState>,
   modality: InputModality,
   last_click_target: Option<usize>,
@@ -87,15 +85,6 @@ struct RangeDragState {
   node_id: usize,
   box_id: usize,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ImeCompositionState {
-  node_id: usize,
-  text: String,
-  cursor: Option<(usize, usize)>,
-}
-
-const IME_PREEDIT_ATTR: &str = "data-fastr-ime-preedit";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextEditState {
@@ -237,12 +226,13 @@ mod tests {
     crate::dom::textarea_current_value(node)
   }
 
-  fn has_preedit_attr(dom: &mut DomNode, node_id: usize) -> bool {
+  fn attr_count(dom: &mut DomNode, node_id: usize) -> usize {
     let index = DomIndexMut::new(dom);
-    index
-      .node(node_id)
-      .and_then(|node| node.get_attribute_ref(IME_PREEDIT_ATTR))
-      .is_some()
+    let node = index.node(node_id).expect("node");
+    match &node.node_type {
+      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => attributes.len(),
+      _ => 0,
+    }
   }
 
   fn set_text_selection_caret(engine: &mut InteractionEngine, dom: &mut DomNode, node_id: usize, caret: usize) {
@@ -280,16 +270,21 @@ mod tests {
 
     let mut engine = InteractionEngine::new();
     engine.focus_node_id(&mut dom, Some(input_id), true);
+    let attr_count_before = attr_count(&mut dom, input_id);
 
     engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
 
-    let comp = engine.ime_composition.as_ref().expect("composition state");
+    let comp = engine.state.ime_preedit.as_ref().expect("preedit state");
     assert_eq!(comp.node_id, input_id);
     assert_eq!(comp.text, "あ");
     assert_eq!(comp.cursor, Some((0, 1)));
 
     assert_eq!(input_value(&mut dom, input_id), "a");
-    assert!(has_preedit_attr(&mut dom, input_id));
+    assert_eq!(
+      attr_count(&mut dom, input_id),
+      attr_count_before,
+      "IME preedit must not mutate element attributes"
+    );
   }
 
   #[test]
@@ -299,14 +294,14 @@ mod tests {
 
     let mut engine = InteractionEngine::new();
     engine.focus_node_id(&mut dom, Some(input_id), true);
+    let attr_count_before = attr_count(&mut dom, input_id);
 
     engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
-    assert!(has_preedit_attr(&mut dom, input_id));
 
     engine.ime_commit(&mut dom, "あ");
 
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_none());
+    assert_eq!(attr_count(&mut dom, input_id), attr_count_before);
     assert_eq!(input_value(&mut dom, input_id), "aあ");
   }
 
@@ -317,14 +312,14 @@ mod tests {
 
     let mut engine = InteractionEngine::new();
     engine.focus_node_id(&mut dom, Some(input_id), true);
+    let attr_count_before = attr_count(&mut dom, input_id);
 
     engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
-    assert!(has_preedit_attr(&mut dom, input_id));
 
     engine.ime_cancel(&mut dom);
 
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_none());
+    assert_eq!(attr_count(&mut dom, input_id), attr_count_before);
     assert_eq!(input_value(&mut dom, input_id), "a");
   }
 
@@ -335,14 +330,14 @@ mod tests {
 
     let mut engine = InteractionEngine::new();
     engine.focus_node_id(&mut dom, Some(textarea_id), true);
+    let attr_count_before = attr_count(&mut dom, textarea_id);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(has_preedit_attr(&mut dom, textarea_id));
 
     engine.ime_commit(&mut dom, "あ");
 
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert!(engine.state.ime_preedit.is_none());
+    assert_eq!(attr_count(&mut dom, textarea_id), attr_count_before);
     assert_eq!(textarea_value(&mut dom, textarea_id), "hiあ");
   }
 
@@ -355,12 +350,10 @@ mod tests {
     engine.focus_node_id(&mut dom, Some(input_id), true);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(engine.ime_composition.is_some());
-    assert!(has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_some());
 
     assert!(engine.clipboard_paste(&mut dom, "X"));
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_none());
     assert_eq!(input_value(&mut dom, input_id), "helloX");
   }
 
@@ -374,14 +367,12 @@ mod tests {
     engine.clipboard_select_all(&mut dom);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(engine.ime_composition.is_some());
-    assert!(has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_some());
 
     let (changed, text) = engine.clipboard_cut(&mut dom);
     assert!(changed);
     assert_eq!(text.as_deref(), Some("hello"));
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_none());
     assert_eq!(input_value(&mut dom, input_id), "");
   }
 
@@ -394,12 +385,10 @@ mod tests {
     engine.focus_node_id(&mut dom, Some(textarea_id), true);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(engine.ime_composition.is_some());
-    assert!(has_preedit_attr(&mut dom, textarea_id));
+    assert!(engine.state.ime_preedit.is_some());
 
     assert!(engine.clipboard_paste(&mut dom, "X"));
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert!(engine.state.ime_preedit.is_none());
     assert_eq!(textarea_value(&mut dom, textarea_id), "helloX");
   }
 
@@ -414,14 +403,12 @@ mod tests {
     engine.clipboard_select_all(&mut dom);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(engine.ime_composition.is_some());
-    assert!(has_preedit_attr(&mut dom, textarea_id));
+    assert!(engine.state.ime_preedit.is_some());
 
     let (changed, text) = engine.clipboard_cut(&mut dom);
     assert!(changed);
     assert_eq!(text.as_deref(), Some("hello"));
-    assert!(engine.ime_composition.is_none());
-    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert!(engine.state.ime_preedit.is_none());
     assert_eq!(textarea_value(&mut dom, textarea_id), "");
   }
 
@@ -569,12 +556,11 @@ mod tests {
     set_text_selection_caret(&mut engine, &mut dom, input_id, 1);
 
     engine.ime_preedit(&mut dom, "あ", None);
-    assert!(has_preedit_attr(&mut dom, input_id));
+    assert!(engine.state.ime_preedit.is_some());
 
     engine.ime_commit(&mut dom, "Z");
 
-    assert!(!has_preedit_attr(&mut dom, input_id));
-    assert!(engine.ime_composition.is_none());
+    assert!(engine.state.ime_preedit.is_none());
     assert_eq!(input_value(&mut dom, input_id), "aZbc");
     assert_eq!(engine.text_edit.as_ref().unwrap().caret, 2);
   }
@@ -620,11 +606,11 @@ fn set_attr(attrs: &mut Vec<(String, String)>, name: &str, value: &str) -> bool 
 }
 
 fn remove_attr(attrs: &mut Vec<(String, String)>, name: &str) -> bool {
-  let Some(idx) = attrs.iter().position(|(k, _)| k.eq_ignore_ascii_case(name)) else {
-    return false;
-  };
-  attrs.remove(idx);
-  true
+  if let Some(idx) = attrs.iter().position(|(k, _)| k.eq_ignore_ascii_case(name)) {
+    attrs.remove(idx);
+    return true;
+  }
+  false
 }
 
 fn set_node_attr(node: &mut DomNode, name: &str, value: &str) -> bool {
@@ -642,17 +628,6 @@ fn remove_node_attr(node: &mut DomNode, name: &str) -> bool {
       remove_attr(attributes, name)
     }
     _ => false,
-  }
-}
-
-fn set_data_flag(index: &mut DomIndexMut, node_id: usize, name: &str, on: bool) -> bool {
-  let Some(node) = index.node_mut(node_id) else {
-    return false;
-  };
-  if on {
-    set_node_attr(node, name, "true")
-  } else {
-    remove_node_attr(node, name)
   }
 }
 
@@ -686,26 +661,6 @@ fn write_text_edit_data_attrs(
     _ => {
       changed |= remove_node_attr(node, "data-fastr-selection-start");
       changed |= remove_node_attr(node, "data-fastr-selection-end");
-    }
-  }
-  changed
-}
-
-fn diff_flag_chain(
-  index: &mut DomIndexMut,
-  attr: &str,
-  old_chain: &[usize],
-  new_chain: &[usize],
-) -> bool {
-  let mut changed = false;
-  for id in old_chain.iter().copied() {
-    if !new_chain.contains(&id) {
-      changed |= set_data_flag(index, id, attr, false);
-    }
-  }
-  for id in new_chain.iter().copied() {
-    if !old_chain.contains(&id) {
-      changed |= set_data_flag(index, id, attr, true);
     }
   }
   changed
@@ -1984,13 +1939,10 @@ fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_i
 impl InteractionEngine {
   pub fn new() -> Self {
     Self {
-      hover_chain: Vec::new(),
-      active_chain: Vec::new(),
+      state: InteractionState::default(),
       pointer_down_target: None,
       range_drag: None,
       text_drag: None,
-      focused: None,
-      ime_composition: None,
       text_edit: None,
       modality: InputModality::Pointer,
       last_click_target: None,
@@ -1998,8 +1950,12 @@ impl InteractionEngine {
     }
   }
 
+  pub fn interaction_state(&self) -> &InteractionState {
+    &self.state
+  }
+
   pub fn focused_node_id(&self) -> Option<usize> {
-    self.focused
+    self.state.focused
   }
 
   /// Returns the most recent click target (pre-order DOM node id) produced by
@@ -2027,29 +1983,34 @@ impl InteractionEngine {
     new_focused: Option<usize>,
     focus_visible: bool,
   ) -> bool {
-    let mut changed = false;
-    if self.focused != new_focused {
-      // Any focus change cancels an in-progress IME composition.
-      if let Some(composition) = self.ime_composition.take() {
-        if let Some(node_mut) = index.node_mut(composition.node_id) {
-          changed |= remove_node_attr(node_mut, IME_PREEDIT_ATTR);
-        }
-      }
+    let prev_focused = self.state.focused;
+    let prev_focus_visible = self.state.focus_visible;
+    let prev_focus_chain = self.state.focus_chain.clone();
 
-      if let Some(old) = self.focused {
-        changed |= set_data_flag(index, old, "data-fastr-focus", false);
-        changed |= set_data_flag(index, old, "data-fastr-focus-visible", false);
+    let mut changed = false;
+
+    // Any focus change cancels an in-progress IME composition.
+    if prev_focused != new_focused {
+      if self.state.ime_preedit.is_some() {
+        changed = true;
+      }
+      self.state.ime_preedit = None;
+
+      if let Some(old) = prev_focused {
         changed |= clear_text_edit_data_attrs(index, old);
       }
       self.text_edit = None;
       self.text_drag = None;
     }
 
-    if let Some(new_id) = new_focused {
-      changed |= set_data_flag(index, new_id, "data-fastr-focus", true);
-      changed |= set_data_flag(index, new_id, "data-fastr-focus-visible", focus_visible);
+    self.state.focused = new_focused;
+    self.state.focus_visible = new_focused.is_some() && focus_visible;
+    self.state.focus_chain = new_focused
+      .map(|id| collect_element_chain(index, id))
+      .unwrap_or_default();
 
-      if self.focused != new_focused {
+    if prev_focused != new_focused {
+      if let Some(new_id) = new_focused {
         // Initialize text editing state for focused text controls.
         //
         // We keep the canonical caret/selection state in `InteractionEngine`, but we also mirror it
@@ -2059,14 +2020,10 @@ impl InteractionEngine {
           let caret = index
             .node(new_id)
             .map(|node| {
-               if is_textarea(node) {
-                 textarea_value_for_editing(node).chars().count()
-               } else {
-                 node
-                   .get_attribute_ref("value")
-                   .unwrap_or("")
-                  .chars()
-                  .count()
+              if is_textarea(node) {
+                textarea_value_for_editing(node).chars().count()
+              } else {
+                node.get_attribute_ref("value").unwrap_or("").chars().count()
               }
             })
             .unwrap_or(0);
@@ -2081,8 +2038,10 @@ impl InteractionEngine {
       }
     }
 
-    self.focused = new_focused;
     changed
+      || prev_focused != self.state.focused
+      || prev_focus_visible != self.state.focus_visible
+      || prev_focus_chain != self.state.focus_chain
   }
 
   /// Programmatically update focus state for the given DOM node id.
@@ -2101,15 +2060,15 @@ impl InteractionEngine {
       InputModality::Pointer
     };
 
-    let prev_focus = self.focused;
+    let prev_focus = self.state.focused;
     let mut index = DomIndexMut::new(dom);
 
     let node_id = node_id.filter(|&id| index.node(id).is_some_and(DomNode::is_element));
     let changed = self.set_focus(&mut index, node_id, focus_visible);
 
-    let action = if self.focused != prev_focus {
+    let action = if self.state.focused != prev_focus {
       InteractionAction::FocusChanged {
-        node_id: self.focused,
+        node_id: self.state.focused,
       }
     } else {
       InteractionAction::None
@@ -2119,7 +2078,7 @@ impl InteractionEngine {
   }
 
   pub fn set_text_selection_caret(&mut self, node_id: usize, caret: usize) {
-    if self.focused != Some(node_id) {
+    if self.state.focused != Some(node_id) {
       return;
     }
     self.text_drag = None;
@@ -2141,7 +2100,7 @@ impl InteractionEngine {
   }
 
   pub fn set_text_selection_range(&mut self, node_id: usize, start: usize, end: usize) {
-    if self.focused != Some(node_id) {
+    if self.state.focused != Some(node_id) {
       return;
     }
     if start == end {
@@ -2167,14 +2126,11 @@ impl InteractionEngine {
     }
   }
 
-  pub fn clear_pointer_state(&mut self, dom: &mut DomNode) -> bool {
-    let mut index = DomIndexMut::new(dom);
-    let hover_changed =
-      diff_flag_chain(&mut index, "data-fastr-hover", &self.hover_chain, &[]);
-    let active_changed =
-      diff_flag_chain(&mut index, "data-fastr-active", &self.active_chain, &[]);
-    self.hover_chain.clear();
-    self.active_chain.clear();
+  pub fn clear_pointer_state(&mut self, _dom: &mut DomNode) -> bool {
+    let hover_changed = !self.state.hover_chain.is_empty();
+    let active_changed = !self.state.active_chain.is_empty();
+    self.state.hover_chain.clear();
+    self.state.active_chain.clear();
     self.pointer_down_target = None;
     self.range_drag = None;
     self.text_drag = None;
@@ -2182,14 +2138,14 @@ impl InteractionEngine {
   }
 
   pub fn clear_pointer_state_without_dom(&mut self) {
-    self.hover_chain.clear();
-    self.active_chain.clear();
+    self.state.hover_chain.clear();
+    self.state.active_chain.clear();
     self.pointer_down_target = None;
     self.range_drag = None;
     self.text_drag = None;
   }
 
-  /// Update hover state (data-fastr-hover on target + ancestors).
+  /// Update hover state (element under pointer + ancestors).
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
   /// translating it by `scroll.viewport`.
   ///
@@ -2271,17 +2227,12 @@ impl InteractionEngine {
       .map(|target| collect_element_chain(&index, target))
       .unwrap_or_default();
 
-    let changed = diff_flag_chain(
-      &mut index,
-      "data-fastr-hover",
-      &self.hover_chain,
-      &new_chain,
-    );
-    self.hover_chain = new_chain;
+    let changed = self.state.hover_chain != new_chain;
+    self.state.hover_chain = new_chain;
     dom_changed | changed
   }
 
-  /// Begin active state (data-fastr-active on target + ancestors) and set modality=Pointer.
+  /// Begin active state (pointer down target + ancestors) and set modality=Pointer.
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
   /// translating it by `scroll.viewport`.
   ///
@@ -2309,13 +2260,8 @@ impl InteractionEngine {
       .map(|target| collect_element_chain(&index, target))
       .unwrap_or_default();
 
-    let changed = diff_flag_chain(
-      &mut index,
-      "data-fastr-active",
-      &self.active_chain,
-      &new_chain,
-    );
-    self.active_chain = new_chain;
+    let changed = self.state.active_chain != new_chain;
+    self.state.active_chain = new_chain;
     self.pointer_down_target = down_target;
 
     let mut dom_changed = changed;
@@ -2339,13 +2285,13 @@ impl InteractionEngine {
         .node(hit.dom_node_id)
         .is_some_and(|node| is_text_input(node) || is_textarea(node))
       {
-        let focus_before = self.focused;
+        let focus_before = self.state.focused;
         if is_focusable_interactive_element(&index, hit.dom_node_id) {
           dom_changed |= self.set_focus(&mut index, Some(hit.dom_node_id), false);
         }
 
         // Only update caret/selection state when the text control is (now) focused.
-        if self.focused == Some(hit.dom_node_id) {
+        if self.state.focused == Some(hit.dom_node_id) {
           let caret = caret_index_for_text_control_point(
             &index,
             box_tree,
@@ -2424,8 +2370,8 @@ impl InteractionEngine {
       *id = new_ids.get(&(ptr as *const DomNode)).copied();
     }
 
-    remap_vec(&mut self.hover_chain, old_index, new_ids);
-    remap_vec(&mut self.active_chain, old_index, new_ids);
+    remap_vec(&mut self.state.hover_chain, old_index, new_ids);
+    remap_vec(&mut self.state.active_chain, old_index, new_ids);
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
     remap_opt(&mut self.last_form_submitter, old_index, new_ids);
@@ -2441,18 +2387,38 @@ impl InteractionEngine {
         None => self.range_drag = None,
       }
     }
-    remap_opt(&mut self.focused, old_index, new_ids);
+    remap_opt(&mut self.state.focused, old_index, new_ids);
+    remap_vec(&mut self.state.focus_chain, old_index, new_ids);
 
-    if let Some(state) = &mut self.ime_composition {
+    // Remap visited links.
+    if !self.state.visited_links.is_empty() {
+      let mut remapped = rustc_hash::FxHashSet::default();
+      remapped.reserve(self.state.visited_links.len());
+      for old in self.state.visited_links.iter().copied() {
+        let Some(ptr) = old_index.id_to_node.get(old).copied() else {
+          continue;
+        };
+        if ptr.is_null() {
+          continue;
+        }
+        if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
+          remapped.insert(new_id);
+        }
+      }
+      self.state.visited_links = remapped;
+    }
+
+    // Remap active IME preedit state.
+    if let Some(preedit) = &mut self.state.ime_preedit {
       let new_node_id = old_index
         .id_to_node
-        .get(state.node_id)
+        .get(preedit.node_id)
         .copied()
         .filter(|ptr| !ptr.is_null())
         .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
       match new_node_id {
-        Some(id) => state.node_id = id,
-        None => self.ime_composition = None,
+        Some(id) => preedit.node_id = id,
+        None => self.state.ime_preedit = None,
       }
     }
 
@@ -2515,7 +2481,7 @@ impl InteractionEngine {
     let prev_focus = text_drag
       .as_ref()
       .map(|state| state.focus_before)
-      .unwrap_or(self.focused);
+      .unwrap_or(self.state.focused);
 
     let page_point = viewport_point.translate(scroll.viewport);
 
@@ -2545,11 +2511,10 @@ impl InteractionEngine {
         );
       }
     }
-    for id in self.active_chain.iter().copied() {
-      dom_changed |= set_data_flag(&mut index, id, "data-fastr-active", false);
-    }
-    self.active_chain.clear();
+    let active_changed = !self.state.active_chain.is_empty();
+    self.state.active_chain.clear();
     self.pointer_down_target = None;
+    dom_changed |= active_changed;
 
     let click_qualifies = match (down_semantic, up_semantic) {
       (Some(down), Some(up)) => down == up || is_ancestor_or_self(&index, down, up),
@@ -2666,7 +2631,9 @@ impl InteractionEngine {
             }
 
             if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
-              dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
+              if self.state.visited_links.insert(target_id) {
+                dom_changed = true;
+              }
 
               let target_blank = index
                 .node(target_id)
@@ -2734,9 +2701,9 @@ impl InteractionEngine {
     }
 
     // `OpenSelectDropdown` includes the focus update; do not replace it with `FocusChanged`.
-    if matches!(action, InteractionAction::None) && self.focused != prev_focus {
+    if matches!(action, InteractionAction::None) && self.state.focused != prev_focus {
       action = InteractionAction::FocusChanged {
-        node_id: self.focused,
+        node_id: self.state.focused,
       };
     }
 
@@ -2775,7 +2742,7 @@ impl InteractionEngine {
   /// Insert typed text into focused text control (input/textarea) and set focus-visible.
   pub fn text_input(&mut self, dom: &mut DomNode, text: &str) -> bool {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return false;
     };
 
@@ -2817,7 +2784,7 @@ impl InteractionEngine {
     let current_len = current.chars().count();
 
     // Any direct text mutation cancels an in-progress IME preedit string.
-    changed |= self.ime_cancel_with_index(&mut index);
+    changed |= self.ime_cancel_internal();
 
     let mut edit = self.text_edit.unwrap_or(TextEditState {
       node_id: focused,
@@ -2879,20 +2846,13 @@ impl InteractionEngine {
     changed
   }
 
-  fn ime_cancel_with_index(&mut self, index: &mut DomIndexMut) -> bool {
-    let Some(composition) = self.ime_composition.take() else {
-      return false;
-    };
-    let Some(node_mut) = index.node_mut(composition.node_id) else {
-      return false;
-    };
-    remove_node_attr(node_mut, IME_PREEDIT_ATTR)
+  fn ime_cancel_internal(&mut self) -> bool {
+    let changed = self.state.ime_preedit.is_some();
+    self.state.ime_preedit = None;
+    changed
   }
 
   /// Update the active IME preedit (composition) string for the focused text control.
-  ///
-  /// This should *not* mutate the actual DOM value; it stores the in-progress text as a
-  /// `data-fastr-ime-preedit` attribute so the painter can render it at the caret with styling.
   pub fn ime_preedit(
     &mut self,
     dom: &mut DomNode,
@@ -2906,8 +2866,8 @@ impl InteractionEngine {
       return self.ime_cancel(dom);
     }
 
-    let Some(focused) = self.focused else {
-      return false;
+    let Some(focused) = self.state.focused else {
+      return self.ime_cancel(dom);
     };
 
     let mut index = DomIndexMut::new(dom);
@@ -2919,7 +2879,7 @@ impl InteractionEngine {
     let is_text_control =
       index.node(focused).is_some_and(is_text_input) || index.node(focused).is_some_and(is_textarea);
     if !is_text_control {
-      changed |= self.ime_cancel_with_index(&mut index);
+      changed |= self.ime_cancel_internal();
       return changed;
     }
 
@@ -2927,31 +2887,28 @@ impl InteractionEngine {
       || node_is_disabled(&index, focused)
       || node_is_readonly(&index, focused)
     {
-      changed |= self.ime_cancel_with_index(&mut index);
+      changed |= self.ime_cancel_internal();
       return changed;
     }
 
     // Update internal state.
-    match self.ime_composition.as_mut() {
+    match self.state.ime_preedit.as_mut() {
       Some(existing) if existing.node_id == focused => {
         if existing.text != text || existing.cursor != cursor {
           existing.text.clear();
           existing.text.push_str(text);
           existing.cursor = cursor;
+          changed = true;
         }
       }
       _ => {
-        self.ime_composition = Some(ImeCompositionState {
+        self.state.ime_preedit = Some(ImePreeditState {
           node_id: focused,
           text: text.to_string(),
           cursor,
         });
+        changed = true;
       }
-    }
-
-    // Mirror the preedit text into the DOM as a paint hint.
-    if let Some(node_mut) = index.node_mut(focused) {
-      changed |= set_node_attr(node_mut, IME_PREEDIT_ATTR, text);
     }
 
     changed
@@ -2960,15 +2917,17 @@ impl InteractionEngine {
   /// Commit IME text into the focused text control, clearing any active preedit.
   pub fn ime_commit(&mut self, dom: &mut DomNode, text: &str) -> bool {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
-      return false;
+    let Some(focused) = self.state.focused else {
+      // IME commits can arrive after focus has been cleared; treat them as cancelling any remaining
+      // preedit state.
+      return self.ime_cancel(dom);
     };
 
     let mut index = DomIndexMut::new(dom);
     // Ensure focus-visible when the IME is used.
     let mut changed = self.set_focus(&mut index, Some(focused), true);
     // Clear any in-flight preedit before inserting committed text.
-    changed |= self.ime_cancel_with_index(&mut index);
+    changed |= self.ime_cancel_internal();
 
     if text.is_empty() {
       return changed;
@@ -2980,9 +2939,8 @@ impl InteractionEngine {
   }
 
   /// Cancel any active IME preedit string without mutating the DOM value.
-  pub fn ime_cancel(&mut self, dom: &mut DomNode) -> bool {
-    let mut index = DomIndexMut::new(dom);
-    self.ime_cancel_with_index(&mut index)
+  pub fn ime_cancel(&mut self, _dom: &mut DomNode) -> bool {
+    self.ime_cancel_internal()
   }
 
   /// Select all text in the currently focused text control (`<input>`/`<textarea>`).
@@ -2991,7 +2949,7 @@ impl InteractionEngine {
   /// and text-editing actions.
   pub fn clipboard_select_all(&mut self, dom: &mut DomNode) -> bool {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return false;
     };
 
@@ -3058,7 +3016,7 @@ impl InteractionEngine {
   /// This does not mutate the DOM.
   pub fn clipboard_copy(&mut self, dom: &mut DomNode) -> Option<String> {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return None;
     };
 
@@ -3104,7 +3062,7 @@ impl InteractionEngine {
   /// Returns `(dom_changed, clipboard_text)`.
   pub fn clipboard_cut(&mut self, dom: &mut DomNode) -> (bool, Option<String>) {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return (false, None);
     };
 
@@ -3163,7 +3121,7 @@ impl InteractionEngine {
       return (dom_changed, selected);
     }
 
-    dom_changed |= self.ime_cancel_with_index(&mut index);
+    dom_changed |= self.ime_cancel_internal();
 
     let mut next = String::with_capacity(
       current
@@ -3199,7 +3157,7 @@ impl InteractionEngine {
   /// Paste text into the focused text control (`<input>`/`<textarea>`), replacing any selection.
   pub fn clipboard_paste(&mut self, dom: &mut DomNode, text: &str) -> bool {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return false;
     };
 
@@ -3237,7 +3195,7 @@ impl InteractionEngine {
     };
     let current_len = current.chars().count();
 
-    changed |= self.ime_cancel_with_index(&mut index);
+    changed |= self.ime_cancel_internal();
 
     let mut edit = self.text_edit.unwrap_or(TextEditState {
       node_id: focused,
@@ -3323,8 +3281,8 @@ impl InteractionEngine {
       let mut index = DomIndexMut::new(dom);
       let focusables = collect_tab_focusables(&index);
       let next_focus = match key {
-        KeyAction::Tab => next_tab_focus(self.focused, &focusables),
-        KeyAction::ShiftTab => prev_tab_focus(self.focused, &focusables),
+        KeyAction::Tab => next_tab_focus(self.state.focused, &focusables),
+        KeyAction::ShiftTab => prev_tab_focus(self.state.focused, &focusables),
         _ => None,
       };
       let Some(next_focus) = next_focus else {
@@ -3333,7 +3291,7 @@ impl InteractionEngine {
       return self.set_focus(&mut index, Some(next_focus), true);
     }
 
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return false;
     };
 
@@ -3406,7 +3364,7 @@ impl InteractionEngine {
           };
 
           // Any direct text mutation cancels an in-progress IME preedit string.
-          changed |= self.ime_cancel_with_index(&mut index);
+          changed |= self.ime_cancel_internal();
 
           let start_byte = byte_offset_for_char_idx(&current, delete_start);
           let end_byte = byte_offset_for_char_idx(&current, delete_end);
@@ -3702,7 +3660,7 @@ impl InteractionEngine {
     base_url: &str,
   ) -> (bool, InteractionAction) {
     self.last_form_submitter = None;
-    let prev_focus = self.focused;
+    let prev_focus = self.state.focused;
 
     self.modality = InputModality::Keyboard;
 
@@ -3724,9 +3682,9 @@ impl InteractionEngine {
       }
       KeyAction::Tab | KeyAction::ShiftTab => {
         let dom_changed = self.key_action_with_box_tree(dom, box_tree, key);
-        let action = if self.focused != prev_focus {
+        let action = if self.state.focused != prev_focus {
           InteractionAction::FocusChanged {
-            node_id: self.focused,
+            node_id: self.state.focused,
           }
         } else {
           InteractionAction::None
@@ -3734,7 +3692,7 @@ impl InteractionEngine {
         return (dom_changed, action);
       }
       KeyAction::Enter => {
-        let Some(focused) = self.focused else {
+        let Some(focused) = self.state.focused else {
           return (false, InteractionAction::None);
         };
         let index = DomIndexMut::new(dom);
@@ -3754,7 +3712,7 @@ impl InteractionEngine {
       }
     }
 
-    let Some(focused) = self.focused else {
+    let Some(focused) = self.state.focused else {
       return (false, InteractionAction::None);
     };
 
@@ -3775,7 +3733,9 @@ impl InteractionEngine {
           .and_then(|node| node.get_attribute_ref("href"))
         {
           if let Some(resolved) = resolve_url(base_url, href) {
-            changed |= set_data_flag(&mut index, focused, "data-fastr-visited", true);
+            if self.state.visited_links.insert(focused) {
+              changed = true;
+            }
             let target_blank = index
               .node(focused)
               .and_then(|node| node.get_attribute_ref("target"))
@@ -3828,16 +3788,20 @@ impl InteractionEngine {
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
-              if let Some(submitter_id) = submitter_id {
-                if let Some(submission) = form_submission(dom, submitter_id, document_url, base_url) {
+              let submission = match submitter_id {
+                Some(submitter_id) => form_submission(dom, submitter_id, document_url, base_url),
+                None => form_submission_without_submitter(dom, form_id, document_url, base_url),
+              };
+              if let Some(submission) = submission {
+                if let Some(submitter_id) = submitter_id {
                   self.last_form_submitter = Some(submitter_id);
-                  match submission.method {
-                    FormSubmissionMethod::Get => {
-                      action = InteractionAction::Navigate { href: submission.url };
-                    }
-                    FormSubmissionMethod::Post => {
-                      action = InteractionAction::NavigateRequest { request: submission };
-                    }
+                }
+                match submission.method {
+                  FormSubmissionMethod::Get => {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
+                  FormSubmissionMethod::Post => {
+                    action = InteractionAction::NavigateRequest { request: submission };
                   }
                 }
               }
@@ -3890,10 +3854,10 @@ impl InteractionEngine {
       InteractionAction::Navigate { .. }
         | InteractionAction::OpenInNewTab { .. }
         | InteractionAction::NavigateRequest { .. }
-    ) && self.focused != prev_focus
+    ) && self.state.focused != prev_focus
     {
       action = InteractionAction::FocusChanged {
-        node_id: self.focused,
+        node_id: self.state.focused,
       };
     }
 

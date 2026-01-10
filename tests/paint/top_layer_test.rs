@@ -1,8 +1,21 @@
-use fastrender::FastRender;
+use fastrender::dom::{enumerate_dom_ids, DomNode};
+use fastrender::interaction::InteractionState;
+use fastrender::{BrowserDocument, FastRender, RenderOptions};
 
 fn pixel_rgba(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
   (p.red(), p.green(), p.blue(), p.alpha())
+}
+
+fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node.node_type.is_element()
+    && node
+      .get_attribute_ref("id")
+      .is_some_and(|value| value.eq_ignore_ascii_case(id))
+  {
+    return Some(node);
+  }
+  node.children.iter().find_map(|child| find_dom_by_id(child, id))
 }
 
 #[test]
@@ -15,7 +28,7 @@ fn modal_dialog_adds_backdrop_and_inert() {
       button:focus { background: rgb(255, 0, 0); }
       dialog { width: 60px; height: 60px; padding: 0; }
     </style>
-    <button></button>
+    <button id="btn"></button>
   "#;
 
   let html = r#"
@@ -25,7 +38,7 @@ fn modal_dialog_adds_backdrop_and_inert() {
       button:focus { background: rgb(255, 0, 0); }
       dialog { width: 60px; height: 60px; padding: 0; }
     </style>
-    <button data-fastr-focus="true"></button>
+    <button id="btn"></button>
     <dialog open data-fastr-modal="true"></dialog>
   "#;
 
@@ -38,7 +51,20 @@ fn modal_dialog_adds_backdrop_and_inert() {
     "baseline should be green (r={base_r}, g={base_g}, b={base_b})"
   );
 
-  let pixmap = renderer.render_html(html, 120, 120).expect("paint dialog");
+  let renderer = FastRender::new().expect("renderer");
+  let mut doc =
+    BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120)).expect("doc");
+  let ids = enumerate_dom_ids(doc.dom());
+  let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
+  let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");
+  let interaction_state = InteractionState {
+    focused: Some(btn_id),
+    ..InteractionState::default()
+  };
+  let pixmap = doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
+    .expect("paint dialog")
+    .pixmap;
   let (r, g, b, _) = pixel_rgba(&pixmap, 5, 5);
 
   assert!(
@@ -53,7 +79,6 @@ fn modal_dialog_adds_backdrop_and_inert() {
 
 #[test]
 fn non_modal_dialog_allows_focus() {
-  let mut renderer = FastRender::new().expect("renderer");
   let html = r#"
     <style>
       body { margin: 0; }
@@ -61,11 +86,24 @@ fn non_modal_dialog_allows_focus() {
       button:focus { background: rgb(255, 0, 0); }
       dialog { width: 60px; height: 60px; padding: 0; }
     </style>
-    <button data-fastr-focus="true"></button>
+    <button id="btn"></button>
     <dialog open></dialog>
   "#;
 
-  let pixmap = renderer.render_html(html, 120, 120).expect("paint dialog");
+  let renderer = FastRender::new().expect("renderer");
+  let mut doc =
+    BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120)).expect("doc");
+  let ids = enumerate_dom_ids(doc.dom());
+  let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
+  let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");
+  let interaction_state = InteractionState {
+    focused: Some(btn_id),
+    ..InteractionState::default()
+  };
+  let pixmap = doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
+    .expect("paint dialog")
+    .pixmap;
   let (r, g, b, _) = pixel_rgba(&pixmap, 5, 5);
 
   assert!(

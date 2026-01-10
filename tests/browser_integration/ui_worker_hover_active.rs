@@ -22,8 +22,8 @@ fn fixture() -> (support::TempSite, String) {
     <style>
       html, body { margin: 0; padding: 0; }
       #box { width:64px; height:64px; background: rgb(255,0,0); }
-      #box[data-fastr-hover="true"] { background: rgb(0,255,0); }
-      #box[data-fastr-active="true"] { background: rgb(0,0,255); }
+      #box:hover { background: rgb(0,255,0); }
+      #box:active { background: rgb(0,0,255); }
     </style>
   </head>
   <body>
@@ -46,9 +46,9 @@ fn scroll_hover_fixture() -> (support::TempSite, String) {
       html, body { margin: 0; padding: 0; }
       #a, #b { width: 100%; height: 50px; }
       #a { background: rgb(255,0,0); }
-      #a[data-fastr-hover="true"] { background: rgb(0,0,255); }
+      #a:hover { background: rgb(0,0,255); }
       #b { background: rgb(0,255,0); }
-      #b[data-fastr-hover="true"] { background: rgb(255,255,0); }
+      #b:hover { background: rgb(255,255,0); }
       .spacer { height: 400px; }
     </style>
   </head>
