@@ -234,3 +234,45 @@ fn flex_wrap_preserves_large_negative_justify_content_offset_for_single_oversize
     child_fragment.bounds.x()
   );
 }
+
+#[test]
+fn flex_wrap_preserves_huge_negative_justify_content_offset_for_single_oversized_item() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.justify_content = JustifyContent::Center;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+
+  let mut child = BoxNode::new_block(
+    fixed_block(1000.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  child.id = 2;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite_width(100.0))
+    .expect("layout succeeds");
+
+  let child_fragment = find_child(&fragment, 2);
+  assert!(
+    (child_fragment.bounds.width() - 1000.0).abs() < 0.1,
+    "expected child width≈1000px (overflow allowed), got {:.2}",
+    child_fragment.bounds.width()
+  );
+  assert!(
+    (child_fragment.bounds.x() + 450.0).abs() < 1.0,
+    "expected justify-content:center to offset oversized child by ~-450px, got x={:.2}",
+    child_fragment.bounds.x()
+  );
+}

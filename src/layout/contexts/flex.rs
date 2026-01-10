@@ -9842,7 +9842,12 @@ impl FlexFormattingContext {
             && rect_w.is_finite()
             && rect_w > wrap_eps
           {
-            let runaway = child_loc_x.abs() > rect_w * 2.0;
+            // Large negative main-axis offsets are legitimate when `justify-content` is applied to
+            // negative free space (e.g. a single oversized flex item centered in a small
+            // container). Only treat the position as "runaway" when the entire item is far
+            // outside the container's main-axis range.
+            let child_max_x = child_loc_x + resolved_width;
+            let runaway = child_max_x < -rect_w * 2.0 || child_loc_x > rect_w * 2.0;
             if runaway {
               manual_row_positions = true;
               fallback_cursor_x = rect.origin.x;
@@ -10340,7 +10345,12 @@ impl FlexFormattingContext {
               manual_col_positions = true;
             }
             if main_axis_is_horizontal && rect_w.is_finite() && rect_w > wrap_eps {
-              let runaway = child_loc_x.abs() > rect_w * 2.0;
+              // Large negative main-axis offsets are legitimate when `justify-content` is applied
+              // to negative free space (e.g. a single oversized flex item centered in a small
+              // container). Only treat the position as "runaway" when the entire item is far
+              // outside the container's main-axis range.
+              let child_max_x = child_loc_x + resolved_width;
+              let runaway = child_max_x < -rect_w * 2.0 || child_loc_x > rect_w * 2.0;
               if runaway {
                 manual_row_positions = true;
                 fallback_cursor_x = rect.origin.x;
