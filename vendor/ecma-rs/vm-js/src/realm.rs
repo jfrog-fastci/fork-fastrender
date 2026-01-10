@@ -19,16 +19,16 @@ pub struct Realm {
   torn_down: bool,
 }
 
-  fn global_data_desc(value: Value) -> PropertyDescriptor {
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value,
-        writable: true,
-      },
-    }
+fn global_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
   }
+}
 
 impl Realm {
   /// Returns the host-facing [`RealmId`] token for this realm.

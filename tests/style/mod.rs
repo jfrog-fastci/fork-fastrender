@@ -17,6 +17,7 @@ mod box_shorthand_invalid_values_ignored_test;
 mod cascade_keywords_layers_scope;
 mod cascade_marker_test;
 mod cascade_perf_test;
+mod class_selector_escaped_special_chars_test;
 mod container_query_at_rule_test;
 mod container_query_forward_compat_test;
 mod container_query_pseudo_element_test;
