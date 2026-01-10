@@ -510,7 +510,7 @@ pub struct JsRuntime {
   pub heap: Heap,
   realm: Realm,
   env: RuntimeEnv,
-  modules: ModuleGraph,
+  modules: Box<ModuleGraph>,
 }
 
 impl JsRuntime {
@@ -519,12 +519,16 @@ impl JsRuntime {
     let mut heap = heap;
     let realm = Realm::new(&mut vm, &mut heap)?;
     let env = RuntimeEnv::new(&mut heap, realm.global_object())?;
+    let mut modules = Box::new(ModuleGraph::new());
+    // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
+    // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
+    vm.set_module_graph(modules.as_mut());
     Ok(Self {
       vm,
       heap,
       realm,
       env,
-      modules: ModuleGraph::new(),
+      modules,
     })
   }
 
@@ -551,7 +555,7 @@ impl JsRuntime {
   /// Borrow-split the runtime into its core components: the VM, the module graph, and the heap.
   pub fn vm_modules_and_heap_mut(&mut self) -> (&mut Vm, &mut ModuleGraph, &mut Heap) {
     let vm = &mut self.vm;
-    let modules = &mut self.modules;
+    let modules = &mut *self.modules;
     let heap = &mut self.heap;
     (vm, modules, heap)
   }
@@ -713,7 +717,6 @@ impl JsRuntime {
         vm: &mut *vm_frame,
         host,
         hooks: &mut hooks,
-        modules: Some(&mut self.modules),
         env: &mut self.env,
         strict,
         this: global_this,
@@ -799,7 +802,6 @@ impl JsRuntime {
         vm: &mut *vm_frame,
         host,
         hooks,
-        modules: Some(&mut self.modules),
         env: &mut self.env,
         strict,
         this: global_this,
@@ -903,7 +905,6 @@ struct Evaluator<'a> {
   vm: &'a mut Vm,
   host: &'a mut dyn VmHost,
   hooks: &'a mut dyn VmHostHooks,
-  modules: Option<&'a mut ModuleGraph>,
   env: &'a mut RuntimeEnv,
   strict: bool,
   this: Value,
@@ -3153,9 +3154,13 @@ impl<'a> Evaluator<'a> {
     };
     import_scope.push_root(options)?;
 
-    let modules = self.modules.as_deref_mut().ok_or(VmError::Unimplemented(
+    let modules_ptr = self.vm.module_graph_ptr().ok_or(VmError::Unimplemented(
       "dynamic import requires a module graph",
     ))?;
+    // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the
+    // VM (see `Vm::set_module_graph` docs). `JsRuntime` stores the graph in a `Box`, so the pointer
+    // remains stable even if the runtime is moved.
+    let modules = unsafe { &mut *modules_ptr };
 
     crate::start_dynamic_import(
       self.vm,
@@ -5335,7 +5340,6 @@ pub(crate) fn run_ecma_function(
     vm,
     host,
     hooks,
-    modules: None,
     env,
     strict,
     this,
@@ -5407,7 +5411,6 @@ pub(crate) fn instantiate_module_decls(
     vm,
     host: &mut dummy_host,
     hooks: &mut dummy_hooks,
-    modules: None,
     env: &mut env,
     // Modules are always strict mode.
     strict: true,
@@ -5459,7 +5462,6 @@ pub(crate) fn run_module(
         vm: &mut *vm_frame,
         host,
         hooks,
-        modules: None,
         env: &mut env,
         strict: true,
         // Per ECMA-262, module top-level `this` is `undefined`.
@@ -5505,7 +5507,6 @@ pub(crate) fn eval_expr(
     vm,
     host,
     hooks,
-    modules: None,
     env,
     strict,
     this,

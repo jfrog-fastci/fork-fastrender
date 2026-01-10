@@ -16,6 +16,7 @@ use crate::jobs::VmJobContext;
 use crate::jobs::VmHost;
 use crate::jobs::VmHostHooks;
 use crate::microtasks::MicrotaskQueue;
+use crate::module_graph::ModuleGraph;
 use crate::RootId;
 use crate::source::StackFrame;
 use crate::source::SourceText;
@@ -243,6 +244,17 @@ pub struct Vm {
   ecma_functions: Vec<EcmaFunctionCode>,
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   import_meta_cache: HashMap<ModuleId, RootId>,
+  /// Optional pointer to an embedding-owned [`ModuleGraph`].
+  ///
+  /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
+  /// access the module graph even when running inside nested ECMAScript function calls (which are
+  /// invoked through `Vm::call` and do not thread an explicit `&mut ModuleGraph` parameter).
+  ///
+  /// ## Safety
+  ///
+  /// The embedding MUST ensure the pointed-to `ModuleGraph` outlives the VM (or clears this pointer
+  /// before dropping the graph).
+  module_graph: Option<*mut ModuleGraph>,
   // Per-realm intrinsic graph used by built-in native function implementations.
   //
   // For now `vm-js` assumes a single active realm per `Vm`. When multiple realms are supported,
@@ -271,6 +283,7 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_functions", &self.ecma_functions.len());
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("import_meta_cache", &self.import_meta_cache.len());
+    ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
     #[cfg(test)]
     {
@@ -448,6 +461,7 @@ impl Vm {
       ecma_functions: Vec::new(),
       ecma_function_cache: HashMap::new(),
       import_meta_cache: HashMap::new(),
+      module_graph: None,
       intrinsics: None,
       #[cfg(test)]
       native_calls_len_override: None,
@@ -743,6 +757,30 @@ impl Vm {
 
   pub fn interrupt_handle(&self) -> InterruptHandle {
     self.interrupt_handle.clone()
+  }
+
+  /// Attach an embedding-owned [`ModuleGraph`] to this VM.
+  ///
+  /// This is used by the AST interpreter (`exec.rs`) to implement dynamic `import()` from nested
+  /// ECMAScript function calls and Promise jobs, where an explicit `&mut ModuleGraph` is not readily
+  /// available.
+  ///
+  /// See also [`Vm::module_graph_ptr`].
+  pub fn set_module_graph(&mut self, graph: &mut ModuleGraph) {
+    self.module_graph = Some(graph as *mut ModuleGraph);
+  }
+
+  /// Clear any attached [`ModuleGraph`].
+  pub fn clear_module_graph(&mut self) {
+    self.module_graph = None;
+  }
+
+  /// Returns the raw pointer to the attached [`ModuleGraph`], if any.
+  ///
+  /// This is intentionally a raw pointer to avoid borrowing `&mut Vm` for the duration of module
+  /// graph access (the module graph is embedding-owned, not VM-owned).
+  pub fn module_graph_ptr(&self) -> Option<*mut ModuleGraph> {
+    self.module_graph
   }
 
   /// Clear the interrupt flag back to `false`.

@@ -230,6 +230,73 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
 }
 
 #[test]
+fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let dep = rt
+    .modules_mut()
+    .add_module(SourceTextModuleRecord::parse("export const y = 1;")?);
+  let m = rt.modules_mut().add_module(SourceTextModuleRecord::parse(
+    "export { y } from './dep.js'; export const x = 1;",
+  )?);
+
+  let mut host = TestHostHooks::new();
+  host.register_module("./m.js", m);
+  host.register_module("./dep.js", dep);
+
+  // Exercise `import()` from inside an invoked function body (nested ECMAScript call).
+  let promise_value = rt.exec_script_with_hooks(
+    &mut host,
+    "function f(){ return import('./m.js'); } f();",
+  )?;
+  let promise_root = rt.heap.add_root(promise_value)?;
+
+  let Value::Object(promise_obj) = promise_value else {
+    panic!("import() should evaluate to a Promise object");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+  host.complete_load_for(&mut rt, "./m.js");
+  host.complete_load_for(&mut rt, "./dep.js");
+
+  let promise_value = rt
+    .heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvalidHandle)?;
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::InvariantViolation(
+      "promise root should reference an object",
+    ));
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    panic!("dynamic import promise should fulfill to an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let x_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, x_key, Value::Object(ns_obj))?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+  let y_value =
+    scope.ordinary_get_with_host(&mut rt.vm, &mut host, ns_obj, y_key, Value::Object(ns_obj))?;
+  assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  rt.heap.remove_root(promise_root);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
 fn dynamic_import_rejects_when_options_not_object() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   let mut host = TestHostHooks::new();
