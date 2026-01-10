@@ -707,6 +707,11 @@ const NODE_INSERT_BEFORE_KEY: &str = "__fastrender_node_insert_before";
 const NODE_REMOVE_CHILD_KEY: &str = "__fastrender_node_remove_child";
 const NODE_REPLACE_CHILD_KEY: &str = "__fastrender_node_replace_child";
 const NODE_CLONE_NODE_KEY: &str = "__fastrender_node_clone_node";
+const NODE_PARENT_NODE_GET_KEY: &str = "__fastrender_node_parent_node_get";
+const NODE_FIRST_CHILD_GET_KEY: &str = "__fastrender_node_first_child_get";
+const NODE_PREVIOUS_SIBLING_GET_KEY: &str = "__fastrender_node_previous_sibling_get";
+const NODE_NEXT_SIBLING_GET_KEY: &str = "__fastrender_node_next_sibling_get";
+const NODE_REMOVE_KEY: &str = "__fastrender_node_remove";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
@@ -1464,6 +1469,26 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let parent_node_get = {
+    let key = alloc_key(scope, NODE_PARENT_NODE_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let first_child_get = {
+    let key = alloc_key(scope, NODE_FIRST_CHILD_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let previous_sibling_get = {
+    let key = alloc_key(scope, NODE_PREVIOUS_SIBLING_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let next_sibling_get = {
+    let key = alloc_key(scope, NODE_NEXT_SIBLING_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let node_remove = {
+    let key = alloc_key(scope, NODE_REMOVE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let get_attribute = {
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1666,6 +1691,75 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = clone_node {
     let key = alloc_key(scope, "cloneNode")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(get)) = parent_node_get {
+    let key = alloc_key(scope, "parentNode")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  if let Some(Value::Object(get)) = first_child_get {
+    let key = alloc_key(scope, "firstChild")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  if let Some(Value::Object(get)) = previous_sibling_get {
+    let key = alloc_key(scope, "previousSibling")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  if let Some(Value::Object(get)) = next_sibling_get {
+    let key = alloc_key(scope, "nextSibling")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+  }
+
+  if let Some(Value::Object(func)) = node_remove {
+    let key = alloc_key(scope, "remove")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -3376,6 +3470,166 @@ fn node_clone_node_native(
   };
 
   get_or_create_node_wrapper(scope, document_obj, cloned)
+}
+
+fn node_traversal_getter(
+  scope: &mut Scope<'_>,
+  this: Value,
+  f: impl FnOnce(&dom2::Document, NodeId) -> Option<NodeId>,
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::Null),
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Null),
+  };
+
+  match f(dom, node_id) {
+    Some(found) => get_or_create_node_wrapper(scope, document_obj, found),
+    None => Ok(Value::Null),
+  }
+}
+
+fn node_parent_node_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  node_traversal_getter(scope, this, |dom, node| dom.parent_node(node))
+}
+
+fn node_first_child_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  node_traversal_getter(scope, this, |dom, node| dom.first_child(node))
+}
+
+fn node_previous_sibling_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  node_traversal_getter(scope, this, |dom, node| dom.previous_sibling(node))
+}
+
+fn node_next_sibling_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  node_traversal_getter(scope, this, |dom, node| dom.next_sibling(node))
+}
+
+fn node_remove_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.remove must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.remove must be called on a node object",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Node.remove must be called on a node object"))?;
+
+  let Some(parent) = dom.parent_node(node_id) else {
+    return Ok(Value::Undefined);
+  };
+
+  if let Err(err) = dom.remove_child(parent, node_id) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
 }
 
 fn element_class_name_get_native(
@@ -5436,6 +5690,104 @@ fn init_window_globals(
     data_desc(Value::Object(clone_node_func)),
   )?;
 
+  // Store shared Node traversal accessors and convenience helpers on `document` so wrappers can
+  // reuse them.
+  let parent_node_get_call_id = vm.register_native_call(node_parent_node_get_native)?;
+  let parent_node_get_name = scope.alloc_string("get parentNode")?;
+  scope.push_root(Value::String(parent_node_get_name))?;
+  let parent_node_get_func =
+    scope.alloc_native_function(parent_node_get_call_id, None, parent_node_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      parent_node_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(parent_node_get_func))?;
+  let parent_node_get_key = alloc_key(&mut scope, NODE_PARENT_NODE_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    parent_node_get_key,
+    data_desc(Value::Object(parent_node_get_func)),
+  )?;
+
+  let first_child_get_call_id = vm.register_native_call(node_first_child_get_native)?;
+  let first_child_get_name = scope.alloc_string("get firstChild")?;
+  scope.push_root(Value::String(first_child_get_name))?;
+  let first_child_get_func =
+    scope.alloc_native_function(first_child_get_call_id, None, first_child_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      first_child_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(first_child_get_func))?;
+  let first_child_get_key = alloc_key(&mut scope, NODE_FIRST_CHILD_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    first_child_get_key,
+    data_desc(Value::Object(first_child_get_func)),
+  )?;
+
+  let previous_sibling_get_call_id = vm.register_native_call(node_previous_sibling_get_native)?;
+  let previous_sibling_get_name = scope.alloc_string("get previousSibling")?;
+  scope.push_root(Value::String(previous_sibling_get_name))?;
+  let previous_sibling_get_func = scope.alloc_native_function(
+    previous_sibling_get_call_id,
+    None,
+    previous_sibling_get_name,
+    0,
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      previous_sibling_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(previous_sibling_get_func))?;
+  let previous_sibling_get_key = alloc_key(&mut scope, NODE_PREVIOUS_SIBLING_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    previous_sibling_get_key,
+    data_desc(Value::Object(previous_sibling_get_func)),
+  )?;
+
+  let next_sibling_get_call_id = vm.register_native_call(node_next_sibling_get_native)?;
+  let next_sibling_get_name = scope.alloc_string("get nextSibling")?;
+  scope.push_root(Value::String(next_sibling_get_name))?;
+  let next_sibling_get_func =
+    scope.alloc_native_function(next_sibling_get_call_id, None, next_sibling_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      next_sibling_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(next_sibling_get_func))?;
+  let next_sibling_get_key = alloc_key(&mut scope, NODE_NEXT_SIBLING_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    next_sibling_get_key,
+    data_desc(Value::Object(next_sibling_get_func)),
+  )?;
+
+  let node_remove_call_id = vm.register_native_call(node_remove_native)?;
+  let node_remove_name = scope.alloc_string("remove")?;
+  scope.push_root(Value::String(node_remove_name))?;
+  let node_remove_func =
+    scope.alloc_native_function(node_remove_call_id, None, node_remove_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(node_remove_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(node_remove_func))?;
+  let node_remove_key = alloc_key(&mut scope, NODE_REMOVE_KEY)?;
+  scope.define_property(
+    document_obj,
+    node_remove_key,
+    data_desc(Value::Object(node_remove_func)),
+  )?;
+
   // Store shared Element selector traversal APIs on `document` so wrappers can reuse them.
   let element_query_selector_call_id = vm.register_native_call(element_query_selector_native)?;
   let element_query_selector_name = scope.alloc_string("querySelector")?;
@@ -6571,6 +6923,69 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_traversal_accessors_follow_dom2_tree() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=a></span><span id=b></span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        const a = document.getElementById('a');\n\
+        const b = document.getElementById('b');\n\
+        return a.parentNode === root\n\
+          && root.firstChild === a\n\
+          && a.previousSibling === null\n\
+          && a.nextSibling === b\n\
+          && b.previousSibling === a\n\
+          && b.nextSibling === null;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_remove_detaches_from_dom2_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=a></span><span id=b></span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const a = document.getElementById('a');\n\
+        a.remove();\n\
+        const root = document.getElementById('root');\n\
+        return document.getElementById('a') === null\n\
+          && a.parentNode === null\n\
+          && root.innerHTML === '<span id=\"b\"></span>';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(dom.inner_html(root).unwrap(), r#"<span id="b"></span>"#);
+
     Ok(())
   }
 
