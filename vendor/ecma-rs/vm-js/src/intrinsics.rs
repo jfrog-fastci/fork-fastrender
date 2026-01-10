@@ -402,6 +402,7 @@ impl Intrinsics {
     let function_prototype_bind_method =
       vm.register_native_call(builtins::function_prototype_bind)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
+    let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
@@ -651,7 +652,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / join / slice / push / splice
+      // Array.prototype.map / forEach / join / slice / push / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -665,6 +666,20 @@ impl Intrinsics {
         array_prototype,
         map_key,
         data_desc(Value::Object(map_fn), true, false, true),
+      )?;
+
+        let for_each_s = scope.alloc_string("forEach")?;
+        scope.push_root(Value::String(for_each_s))?;
+        let for_each_key = PropertyKey::from_string(for_each_s);
+        let for_each_fn = scope.alloc_native_function(array_prototype_for_each, None, for_each_s, 1)?;
+        scope.push_root(Value::Object(for_each_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(for_each_fn, Some(function_prototype))?;
+      scope.define_property(
+        array_prototype,
+        for_each_key,
+        data_desc(Value::Object(for_each_fn), true, false, true),
       )?;
 
         let join_s = scope.alloc_string("join")?;

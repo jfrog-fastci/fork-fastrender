@@ -113,6 +113,28 @@ fn array_is_array_works() {
 }
 
 #[test]
+fn array_prototype_for_each_iterates_existing_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; delete a[1]; var s=0; a.forEach(function(x){ s = s + x; }); s===4"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_for_each_binds_this_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={sum:0}; [1,2].forEach(function(x){ this.sum = this.sum + x; }, o); o.sum===3"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt
