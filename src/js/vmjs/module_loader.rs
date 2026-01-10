@@ -1595,4 +1595,14 @@ mod tests {
     assert_eq!(host.bindings_host.calls, 1);
     Ok(())
   }
+
+  #[test]
+  fn import_map_error_to_throw_kind_and_message_dedupes_limit_exceeded_prefix() {
+    let (kind, msg) = import_map_error_to_throw_kind_and_message(ImportMapError::LimitExceeded(
+      "import map limit exceeded: \"imports\" has too many entries (3 > max 2)".to_string(),
+    ));
+    assert_eq!(kind, ImportMapThrowKind::TypeError);
+    assert_eq!(msg.match_indices("import map limit exceeded:").count(), 1);
+    assert_eq!(msg, "import map limit exceeded: \"imports\" has too many entries (3 > max 2)");
+  }
 }
