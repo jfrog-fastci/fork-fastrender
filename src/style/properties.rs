@@ -8341,6 +8341,32 @@ pub fn apply_declaration_with_base(
   );
 }
 
+pub(crate) fn apply_declaration_with_base_no_tracking(
+  styles: &mut ComputedStyle,
+  decl: &Declaration,
+  parent_styles: &ComputedStyle,
+  revert_base: &ComputedStyle,
+  revert_layer_base: Option<&ComputedStyle>,
+  parent_font_size: f32,
+  root_font_size: f32,
+  viewport: crate::geometry::Size,
+  is_dark_color_scheme: bool,
+) {
+  apply_declaration_with_base_internal(
+    styles,
+    decl,
+    parent_styles,
+    revert_base,
+    revert_layer_base,
+    None,
+    parent_font_size,
+    root_font_size,
+    viewport,
+    false,
+    is_dark_color_scheme,
+  );
+}
+
 pub(crate) fn apply_declaration_with_base_and_custom_properties(
   styles: &mut ComputedStyle,
   decl: &Declaration,

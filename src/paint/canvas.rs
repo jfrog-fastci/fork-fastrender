@@ -1831,6 +1831,18 @@ impl Canvas {
     let dy0s = dy0.round();
     let dy1s = dy1.round();
 
+    // Only snap when the rect edges already land very close to integer device pixels. This keeps
+    // the snapping path effective at fixing float noise / seam issues, without quantizing real
+    // subpixel translations (e.g. during transforms/animations) and changing the visual output.
+    const SNAP_EPSILON_PX: f32 = 1e-3;
+    if (dx0 - dx0s).abs() > SNAP_EPSILON_PX
+      || (dx1 - dx1s).abs() > SNAP_EPSILON_PX
+      || (dy0 - dy0s).abs() > SNAP_EPSILON_PX
+      || (dy1 - dy1s).abs() > SNAP_EPSILON_PX
+    {
+      return None;
+    }
+
     let min_x = dx0s.min(dx1s);
     let max_x = dx0s.max(dx1s);
     let min_y = dy0s.min(dy1s);

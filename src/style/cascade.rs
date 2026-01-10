@@ -88,6 +88,7 @@ use crate::style::position_try::PositionTryRegistry;
 use crate::style::properties::apply_content_visibility_implied_containment;
 use crate::style::properties::apply_declaration_with_base;
 use crate::style::properties::apply_declaration_with_base_and_custom_properties;
+use crate::style::properties::apply_declaration_with_base_no_tracking;
 use crate::style::properties::apply_property_from_source;
 use crate::style::properties::resolve_pending_logical_properties;
 use crate::style::properties::with_image_set_dpr;
@@ -142,9 +143,42 @@ use std::time::Instant;
 const USER_AGENT_STYLESHEET: &str = include_str!("../user_agent.css");
 static UA_STYLESHEET: OnceLock<StyleSheet> = OnceLock::new();
 static DEFAULT_COMPUTED_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
+static EMPTY_VAR_DEPENDENT_DECLS: OnceLock<
+  Arc<HashMap<&'static str, crate::style::VarDependentDeclaration>>,
+> = OnceLock::new();
+static EMPTY_CURRENT_COLOR_DEPENDENT_DECLS: OnceLock<
+  Arc<HashMap<&'static str, crate::style::CurrentColorDependentDeclaration>>,
+> = OnceLock::new();
+static EMPTY_CUSTOM_PROPERTY_DECLS: OnceLock<
+  Arc<HashMap<Arc<str>, crate::style::CustomPropertyDeclaration>>,
+> = OnceLock::new();
 
 fn default_computed_style() -> &'static ComputedStyle {
   DEFAULT_COMPUTED_STYLE.get_or_init(ComputedStyle::default)
+}
+
+#[inline]
+fn empty_var_dependent_declarations(
+) -> Arc<HashMap<&'static str, crate::style::VarDependentDeclaration>> {
+  EMPTY_VAR_DEPENDENT_DECLS
+    .get_or_init(|| Arc::new(HashMap::new()))
+    .clone()
+}
+
+#[inline]
+fn empty_current_color_dependent_declarations(
+) -> Arc<HashMap<&'static str, crate::style::CurrentColorDependentDeclaration>> {
+  EMPTY_CURRENT_COLOR_DEPENDENT_DECLS
+    .get_or_init(|| Arc::new(HashMap::new()))
+    .clone()
+}
+
+#[inline]
+fn empty_custom_property_declarations(
+) -> Arc<HashMap<Arc<str>, crate::style::CustomPropertyDeclaration>> {
+  EMPTY_CUSTOM_PROPERTY_DECLS
+    .get_or_init(|| Arc::new(HashMap::new()))
+    .clone()
 }
 
 // Optional cascade profiling for large-page performance analysis.
@@ -15762,9 +15796,6 @@ fn compute_base_styles<'a>(
   element_attr_cache: &ElementAttrCache,
   include_starting_style: bool,
 ) -> Result<NodeBaseStyles, RenderError> {
-  let _substitution_ctx_guard =
-    crate::style::var_resolution::push_substitution_context(node, viewport, color_scheme_pref);
-
   let container_query_ancestor_ids = if container_ctx.is_some() {
     container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
   } else {
@@ -15977,6 +16008,7 @@ fn compute_base_styles<'a>(
   let prof = cascade_profile_enabled();
   let decl_start = prof.then(|| Instant::now());
   apply_cascaded_declarations(
+    node,
     &mut ua_styles,
     ua_matches,
     None,
@@ -16070,6 +16102,7 @@ fn compute_base_styles<'a>(
   };
   let decl_start = prof.then(|| Instant::now());
   apply_cascaded_declarations(
+    node,
     &mut styles,
     matching_rules,
     inline_decls,
@@ -16194,22 +16227,37 @@ fn compute_base_styles<'a>(
       break;
     }
 
-    styles.recompute_var_dependent_properties_with_container_query_context(
-      parent_styles,
-      viewport,
-      node_id,
-      container_query_ancestor_ids.as_ref(),
-      container_ctx,
-    );
-    ua_styles.recompute_var_dependent_properties_with_container_query_context(
-      parent_ua_styles,
-      viewport,
-      node_id,
-      container_query_ancestor_ids.as_ref(),
-      container_ctx,
-    );
-    styles.recompute_current_color_dependent_properties(parent_styles, viewport);
-    ua_styles.recompute_current_color_dependent_properties(parent_ua_styles, viewport);
+    let needs_substitution_context = !styles.var_dependent_declarations.is_empty()
+      || !ua_styles.var_dependent_declarations.is_empty()
+      || !styles.current_color_dependent_declarations.is_empty()
+      || !ua_styles.current_color_dependent_declarations.is_empty();
+
+    let mut recompute_var_and_current_color = || {
+      styles.recompute_var_dependent_properties_with_container_query_context(
+        parent_styles,
+        viewport,
+        node_id,
+        container_query_ancestor_ids.as_ref(),
+        container_ctx,
+      );
+      ua_styles.recompute_var_dependent_properties_with_container_query_context(
+        parent_ua_styles,
+        viewport,
+        node_id,
+        container_query_ancestor_ids.as_ref(),
+        container_ctx,
+      );
+      styles.recompute_current_color_dependent_properties(parent_styles, viewport);
+      ua_styles.recompute_current_color_dependent_properties(parent_ua_styles, viewport);
+    };
+
+    if needs_substitution_context {
+      crate::style::var_resolution::with_substitution_context(node, viewport, color_scheme_pref, || {
+        recompute_var_and_current_color();
+      });
+    } else {
+      recompute_var_and_current_color();
+    }
 
     current_root_font_size = if is_root { styles.font_size } else { root_font_size };
     styles.root_font_size = current_root_font_size;
@@ -18041,9 +18089,9 @@ fn apply_styles_internal_with_ancestors<'a>(
 pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle) {
   // Reset cascade bookkeeping for the new style; logical pending state should not inherit.
   styles.logical.reset();
-  styles.var_dependent_declarations = Arc::new(HashMap::new());
-  styles.current_color_dependent_declarations = Arc::new(HashMap::new());
-  styles.custom_property_declarations = Arc::new(HashMap::new());
+  styles.var_dependent_declarations = empty_var_dependent_declarations();
+  styles.current_color_dependent_declarations = empty_current_color_dependent_declarations();
+  styles.custom_property_declarations = empty_custom_property_declarations();
   styles.custom_property_revert_base = CustomPropertyStore::default();
   // Typography properties inherit
   styles.font_family = parent.font_family.clone();
@@ -26826,8 +26874,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![
         MatchedRule {
@@ -26867,8 +26917,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![MatchedRule {
         origin: StyleOrigin::UserAgent,
@@ -26918,8 +26970,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
+    let node = element_with_id_and_class("target", "item", None);
     let mut styles = ComputedStyle::default();
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       rules.clone(),
       None,
@@ -26936,6 +26990,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let mut styles = ComputedStyle::default();
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       rules,
       Some(Cow::Owned(parse_declarations("color: rgb(7, 8, 9);"))),
@@ -26957,6 +27012,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let theme_layer: Arc<[u32]> = Arc::from([0u32, 2].as_slice());
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
+    let node = element_with_id_and_class("target", "item", None);
 
     let normal_rules = vec![
       MatchedRule {
@@ -26978,6 +27034,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     ];
     let mut styles = ComputedStyle::default();
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       normal_rules,
       None,
@@ -27012,6 +27069,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     ];
     let mut styles = ComputedStyle::default();
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       important_rules,
       None,
@@ -27033,8 +27091,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![
         MatchedRule {
@@ -27074,8 +27134,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![MatchedRule {
         origin: StyleOrigin::Author,
@@ -27107,8 +27169,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![MatchedRule {
         origin: StyleOrigin::Author,
@@ -27141,8 +27205,10 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let parent = ComputedStyle::default();
     let viewport = Size::new(800.0, 600.0);
     let mut styles = ComputedStyle::default();
+    let node = element_with_id_and_class("target", "item", None);
 
     apply_cascaded_declarations(
+      &node,
       &mut styles,
       vec![
         MatchedRule {
@@ -34681,6 +34747,7 @@ fn normalize_overflow_axes(styles: &mut ComputedStyle) {
 }
 
 fn apply_cascaded_declarations<'a, F>(
+  node: &DomNode,
   styles: &mut ComputedStyle,
   mut matched_rules: Vec<MatchedRule<'a>>,
   inline_declarations: Option<Cow<'a, [Declaration]>>,
@@ -34695,9 +34762,9 @@ fn apply_cascaded_declarations<'a, F>(
 ) where
   F: Fn(&Declaration) -> bool,
 {
-  styles.var_dependent_declarations = Arc::new(HashMap::new());
-  styles.current_color_dependent_declarations = Arc::new(HashMap::new());
-  styles.custom_property_declarations = Arc::new(HashMap::new());
+  styles.var_dependent_declarations = empty_var_dependent_declarations();
+  styles.current_color_dependent_declarations = empty_current_color_dependent_declarations();
+  styles.custom_property_declarations = empty_custom_property_declarations();
   styles.custom_property_revert_base = revert_base_styles.custom_properties.clone();
   let mut total_decls = matched_rules
     .iter()
@@ -34741,6 +34808,37 @@ fn apply_cascaded_declarations<'a, F>(
   const HAS_OTHER_NORMAL: u8 = 1 << 2;
   const HAS_OTHER_IMPORTANT: u8 = 1 << 3;
 
+  fn value_depends_on_current_color(value: &PropertyValue) -> bool {
+    match value {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => true,
+      PropertyValue::Color(color) => color.depends_on_current_color(),
+      PropertyValue::BoxShadow(shadows) => shadows.iter().any(|shadow| {
+        shadow
+          .color
+          .as_ref()
+          .map_or(true, |color| color.depends_on_current_color())
+      }),
+      PropertyValue::TextShadow(shadows) => shadows.iter().any(|shadow| {
+        shadow
+          .color
+          .as_ref()
+          .map_or(true, |color| color.depends_on_current_color())
+      }),
+      PropertyValue::LinearGradient { stops, .. }
+      | PropertyValue::RepeatingLinearGradient { stops, .. }
+      | PropertyValue::ConicGradient { stops, .. }
+      | PropertyValue::RepeatingConicGradient { stops, .. } => stops
+        .iter()
+        .any(|stop| stop.color.depends_on_current_color()),
+      PropertyValue::RadialGradient { stops, .. }
+      | PropertyValue::RepeatingRadialGradient { stops, .. } => stops
+        .iter()
+        .any(|stop| stop.color.depends_on_current_color()),
+      PropertyValue::Multiple(values) => values.iter().any(value_depends_on_current_color),
+      _ => false,
+    }
+  }
+
   let mut rule_decl_kinds: Vec<u8> = Vec::with_capacity(matched_rules.len());
   let mut important_custom_decl_orders: Vec<usize> = Vec::new();
   let mut important_other_decl_orders: Vec<usize> = Vec::new();
@@ -34755,11 +34853,16 @@ fn apply_cascaded_declarations<'a, F>(
   let mut any_custom_revert_layer = false;
   let mut any_registered_custom_var = false;
   let mut any_non_custom_revert_layer = false;
+  let mut needs_substitution_context = false;
+  let mut needs_dependency_tracking = false;
   for rule in matched_rules.iter() {
     let important_custom_start = important_custom_decl_orders.len();
     let important_other_start = important_other_decl_orders.len();
     let mut mask = 0u8;
     for (decl_order, declaration) in rule.declarations.iter().enumerate() {
+      if declaration.contains_var {
+        needs_substitution_context = true;
+      }
       let is_custom = declaration.property.is_custom();
       if is_custom {
         if declaration.important {
@@ -34793,6 +34896,11 @@ fn apply_cascaded_declarations<'a, F>(
         } else {
           mask |= HAS_OTHER_NORMAL;
         }
+        if !needs_dependency_tracking
+          && (declaration.contains_var || value_depends_on_current_color(&declaration.value))
+        {
+          needs_dependency_tracking = true;
+        }
         if !any_color_scheme_decl && declaration.property.as_str() == "color-scheme" {
           any_color_scheme_decl = true;
         }
@@ -34815,6 +34923,10 @@ fn apply_cascaded_declarations<'a, F>(
     important_custom_ranges.push((important_custom_start, important_custom_decl_orders.len()));
     important_other_ranges.push((important_other_start, important_other_decl_orders.len()));
   }
+
+  let _substitution_guard = needs_substitution_context.then(|| {
+    crate::style::var_resolution::push_substitution_context(node, viewport, color_scheme_pref)
+  });
 
   // Track `revert-layer` bases for registered custom properties without cloning full `ComputedStyle`
   // snapshots. If any custom property declaration contains `revert-layer` (or a registered custom
@@ -34910,133 +35022,184 @@ fn apply_cascaded_declarations<'a, F>(
   // the normal cascade order. We then reuse that base when applying !important declarations so
   // `--x: revert-layer !important` ignores any normal declarations in the same layer.
   if track_custom_revert_layer {
-    for &rule_idx in rule_order.iter() {
-      let rule = &matched_rules[rule_idx];
-      let origin_rank = rule.origin.rank();
-      let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
-      if !custom_layer_snapshots.contains_key(&layer_key) {
-        custom_layer_snapshots.insert(layer_key.clone(), styles.custom_properties.clone());
-      }
-
-      if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
-        continue;
-      }
-
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let revert_layer_base_custom_properties = custom_layer_snapshots.get(&layer_key);
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < rule_order.len() {
+      let cascade_origin = match matched_rules[rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start = i;
+      i += 1;
+      while i < rule_order.len() {
+        let next_origin = match matched_rules[rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for declaration in rule.declarations.iter() {
-          if declaration.important || !declaration.property.is_custom() {
+        for &rule_idx in rule_order[start..i].iter() {
+          let rule = &matched_rules[rule_idx];
+          let origin_rank = rule.origin.rank();
+          let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
+          if !custom_layer_snapshots.contains_key(&layer_key) {
+            custom_layer_snapshots.insert(layer_key.clone(), styles.custom_properties.clone());
+          }
+
+          if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
             continue;
           }
-          if !filter(declaration) {
-            continue;
+
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          let revert_layer_base_custom_properties = custom_layer_snapshots.get(&layer_key);
+          for declaration in rule.declarations.iter() {
+            if declaration.important || !declaration.property.is_custom() {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            apply_declaration_with_base_and_custom_properties(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              None,
+              revert_layer_base_custom_properties,
+              parent_font_size,
+              root_font_size,
+              viewport,
+            );
           }
-          apply_declaration_with_base_and_custom_properties(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            None,
-            revert_layer_base_custom_properties,
-            parent_font_size,
-            root_font_size,
-            viewport,
-          );
         }
       });
     }
   } else if any_custom_normal {
-    for &rule_idx in rule_order.iter() {
-      if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
-        continue;
-      }
-      let rule = &matched_rules[rule_idx];
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < rule_order.len() {
+      let cascade_origin = match matched_rules[rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start = i;
+      i += 1;
+      while i < rule_order.len() {
+        let next_origin = match matched_rules[rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for declaration in rule.declarations.iter() {
-          if declaration.important || !declaration.property.is_custom() {
+        for &rule_idx in rule_order[start..i].iter() {
+          if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
             continue;
           }
-          if !filter(declaration) {
-            continue;
+          let rule = &matched_rules[rule_idx];
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          for declaration in rule.declarations.iter() {
+            if declaration.important || !declaration.property.is_custom() {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            apply_declaration_with_base_and_custom_properties(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              None,
+              None,
+              parent_font_size,
+              root_font_size,
+              viewport,
+            );
           }
-          apply_declaration_with_base_and_custom_properties(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            None,
-            None,
-            parent_font_size,
-            root_font_size,
-            viewport,
-          );
         }
       });
     }
   }
   if any_custom_important {
-    for &rule_idx in important_rule_order.iter() {
-      if rule_decl_kinds[rule_idx] & HAS_CUSTOM_IMPORTANT == 0 {
-        continue;
-      }
-      let rule = &matched_rules[rule_idx];
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let revert_layer_base_custom_properties = if track_custom_revert_layer {
-        let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
-        match custom_layer_snapshots.get(&layer_key) {
-          Some(base) => Some(base),
-          None => {
-            debug_assert!(false, "custom layer base missing");
-            None
-          }
-        }
-      } else {
-        None
-      };
-      let (start, end) = important_custom_ranges[rule_idx];
-      let decls = rule.declarations.as_ref();
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < important_rule_order.len() {
+      let cascade_origin = match matched_rules[important_rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start_idx = i;
+      i += 1;
+      while i < important_rule_order.len() {
+        let next_origin = match matched_rules[important_rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for &decl_order in important_custom_decl_orders[start..end].iter() {
-          let declaration = &decls[decl_order];
-          debug_assert!(declaration.important);
-          debug_assert!(declaration.property.is_custom());
-          if !filter(declaration) {
+        for &rule_idx in important_rule_order[start_idx..i].iter() {
+          if rule_decl_kinds[rule_idx] & HAS_CUSTOM_IMPORTANT == 0 {
             continue;
           }
-          apply_declaration_with_base_and_custom_properties(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            None,
-            revert_layer_base_custom_properties,
-            parent_font_size,
-            root_font_size,
-            viewport,
-          );
+          let rule = &matched_rules[rule_idx];
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          let revert_layer_base_custom_properties = if track_custom_revert_layer {
+            let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
+            match custom_layer_snapshots.get(&layer_key) {
+              Some(base) => Some(base),
+              None => {
+                debug_assert!(false, "custom layer base missing");
+                None
+              }
+            }
+          } else {
+            None
+          };
+          let (start, end) = important_custom_ranges[rule_idx];
+          let decls = rule.declarations.as_ref();
+          for &decl_order in important_custom_decl_orders[start..end].iter() {
+            let declaration = &decls[decl_order];
+            debug_assert!(declaration.important);
+            debug_assert!(declaration.property.is_custom());
+            if !filter(declaration) {
+              continue;
+            }
+            apply_declaration_with_base_and_custom_properties(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              None,
+              revert_layer_base_custom_properties,
+              parent_font_size,
+              root_font_size,
+              viewport,
+            );
+          }
         }
       });
     }
@@ -35061,124 +35224,187 @@ fn apply_cascaded_declarations<'a, F>(
     let mut color_scheme_layer_snapshot_stratum: Option<(u8, bool)> = None;
 
     if any_other_normal {
-      for &rule_idx in rule_order.iter() {
-        if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
-          continue;
-        }
-        let rule = &matched_rules[rule_idx];
-        let revert_base = match rule.origin {
-          StyleOrigin::UserAgent => defaults,
-          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-        };
-        let cascade_origin = match rule.origin {
+      let mut i = 0usize;
+      while i < rule_order.len() {
+        let cascade_origin = match matched_rules[rule_order[i]].origin {
           StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
           StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
         };
+        let start = i;
+        i += 1;
+        while i < rule_order.len() {
+          let next_origin = match matched_rules[rule_order[i]].origin {
+            StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+            StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+          };
+          if next_origin == cascade_origin {
+            i += 1;
+          } else {
+            break;
+          }
+        }
+
         crate::style::with_cascade_order_origin(cascade_origin, || {
-          for declaration in rule.declarations.iter() {
-            if declaration.important || declaration.property.is_custom() {
+          for &rule_idx in rule_order[start..i].iter() {
+            if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
               continue;
             }
-            if declaration.property.as_str() != "color-scheme" {
-              continue;
-            }
-            if !filter(declaration) {
-              continue;
-            }
-            let revert_layer_base = if track_revert_layer {
-              let stratum = (rule.origin.rank(), false);
-              if color_scheme_layer_snapshot_stratum != Some(stratum) {
-                color_scheme_layer_snapshots.clear();
-                color_scheme_layer_snapshot_stratum = Some(stratum);
-              }
-              let layer_order = &rule.layer_order;
-              let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-                Some(existing) => existing,
-                None => {
-                  color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                  color_scheme_layer_snapshots
-                    .get_mut(layer_order.as_ref())
-                    .expect("layer snapshot inserted")
-                }
-              };
-              Some(&*layer_base)
-            } else {
-              None
+            let rule = &matched_rules[rule_idx];
+            let revert_base = match rule.origin {
+              StyleOrigin::UserAgent => defaults,
+              StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
             };
-            apply_declaration_with_base(
-              styles,
-              declaration,
-              parent_styles,
-              revert_base,
-              revert_layer_base,
-              parent_font_size,
-              root_font_size,
-              viewport,
-              false,
-            );
+
+            for declaration in rule.declarations.iter() {
+              if declaration.important || declaration.property.is_custom() {
+                continue;
+              }
+              if declaration.property.as_str() != "color-scheme" {
+                continue;
+              }
+              if !filter(declaration) {
+                continue;
+              }
+              let revert_layer_base = if track_revert_layer {
+                let stratum = (rule.origin.rank(), false);
+                if color_scheme_layer_snapshot_stratum != Some(stratum) {
+                  color_scheme_layer_snapshots.clear();
+                  color_scheme_layer_snapshot_stratum = Some(stratum);
+                }
+                let layer_order = &rule.layer_order;
+                let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+                  Some(existing) => existing,
+                  None => {
+                    color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                    color_scheme_layer_snapshots
+                      .get_mut(layer_order.as_ref())
+                      .expect("layer snapshot inserted")
+                  }
+                };
+                Some(&*layer_base)
+              } else {
+                None
+              };
+              if needs_dependency_tracking {
+                apply_declaration_with_base(
+                  styles,
+                  declaration,
+                  parent_styles,
+                  revert_base,
+                  revert_layer_base,
+                  parent_font_size,
+                  root_font_size,
+                  viewport,
+                  false,
+                );
+              } else {
+                apply_declaration_with_base_no_tracking(
+                  styles,
+                  declaration,
+                  parent_styles,
+                  revert_base,
+                  revert_layer_base,
+                  parent_font_size,
+                  root_font_size,
+                  viewport,
+                  false,
+                );
+              }
+            }
           }
         });
       }
     }
 
     if any_other_important {
-      for &rule_idx in important_rule_order.iter() {
-        if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
-          continue;
-        }
-        let rule = &matched_rules[rule_idx];
-        let revert_base = match rule.origin {
-          StyleOrigin::UserAgent => defaults,
-          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-        };
-        let (start, end) = important_other_ranges[rule_idx];
-        let decls = rule.declarations.as_ref();
-        let cascade_origin = match rule.origin {
+      let mut i = 0usize;
+      while i < important_rule_order.len() {
+        let cascade_origin = match matched_rules[important_rule_order[i]].origin {
           StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
           StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
         };
+        let start_idx = i;
+        i += 1;
+        while i < important_rule_order.len() {
+          let next_origin = match matched_rules[important_rule_order[i]].origin {
+            StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+            StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+          };
+          if next_origin == cascade_origin {
+            i += 1;
+          } else {
+            break;
+          }
+        }
+
         crate::style::with_cascade_order_origin(cascade_origin, || {
-          for &decl_order in important_other_decl_orders[start..end].iter() {
-            let declaration = &decls[decl_order];
-            debug_assert!(declaration.important);
-            debug_assert!(!declaration.property.is_custom());
-            if declaration.property.as_str() != "color-scheme" {
+          for &rule_idx in important_rule_order[start_idx..i].iter() {
+            if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
               continue;
             }
-            if !filter(declaration) {
-              continue;
-            }
-            let revert_layer_base = if track_revert_layer {
-              let stratum = (rule.origin.rank(), true);
-              if color_scheme_layer_snapshot_stratum != Some(stratum) {
-                color_scheme_layer_snapshots.clear();
-                color_scheme_layer_snapshot_stratum = Some(stratum);
-              }
-              let layer_order = &rule.layer_order;
-              let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
-                Some(existing) => existing,
-                None => {
-                  color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                  color_scheme_layer_snapshots
-                    .get_mut(layer_order.as_ref())
-                    .expect("layer snapshot inserted")
-                }
-              };
-              Some(&*layer_base)
-            } else {
-              None
+            let rule = &matched_rules[rule_idx];
+            let revert_base = match rule.origin {
+              StyleOrigin::UserAgent => defaults,
+              StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
             };
-            apply_declaration_with_base(
-              styles,
-              declaration,
-              parent_styles,
-              revert_base,
-              revert_layer_base,
-              parent_font_size,
-              root_font_size,
-              viewport,
-              false,
-            );
+            let (start, end) = important_other_ranges[rule_idx];
+            let decls = rule.declarations.as_ref();
+            for &decl_order in important_other_decl_orders[start..end].iter() {
+              let declaration = &decls[decl_order];
+              debug_assert!(declaration.important);
+              debug_assert!(!declaration.property.is_custom());
+              if declaration.property.as_str() != "color-scheme" {
+                continue;
+              }
+              if !filter(declaration) {
+                continue;
+              }
+              let revert_layer_base = if track_revert_layer {
+                let stratum = (rule.origin.rank(), true);
+                if color_scheme_layer_snapshot_stratum != Some(stratum) {
+                  color_scheme_layer_snapshots.clear();
+                  color_scheme_layer_snapshot_stratum = Some(stratum);
+                }
+                let layer_order = &rule.layer_order;
+                let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+                  Some(existing) => existing,
+                  None => {
+                    color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                    color_scheme_layer_snapshots
+                      .get_mut(layer_order.as_ref())
+                      .expect("layer snapshot inserted")
+                  }
+                };
+                Some(&*layer_base)
+              } else {
+                None
+              };
+              if needs_dependency_tracking {
+                apply_declaration_with_base(
+                  styles,
+                  declaration,
+                  parent_styles,
+                  revert_base,
+                  revert_layer_base,
+                  parent_font_size,
+                  root_font_size,
+                  viewport,
+                  false,
+                );
+              } else {
+                apply_declaration_with_base_no_tracking(
+                  styles,
+                  declaration,
+                  parent_styles,
+                  revert_base,
+                  revert_layer_base,
+                  parent_font_size,
+                  root_font_size,
+                  viewport,
+                  false,
+                );
+              }
+            }
           }
         });
       }
@@ -35192,7 +35418,8 @@ fn apply_cascaded_declarations<'a, F>(
   // `background-position-inline`, `background-repeat-inline`) map using the final writing mode,
   // regardless of declaration order. This mirrors the `color-scheme` early pass above.
   if any_writing_mode_decl {
-    let mut writing_mode_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
+    let mut writing_mode_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> =
+      FxHashMap::default();
     let mut writing_mode_layer_snapshot_stratum: Option<(u8, bool)> = None;
 
     if any_other_normal {
@@ -35221,8 +35448,8 @@ fn apply_cascaded_declarations<'a, F>(
             if writing_mode_layer_snapshot_stratum != Some(stratum) {
               writing_mode_layer_snapshots.clear();
               writing_mode_layer_snapshot_stratum = Some(stratum);
-             }
-             let layer_order = &rule.layer_order;
+            }
+            let layer_order = &rule.layer_order;
             let layer_base = writing_mode_layer_snapshots
               .entry(Arc::clone(layer_order))
               .or_insert_with(|| styles.clone());
@@ -35230,17 +35457,31 @@ fn apply_cascaded_declarations<'a, F>(
           } else {
             None
           };
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            is_dark_color_scheme,
-          );
+          if needs_dependency_tracking {
+            apply_declaration_with_base(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              is_dark_color_scheme,
+            );
+          } else {
+            apply_declaration_with_base_no_tracking(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              is_dark_color_scheme,
+            );
+          }
         }
       }
     }
@@ -35274,8 +35515,8 @@ fn apply_cascaded_declarations<'a, F>(
             if writing_mode_layer_snapshot_stratum != Some(stratum) {
               writing_mode_layer_snapshots.clear();
               writing_mode_layer_snapshot_stratum = Some(stratum);
-             }
-             let layer_order = &rule.layer_order;
+            }
+            let layer_order = &rule.layer_order;
             let layer_base = writing_mode_layer_snapshots
               .entry(Arc::clone(layer_order))
               .or_insert_with(|| styles.clone());
@@ -35283,17 +35524,31 @@ fn apply_cascaded_declarations<'a, F>(
           } else {
             None
           };
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            is_dark_color_scheme,
-          );
+          if needs_dependency_tracking {
+            apply_declaration_with_base(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              is_dark_color_scheme,
+            );
+          } else {
+            apply_declaration_with_base_no_tracking(
+              styles,
+              declaration,
+              parent_styles,
+              revert_base,
+              revert_layer_base,
+              parent_font_size,
+              root_font_size,
+              viewport,
+              is_dark_color_scheme,
+            );
+          }
         }
       }
     }
@@ -35304,146 +35559,239 @@ fn apply_cascaded_declarations<'a, F>(
     // When `revert-layer` can occur (directly or via `var()` substitution), record the per-layer
     // base before applying any declarations in that layer. The same base is then used for both
     // normal and !important declarations.
-    for &rule_idx in rule_order.iter() {
-      let rule = &matched_rules[rule_idx];
-      let origin_rank = rule.origin.rank();
-      let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
-      if !layer_snapshots.contains_key(&layer_key) {
-        layer_snapshots.insert(layer_key.clone(), styles.clone());
-      }
-
-      if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
-        continue;
-      }
-
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let revert_layer_base = layer_snapshots.get(&layer_key).map(|s| s as &ComputedStyle);
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < rule_order.len() {
+      let cascade_origin = match matched_rules[rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start = i;
+      i += 1;
+      while i < rule_order.len() {
+        let next_origin = match matched_rules[rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for declaration in rule.declarations.iter() {
-          if declaration.important
-            || declaration.property.is_custom()
-            || declaration.property.as_str() == "color-scheme"
-            || declaration.property.as_str() == "writing-mode"
-          {
+        for &rule_idx in rule_order[start..i].iter() {
+          let rule = &matched_rules[rule_idx];
+          let origin_rank = rule.origin.rank();
+          let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
+          if !layer_snapshots.contains_key(&layer_key) {
+            layer_snapshots.insert(layer_key.clone(), styles.clone());
+          }
+
+          if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
             continue;
           }
-          if !filter(declaration) {
-            continue;
+
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          let revert_layer_base = layer_snapshots.get(&layer_key).map(|s| s as &ComputedStyle);
+          for declaration in rule.declarations.iter() {
+            if declaration.important
+              || declaration.property.is_custom()
+              || declaration.property.as_str() == "color-scheme"
+              || declaration.property.as_str() == "writing-mode"
+            {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            if needs_dependency_tracking {
+              apply_declaration_with_base(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                revert_layer_base,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            } else {
+              apply_declaration_with_base_no_tracking(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                revert_layer_base,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            }
           }
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            is_dark_color_scheme,
-          );
         }
       });
     }
   } else if any_other_normal {
-    for &rule_idx in rule_order.iter() {
-      if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
-        continue;
-      }
-      let rule = &matched_rules[rule_idx];
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < rule_order.len() {
+      let cascade_origin = match matched_rules[rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start = i;
+      i += 1;
+      while i < rule_order.len() {
+        let next_origin = match matched_rules[rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for declaration in rule.declarations.iter() {
-          if declaration.important
-            || declaration.property.is_custom()
-            || declaration.property.as_str() == "color-scheme"
-            || declaration.property.as_str() == "writing-mode"
-          {
+        for &rule_idx in rule_order[start..i].iter() {
+          if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
             continue;
           }
-          if !filter(declaration) {
-            continue;
+          let rule = &matched_rules[rule_idx];
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          for declaration in rule.declarations.iter() {
+            if declaration.important
+              || declaration.property.is_custom()
+              || declaration.property.as_str() == "color-scheme"
+              || declaration.property.as_str() == "writing-mode"
+            {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            if needs_dependency_tracking {
+              apply_declaration_with_base(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                None,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            } else {
+              apply_declaration_with_base_no_tracking(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                None,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            }
           }
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            None,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            is_dark_color_scheme,
-          );
         }
       });
     }
   }
   if any_other_important {
-    for &rule_idx in important_rule_order.iter() {
-      if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
-        continue;
-      }
-      let rule = &matched_rules[rule_idx];
-      let revert_base = match rule.origin {
-        StyleOrigin::UserAgent => defaults,
-        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
-      };
-      let revert_layer_base = if track_revert_layer {
-        let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
-        match layer_snapshots.get(&layer_key) {
-          Some(base) => Some(base),
-          None => {
-            debug_assert!(false, "layer snapshot missing for important declarations");
-            None
-          }
-        }
-      } else {
-        None
-      };
-      let (start, end) = important_other_ranges[rule_idx];
-      let decls = rule.declarations.as_ref();
-      let cascade_origin = match rule.origin {
+    let mut i = 0usize;
+    while i < important_rule_order.len() {
+      let cascade_origin = match matched_rules[important_rule_order[i]].origin {
         StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
         StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
       };
+      let start_idx = i;
+      i += 1;
+      while i < important_rule_order.len() {
+        let next_origin = match matched_rules[important_rule_order[i]].origin {
+          StyleOrigin::UserAgent => crate::style::CascadeOrderOrigin::UserAgent,
+          StyleOrigin::Author | StyleOrigin::Inline => crate::style::CascadeOrderOrigin::Author,
+        };
+        if next_origin == cascade_origin {
+          i += 1;
+        } else {
+          break;
+        }
+      }
+
       crate::style::with_cascade_order_origin(cascade_origin, || {
-        for &decl_order in important_other_decl_orders[start..end].iter() {
-          let declaration = &decls[decl_order];
-          debug_assert!(declaration.important);
-          debug_assert!(!declaration.property.is_custom());
-          if declaration.property.as_str() == "color-scheme"
-            || declaration.property.as_str() == "writing-mode"
-          {
+        for &rule_idx in important_rule_order[start_idx..i].iter() {
+          if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
             continue;
           }
-          if !filter(declaration) {
-            continue;
+          let rule = &matched_rules[rule_idx];
+          let revert_base = match rule.origin {
+            StyleOrigin::UserAgent => defaults,
+            StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+          };
+          let revert_layer_base = if track_revert_layer {
+            let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
+            match layer_snapshots.get(&layer_key) {
+              Some(base) => Some(base),
+              None => {
+                debug_assert!(false, "layer snapshot missing for important declarations");
+                None
+              }
+            }
+          } else {
+            None
+          };
+          let (start, end) = important_other_ranges[rule_idx];
+          let decls = rule.declarations.as_ref();
+          for &decl_order in important_other_decl_orders[start..end].iter() {
+            let declaration = &decls[decl_order];
+            debug_assert!(declaration.important);
+            debug_assert!(!declaration.property.is_custom());
+            if declaration.property.as_str() == "color-scheme"
+              || declaration.property.as_str() == "writing-mode"
+            {
+              continue;
+            }
+            if !filter(declaration) {
+              continue;
+            }
+            if needs_dependency_tracking {
+              apply_declaration_with_base(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                revert_layer_base,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            } else {
+              apply_declaration_with_base_no_tracking(
+                styles,
+                declaration,
+                parent_styles,
+                revert_base,
+                revert_layer_base,
+                parent_font_size,
+                root_font_size,
+                viewport,
+                is_dark_color_scheme,
+              );
+            }
           }
-          apply_declaration_with_base(
-            styles,
-            declaration,
-            parent_styles,
-            revert_base,
-            revert_layer_base,
-            parent_font_size,
-            root_font_size,
-            viewport,
-            is_dark_color_scheme,
-          );
         }
       });
     }
@@ -37904,6 +38252,7 @@ fn compute_pseudo_element_styles(
   apply_initial_pseudo_styles(&mut ua_styles);
   inherit_styles(&mut ua_styles, ua_parent_styles);
   apply_cascaded_declarations(
+    node,
     &mut ua_styles,
     ua_matches,
     None,
@@ -37951,6 +38300,7 @@ fn compute_pseudo_element_styles(
 
   // Apply matching declarations
   apply_cascaded_declarations(
+    node,
     &mut styles,
     matching_rules,
     None,
@@ -38176,6 +38526,7 @@ fn compute_first_line_styles(
   let mut ua_styles = base_ua_styles.clone();
   ua_styles.display = Display::Inline;
   apply_cascaded_declarations(
+    node,
     &mut ua_styles,
     ua_matches,
     None,
@@ -38217,6 +38568,7 @@ fn compute_first_line_styles(
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
   apply_cascaded_declarations(
+    node,
     &mut styles,
     matching_rules,
     None,
@@ -38331,6 +38683,7 @@ fn compute_first_letter_styles(
   let mut ua_styles = base_ua_styles.clone();
   ua_styles.display = Display::Inline;
   apply_cascaded_declarations(
+    node,
     &mut ua_styles,
     ua_matches,
     None,
@@ -38372,6 +38725,7 @@ fn compute_first_letter_styles(
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
   apply_cascaded_declarations(
+    node,
     &mut styles,
     matching_rules,
     None,
@@ -38502,6 +38856,7 @@ fn compute_marker_styles(
   ua_styles.text_transform = crate::style::types::TextTransform::none();
 
   apply_cascaded_declarations(
+    node,
     &mut ua_styles,
     ua_matches,
     None,
@@ -38553,6 +38908,7 @@ fn compute_marker_styles(
   styles.text_transform = crate::style::types::TextTransform::none();
 
   apply_cascaded_declarations(
+    node,
     &mut styles,
     matching_rules,
     None,
