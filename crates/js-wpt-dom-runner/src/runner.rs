@@ -518,7 +518,11 @@ fn map_backend_error(err: RunError) -> Result<RunOutcome, RunError> {
 }
 
 fn is_interrupt_error(msg: &str) -> bool {
-  msg.contains("interrupted") || msg.contains("Interrupt")
+  msg.contains("interrupted")
+    || msg.contains("Interrupt")
+    || msg.contains("Interrupted")
+    || msg.contains("OutOfFuel")
+    || msg.contains("DeadlineExceeded")
 }
 
 fn id_dir(id: &str) -> String {

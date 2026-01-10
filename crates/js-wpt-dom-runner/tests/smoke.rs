@@ -318,3 +318,21 @@ fn runs_urlsearchparams_live_test_vmjs() {
     .expect("urlsearchparams-live should include report payload under vmjs");
   assert_eq!(report.file_status, "pass");
 }
+
+#[test]
+fn classifies_vmjs_termination_as_timeout() {
+  if !BackendKind::VmJs.is_available() {
+    return;
+  }
+
+  let result = run_test_id_backend(
+    "smoke/infinite_loop_timeout.window.js",
+    BackendSelection::VmJs,
+    RunnerConfig::default(),
+  );
+  assert_eq!(
+    result.outcome,
+    RunOutcome::Timeout,
+    "vm-js backend should classify engine termination as a timeout"
+  );
+}
