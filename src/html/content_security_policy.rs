@@ -5,12 +5,12 @@
 //! Policy. This module implements a deliberately small-but-useful subset:
 //!
 //! - Directives: `default-src`, `style-src`, `img-src`, `font-src`, `connect-src`, `frame-src`,
-//!   `script-src`
+//!   `script-src`, `script-src-elem`, `script-src-attr`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
 //!   - `'unsafe-inline'` (inline scripts only; ignored when a nonce/hash is present, matching
 //!     modern browser behavior)
-//!   - `'strict-dynamic'` (only affects `script-src`; treated conservatively)
+//!   - `'strict-dynamic'` (only affects script directives; treated conservatively)
 //!   - `'nonce-…'` (inline + external `<script nonce=...>`)
 //!   - `'sha256-…'` (inline scripts only; base64-encoded SHA-256 of the inline source bytes)
 //!   - `*`
@@ -44,6 +44,8 @@ const MAX_ATTRIBUTES_PER_TAG: usize = 128;
 pub enum CspDirective {
   DefaultSrc,
   ScriptSrc,
+  ScriptSrcElem,
+  ScriptSrcAttr,
   StyleSrc,
   ImgSrc,
   FontSrc,
@@ -56,6 +58,8 @@ impl CspDirective {
     match self {
       CspDirective::DefaultSrc => "default-src",
       CspDirective::ScriptSrc => "script-src",
+      CspDirective::ScriptSrcElem => "script-src-elem",
+      CspDirective::ScriptSrcAttr => "script-src-attr",
       CspDirective::StyleSrc => "style-src",
       CspDirective::ImgSrc => "img-src",
       CspDirective::FontSrc => "font-src",
@@ -189,12 +193,12 @@ impl CspPolicy {
     url: &Url,
   ) -> bool {
     self.policies.iter().all(|set| {
-      // A missing directive/default-src means this policy set doesn't restrict scripts.
-      let Some(list) = set
-        .directives
-        .get(&CspDirective::ScriptSrc)
-        .or_else(|| set.directives.get(&CspDirective::DefaultSrc))
-      else {
+      // For `<script>` elements, `script-src-elem` takes precedence over `script-src` (and both fall
+      // back to `default-src`).
+      //
+      // If neither `script-src-elem`, `script-src`, nor `default-src` is present, this policy set
+      // does not restrict scripts.
+      let Some(list) = directive_sources_for_set(set, CspDirective::ScriptSrcElem) else {
         return true;
       };
 
@@ -208,8 +212,31 @@ impl CspPolicy {
         }
       }
 
-      set_allows_url(set, CspDirective::ScriptSrc, document_origin, url)
+      set_allows_url(set, CspDirective::ScriptSrcElem, document_origin, url)
     })
+  }
+}
+
+fn directive_sources_for_set(set: &CspDirectiveSet, directive: CspDirective) -> Option<&Vec<CspSource>> {
+  match directive {
+    CspDirective::ScriptSrcElem => set
+      .directives
+      .get(&CspDirective::ScriptSrcElem)
+      .or_else(|| set.directives.get(&CspDirective::ScriptSrc))
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
+    CspDirective::ScriptSrcAttr => set
+      .directives
+      .get(&CspDirective::ScriptSrcAttr)
+      .or_else(|| set.directives.get(&CspDirective::ScriptSrc))
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
+    CspDirective::ScriptSrc => set
+      .directives
+      .get(&CspDirective::ScriptSrc)
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
+    _ => set
+      .directives
+      .get(&directive)
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
   }
 }
 
@@ -219,10 +246,7 @@ fn set_allows_url(
   document_origin: Option<&DocumentOrigin>,
   url: &Url,
 ) -> bool {
-  let list = set
-    .directives
-    .get(&directive)
-    .or_else(|| set.directives.get(&CspDirective::DefaultSrc));
+  let list = directive_sources_for_set(set, directive);
   let Some(list) = list else {
     // No directive and no default-src => allow.
     return true;
@@ -234,7 +258,10 @@ fn set_allows_url(
 
   // CSP3: `strict-dynamic` disables host/scheme-source allowlisting when a nonce/hash is present.
   // We do not model trust propagation here; treat it conservatively as "URL sources do not match".
-  if directive == CspDirective::ScriptSrc
+  if matches!(
+    directive,
+    CspDirective::ScriptSrc | CspDirective::ScriptSrcElem | CspDirective::ScriptSrcAttr
+  )
     && list.iter().any(|s| matches!(s, CspSource::StrictDynamic))
     && list
       .iter()
@@ -349,6 +376,10 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
     let Some(directive) = match_lower_directive(name) else {
       continue;
     };
+    // CSP: when a directive appears multiple times, only the first occurrence is used.
+    if directives.contains_key(&directive) {
+      continue;
+    }
     let mut sources = Vec::new();
     for token in parts {
       if token.eq_ignore_ascii_case("'self'") {
@@ -398,12 +429,12 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
 fn match_lower_directive(name: &str) -> Option<CspDirective> {
   if name.eq_ignore_ascii_case("default-src") {
     Some(CspDirective::DefaultSrc)
-  } else if name.eq_ignore_ascii_case("script-src")
-    || name.eq_ignore_ascii_case("script-src-elem")
-    || name.eq_ignore_ascii_case("script-src-attr")
-  {
-    // MVP: treat script-src-elem/script-src-attr as equivalent to script-src.
+  } else if name.eq_ignore_ascii_case("script-src") {
     Some(CspDirective::ScriptSrc)
+  } else if name.eq_ignore_ascii_case("script-src-elem") {
+    Some(CspDirective::ScriptSrcElem)
+  } else if name.eq_ignore_ascii_case("script-src-attr") {
+    Some(CspDirective::ScriptSrcAttr)
   } else if name.eq_ignore_ascii_case("style-src") {
     Some(CspDirective::StyleSrc)
   } else if name.eq_ignore_ascii_case("img-src") {
@@ -471,10 +502,8 @@ fn non_empty_trimmed_ascii(value: &str) -> Option<&str> {
 }
 
 fn set_allows_inline_script(set: &CspDirectiveSet, nonce: Option<&str>, source_text: &str) -> bool {
-  let list = set
-    .directives
-    .get(&CspDirective::ScriptSrc)
-    .or_else(|| set.directives.get(&CspDirective::DefaultSrc));
+  // Inline `<script>` elements use `script-src-elem` (fallback: `script-src` → `default-src`).
+  let list = directive_sources_for_set(set, CspDirective::ScriptSrcElem);
   let Some(list) = list else {
     // No directive and no default-src => allow.
     return true;
@@ -1149,5 +1178,25 @@ mod tests {
       "https://example.com/",
       "https://example.com/a.png"
     ));
+  }
+
+  #[test]
+  fn duplicate_directives_ignore_subsequent_occurrences() {
+    // CSP: When a directive appears multiple times within a policy, only the first is used.
+    let policy = CspPolicy::from_values(["img-src 'none'; img-src https:"]).expect("parse");
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/a.png"
+    ));
+  }
+
+  #[test]
+  fn script_src_elem_overrides_script_src_for_script_elements() {
+    // `script-src-elem` takes precedence over `script-src` regardless of order.
+    let policy = CspPolicy::from_values(["script-src-elem https:; script-src 'none'"]).expect("parse");
+    let url = Url::parse("https://example.com/a.js").expect("url");
+    assert!(policy.allows_script_url(Some(&doc_origin("https://example.com/")), None, &url));
   }
 }
