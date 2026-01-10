@@ -1,0 +1,28 @@
+@font-face {
+  font-family: 'Montserrat';
+  font-display: swap;
+  font-style: normal;
+  font-weight: 300;
+  src: url(c8861d4f88efa374f573575cb6063bf5.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-display: swap;
+  font-style: normal;
+  font-weight: 600;
+  src: url(bedb5c0eb2e55675ecd496c04f7780ad.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-display: swap;
+  font-style: normal;
+  font-weight: 800;
+  src: url(448fe102bfa785d28790d5e1a72ac68c.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-display: swap;
+  font-style: normal;
+  font-weight: 900;
+  src: url(4aa89f05e46651afac688e0d97082489.ttf) format('truetype');
+}
