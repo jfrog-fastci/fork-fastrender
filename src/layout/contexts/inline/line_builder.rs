@@ -4464,16 +4464,7 @@ impl<'a> LineBuilder<'a> {
   fn finish_line(&mut self) -> Result<(), LayoutError> {
     check_layout_deadline(&mut self.deadline_counter)?;
     self.trim_soft_wrap_trailing_spaces();
-    let push_empty_after_hard_break = self.current_line.is_empty()
-      && !self.current_line.ends_with_hard_break
-      && self
-        .lines
-        .last()
-        .is_some_and(|line| line.ends_with_hard_break);
-    if !self.current_line.is_empty()
-      || self.current_line.ends_with_hard_break
-      || push_empty_after_hard_break
-    {
+    if !self.current_line.is_empty() || self.current_line.ends_with_hard_break {
       // Calculate final line metrics
       self.current_line.width = self.current_x;
       self.current_line.height = self.baseline_acc.line_height();
@@ -6882,6 +6873,45 @@ mod tests {
 
     let lines = builder.finish().unwrap().lines;
     assert!(lines.is_empty());
+  }
+
+  #[test]
+  fn terminal_hard_break_does_not_create_trailing_empty_line() {
+    let mut builder = make_builder(200.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("Hello", 50.0)))
+      .unwrap();
+    builder.add_item(InlineItem::HardBreak).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].ends_with_hard_break);
+    assert_eq!(flatten_text(&lines[0].items[0].item), "Hello");
+  }
+
+  #[test]
+  fn hard_break_only_produces_single_empty_line() {
+    let mut builder = make_builder(200.0);
+    builder.add_item(InlineItem::HardBreak).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].ends_with_hard_break);
+    assert!(lines[0].items.is_empty());
+  }
+
+  #[test]
+  fn consecutive_hard_breaks_produce_multiple_empty_lines() {
+    let mut builder = make_builder(200.0);
+    builder.add_item(InlineItem::HardBreak).unwrap();
+    builder.add_item(InlineItem::HardBreak).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].ends_with_hard_break);
+    assert!(lines[1].ends_with_hard_break);
+    assert!(lines[0].items.is_empty());
+    assert!(lines[1].items.is_empty());
   }
 
   #[test]
