@@ -692,12 +692,17 @@ fn try_clone_import_attribute(value: &ImportAttribute) -> Result<ImportAttribute
   })
 }
 
-fn try_clone_module_request(value: &ModuleRequest) -> Result<ModuleRequest, VmError> {
+fn try_clone_module_request(vm: &mut Vm, value: &ModuleRequest) -> Result<ModuleRequest, VmError> {
+  vm.tick()?;
   let mut attributes: Vec<ImportAttribute> = Vec::new();
   attributes
     .try_reserve_exact(value.attributes.len())
     .map_err(|_| VmError::OutOfMemory)?;
-  for attr in &value.attributes {
+  const ATTR_TICK_EVERY: usize = 32;
+  for (i, attr) in value.attributes.iter().enumerate() {
+    if i % ATTR_TICK_EVERY == 0 && i != 0 {
+      vm.tick()?;
+    }
     attributes.push(try_clone_import_attribute(attr)?);
   }
   Ok(ModuleRequest {
@@ -706,13 +711,18 @@ fn try_clone_module_request(value: &ModuleRequest) -> Result<ModuleRequest, VmEr
   })
 }
 
-fn try_clone_module_requests(values: &[ModuleRequest]) -> Result<Vec<ModuleRequest>, VmError> {
+fn try_clone_module_requests(vm: &mut Vm, values: &[ModuleRequest]) -> Result<Vec<ModuleRequest>, VmError> {
+  vm.tick()?;
   let mut out: Vec<ModuleRequest> = Vec::new();
   out
     .try_reserve_exact(values.len())
     .map_err(|_| VmError::OutOfMemory)?;
-  for v in values {
-    out.push(try_clone_module_request(v)?);
+  const REQUEST_TICK_EVERY: usize = 32;
+  for (i, v) in values.iter().enumerate() {
+    if i % REQUEST_TICK_EVERY == 0 && i != 0 {
+      vm.tick()?;
+    }
+    out.push(try_clone_module_request(vm, v)?);
   }
   Ok(out)
 }
@@ -760,7 +770,7 @@ pub fn inner_module_loading(
 
   let should_traverse = record.status == ModuleStatus::New && !state.visited_contains(module);
   let requested_modules = if should_traverse {
-    try_clone_module_requests(&record.requested_modules)?
+    try_clone_module_requests(vm, &record.requested_modules)?
   } else {
     Vec::new()
   };
@@ -1548,6 +1558,33 @@ mod tests {
     }
 
     let err = first_unsupported_import_attribute_key(&mut vm, &supported, &attrs).unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+      other => panic!("expected OutOfFuel termination, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn cloning_requested_module_lists_consumes_fuel() {
+    // `InnerModuleLoading` clones `[[RequestedModules]]` out of module records so it can recurse
+    // without holding borrows. That cloning work is user-controlled (source size) and must be
+    // budgeted.
+    let mut vm = Vm::new(VmOptions {
+      check_time_every: 1,
+      ..VmOptions::default()
+    });
+    vm.set_budget(Budget {
+      fuel: Some(1),
+      deadline: None,
+      check_time_every: 1,
+    });
+
+    let mut requests = Vec::<ModuleRequest>::new();
+    for _ in 0..5000 {
+      requests.push(ModuleRequest::new("A", Vec::new()));
+    }
+
+    let err = try_clone_module_requests(&mut vm, &requests).unwrap_err();
     match err {
       VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
       other => panic!("expected OutOfFuel termination, got {other:?}"),
