@@ -3329,8 +3329,8 @@ fn mix_colors(
   }
 }
 
-/// Parse named color (all 147 CSS named colors)
-fn parse_named_color(s: &str) -> Option<Rgba> {
+/// Parse named color (all 147 CSS named colors).
+pub(crate) fn parse_named_color(s: &str) -> Option<Rgba> {
   let lower: std::borrow::Cow<'_, str> = if s.bytes().any(|b| b.is_ascii_uppercase()) {
     std::borrow::Cow::Owned(s.to_ascii_lowercase())
   } else {

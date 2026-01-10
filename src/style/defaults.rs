@@ -122,45 +122,123 @@ pub fn parse_dimension_attribute(dim_str: &str) -> Option<Length> {
 
 /// Parse HTML bgcolor attribute
 ///
-/// Handles hex colors like #ff6600 or ff6600, with 3 or 6 digit variants.
+/// Implements the WHATWG HTML "rules for parsing a legacy color value".
+///
+/// References:
+/// - WHATWG HTML: `#rules-for-parsing-a-legacy-colour-value`
 pub fn parse_color_attribute(color_str: &str) -> Option<Rgba> {
-  let color_str = trim_ascii_whitespace_html(color_str);
+  // Step 1: If input is the empty string, return failure.
+  if color_str.is_empty() {
+    return None;
+  }
 
-  // Handle hex colors like #ff6600 or ff6600
-  if color_str.starts_with('#') {
-    let hex = &color_str[1..];
-    if hex.len() == 6 {
-      if let (Ok(r), Ok(g), Ok(b)) = (
-        u8::from_str_radix(&hex[0..2], 16),
-        u8::from_str_radix(&hex[2..4], 16),
-        u8::from_str_radix(&hex[4..6], 16),
-      ) {
-        return Some(Rgba { r, g, b, a: 1.0 });
-      }
-    } else if hex.len() == 3 {
-      // Shorthand like #f60
-      if let (Ok(r), Ok(g), Ok(b)) = (
-        u8::from_str_radix(&hex[0..1], 16),
-        u8::from_str_radix(&hex[1..2], 16),
-        u8::from_str_radix(&hex[2..3], 16),
-      ) {
-        // Double each digit: #f60 -> #ff6600
-        return Some(Rgba {
-          r: r * 17,
-          g: g * 17,
-          b: b * 17,
-          a: 1.0,
-        });
-      }
+  // Step 2: Strip leading/trailing ASCII whitespace.
+  let trimmed = trim_ascii_whitespace_html(color_str);
+
+  // Step 3: If input is "transparent" (ASCII case-insensitive), return failure.
+  if trimmed.eq_ignore_ascii_case("transparent") {
+    return None;
+  }
+
+  // Step 4: If input is a named color, return it (CSS2 system colors are *not* recognized).
+  if let Some(named) = crate::style::color::parse_named_color(trimmed) {
+    return Some(named);
+  }
+
+  // Step 5: Special-case "#rgb" shorthand (exactly 4 code points: "#"+3 hex digits).
+  if trimmed.starts_with('#') && trimmed.chars().count() == 4 {
+    let mut chars = trimmed.chars();
+    let _hash = chars.next();
+    let r = chars.next()?;
+    let g = chars.next()?;
+    let b = chars.next()?;
+    if r.is_ascii_hexdigit() && g.is_ascii_hexdigit() && b.is_ascii_hexdigit() {
+      let to_nibble = |c: char| c.to_digit(16).map(|v| v as u8);
+      let r = to_nibble(r)?;
+      let g = to_nibble(g)?;
+      let b = to_nibble(b)?;
+      return Some(Rgba::rgb(r * 17, g * 17, b * 17));
     }
   }
 
-  // Fallback to CSS color parsing for rgb()/named colors.
-  if let Ok(color) = crate::style::color::Color::parse(color_str) {
-    return Some(color.to_rgba(Rgba::BLACK));
+  // Steps 6-7: Replace non-BMP code points with "00", then truncate to 128 code points.
+  // (We do both in one pass.)
+  let mut input = String::new();
+  let mut codepoints = 0usize;
+  for ch in trimmed.chars() {
+    if codepoints >= 128 {
+      break;
+    }
+    if (ch as u32) > 0xFFFF {
+      // Replace with "00" (two code points), but respect the 128-code-point cap.
+      if codepoints >= 127 {
+        input.push('0');
+        break;
+      }
+      input.push('0');
+      input.push('0');
+      codepoints += 2;
+    } else {
+      input.push(ch);
+      codepoints += 1;
+    }
   }
 
-  None
+  // Step 8: If first character is '#', remove it.
+  if input.starts_with('#') {
+    input.remove(0);
+  }
+
+  // Step 9: Replace any non-ASCII-hex-digit character with '0'.
+  input = input
+    .chars()
+    .map(|c| if c.is_ascii_hexdigit() { c } else { '0' })
+    .collect();
+
+  // Step 10: While length is zero or not a multiple of 3, append '0'.
+  while input.is_empty() || input.len() % 3 != 0 {
+    input.push('0');
+  }
+
+  // Steps 11+: Split into 3 equal components.
+  let component_len = input.len() / 3;
+  let (mut r_part, rest) = input.split_at(component_len);
+  let (mut g_part, mut b_part) = rest.split_at(component_len);
+
+  // Step 12: If component length > 8, drop leading (len-8) chars in each component.
+  let mut len = component_len;
+  if len > 8 {
+    let drop = len - 8;
+    r_part = &r_part[drop..];
+    g_part = &g_part[drop..];
+    b_part = &b_part[drop..];
+    len = 8;
+  }
+
+  // Step 13: While len > 2 and first char of each component is '0', drop first char.
+  while len > 2
+    && r_part.as_bytes().first() == Some(&b'0')
+    && g_part.as_bytes().first() == Some(&b'0')
+    && b_part.as_bytes().first() == Some(&b'0')
+  {
+    r_part = &r_part[1..];
+    g_part = &g_part[1..];
+    b_part = &b_part[1..];
+    len -= 1;
+  }
+
+  // Step 14: If len is still > 2, truncate each component to its first 2 chars.
+  if len > 2 {
+    r_part = &r_part[..2];
+    g_part = &g_part[..2];
+    b_part = &b_part[..2];
+  }
+
+  // Steps 15-17: Interpret each component as a hex number.
+  let r = u8::from_str_radix(r_part, 16).ok()?;
+  let g = u8::from_str_radix(g_part, 16).ok()?;
+  let b = u8::from_str_radix(b_part, 16).ok()?;
+  Some(Rgba::rgb(r, g, b))
 }
 
 #[cfg(test)]
@@ -201,14 +279,38 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_parse_color_attribute_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    assert!(
-      parse_color_attribute(&format!("{nbsp}ff6600")).is_none(),
+    assert_ne!(
+      parse_color_attribute(&format!("{nbsp}ff6600")),
+      parse_color_attribute("ff6600"),
       "NBSP must not be treated as ASCII whitespace"
     );
-    assert!(
-      parse_color_attribute(&format!("{nbsp}#ff6600")).is_none(),
+    assert_ne!(
+      parse_color_attribute(&format!("{nbsp}#ff6600")),
+      parse_color_attribute("#ff6600"),
       "NBSP must not be treated as ASCII whitespace"
     );
+  }
+
+  #[test]
+  fn parse_color_attribute_parses_hashless_hex() {
+    assert_eq!(parse_color_attribute("ff6600"), Some(Rgba::rgb(255, 102, 0)));
+    assert_eq!(
+      parse_color_attribute("  ff6600  "),
+      Some(Rgba::rgb(255, 102, 0))
+    );
+  }
+
+  #[test]
+  fn parse_color_attribute_rejects_transparent() {
+    assert!(parse_color_attribute("transparent").is_none());
+    assert!(parse_color_attribute("Transparent").is_none());
+  }
+
+  #[test]
+  fn parse_color_attribute_does_not_recognize_system_colors() {
+    // HTML legacy color parsing only recognizes named colors, not CSS system color keywords like
+    // "Canvas". Treat it as a "hashless hex" legacy color value instead.
+    assert_eq!(parse_color_attribute("Canvas"), Some(Rgba::rgb(202, 0, 160)));
   }
 
   fn layout_widths(toggle: &str) -> (Vec<f32>, Vec<f32>) {

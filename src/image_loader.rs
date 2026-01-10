@@ -2132,7 +2132,32 @@ fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
   if trimmed.eq_ignore_ascii_case("currentColor") {
     return None;
   }
-  if let Some(hex) = crate::style::defaults::parse_color_attribute(trimmed) {
+
+  // SVG paint attributes use CSS color syntax; do not apply HTML "legacy color value" parsing
+  // here because values like `url(#gradient)` must not be coerced into arbitrary colors.
+  fn parse_hex_color_strict(value: &str) -> Option<Rgba> {
+    let value = value.strip_prefix('#').unwrap_or(value);
+    if !value.chars().all(|c| c.is_ascii_hexdigit()) {
+      return None;
+    }
+    match value.len() {
+      6 => {
+        let r = u8::from_str_radix(&value[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&value[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&value[4..6], 16).ok()?;
+        Some(Rgba::rgb(r, g, b))
+      }
+      3 => {
+        let r = u8::from_str_radix(&value[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&value[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&value[2..3], 16).ok()?;
+        Some(Rgba::rgb(r * 17, g * 17, b * 17))
+      }
+      _ => None,
+    }
+  }
+
+  if let Some(hex) = parse_hex_color_strict(trimmed) {
     return Some(hex);
   }
   trimmed.parse::<csscolorparser::Color>().ok().map(|c| {
