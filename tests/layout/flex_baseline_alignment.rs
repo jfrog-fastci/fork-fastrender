@@ -6,7 +6,9 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::AlignItems;
+use fastrender::style::types::Direction;
 use fastrender::style::types::FlexDirection;
+use fastrender::style::types::FlexWrap;
 use fastrender::style::types::LineHeight;
 use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
@@ -173,6 +175,91 @@ fn flex_align_items_baseline_influences_cross_size() {
   );
 }
 
+#[test]
+fn flex_align_items_baseline_aligns_baselines_in_wrap_reverse_row_multiline() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::HorizontalTb;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_items = AlignItems::Baseline;
+  // 2x60px items fit; the 3rd forces a second line.
+  container_style.width = Some(Length::px(120.0));
+
+  let line_height = 20.0;
+  let make_item = |font_size: f32| {
+    let mut wrapper_style = ComputedStyle::default();
+    wrapper_style.display = Display::Block;
+    wrapper_style.width = Some(Length::px(60.0));
+    wrapper_style.font_size = font_size;
+    wrapper_style.line_height = LineHeight::Length(Length::px(line_height));
+    wrapper_style.flex_shrink = 0.0;
+    let wrapper_style = Arc::new(wrapper_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.font_size = font_size;
+    text_style.line_height = LineHeight::Length(Length::px(line_height));
+    let text_child = BoxNode::new_text(Arc::new(text_style), "Hello".to_string());
+
+    BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child])
+  };
+
+  let child_large = make_item(20.0);
+  let child_small = make_item(5.0);
+  let child_wrap = make_item(20.0);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child_large, child_small, child_wrap],
+  );
+
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(120.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout should succeed");
+
+  assert_eq!(fragment.children.len(), 3);
+  let a = &fragment.children[0];
+  let b = &fragment.children[1];
+  let c = &fragment.children[2];
+
+  // Prove wrapping occurred (2 items on the first line, 1 on the second).
+  let eps = 0.75;
+  assert!(
+    (b.bounds.x() - a.bounds.x()).abs() > 1.0,
+    "expected first two items to be on the same line (a.x={:.2}, b.x={:.2})",
+    a.bounds.x(),
+    b.bounds.x()
+  );
+  assert!(
+    (c.bounds.x() - a.bounds.x()).abs() < eps && (c.bounds.x() - b.bounds.x()).abs() > 1.0,
+    "expected third item to wrap onto a different flex line (a.x={:.2}, b.x={:.2}, c.x={:.2})",
+    a.bounds.x(),
+    b.bounds.x(),
+    c.bounds.x()
+  );
+
+  let baseline_a = first_baseline_offset(a).expect("expected child a to have a baseline");
+  let baseline_b = first_baseline_offset(b).expect("expected child b to have a baseline");
+  assert!(
+    (baseline_a - baseline_b).abs() > 1.0,
+    "expected baseline offsets to differ (a={baseline_a:.2}, b={baseline_b:.2})"
+  );
+
+  let baseline_pos_a = a.bounds.y() + baseline_a;
+  let baseline_pos_b = b.bounds.y() + baseline_b;
+  assert!(
+    (baseline_pos_a - baseline_pos_b).abs() < eps,
+    "expected baselines to align under wrap-reverse (a={baseline_pos_a:.2}, b={baseline_pos_b:.2})"
+  );
+}
+
 fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(writing_mode: WritingMode) {
   let fc = FlexFormattingContext::new();
 
@@ -250,6 +337,95 @@ fn run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(wri
   }
 }
 
+fn run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode(
+  writing_mode: WritingMode,
+  direction: Direction,
+) {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = writing_mode;
+  container_style.direction = direction;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_items = AlignItems::Baseline;
+  // 2x20px items fit; the 3rd forces a second column (multi-line).
+  container_style.width = Some(Length::px(120.0));
+  container_style.height = Some(Length::px(40.0));
+
+  let line_height = 20.0;
+  let make_item = |font_size: f32| {
+    let mut wrapper_style = ComputedStyle::default();
+    wrapper_style.display = Display::Block;
+    wrapper_style.writing_mode = writing_mode;
+    wrapper_style.width = Some(Length::px(60.0));
+    wrapper_style.height = Some(Length::px(20.0));
+    wrapper_style.font_size = font_size;
+    wrapper_style.line_height = LineHeight::Length(Length::px(line_height));
+    wrapper_style.flex_shrink = 0.0;
+    let wrapper_style = Arc::new(wrapper_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.writing_mode = writing_mode;
+    text_style.font_size = font_size;
+    text_style.line_height = LineHeight::Length(Length::px(line_height));
+    let text_child = BoxNode::new_text(Arc::new(text_style), "A".to_string());
+
+    BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child])
+  };
+
+  let child_large = make_item(20.0);
+  let child_small = make_item(5.0);
+  let child_wrap = make_item(20.0);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child_large, child_small, child_wrap],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(120.0, 40.0))
+    .expect("layout should succeed");
+
+  assert_eq!(fragment.children.len(), 3);
+  let a = &fragment.children[0];
+  let b = &fragment.children[1];
+  let c = &fragment.children[2];
+
+  // Prove wrapping occurred (2 items in the first column, 1 in the second).
+  let eps = 0.75;
+  assert!(
+    (c.bounds.x() - a.bounds.x()).abs() > 30.0 || (c.bounds.x() - b.bounds.x()).abs() > 30.0,
+    "expected third item to wrap onto a different flex line (a.x={:.2}, b.x={:.2}, c.x={:.2})",
+    a.bounds.x(),
+    b.bounds.x(),
+    c.bounds.x()
+  );
+  assert!(
+    (c.bounds.y() - a.bounds.y()).abs() < eps,
+    "expected wrapped item to start a new line at the main-axis start (a.y={:.2}, c.y={:.2})",
+    a.bounds.y(),
+    c.bounds.y()
+  );
+
+  let baseline_a = baseline_offset_x_with_fallback(a, writing_mode);
+  let baseline_b = baseline_offset_x_with_fallback(b, writing_mode);
+  assert!(
+    (baseline_a - baseline_b).abs() > 1.0,
+    "expected baseline offsets to differ (a={baseline_a:.2}, b={baseline_b:.2})"
+  );
+
+  let baseline_pos_a = a.bounds.x() + baseline_a;
+  let baseline_pos_b = b.bounds.x() + baseline_b;
+  assert!(
+    (baseline_pos_a - baseline_pos_b).abs() < eps,
+    "expected x baselines to align under wrap-reverse (a={baseline_pos_a:.2}, b={baseline_pos_b:.2})"
+  );
+}
+
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_vertical_lr() {
   run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::VerticalLr);
@@ -268,4 +444,20 @@ fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideway
 #[test]
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideways_rl() {
   run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::SidewaysRl);
+}
+
+#[test]
+fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_lr_rtl() {
+  run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::VerticalLr,
+    Direction::Rtl,
+  );
+}
+
+#[test]
+fn flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode_vertical_rl() {
+  run_flex_align_items_baseline_wrap_reverse_aligns_x_baselines_in_vertical_writing_mode(
+    WritingMode::VerticalRl,
+    Direction::Ltr,
+  );
 }
