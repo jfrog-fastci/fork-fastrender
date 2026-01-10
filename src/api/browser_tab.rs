@@ -151,6 +151,7 @@ pub struct BrowserTabHost {
   orchestrator: ScriptOrchestrator,
   scheduler: ScriptScheduler<NodeId>,
   scripts: HashMap<ScriptId, ScriptEntry>,
+  scheduled_script_nodes: HashSet<NodeId>,
   deferred_scripts: HashSet<ScriptId>,
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
@@ -177,6 +178,7 @@ pub struct BrowserTabHost {
   js_execution_options: JsExecutionOptions,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
+  last_dynamic_script_discovery_generation: u64,
 }
 
 impl BrowserTabHost {
@@ -195,6 +197,7 @@ impl BrowserTabHost {
       orchestrator: ScriptOrchestrator::new(),
       scheduler: ScriptScheduler::new(),
       scripts: HashMap::new(),
+      scheduled_script_nodes: HashSet::new(),
       deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
       parser_blocked_on: None,
@@ -213,6 +216,7 @@ impl BrowserTabHost {
       js_execution_options,
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
+      last_dynamic_script_discovery_generation: 0,
     }
   }
 
@@ -279,6 +283,7 @@ impl BrowserTabHost {
     self.orchestrator = ScriptOrchestrator::new();
     self.scheduler = ScriptScheduler::new();
     self.scripts.clear();
+    self.scheduled_script_nodes.clear();
     self.deferred_scripts.clear();
     self.executed.clear();
     self.parser_blocked_on = None;
@@ -302,6 +307,7 @@ impl BrowserTabHost {
       .and_then(|ctx| ctx.csp.clone());
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
+    self.last_dynamic_script_discovery_generation = 0;
     self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
     self.stylesheet_keys_by_node.clear();
     self.next_stylesheet_key = 0;
@@ -738,6 +744,122 @@ impl BrowserTabHost {
     out
   }
 
+  fn discover_dynamic_scripts(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    // Avoid O(N) scans on every hook call by gating discovery on the document's mutation counter.
+    let generation = self.document.dom_mutation_generation();
+    if generation == self.last_dynamic_script_discovery_generation {
+      return Ok(());
+    }
+    self.last_dynamic_script_discovery_generation = generation;
+
+    fn is_html_namespace(namespace: &str) -> bool {
+      namespace.is_empty() || namespace == HTML_NAMESPACE
+    }
+
+    let document_url = self.document_url.as_deref();
+    let discovered: Vec<(NodeId, ScriptElementSpec)> = {
+      let dom = self.document.dom();
+      let mut base_url_tracker = BaseUrlTracker::new(document_url);
+      let mut discovered: Vec<(NodeId, ScriptElementSpec)> = Vec::new();
+
+      let mut stack: Vec<(NodeId, bool, bool, bool)> = Vec::new();
+      stack.push((dom.root(), false, false, false));
+
+      while let Some((id, in_head, in_foreign_namespace, in_template)) = stack.pop() {
+        let node = dom.node(id);
+
+        // Shadow roots are treated as separate trees for script discovery/execution.
+        if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+          continue;
+        }
+
+        // HTML: "prepare a script" early-outs when the script element is not connected. Be robust
+        // against partially-detached nodes that may still appear in a parent's `children` list.
+        if !dom.is_connected_for_scripting(id) {
+          continue;
+        }
+
+        let mut next_in_head = in_head;
+        let mut next_in_template = in_template;
+        let mut next_in_foreign_namespace = in_foreign_namespace;
+
+        match &node.kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            attributes,
+          } => {
+            base_url_tracker.on_element_inserted(
+              tag_name,
+              namespace,
+              attributes,
+              in_head,
+              in_foreign_namespace,
+              in_template,
+            );
+
+            if tag_name.eq_ignore_ascii_case("script")
+              && is_html_namespace(namespace)
+              && !node.script_already_started
+              && !self.scheduled_script_nodes.contains(&id)
+            {
+              let mut spec =
+                crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+                  dom,
+                  id,
+                  &base_url_tracker,
+                );
+              spec.parser_inserted = false;
+              discovered.push((id, spec));
+            }
+
+            let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
+            next_in_head = in_head || is_head;
+            let is_template =
+              tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace);
+            next_in_template = in_template || is_template;
+            next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
+          }
+          NodeKind::Slot {
+            namespace,
+            attributes,
+            ..
+          } => {
+            base_url_tracker.on_element_inserted(
+              "slot",
+              namespace,
+              attributes,
+              in_head,
+              in_foreign_namespace,
+              in_template,
+            );
+            next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
+          }
+          _ => {}
+        }
+
+        // Inert subtrees (template contents) should not be traversed for script execution.
+        if node.inert_subtree {
+          continue;
+        }
+
+        // Push children in reverse so we traverse left-to-right in document order.
+        for &child in node.children.iter().rev() {
+          stack.push((child, next_in_head, next_in_foreign_namespace, next_in_template));
+        }
+      }
+
+      discovered
+    };
+
+    for (node_id, spec) in discovered {
+      let base_url_at_discovery = spec.base_url.clone();
+      self.register_and_schedule_dynamic_script(node_id, spec, base_url_at_discovery, event_loop)?;
+    }
+
+    Ok(())
+  }
+
   fn register_and_schedule_script(
     &mut self,
     node_id: NodeId,
@@ -837,10 +959,39 @@ impl BrowserTabHost {
         spec: spec_for_table,
       },
     );
+    self.scheduled_script_nodes.insert(node_id);
     if is_deferred {
       self.lifecycle.register_deferred_script();
       self.deferred_scripts.insert(discovered.id);
     }
+    self.apply_scheduler_actions(discovered.actions, event_loop)?;
+    Ok(discovered.id)
+  }
+
+  fn register_and_schedule_dynamic_script(
+    &mut self,
+    node_id: NodeId,
+    spec: ScriptElementSpec,
+    base_url_at_discovery: Option<String>,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<ScriptId> {
+    let spec_for_table = spec.clone();
+    if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
+      self
+        .js_execution_options
+        .check_script_source(&spec_for_table.inline_text, "source=inline")?;
+    }
+    let discovered = self
+      .scheduler
+      .discovered_script(spec, node_id, base_url_at_discovery)?;
+    self.scripts.insert(
+      discovered.id,
+      ScriptEntry {
+        node_id,
+        spec: spec_for_table,
+      },
+    );
+    self.scheduled_script_nodes.insert(node_id);
     self.apply_scheduler_actions(discovered.actions, event_loop)?;
     Ok(discovered.id)
   }
@@ -923,12 +1074,16 @@ impl BrowserTabHost {
           }
 
           let wait_result = self.wait_for_stylesheets_if_needed(script_id, event_loop);
-          let exec_result = match wait_result {
+          let (generation_before, exec_result) = match wait_result {
             Ok(()) => {
-              let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-              self.execute_script(script_id, &source_text, event_loop)
+              let generation_before = self.document.dom_mutation_generation();
+              let exec_result = {
+                let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+                self.execute_script(script_id, &source_text, event_loop)
+              };
+              (Some(generation_before), exec_result)
             }
-            Err(err) => Err(err),
+            Err(err) => (None, Err(err)),
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
           self.finish_script_execution(script_id, event_loop)?;
@@ -958,6 +1113,13 @@ impl BrowserTabHost {
           // microtasks until the outermost script returns.
           if self.js_execution_depth.get() == 0 {
             event_loop.perform_microtask_checkpoint(self)?;
+          }
+
+          // HTML: scripts inserted by the executed script (or its microtasks) should be prepared
+          // once the script finishes running. Avoid O(N) DOM scans when the script did not mutate
+          // the DOM.
+          if generation_before.is_some_and(|before| self.document.dom_mutation_generation() != before) {
+            self.discover_dynamic_scripts(event_loop)?;
           }
         }
         ScriptSchedulerAction::QueueTask {
@@ -1197,7 +1359,12 @@ impl BrowserTabHost {
     let is_blocking = self
       .scripts
       .get(&script_id)
-      .is_some_and(|entry| entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr);
+      .is_some_and(|entry| {
+        entry.spec.parser_inserted
+          && entry.spec.src_attr_present
+          && !entry.spec.async_attr
+          && !entry.spec.defer_attr
+      });
 
     if is_blocking {
       let script_node_id = self
@@ -2011,6 +2178,12 @@ impl BrowserTab {
     mut on_error: impl FnMut(Error),
     mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
+    {
+      // Ensure scripts inserted outside the event loop (e.g. via host DOM mutations) are detected
+      // before we decide the loop is idle.
+      let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+      host.discover_dynamic_scripts(event_loop)?;
+    }
     let pending_frame = &mut self.pending_frame;
     self.event_loop.run_until_idle_handling_errors_with_hook(
       &mut self.host,
@@ -2029,6 +2202,7 @@ impl BrowserTab {
             on_render();
           }
         }
+        host.discover_dynamic_scripts(event_loop)?;
         Ok(())
       },
     )
@@ -2155,6 +2329,11 @@ impl BrowserTab {
             });
           }
         }
+
+        // Ensure scripts inserted by rAF callbacks are discovered even when the microtask queue was
+        // empty (meaning the microtask-only run stopped at `MaxTasks` without invoking hooks).
+        let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+        host.discover_dynamic_scripts(event_loop)?;
       }
 
       if self.commit_pending_navigation()? {
@@ -2180,6 +2359,12 @@ impl BrowserTab {
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
+    {
+      // Ensure dynamically inserted scripts are discovered even if the event loop is currently
+      // idle.
+      let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+      host.discover_dynamic_scripts(event_loop)?;
+    }
     let run_limits = self.host.js_execution_options.event_loop_run_limits;
     if self.event_loop.pending_microtask_count() > 0 {
       // Drain microtasks only (HTML microtask checkpoint), but do not run any tasks.
@@ -2188,7 +2373,9 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match self.event_loop.run_until_idle(&mut self.host, microtask_limits)? {
+      match self.event_loop.run_until_idle_with_hook(&mut self.host, microtask_limits, |host, event_loop| {
+        host.discover_dynamic_scripts(event_loop)
+      })? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
         RunUntilIdleOutcome::Stopped(reason) => {
@@ -2204,7 +2391,9 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match self.event_loop.run_until_idle(&mut self.host, one_task_limits)? {
+      match self.event_loop.run_until_idle_with_hook(&mut self.host, one_task_limits, |host, event_loop| {
+        host.discover_dynamic_scripts(event_loop)
+      })? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
         RunUntilIdleOutcome::Stopped(reason) => {

@@ -63,6 +63,7 @@ mod browser_thread_select_dropdown_choose;
 mod browser_thread_paint_cancellation;
 mod document;
 mod document2;
+mod dynamic_script_insertion;
 mod history_navigation;
 mod select_dropdown;
 mod select_dropdown_hidden_option_arrow_key;

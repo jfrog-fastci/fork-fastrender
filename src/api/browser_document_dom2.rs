@@ -244,6 +244,14 @@ impl BrowserDocumentDom2 {
     self.dom.as_ref()
   }
 
+  /// Returns a monotonically increasing counter that changes whenever the DOM might have mutated.
+  ///
+  /// This is intended for host integrations that need to perform bounded whole-document scans (for
+  /// example: detecting dynamically inserted `<script>` elements after JS-driven DOM mutations).
+  pub fn dom_mutation_generation(&self) -> u64 {
+    self.dom.mutation_generation()
+  }
+
   /// Returns a mutable reference to the live `dom2` document, marking the document dirty.
   ///
   /// Note: `dom_mut()` is intentionally conservative. Callers that want incremental invalidation

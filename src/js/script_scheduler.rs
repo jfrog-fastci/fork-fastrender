@@ -591,12 +591,22 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
           }
         } else {
-          // Inline classic scripts execute immediately and block parsing.
-          actions.push(ScriptSchedulerAction::ExecuteNow {
-            script_id: id,
-            node_id,
-            source_text: element.inline_text,
-          });
+          // Inline classic scripts:
+          // - parser-inserted: execute synchronously (parsing-blocking),
+          // - dynamically inserted: queue as a task (MVP: keep DOM mutation calls non-reentrant).
+          if element.parser_inserted {
+            actions.push(ScriptSchedulerAction::ExecuteNow {
+              script_id: id,
+              node_id,
+              source_text: element.inline_text,
+            });
+          } else {
+            actions.push(ScriptSchedulerAction::QueueTask {
+              script_id: id,
+              node_id,
+              source_text: element.inline_text,
+            });
+          }
         }
       }
       ScriptType::Module => {
