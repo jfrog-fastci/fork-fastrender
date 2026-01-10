@@ -51,7 +51,7 @@ use fastrender::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write;
 use std::fs;
 use std::io;
@@ -687,35 +687,6 @@ fn collect_entries(args: &Args, page_filter: Option<PagesetFilter>) -> Vec<Cache
     }
   };
 
-  let mut stem_to_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
-  for entry in &entries {
-    stem_to_paths
-      .entry(entry.stem.clone())
-      .or_default()
-      .push(entry.path.clone());
-  }
-
-  let duplicates: Vec<_> = stem_to_paths
-    .into_iter()
-    .filter(|(_, paths)| paths.len() > 1)
-    .collect();
-  if !duplicates.is_empty() {
-    eprintln!("Cached HTML stems collide after normalization:");
-    for (stem, paths) in duplicates {
-      let joined = paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-      eprintln!("  {stem}: {joined}");
-    }
-    eprintln!(
-      "Clean stale files in {} or re-run fetch_pages --refresh.",
-      CACHE_HTML_DIR
-    );
-    std::process::exit(1);
-  }
-
   entries.sort_by(|a, b| a.cache_stem.cmp(&b.cache_stem));
 
   if let Some((index, total)) = args.shard {
@@ -980,15 +951,16 @@ fn render_panic_result(
   started: Instant,
   message: String,
 ) -> PageResult {
+  let output_stem = &entry.cache_stem;
   let time_ms = started.elapsed().as_millis();
   let mut log = format!(
-    "=== {} ===\nStatus: CRASH\nPanic: {}\nTime: {}ms\n",
-    entry.stem, message, time_ms
+    "=== {} ===\nCanonical: {}\nStatus: CRASH\nPanic: {}\nTime: {}ms\n",
+    output_stem, entry.stem, message, time_ms
   );
-  let _ = fs::write(log_path_for(&shared.out_dir, &entry.stem), &log);
+  let _ = fs::write(log_path_for(&shared.out_dir, output_stem), &log);
   if shared.diagnostics_json {
     let diag = DiagnosticsFile {
-      page: entry.stem.clone(),
+      page: output_stem.to_string(),
       status: "crash".to_string(),
       error: Some(message.clone()),
       time_ms,
@@ -997,14 +969,14 @@ fn render_panic_result(
       summary: None,
     };
     write_stage_json(
-      diagnostics_path_for(&shared.out_dir, &entry.stem),
+      diagnostics_path_for(&shared.out_dir, output_stem),
       &diag,
       &mut log,
     );
-    let _ = fs::write(log_path_for(&shared.out_dir, &entry.stem), &log);
+    let _ = fs::write(log_path_for(&shared.out_dir, output_stem), &log);
   }
   PageResult {
-    name: entry.stem.clone(),
+    name: output_stem.to_string(),
     status: Status::Crash(message),
     time_ms,
     size: None,
@@ -1013,13 +985,13 @@ fn render_panic_result(
 
 fn render_entry(shared: &RenderShared, entry: &CachedEntry) -> PageResult {
   let started = Instant::now();
-  apply_test_render_delay(Some(&entry.stem));
-  if should_panic_for_test(&entry.stem) {
+  apply_test_render_delay(Some(&entry.cache_stem));
+  if should_panic_for_test(&entry.cache_stem) {
     return render_panic_result(
       shared,
       entry,
       started,
-      format!("simulated crash for {}", entry.stem),
+      format!("simulated crash for {}", entry.cache_stem),
     );
   }
   let result = std::panic::catch_unwind(AssertUnwindSafe(|| render_entry_inner(shared, entry)));
@@ -1030,7 +1002,7 @@ fn render_entry(shared: &RenderShared, entry: &CachedEntry) -> PageResult {
 }
 
 fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult {
-  let name = entry.stem.clone();
+  let name = entry.cache_stem.clone();
   let path = entry.path.clone();
   let output_path = output_path_for(&shared.out_dir, &name);
   let log_path = log_path_for(&shared.out_dir, &name);
@@ -1039,7 +1011,8 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
   let mut log = String::new();
 
   let _ = writeln!(log, "=== {} ===", name);
-  let _ = writeln!(log, "Stem: {}", entry.cache_stem);
+  let _ = writeln!(log, "Canonical: {}", entry.stem);
+  let _ = writeln!(log, "Cache stem: {}", entry.cache_stem);
   let _ = writeln!(log, "Source: {}", path.display());
   let _ = writeln!(log, "Output: {}", output_path.display());
   let _ = writeln!(
@@ -1385,7 +1358,7 @@ fn build_worker_command(
   }
 
   maybe_set_worker_rayon_threads(&mut cmd, rayon_threads_per_worker);
-  configure_worker_stdio(&mut cmd, &stderr_path_for(&args.out_dir, &entry.stem))?;
+  configure_worker_stdio(&mut cmd, &stderr_path_for(&args.out_dir, &entry.cache_stem))?;
 
   Ok(cmd)
 }
@@ -1493,8 +1466,8 @@ fn run_workers(
       let Some(entry) = queue.pop_front() else {
         break;
       };
-      let _ = fs::remove_file(result_path_for(&args.out_dir, &entry.stem));
-      let _ = fs::remove_file(stderr_path_for(&args.out_dir, &entry.stem));
+      let _ = fs::remove_file(result_path_for(&args.out_dir, &entry.cache_stem));
+      let _ = fs::remove_file(stderr_path_for(&args.out_dir, &entry.cache_stem));
       let child = spawn_worker(
         &exe,
         args,
@@ -1518,17 +1491,20 @@ fn run_workers(
         let mut entry = running.swap_remove(i);
         let _ = entry.child.kill();
         let _ = entry.child.wait();
-        append_timeout_stderr_note(&stderr_path_for(&args.out_dir, &entry.entry.stem), elapsed);
+        append_timeout_stderr_note(
+          &stderr_path_for(&args.out_dir, &entry.entry.cache_stem),
+          elapsed,
+        );
         let message = format!("hard timeout after {:.2}s", hard_timeout.as_secs_f64());
         write_timeout_artifacts(
           &args.out_dir,
-          &entry.entry.stem,
+          &entry.entry.cache_stem,
           &message,
           elapsed,
           args.diagnostics_json,
         );
         let result = PageResult {
-          name: entry.entry.stem.clone(),
+          name: entry.entry.cache_stem.clone(),
           status: Status::Timeout(message),
           time_ms: elapsed.as_millis(),
           size: None,
@@ -1541,18 +1517,21 @@ fn run_workers(
       match running[i].child.try_wait() {
         Ok(Some(status)) => {
           let entry = running.swap_remove(i);
-          if let Some(result) = read_worker_result(&args.out_dir, &entry.entry.stem) {
+          if let Some(result) = read_worker_result(&args.out_dir, &entry.entry.cache_stem) {
             print_page_status(&result);
             results.push(result);
           } else {
             let summary = summarize_exit_status(&status);
             let message = synthesize_worker_failure_note(summary);
             let time_ms = entry.started.elapsed().as_millis();
-            let mut log = format!("=== {} ===\nStatus: CRASH\n{}\n", entry.entry.stem, message);
-            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.stem), &log);
+            let mut log = format!(
+              "=== {} ===\nCanonical: {}\nStatus: CRASH\n{}\n",
+              entry.entry.cache_stem, entry.entry.stem, message
+            );
+            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
             if args.diagnostics_json {
               let diag = DiagnosticsFile {
-                page: entry.entry.stem.clone(),
+                page: entry.entry.cache_stem.clone(),
                 status: "crash".to_string(),
                 error: Some(message.clone()),
                 time_ms,
@@ -1561,14 +1540,14 @@ fn run_workers(
                 summary: None,
               };
               write_stage_json(
-                diagnostics_path_for(&args.out_dir, &entry.entry.stem),
+                diagnostics_path_for(&args.out_dir, &entry.entry.cache_stem),
                 &diag,
                 &mut log,
               );
-              let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.stem), &log);
+              let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
             }
             let result = PageResult {
-              name: entry.entry.stem.clone(),
+              name: entry.entry.cache_stem.clone(),
               status: Status::Crash(message),
               time_ms,
               size: None,
@@ -1584,11 +1563,14 @@ fn run_workers(
           let entry = running.swap_remove(i);
           let message = "worker try_wait failed".to_string();
           let time_ms = entry.started.elapsed().as_millis();
-          let mut log = format!("=== {} ===\nStatus: CRASH\n{}\n", entry.entry.stem, message);
-          let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.stem), &log);
+          let mut log = format!(
+            "=== {} ===\nCanonical: {}\nStatus: CRASH\n{}\n",
+            entry.entry.cache_stem, entry.entry.stem, message
+          );
+          let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
           if args.diagnostics_json {
             let diag = DiagnosticsFile {
-              page: entry.entry.stem.clone(),
+              page: entry.entry.cache_stem.clone(),
               status: "crash".to_string(),
               error: Some(message.clone()),
               time_ms,
@@ -1597,14 +1579,14 @@ fn run_workers(
               summary: None,
             };
             write_stage_json(
-              diagnostics_path_for(&args.out_dir, &entry.entry.stem),
+              diagnostics_path_for(&args.out_dir, &entry.entry.cache_stem),
               &diag,
               &mut log,
             );
-            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.stem), &log);
+            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
           }
           let result = PageResult {
-            name: entry.entry.stem.clone(),
+            name: entry.entry.cache_stem.clone(),
             status: Status::Crash(message),
             time_ms,
             size: None,
@@ -1641,7 +1623,7 @@ fn worker_main(worker_args: WorkerArgs) -> io::Result<()> {
 
   let page_result = render_entry(&shared, &entry);
 
-  write_worker_result(&args.out_dir, &entry.stem, &page_result)
+  write_worker_result(&args.out_dir, &entry.cache_stem, &page_result)
 }
 
 const TEXT_PREVIEW: usize = 160;
@@ -2302,6 +2284,43 @@ mod tests {
       cmd_args.get(pos + 1).map(String::as_str),
       Some("use-stale-when-deadline")
     );
+  }
+
+  #[test]
+  fn collect_entries_allows_collision_suffix_cache_stems() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cache_dir = dir.path().join("fetches/html");
+    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    std::fs::write(cache_dir.join("example.com--deadbeef.html"), "<!doctype html>")
+      .expect("write html");
+    std::fs::write(cache_dir.join("example.com--beefcafe.html"), "<!doctype html>")
+      .expect("write html");
+
+    struct CwdGuard(std::path::PathBuf);
+
+    impl Drop for CwdGuard {
+      fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+      }
+    }
+
+    let prev_dir = std::env::current_dir().expect("current dir");
+    let _cwd_guard = CwdGuard(prev_dir);
+    std::env::set_current_dir(dir.path()).expect("set current dir");
+
+    let cli = Cli::try_parse_from(["render_pages"]).expect("parse args");
+    let entries = super::collect_entries(&cli.args, None);
+    assert_eq!(entries.len(), 2);
+
+    // Collision-aware cache stems should map to a shared canonical stem.
+    assert_eq!(entries[0].stem, "example.com");
+    assert_eq!(entries[1].stem, "example.com");
+
+    // The output names are based on cache stems so they remain unique.
+    assert_ne!(entries[0].cache_stem, entries[1].cache_stem);
+    assert_eq!(entries[0].cache_stem, "example.com--beefcafe");
+    assert_eq!(entries[1].cache_stem, "example.com--deadbeef");
   }
 
   #[test]
