@@ -1454,6 +1454,67 @@ mod tests {
     assert_eq!(calls.load(Ordering::Relaxed), 2);
   }
 
+  #[cfg(feature = "flexbox")]
+  #[test]
+  fn flexbox_remeasures_leaf_after_intrinsic_probe_when_main_size_becomes_known() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls_with_known_width = Arc::new(AtomicUsize::new(0));
+    let calls_with_known_width_for_cb = Arc::clone(&calls_with_known_width);
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    // Keep this test focused on cache semantics, not float rounding.
+    taffy.disable_rounding();
+
+    let leaf = taffy.new_leaf(Style::default()).unwrap();
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          flex_direction: FlexDirection::Row,
+          size: Size {
+            width: length(100.0),
+            height: auto(),
+          },
+          ..Default::default()
+        },
+        &[leaf],
+      )
+      .unwrap();
+
+    // During flex layout, the leaf is first measured under intrinsic sizing (MaxContent) with no
+    // known main size, then remeasured with a known/definite main size to determine cross size.
+    //
+    // If the per-node cache incorrectly "promotes" intrinsic measurements to later calls with
+    // `known_dimensions.width == Some(cached_size.width)`, the second measurement can be skipped,
+    // leaving the cross size stuck at the intrinsic result.
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size::MAX_CONTENT,
+        move |known_dimensions, _available_space, node_id, _node_context, _style| {
+          assert_eq!(node_id, leaf);
+          if known_dimensions.width.is_some() {
+            calls_with_known_width_for_cb.fetch_add(1, Ordering::Relaxed);
+            MeasureOutput::from_size(Size {
+              width: 100.0,
+              height: 20.0,
+            })
+          } else {
+            MeasureOutput::from_size(Size {
+              width: 100.0,
+              height: 10.0,
+            })
+          }
+        },
+      )
+      .unwrap();
+
+    assert!(calls_with_known_width.load(Ordering::Relaxed) > 0);
+    assert_eq!(taffy.layout(leaf).unwrap().size.height, 20.0);
+  }
+
   #[cfg(all(feature = "std", panic = "unwind"))]
   #[test]
   fn abort_now_aborts_layout_computation() {
