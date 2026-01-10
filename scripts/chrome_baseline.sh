@@ -566,6 +566,12 @@ if out is None:
 if out is None:
     out = insertion + data
 
+if disable_js:
+    # Many fixtures include `decoding="async"` on `<img>` elements. In headless screenshot mode,
+    # Chrome can capture before those async decodes have finished, producing blank thumbnails in
+    # the baseline PNGs. Force synchronous decode so screenshots are more representative.
+    out = out.replace(b'decoding="async"', b'decoding="sync"')
+
 open(out_path, "wb").write(out)
 print(sha256, end="")
 PY
