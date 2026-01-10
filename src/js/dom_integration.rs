@@ -213,3 +213,9 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
   // too.
   namespace.is_empty() || namespace == HTML_NAMESPACE
 }
+
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+// Notably, this does *not* include U+000B VT (vertical tab).
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
