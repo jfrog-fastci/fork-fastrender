@@ -291,6 +291,7 @@ mod tests {
     dom: Document,
     started_loads: Vec<String>,
     executed: Vec<String>,
+    events: Vec<ScriptElementEvent>,
     next_handle: u32,
   }
 
@@ -300,6 +301,7 @@ mod tests {
         dom,
         started_loads: Vec::new(),
         executed: Vec::new(),
+        events: Vec::new(),
         next_handle: 1,
       }
     }
@@ -367,9 +369,10 @@ mod tests {
   impl ScriptEventDispatcher for TestHost {
     fn dispatch_script_event(
       &mut self,
-      _event: ScriptElementEvent,
+      event: ScriptElementEvent,
       _spec: &ScriptElementSpec,
     ) -> Result<()> {
+      self.events.push(event);
       Ok(())
     }
   }
@@ -559,6 +562,78 @@ mod tests {
     assert!(
       host.executed.is_empty(),
       "expected no inline execution when src attribute is present"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_module_script_empty_src_queues_error_event() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom.append_child(dom.root(), script).expect("append_child");
+    dom
+      .set_attribute(script, "type", "module")
+      .expect("set_attribute");
+    dom.set_attribute(script, "src", "").expect("set_attribute");
+    let text = dom.create_text("INLINE");
+    dom.append_child(script, text).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no fetch to be started for unsupported module script dynamic insertion"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no inline execution when src attribute is present"
+    );
+    assert_eq!(
+      host.events,
+      vec![ScriptElementEvent::Error],
+      "expected module scripts with empty src to queue an error event task"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_script_with_src_queues_error_event() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom.append_child(dom.root(), script).expect("append_child");
+    dom
+      .set_attribute(script, "type", "importmap")
+      .expect("set_attribute");
+    dom
+      .set_attribute(script, "src", "https://example.invalid/map.json")
+      .expect("set_attribute");
+    let text = dom.create_text("{\"imports\":{}}");
+    dom.append_child(script, text).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no fetch to be started for importmap scripts with src"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no execution for importmap scripts"
+    );
+    assert_eq!(
+      host.events,
+      vec![ScriptElementEvent::Error],
+      "expected importmap scripts with src to queue an error event task"
     );
     Ok(())
   }
