@@ -52,6 +52,7 @@ pub mod html_script_pipeline;
 pub mod html_script_scheduler;
 pub mod import_maps;
 pub mod module_graph_loader;
+pub mod realm_module_loader;
 pub mod script_encoding;
 pub mod options;
 pub mod document_write;
@@ -181,6 +182,7 @@ pub use html_classic_scripts::{
   ResourceFetcherClassicScriptFetcher,
 };
 pub use module_loader::VmJsModuleLoader;
+pub use realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,

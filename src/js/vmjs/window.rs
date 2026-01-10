@@ -7,7 +7,7 @@ use crate::js::runtime::with_event_loop;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_realm::{
   register_dom_host_source, register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
-  WindowRealmHost, WindowRealmUserData,
+  WindowRealmHost,
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -462,23 +462,23 @@ impl WindowHostState {
   }
 
   pub fn import_map_state(&self) -> &ImportMapState {
-    if let Some(data) = self.window.vm().user_data::<WindowRealmUserData>() {
-      if let Some(loader) = data.module_loader.as_ref() {
-        return &loader.import_map_state;
-      }
-    }
     &self.import_map_state
   }
 
   pub fn import_map_state_mut(&mut self) -> &mut ImportMapState {
-    // Keep import maps in the realm's module loader state when module scripts are enabled so
-    // dynamic `import()` uses the same map as host APIs like `register_import_map_*`.
-    if let Some(data) = self.window.vm_mut().user_data_mut::<WindowRealmUserData>() {
-      if let Some(loader) = data.module_loader.as_mut() {
-        return &mut loader.import_map_state;
-      }
-    }
     &mut self.import_map_state
+  }
+
+  fn sync_import_map_state_to_module_loader(&mut self) {
+    // `ModuleLoader` lives behind a `RefCell`, so we cannot return references into it. Keep the host
+    // import map state as the canonical value, and copy it into the per-realm loader when module
+    // loading is enabled.
+    if self.window.vm().module_graph_ptr().is_none() {
+      return;
+    }
+    let module_loader = self.window.module_loader_handle();
+    let mut module_loader = module_loader.borrow_mut();
+    *module_loader.import_map_state_mut() = self.import_map_state.clone();
   }
 
   pub fn import_maps(&self) -> &ImportMapState {
@@ -522,6 +522,7 @@ impl WindowHostState {
       crate::js::import_maps::create_import_map_parse_result_with_limits(json, base_url, limits);
     let warnings = std::mem::take(&mut parse_result.warnings);
     crate::js::import_maps::register_import_map_with_limits(self.import_map_state_mut(), parse_result, limits)?;
+    self.sync_import_map_state_to_module_loader();
     Ok(warnings)
   }
 
@@ -536,6 +537,8 @@ impl WindowHostState {
       // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
       // import map errors (console, `window.onerror`, etc.).
       self.import_map_errors.push(err);
+    } else {
+      self.sync_import_map_state_to_module_loader();
     }
 
     Ok(())
@@ -1328,7 +1331,11 @@ mod tests {
       "#,
     )?;
 
-    host.perform_microtask_checkpoint()?;
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
 
     assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
     assert!(matches!(
@@ -1375,7 +1382,11 @@ mod tests {
       "#,
     )?;
 
-    host.perform_microtask_checkpoint()?;
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
 
     let err = get_global_prop_utf8(&mut host, "__err").unwrap_or_default();
     assert!(
@@ -1417,7 +1428,11 @@ mod tests {
       "#,
     )?;
 
-    host.perform_microtask_checkpoint()?;
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
 
     assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
     assert!(matches!(
@@ -1447,7 +1462,11 @@ mod tests {
       "#,
     )?;
 
-    host.perform_microtask_checkpoint()?;
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
 
     let err = get_global_prop_utf8(&mut host, "__err").unwrap_or_default();
     assert!(

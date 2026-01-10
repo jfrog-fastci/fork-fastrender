@@ -4399,17 +4399,26 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome};
+  use crate::js::realm_module_loader::ModuleLoader;
   use crate::js::JsExecutionOptions;
   use crate::js::window_realm::WindowRealm;
   use crate::js::window_realm::WindowRealmConfig;
   use crate::resource::FetchedResource;
+  use std::cell::RefCell;
   use std::collections::VecDeque;
+  use std::rc::Rc;
   use std::sync::Arc;
   use std::time::Duration;
   use vm_js::{ExecutionContext, HeapLimits, RootId, VmOptions};
   use vm_js::{Job, RealmId, VmHostHooks};
   use vm_js::PromiseState;
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
+
+  fn make_user_data(document_url: &str) -> WindowRealmUserData {
+    let url = document_url.to_string();
+    let module_loader = Rc::new(RefCell::new(ModuleLoader::new(Some(url.clone()))));
+    WindowRealmUserData::new(url, module_loader)
+  }
 
   struct DummyHost;
 
@@ -4736,9 +4745,7 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    vm.set_user_data(WindowRealmUserData::new(
-      "https://example.com/dir/page".to_string(),
-    ));
+    vm.set_user_data(make_user_data("https://example.com/dir/page"));
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
@@ -5115,9 +5122,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     // `Response.redirect("relative")` resolves against the current document base URL, which is
     // stored on the VM by `WindowRealm`.
-    vm.set_user_data(WindowRealmUserData::new(
-      "https://example.com/dir/page".to_string(),
-    ));
+    vm.set_user_data(make_user_data("https://example.com/dir/page"));
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);

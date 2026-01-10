@@ -1,9 +1,8 @@
 use crate::error::{Error, Result};
 use crate::js::runtime::with_event_loop;
-use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
-use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmUserData};
+use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -12,21 +11,16 @@ use crate::js::{
     create_import_map_parse_result_with_limits, register_import_map_with_limits, ImportMapError,
     ImportMapWarningKind,
   },
-  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec,
+  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ModuleKey, ScriptElementSpec,
   WindowFetchBindings, WindowFetchEnv, WindowXhrBindings, WindowXhrEnv,
 };
-use crate::resource::{
-  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
-  origin_from_url, CorsMode, FetchDestination, FetchRequest, ResourceFetcher,
-};
+use crate::resource::{origin_from_url, CorsMode, ResourceFetcher};
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
-use encoding_rs::UTF_8;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  HostDefined, ModuleGraph, ModuleId, PromiseState, SourceText, SourceTextModuleRecord, Value, VmError,
-  VmHost,
+  HostDefined, ModuleGraph, ModuleId, PromiseState, SourceText, Value, VmError, VmHost,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 
@@ -247,6 +241,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       Arc::from("<inline>")
     };
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
+    let js_execution_options = self.js_execution_options;
+    let module_loader = realm.module_loader_handle();
     let exec_result: Result<()> = with_event_loop(event_loop, || {
       update_time_bindings_clock(realm.heap(), clock.clone())
         .map_err(|err| Error::Other(err.to_string()))?;
@@ -255,11 +251,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       // Classic scripts can evaluate dynamic `import()` expressions. If module loading is enabled
       // for this realm, ensure the per-realm loader uses classic-script defaults.
-      if let Some(data) = realm.vm_mut().user_data_mut::<WindowRealmUserData>() {
-        if let Some(loader) = data.module_loader.as_mut() {
-          loader.fetcher = document.fetcher();
-          loader.cors_mode = CorsMode::Anonymous;
-        }
+      if realm.vm().module_graph_ptr().is_some() {
+        let mut loader = module_loader.borrow_mut();
+        loader.set_fetcher(document.fetcher());
+        loader.set_cors_mode(CorsMode::Anonymous);
+        loader.set_js_execution_options(js_execution_options);
       }
       let webidl_bindings_host = match webidl_bindings_host {
         Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
@@ -313,10 +309,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
-    // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
-    // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
-    let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
-
     let entry_specifier = if spec.src_attr_present {
       let Some(entry_url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
         // HTML: modules with `src` present but empty/invalid do not execute.
@@ -335,15 +327,31 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       ));
     };
 
+    // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
+    // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
+    let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
+
     let diagnostics = self.diagnostics.clone();
-    let document_url = self.document_url.clone();
     let clock = event_loop.clock();
+    let js_execution_options = self.js_execution_options;
     let webidl_bindings_host = self.webidl_bindings_host;
+    let entry_key = ModuleKey {
+      url: entry_specifier.clone(),
+      attributes: Vec::new(),
+    };
+    let module_loader = realm.module_loader_handle();
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
       update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       realm.reset_interrupt();
+
+      {
+        let mut loader = module_loader.borrow_mut();
+        loader.set_fetcher(Arc::clone(&fetcher));
+        loader.set_cors_mode(cors_mode);
+        loader.set_js_execution_options(js_execution_options);
+      }
 
       // Route Promise jobs (including module-loading promise reactions) through FastRender's
       // microtask queue.
@@ -371,34 +379,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
       let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
-      let (
-        options,
-        document_origin,
-        module_map_ptr,
-        import_map_state_ptr,
-        loaded_bytes_total_ptr,
-        module_depths_ptr,
-      ) = {
-        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-          return Err(Error::Other("window realm missing user data".to_string()));
-        };
-        let Some(loader) = data.module_loader.as_mut() else {
-          return Err(Error::Other(
-            "module scripts requested but module loading is not enabled for this realm".to_string(),
-          ));
-        };
-        loader.fetcher = Arc::clone(&fetcher);
-        loader.cors_mode = cors_mode;
-        (
-          loader.options,
-          loader.document_origin.clone(),
-          &mut loader.module_map as *mut std::collections::HashMap<String, ModuleId>,
-          &mut loader.import_map_state as *mut crate::js::import_maps::ImportMapState,
-          &mut loader.loaded_bytes_total as *mut usize,
-          &mut loader.module_depths as *mut std::collections::HashMap<ModuleId, usize>,
-        )
-      };
-
       let mut scope = heap.scope();
 
       let vm_error_to_host_error = |scope: &mut vm_js::Scope<'_>, err: VmError| -> Error {
@@ -418,166 +398,40 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         }
       };
 
-      let record_nonfatal_error = |message: String| -> Error {
-        if let Some(diag) = diagnostics.as_ref() {
-          diag.record_js_exception(message.clone(), None);
+      let entry_module: std::result::Result<ModuleId, VmError> = {
+        let mut loader = module_loader.borrow_mut();
+        if spec.src_attr_present {
+          loader.get_or_fetch_module(module_graph, entry_key.clone())
+        } else {
+          loader.get_or_parse_inline_module(module_graph, entry_key.clone(), spec.inline_text.as_str())
         }
-        Error::Other(message)
       };
 
-      if let Err(err) = options.check_module_specifier(&entry_specifier) {
-        return Err(record_nonfatal_error(err.to_string()));
-      }
-      if let Err(err) = options.check_module_graph_depth(0, &entry_specifier) {
-        return Err(record_nonfatal_error(err.to_string()));
-      }
-
-      let entry_module: ModuleId = if let Some(id) =
-        unsafe { (&*module_map_ptr).get(&entry_specifier).copied() }
-      {
-        id
-      } else if spec.src_attr_present {
-        let next_modules = unsafe { (&*module_map_ptr).len() }
-          .checked_add(1)
-          .ok_or_else(|| record_nonfatal_error("Module graph module count overflowed usize".to_string()))?;
-        if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
-          return Err(record_nonfatal_error(err.to_string()));
-        }
-
-        let current_total = unsafe { *loaded_bytes_total_ptr };
-        let remaining_total = options.max_module_graph_total_bytes.saturating_sub(current_total);
-        let max_fetch = options
-          .max_script_bytes
-          .min(remaining_total)
-          .saturating_add(1);
-        let mut req = FetchRequest::new(&entry_specifier, FetchDestination::ScriptCors)
-          .with_referrer_url(&document_url)
-          .with_credentials_mode(cors_mode.credentials_mode());
-        if let Some(origin) = document_origin.as_ref() {
-          req = req.with_client_origin(origin);
-        }
-
-        let fetched = fetcher.fetch_partial_with_request(req, max_fetch).map_err(|err| {
-          record_nonfatal_error(format!("failed to fetch module {entry_specifier}: {err}"))
-        })?;
-
-        ensure_http_success(&fetched, &entry_specifier)
-          .map_err(|err| record_nonfatal_error(err.to_string()))?;
-        ensure_script_mime_sane(&fetched, &entry_specifier)
-          .map_err(|err| record_nonfatal_error(err.to_string()))?;
-        if cors_enforcement_enabled() {
-          ensure_cors_allows_origin(document_origin.as_ref(), &fetched, &entry_specifier, cors_mode)
-            .map_err(|err| record_nonfatal_error(err.to_string()))?;
-        }
-
-        // HTML import maps: enforce Subresource Integrity metadata (when present).
-        let integrity_metadata = url::Url::parse(&entry_specifier)
-          .ok()
-          .map(|url| unsafe { &*import_map_state_ptr }.resolve_module_integrity_metadata(&url))
-          .unwrap_or("");
-        if !integrity_metadata.is_empty() {
-          if let Err(message) = crate::js::sri::verify_integrity(&fetched.bytes, integrity_metadata)
-          {
-            return Err(record_nonfatal_error(format!(
-              "SRI blocked module {entry_specifier}: {message}"
-            )));
-          }
-        }
-
-        if fetched.bytes.len() > options.max_script_bytes {
-          return Err(record_nonfatal_error(format!(
-            "module {entry_specifier} is too large ({} bytes > max {})",
-            fetched.bytes.len(),
-            options.max_script_bytes
-          )));
-        }
-
-        let next_total = match options.check_module_graph_total_bytes(current_total, fetched.bytes.len(), &entry_specifier)
-        {
-          Ok(next) => next,
-          Err(err) => return Err(record_nonfatal_error(err.to_string())),
-        };
-
-        let source_text = decode_classic_script_bytes(
-          &fetched.bytes,
-          fetched.content_type.as_deref(),
-          UTF_8,
-        );
-        let source = Arc::new(SourceText::new(entry_specifier.clone(), source_text));
-        let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
-          Ok(record) => record,
-          Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
-        };
-        let id = module_graph.add_module(record);
-        unsafe {
-          (&mut *module_map_ptr).insert(entry_specifier.clone(), id);
-          *loaded_bytes_total_ptr = next_total;
-          (&mut *module_depths_ptr).insert(id, 0);
-        }
-        id
-      } else {
-        let next_modules = unsafe { (&*module_map_ptr).len() }
-          .checked_add(1)
-          .ok_or_else(|| record_nonfatal_error("Module graph module count overflowed usize".to_string()))?;
-        if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
-          return Err(record_nonfatal_error(err.to_string()));
-        }
-
-        let inline_len = spec.inline_text.as_bytes().len();
-        if options.max_script_bytes != usize::MAX && inline_len > options.max_script_bytes {
-          return Err(record_nonfatal_error(format!(
-            "inline module {entry_specifier} is too large ({} bytes > max {})",
-            inline_len,
-            options.max_script_bytes
-          )));
-        }
-
-        let current_total = unsafe { *loaded_bytes_total_ptr };
-        let next_total = match options.check_module_graph_total_bytes(current_total, inline_len, &entry_specifier) {
-          Ok(next) => next,
-          Err(err) => return Err(record_nonfatal_error(err.to_string())),
-        };
-
-        let source = Arc::new(SourceText::new(
-          entry_specifier.clone(),
-          spec.inline_text.as_str(),
-        ));
-        let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
-          Ok(record) => record,
-          Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
-        };
-        let id = module_graph.add_module(record);
-        unsafe {
-          (&mut *module_map_ptr).insert(entry_specifier.clone(), id);
-          *loaded_bytes_total_ptr = next_total;
-          (&mut *module_depths_ptr).insert(id, 0);
-        }
-        id
+      let entry_module = match entry_module {
+        Ok(id) => id,
+        Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
       };
 
-      let module_result: std::result::Result<(), VmError> = (|| {
-        // Load all modules in the static import graph.
-        let load_promise = vm_js::load_requested_modules(
-          &mut vm,
-          &mut scope,
-          module_graph,
-          &mut hooks,
-          entry_module,
-          HostDefined::default(),
-        )?;
-        scope.push_root(load_promise)?;
-        ensure_promise_fulfilled(scope.heap(), load_promise)?;
-        Ok(())
-      })();
+      let load_promise = match vm_js::load_requested_modules(
+        &mut vm,
+        &mut scope,
+        module_graph,
+        &mut hooks,
+        entry_module,
+        HostDefined::default(),
+      ) {
+        Ok(p) => p,
+        Err(err) => return Err(vm_error_to_host_error(&mut scope, err)),
+      };
+      if let Err(err) = ensure_promise_fulfilled(scope.heap(), load_promise) {
+        return Err(vm_error_to_host_error(&mut scope, err));
+      }
 
       if let Some(err) = hooks.finish(scope.heap_mut()) {
         return Err(err);
       }
 
-      match module_result {
-        Ok(()) => Ok(()),
-        Err(err) => Err(vm_error_to_host_error(&mut scope, err)),
-      }
+      Ok(())
     });
 
     if let Some(req) = realm.take_pending_navigation_request() {
@@ -625,10 +479,22 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
     let webidl_bindings_host = self.webidl_bindings_host;
+    let js_execution_options = self.js_execution_options;
+    let entry_key = ModuleKey {
+      url: entry_specifier.clone(),
+      attributes: Vec::new(),
+    };
+    let module_loader = realm.module_loader_handle();
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
       update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
+      {
+        let mut loader = module_loader.borrow_mut();
+        loader.set_fetcher(document.fetcher());
+        loader.set_cors_mode(cors_mode);
+        loader.set_js_execution_options(js_execution_options);
+      }
       realm.reset_interrupt();
 
       // Route Promise jobs (including module-loading promise reactions) through FastRender's
@@ -662,92 +528,20 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
       let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
-      let (options, module_map_ptr, loaded_bytes_total_ptr, module_depths_ptr) = {
-        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-          return Err(Error::Other("window realm missing user data".to_string()));
-        };
-        let Some(loader) = data.module_loader.as_mut() else {
-          return Err(Error::Other(
-            "module scripts requested but module loading is not enabled for this realm".to_string(),
-          ));
-        };
-        loader.fetcher = document.fetcher();
-        loader.cors_mode = cors_mode;
-        (
-          loader.options,
-          &mut loader.module_map as *mut std::collections::HashMap<String, ModuleId>,
-          &mut loader.loaded_bytes_total as *mut usize,
-          &mut loader.module_depths as *mut std::collections::HashMap<ModuleId, usize>,
-        )
-      };
-
       let entry_module = {
-        let module_map = unsafe { &mut *module_map_ptr };
-        if let Some(id) = module_map.get(&entry_specifier).copied() {
-          id
-        } else {
-          let record_budget_error = |message: String| {
-            if let Some(diag) = diagnostics.as_ref() {
-              diag.record_js_exception(message, None);
-            }
-          };
-
-          if let Err(err) = options.check_module_specifier(&entry_specifier) {
-            record_budget_error(err.to_string());
-            return Ok(());
-          }
-          if let Err(err) = options.check_module_graph_depth(0, &entry_specifier) {
-            record_budget_error(err.to_string());
-            return Ok(());
-          }
-
-          let next_modules = module_map
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| Error::Other("Module graph module count overflowed usize".to_string()))?;
-          if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
-            record_budget_error(err.to_string());
-            return Ok(());
-          }
-
-          let module_bytes = script_text.as_bytes().len();
-          let context = format!("source=module specifier={entry_specifier}");
-          if let Err(err) = options.check_script_source_bytes(module_bytes, &context) {
-            record_budget_error(err.to_string());
-            return Ok(());
-          }
-
-          let current_total = unsafe { *loaded_bytes_total_ptr };
-          let next_total =
-            match options.check_module_graph_total_bytes(current_total, module_bytes, &entry_specifier) {
-              Ok(next) => next,
-              Err(err) => {
-                record_budget_error(err.to_string());
-                return Ok(());
+        let mut loader = module_loader.borrow_mut();
+        match loader.get_or_parse_inline_module(module_graph, entry_key.clone(), script_text) {
+          Ok(id) => id,
+          Err(err) => {
+            if vm_error_format::vm_error_is_js_exception(&err) {
+              if let Some(diag) = diagnostics.as_ref() {
+                let (message, stack) = vm_error_format::vm_error_to_message_and_stack(heap, err);
+                diag.record_js_exception(message, stack);
               }
-            };
-
-          let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
-          let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
-            Ok(record) => record,
-            Err(err) => {
-              if vm_error_format::vm_error_is_js_exception(&err) {
-                if let Some(diag) = diagnostics.as_ref() {
-                  let (message, stack) = vm_error_format::vm_error_to_message_and_stack(heap, err);
-                  diag.record_js_exception(message, stack);
-                }
-                return Ok(());
-              }
-              return Err(vm_error_format::vm_error_to_error(heap, err));
+              return Ok(());
             }
-          };
-          let id = module_graph.add_module(record);
-          module_map.insert(entry_specifier.clone(), id);
-          unsafe {
-            *loaded_bytes_total_ptr = next_total;
-            (&mut *module_depths_ptr).insert(id, 0);
+            return Err(vm_error_format::vm_error_to_error(heap, err));
           }
-          id
         }
       };
 
@@ -839,13 +633,14 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let Some(realm) = self.realm.as_mut() else {
       return Ok(());
     };
-    let Some(import_map_state) = realm
-      .vm_mut()
-      .user_data_mut::<WindowRealmUserData>()
-      .and_then(|data| data.module_loader.as_mut().map(|loader| &mut loader.import_map_state))
-    else {
+    // Import maps are only meaningful when module scripts are enabled for the realm.
+    if realm.vm().module_graph_ptr().is_none() {
       return Ok(());
-    };
+    }
+
+    let module_loader = realm.module_loader_handle();
+    let mut module_loader = module_loader.borrow_mut();
+    let import_map_state = module_loader.import_map_state_mut();
 
     match register_import_map_with_limits(import_map_state, result, limits) {
       Ok(()) => Ok(()),
@@ -1450,13 +1245,15 @@ mod tests {
       &mut event_loop,
     )?;
 
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    let module_loader = realm.module_loader_handle();
     assert!(
-      executor
-        .realm
-        .as_mut()
-        .and_then(|realm| realm.vm_mut().user_data_mut::<WindowRealmUserData>())
-        .and_then(|data| data.module_loader.as_ref().map(|loader| &loader.import_map_state))
-        .is_some_and(|state| state.import_map.imports.is_empty()),
+      module_loader
+        .borrow_mut()
+        .import_map_state_mut()
+        .import_map
+        .imports
+        .is_empty(),
       "expected import map registration to be blocked by max_bytes"
     );
     Ok(())
@@ -1489,13 +1286,15 @@ mod tests {
       &mut document,
       &mut event_loop,
     )?;
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    let module_loader = realm.module_loader_handle();
     assert!(
-      executor
-        .realm
-        .as_mut()
-        .and_then(|realm| realm.vm_mut().user_data_mut::<WindowRealmUserData>())
-        .and_then(|data| data.module_loader.as_ref().map(|loader| &loader.import_map_state))
-        .is_some_and(|state| state.import_map.imports.contains_key("a")),
+      module_loader
+        .borrow_mut()
+        .import_map_state_mut()
+        .import_map
+        .imports
+        .contains_key("a"),
       "expected first import map entry to be registered"
     );
 
@@ -1508,12 +1307,12 @@ mod tests {
       &mut event_loop,
     )?;
     assert!(
-      executor
-        .realm
-        .as_mut()
-        .and_then(|realm| realm.vm_mut().user_data_mut::<WindowRealmUserData>())
-        .and_then(|data| data.module_loader.as_ref().map(|loader| &loader.import_map_state))
-        .is_some_and(|state| !state.import_map.imports.contains_key("b")),
+      !module_loader
+        .borrow_mut()
+        .import_map_state_mut()
+        .import_map
+        .imports
+        .contains_key("b"),
       "expected import map merge to be blocked by max_total_entries"
     );
     Ok(())
