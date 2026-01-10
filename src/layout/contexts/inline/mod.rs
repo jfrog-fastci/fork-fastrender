@@ -3304,6 +3304,22 @@ impl InlineFormattingContext {
       }
     }
 
+    let (intrinsic_min_width, intrinsic_max_width) = if specified_inline.is_some() {
+      (constraint_inline_border_box, constraint_inline_border_box)
+    } else {
+      let (min_border, max_border) = match style.box_sizing {
+        crate::style::types::BoxSizing::BorderBox => (min_inline, max_inline),
+        crate::style::types::BoxSizing::ContentBox => (
+          (min_inline + edges_actual).max(0.0),
+          (max_inline + edges_actual).max(0.0),
+        ),
+      };
+      (
+        crate::layout::utils::clamp_with_order(preferred_min_border, min_border, max_border),
+        crate::layout::utils::clamp_with_order(preferred_border, min_border, max_border),
+      )
+    };
+
     Ok(
       InlineBlockItem::new(
         fragment,
@@ -3316,6 +3332,7 @@ impl InlineFormattingContext {
         matches!(style.overflow_x, crate::style::types::Overflow::Visible)
           && matches!(style.overflow_y, crate::style::types::Overflow::Visible),
       )
+      .with_intrinsic_widths(intrinsic_min_width, intrinsic_max_width)
       .with_vertical_align(va),
     )
   }
@@ -7932,7 +7949,7 @@ impl InlineFormattingContext {
         }
         InlineItem::InlineBlock(block) => {
           tracker.break_segment();
-          tracker.add_width(block.total_width());
+          tracker.add_width(block.intrinsic_min_total_width());
           tracker.break_segment();
         }
         InlineItem::Ruby(ruby) => {
@@ -7979,7 +7996,7 @@ impl InlineFormattingContext {
           boxed.finish();
         }
         InlineItem::InlineBlock(block) => {
-          tracker.add_width(block.total_width());
+          tracker.add_width(block.intrinsic_max_total_width());
         }
         InlineItem::Ruby(ruby) => {
           tracker.add_width(ruby.width());
@@ -14864,6 +14881,52 @@ mod tests {
       "max-content: expected {}, got {}",
       max_expected,
       max_actual
+    );
+  }
+
+  #[test]
+  fn intrinsic_min_content_width_uses_inline_block_min_content_width() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.font_size = 16.0;
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        default_style(),
+        "Miners clash with police in Bolivia amid protests".to_string(),
+      )],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Block);
+    let (expected_min, expected_max) = fc
+      .compute_intrinsic_inline_sizes(&inline_block)
+      .expect("inline-block intrinsic sizes");
+
+    let (min, max) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&inline_block])
+      .expect("intrinsic widths for children");
+
+    assert!(
+      (min - expected_min).abs() < 0.5,
+      "expected min-content {:.2}, got {:.2}",
+      expected_min,
+      min
+    );
+    assert!(
+      (max - expected_max).abs() < 0.5,
+      "expected max-content {:.2}, got {:.2}",
+      expected_max,
+      max
+    );
+    assert!(
+      max > min + 10.0,
+      "expected max-content {:.2} to exceed min-content {:.2}",
+      max,
+      min
     );
   }
 

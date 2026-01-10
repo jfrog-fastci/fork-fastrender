@@ -2403,6 +2403,12 @@ pub struct InlineBlockItem {
   /// Width of the inline-block
   pub width: f32,
 
+  /// Min-content intrinsic width (border-box, excluding margins).
+  pub intrinsic_min_width: f32,
+
+  /// Max-content intrinsic width (border-box, excluding margins).
+  pub intrinsic_max_width: f32,
+
   /// Height of the inline-block
   pub height: f32,
 
@@ -2504,6 +2510,8 @@ impl InlineBlockItem {
     Self {
       fragment,
       width,
+      intrinsic_min_width: width,
+      intrinsic_max_width: width,
       height,
       margin_left,
       margin_right,
@@ -2516,6 +2524,12 @@ impl InlineBlockItem {
     }
   }
 
+  pub fn with_intrinsic_widths(mut self, min_width: f32, max_width: f32) -> Self {
+    self.intrinsic_min_width = min_width;
+    self.intrinsic_max_width = max_width;
+    self
+  }
+
   /// Sets the vertical alignment
   pub fn with_vertical_align(mut self, align: VerticalAlign) -> Self {
     self.vertical_align = align;
@@ -2524,6 +2538,14 @@ impl InlineBlockItem {
 
   pub fn total_width(&self) -> f32 {
     self.margin_left + self.width + self.margin_right
+  }
+
+  pub fn intrinsic_min_total_width(&self) -> f32 {
+    self.margin_left + self.intrinsic_min_width + self.margin_right
+  }
+
+  pub fn intrinsic_max_total_width(&self) -> f32 {
+    self.margin_left + self.intrinsic_max_width + self.margin_right
   }
 }
 
