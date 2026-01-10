@@ -822,8 +822,16 @@ fn fill_headers_from_init(
       .try_into()
       .map_err(|_| throw_type_error(vm, scope, host, hooks, "Headers init array too large"))?;
 
-    let mut sequence: Vec<[String; 2]> = Vec::with_capacity(len);
+    let mut sequence: Vec<[String; 2]> = Vec::new();
+    sequence
+      .try_reserve_exact(len)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    const TICK_EVERY: usize = 256;
     for idx in 0..len {
+      if idx % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
       let key = alloc_key(scope, &idx.to_string())?;
       let entry = vm.get(scope, obj, key)?;
       let Value::Object(entry_obj) = entry else {
@@ -870,9 +878,19 @@ fn fill_headers_from_init(
   }
 
   // Record form: iterate own keys in `[[OwnPropertyKeys]]` order.
-  let keys = scope.heap().ordinary_own_property_keys(obj)?;
+  let keys = scope
+    .heap()
+    .ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
   let mut pairs: Vec<(String, String)> = Vec::new();
-  for key in keys {
+  pairs
+    .try_reserve_exact(keys.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  const TICK_EVERY: usize = 256;
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
     let PropertyKey::String(s) = key else {
       continue;
     };

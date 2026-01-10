@@ -873,8 +873,22 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     object: Self::Object,
   ) -> Result<Vec<PropertyKey<Self::String, Self::Symbol>>, Self::Error> {
     self.root(Value::Object(object))?;
-    let keys = self.scope.heap().ordinary_own_property_keys(object)?;
-    Ok(keys.into_iter().map(Self::from_vm_property_key).collect())
+    let keys = self
+      .scope
+      .heap()
+      .ordinary_own_property_keys_with_tick(object, || self.vm.tick())?;
+
+    let mut out = Vec::new();
+    out
+      .try_reserve_exact(keys.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for (i, key) in keys.into_iter().enumerate() {
+      if i % 1024 == 0 {
+        self.vm.tick()?;
+      }
+      out.push(Self::from_vm_property_key(key));
+    }
+    Ok(out)
   }
 
   fn alloc_string_from_code_units(&mut self, units: &[u16]) -> Result<Self::String, Self::Error> {

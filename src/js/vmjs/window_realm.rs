@@ -815,7 +815,7 @@ fn storage_to_index(scope: &mut Scope<'_>, value: Value) -> Result<Option<usize>
 }
 
 fn storage_length_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -824,11 +824,18 @@ fn storage_length_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let data_obj = storage_require_this(scope, callee, this)?;
-  let keys = scope.ordinary_own_property_keys(data_obj)?;
-  let count = keys
-    .iter()
-    .filter(|k| matches!(k, PropertyKey::String(_)))
-    .count();
+  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
+
+  let mut count: usize = 0;
+  for (i, key) in keys.iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if matches!(key, PropertyKey::String(_)) {
+      count = count.saturating_add(1);
+    }
+  }
+
   Ok(Value::Number(count as f64))
 }
 
@@ -903,7 +910,7 @@ fn storage_remove_item_native(
 }
 
 fn storage_clear_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -912,15 +919,18 @@ fn storage_clear_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let data_obj = storage_require_this(scope, callee, this)?;
-  let keys = scope.ordinary_own_property_keys(data_obj)?;
-  for key in keys {
+  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
     let _ = scope.ordinary_delete(data_obj, key)?;
   }
   Ok(Value::Undefined)
 }
 
 fn storage_key_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -933,17 +943,23 @@ fn storage_key_native(
   let Some(idx) = storage_to_index(scope, idx_v)? else {
     return Ok(Value::Null);
   };
-  let keys = scope.ordinary_own_property_keys(data_obj)?;
-  let mut string_keys = Vec::new();
-  for key in keys {
-    if let PropertyKey::String(s) = key {
-      string_keys.push(s);
+  let keys = scope.ordinary_own_property_keys_with_tick(data_obj, || vm.tick())?;
+
+  let mut string_idx: usize = 0;
+  for (i, key) in keys.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
     }
+    let PropertyKey::String(s) = key else {
+      continue;
+    };
+    if string_idx == idx {
+      return Ok(Value::String(s));
+    }
+    string_idx = string_idx.saturating_add(1);
   }
-  let Some(key) = string_keys.get(idx).copied() else {
-    return Ok(Value::Null);
-  };
-  Ok(Value::String(key))
+
+  Ok(Value::Null)
 }
 
 fn install_storage_object(
