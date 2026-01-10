@@ -1599,11 +1599,35 @@ impl FormattingContext for FlexFormattingContext {
                           }
                         } else if known_dimensions.height.is_none()
                           && matches!(avail.height, AvailableSpace::Definite(_))
-                          && ((flex_basis_is_auto
-                            && physical_height_is_auto(box_node.style.as_ref()))
+                          && ((flex_basis_is_auto && physical_height_is_auto(box_node.style.as_ref()))
                             || flex_basis_is_content)
                         {
                           avail.height = AvailableSpace::MaxContent;
+                        }
+
+                        // When a flex item is not stretched in the cross axis and its cross size is
+                        // `auto`, the used cross size is content-based. Taffy can still propagate
+                        // the container's definite cross size as the available space for the
+                        // measurement callback; treat that definite available space as max-content
+                        // so nested formatting contexts (notably `flex-wrap` containers with `gap`)
+                        // report their intrinsic size instead of incorrectly expanding and then
+                        // centering their contents.
+                        let effective_align_self =
+                          box_node.style.align_self.unwrap_or(style.align_items);
+                        if effective_align_self != AlignItems::Stretch {
+                          if container_main_axis_is_horizontal {
+                            if known_dimensions.height.is_none()
+                              && matches!(avail.height, AvailableSpace::Definite(_))
+                              && physical_height_is_auto(box_node.style.as_ref())
+                            {
+                              avail.height = AvailableSpace::MaxContent;
+                            }
+                          } else if known_dimensions.width.is_none()
+                            && matches!(avail.width, AvailableSpace::Definite(_))
+                            && physical_width_is_auto(box_node.style.as_ref())
+                          {
+                            avail.width = AvailableSpace::MaxContent;
+                          }
                         }
 
                         // Taffy sometimes propagates a "known" height for nested flex containers even

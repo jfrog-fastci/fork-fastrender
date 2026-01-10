@@ -1098,7 +1098,7 @@ impl InlineFormattingContext {
           if establishes_abs_cb {
             abs_cb_stack.pop();
           }
-          let fallback_metrics = self.compute_strut_metrics(&child.style);
+          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
           let has_floats = child_items
             .iter()
             .any(|item| matches!(item, InlineItem::Floating(_)));
@@ -1477,7 +1477,7 @@ impl InlineFormattingContext {
           if establishes_abs_cb {
             abs_cb_stack.pop();
           }
-          let fallback_metrics = self.compute_strut_metrics(&child.style);
+          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
           let has_floats = child_items
             .iter()
             .any(|item| matches!(item, InlineItem::Floating(_)));
@@ -2240,7 +2240,7 @@ impl InlineFormattingContext {
           if establishes_abs_cb {
             abs_cb_stack.pop();
           }
-          let fallback_metrics = self.compute_strut_metrics(&child.style);
+          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
           let has_floats = child_items
             .iter()
             .any(|item| matches!(item, InlineItem::Floating(_)));
@@ -2607,7 +2607,7 @@ impl InlineFormattingContext {
           if establishes_abs_cb {
             abs_cb_stack.pop();
           }
-          let fallback_metrics = self.compute_strut_metrics(&child.style);
+          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
           let has_floats = child_items
             .iter()
             .any(|item| matches!(item, InlineItem::Floating(_)));
@@ -5461,6 +5461,48 @@ impl InlineFormattingContext {
     let descent = font_size * 0.2;
     let half_leading = (line_height - (ascent + descent)) / 2.0;
     BaselineMetrics::new(ascent + half_leading, line_height, ascent, descent)
+  }
+
+  fn compute_strut_metrics_for_items(
+    &self,
+    style: &ComputedStyle,
+    items: &[InlineItem],
+  ) -> BaselineMetrics {
+    // The CSS "strut" is an imaginary inline box that establishes a minimum line box height.
+    //
+    // If the authored `font-family` resolves to a face that lacks glyph coverage, text shaping can
+    // fall back to later families even though `resolve_scaled_metrics` can still return the missing
+    // face. When the strut metrics come from the missing face while the actual text uses a fallback
+    // face, baseline alignment can inflate the line height and drift relative to browser behavior.
+    let Some(sample) = first_non_whitespace_shaped_run_in_items(items, style) else {
+      return self.compute_strut_metrics(style);
+    };
+
+    let Some(scaled) = self.font_context.get_scaled_metrics_with_variations(
+      sample.font.as_ref(),
+      sample.font_size,
+      &sample.variations,
+    ) else {
+      return self.compute_strut_metrics(style);
+    };
+
+    let line_height =
+      compute_line_height_with_metrics_viewport(style, Some(&scaled), Some(self.viewport_size));
+    if !line_height.is_finite() || line_height <= 0.0 {
+      return self.compute_strut_metrics(style);
+    }
+
+    // CSS 2.1 §10.8: distribute leading equally above and below the font's ascent/descent.
+    let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
+    BaselineMetrics {
+      baseline_offset: scaled.ascent + half_leading,
+      height: line_height,
+      ascent: scaled.ascent,
+      descent: scaled.descent,
+      line_gap: scaled.line_gap,
+      line_height,
+      x_height: scaled.x_height,
+    }
   }
 
   fn compute_strut_metrics_for_segments(
