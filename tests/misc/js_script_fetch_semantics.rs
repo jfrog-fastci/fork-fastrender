@@ -305,3 +305,65 @@ fn referrerpolicy_no_referrer_suppresses_referer_header_for_scripts() -> Result<
   );
   Ok(())
 }
+
+#[test]
+fn document_referrer_policy_header_applies_to_script_requests() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(listener) = try_bind_localhost("referrer-policy header script server") else {
+    return Ok(());
+  };
+
+  let addr = listener.local_addr().expect("server addr");
+  let doc_url = format!("http://{}/page.html", addr);
+
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let server_thread = std::thread::spawn(move || {
+    // Handle the document request + the script request (two separate connections).
+    for _ in 0..2 {
+      let (mut stream, _) = listener.accept().expect("accept");
+      let (path, headers) = read_http_request(&mut stream);
+      if path == "/page.html" {
+        let body = r#"<!doctype html><html><head>
+          <script src="/script.js"></script>
+        </head><body></body></html>"#;
+        write_http_response(
+          stream,
+          "200 OK",
+          "text/html",
+          body,
+          &[("Referrer-Policy", "no-referrer")],
+        );
+      } else if path == "/script.js" {
+        *captured_script_headers_for_thread
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
+        write_http_response(stream, "200 OK", "application/javascript", "EXTERNAL", &[]);
+      } else {
+        write_http_response(stream, "404 Not Found", "text/plain", "not found", &[]);
+      }
+    }
+  });
+
+  let executor = LogExecutor::default();
+  let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+  tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  server_thread.join().expect("join server thread");
+
+  assert_eq!(executor.take_log(), vec!["EXTERNAL".to_string()]);
+
+  let headers = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone()
+    .unwrap_or_default();
+
+  assert!(
+    !headers.contains_key("referer"),
+    "expected Referrer-Policy response header to suppress Referer header; got headers={headers:?}"
+  );
+  Ok(())
+}

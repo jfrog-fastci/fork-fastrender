@@ -1464,8 +1464,12 @@ impl BrowserTab {
       let final_url = super::merge_fragment_from_url(hint, target_url.as_str());
       let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
+      // The `Referrer-Policy` response header applies as the initial document referrer policy
+      // (matching `FastRender::prepare_url`). `<meta name="referrer">` can override it.
+      let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
       let document_referrer_policy =
-        crate::html::referrer_policy::extract_referrer_policy_from_html(&html).unwrap_or_default();
+        crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
+          .unwrap_or(initial_referrer_policy);
 
       // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
       // document URL is used for referrer/origin semantics and must remain stable even if `<base
