@@ -1760,7 +1760,7 @@ impl<'a> Evaluator<'a> {
     //
     // This is also the central stack capture point for implicit throws (TDZ errors, TypeErrors,
     // etc) that are surfaced as `Err(VmError::Throw(..))` from lower-level helpers.
-    let mut thrown_at_stmt = |value: Value| {
+    let thrown_at_stmt = |value: Value| {
       let source = self.env.source();
       let rel_start = stmt.loc.start_u32().saturating_sub(self.env.prefix_len());
       let abs_offset = self.env.base_offset().saturating_add(rel_start);
