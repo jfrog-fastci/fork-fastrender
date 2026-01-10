@@ -125,8 +125,8 @@ fn page_loop_render_fixtures_runs_prebuilt_binary_under_run_limited() {
   );
   assert_eq!(
     cmd_env(&cmd, "FASTR_USE_BUNDLED_FONTS").as_deref(),
-    Some("1"),
-    "expected FASTR_USE_BUNDLED_FONTS=1 for deterministic renders"
+    None,
+    "page-loop should not force FASTR_USE_BUNDLED_FONTS; render_fixtures owns its font config"
   );
   assert_eq!(
     cmd.get_current_dir().map(|p| p.to_path_buf()),
@@ -195,8 +195,8 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
 
   assert_eq!(
     cmd_env(&cmd, "FASTR_USE_BUNDLED_FONTS").as_deref(),
-    Some("1"),
-    "expected FASTR_USE_BUNDLED_FONTS=1 for deterministic renders"
+    None,
+    "page-loop should not force FASTR_USE_BUNDLED_FONTS; inspect_frag owns its font config"
   );
   assert_eq!(
     cmd.get_current_dir().map(|p| p.to_path_buf()),
