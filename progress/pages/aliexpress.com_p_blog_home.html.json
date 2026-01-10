@@ -1,0 +1,24 @@
+{
+  "url": "https://www.aliexpress.com/p/blog/home.html",
+  "config": {
+    "disk_cache_enabled": true,
+    "http_browser_headers_enabled": true
+  },
+  "status": "error",
+  "total_ms": null,
+  "stages_ms": {
+    "fetch": 0.0,
+    "css": 0.0,
+    "cascade": 0.0,
+    "box_tree": 0.0,
+    "layout": 0.0,
+    "paint": 0.0
+  },
+  "notes": "",
+  "auto_notes": "not run",
+  "hotspot": "fetch",
+  "failure_stage": null,
+  "timeout_stage": null,
+  "last_good_commit": "",
+  "last_regression_commit": ""
+}

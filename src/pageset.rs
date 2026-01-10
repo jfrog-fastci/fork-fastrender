@@ -72,7 +72,7 @@ pub const PAGESET_URLS: &[&str] = &[
   "https://sina.com.cn",
   "https://espn.com",
   "https://imdb.com",
-  "https://craigslist.org",
+  "https://www.craigslist.org/about/sites",
   "https://pinterest.com",
   "https://medium.com",
   "https://quora.com",
@@ -113,7 +113,7 @@ pub const PAGESET_URLS: &[&str] = &[
   "https://engadget.com",
   "https://nbcnews.com",
   "https://dailymail.co.uk",
-  "https://figma.com",
+  "https://www.figma.com",
   "https://ft.com",
   "https://phoronix.com",
   "https://nationalgeographic.com",
@@ -143,14 +143,14 @@ pub const PAGESET_URLS: &[&str] = &[
   "https://blog.rust-lang.org",
   "https://rfc-editor.org",
   "https://www.tesco.com/",
-  "https://bing.com",
+  "https://www.bing.com",
   "https://discord.com",
   "https://weather.com",
   "https://bbc.co.uk",
   "https://npmjs.com",
   "https://latimes.com",
   "https://cloudflare.com",
-  "https://aliexpress.com",
+  "https://www.aliexpress.com/p/blog/home.html",
   "https://apnews.com",
   "https://aljazeera.com",
   "https://tripadvisor.com",
@@ -404,6 +404,44 @@ mod tests {
   fn cache_html_path_uses_cache_dir() {
     let path = cache_html_path("example.com");
     assert!(path.ends_with("fetches/html/example.com.html"));
+  }
+
+  #[test]
+  fn stabilized_pageset_urls_have_expected_stems_and_no_collisions() {
+    let stabilized: &[(&str, &str)] = &[
+      (
+        "https://www.aliexpress.com/p/blog/home.html",
+        "aliexpress.com_p_blog_home.html",
+      ),
+      ("https://www.bing.com", "bing.com"),
+      (
+        "https://www.craigslist.org/about/sites",
+        "craigslist.org_about_sites",
+      ),
+      ("https://www.figma.com", "figma.com"),
+    ];
+
+    for (url, expected_stem) in stabilized {
+      assert_eq!(pageset_stem(url).as_deref(), Some(*expected_stem));
+    }
+
+    let (entries, collisions) = pageset_entries_with_collisions();
+    for (_, expected_stem) in stabilized {
+      assert!(
+        !collisions.iter().any(|(stem, _)| stem == expected_stem),
+        "unexpected pageset collision for {expected_stem}"
+      );
+      let matches: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.stem == *expected_stem)
+        .collect();
+      assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one pageset entry for stem {expected_stem}"
+      );
+      assert_eq!(matches[0].cache_stem, *expected_stem);
+    }
   }
 
   #[test]
