@@ -16,9 +16,10 @@ use super::{
 ///
 /// Supported subset:
 /// - Classic scripts only (`type`/`language` mapped via [`determine_script_type_dom2`]).
-/// - External scripts (`src` present and non-empty) are treated as async by default because
-///   DOM-created scripts have the HTML "force async" flag set (captured via
-///   [`ScriptElementSpec::force_async`]).
+/// - External scripts (`src` present and non-empty) are async by default because dynamically created
+///   `<script>` elements have their HTML "force async" flag set (stored on the `dom2` node and
+///   captured via [`ScriptElementSpec::force_async`]). Assigning `script.async = false` clears this
+///   flag and makes external scripts execute in insertion order.
 /// - Inline scripts are queued as `TaskSource::Script` tasks (rather than executing synchronously
 ///   inside the DOM mutation call). The event loop's post-task microtask checkpoint naturally
 ///   applies.
@@ -200,6 +201,7 @@ fn collect_html_script_elements(dom: &Document, node: NodeId, out: &mut Vec<Node
 
 fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> ScriptElementSpec {
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
+  let force_async = dom.node(script).script_force_async;
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
   let crossorigin = dom
@@ -242,13 +244,13 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     src_attr_present,
     inline_text,
     async_attr,
+    force_async,
     defer_attr,
     nomodule_attr,
     crossorigin,
     integrity,
     referrer_policy,
     parser_inserted: false,
-    force_async: dom.node(script).script_force_async,
     node_id: Some(script),
     script_type: determine_script_type_dom2(dom, script),
   }

@@ -105,6 +105,7 @@ pub fn extract_script_elements(
           src_attr_present,
           inline_text,
           async_attr,
+          force_async: false,
           defer_attr,
           nomodule_attr,
           crossorigin,
@@ -113,7 +114,6 @@ pub fn extract_script_elements(
           // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and
           // enabling scheduler tests). This is not reliable for dynamically inserted scripts.
           parser_inserted: true,
-          force_async: false,
           node_id: None,
           script_type: determine_script_type(node),
         });

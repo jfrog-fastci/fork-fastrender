@@ -250,7 +250,7 @@ where
     let is_deferred = spec.script_type == ScriptType::Classic
       && spec.src.is_some()
       && spec.defer_attr
-      && !spec.async_attr;
+      && !spec.is_effectively_async();
     let discovered =
       self
         .scheduler

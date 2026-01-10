@@ -128,6 +128,8 @@ pub mod vm_host;
 pub mod quickjs_dom;
 
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
 #[path = "legacy/dom_integration.rs"]
@@ -234,6 +236,17 @@ pub struct ScriptElementSpec {
   pub inline_text: String,
   /// Whether the `async` boolean attribute is present.
   pub async_attr: bool,
+  /// Whether the script element's internal "force async" flag is set.
+  ///
+  /// HTML uses this per-element flag to make dynamically created scripts async-by-default (even
+  /// without an `async` attribute). Assigning `script.async = false` clears this flag so the script
+  /// can run in insertion order.
+  ///
+  /// Expected defaults:
+  /// - DOM-created `<script>` elements (e.g. `document.createElement("script")`): `true`
+  /// - Parser-created scripts (full document parsing): `false`
+  /// - Fragment-parser-created scripts (e.g. `innerHTML` parsing): `false`
+  pub force_async: bool,
   /// Whether the `defer` boolean attribute is present.
   pub defer_attr: bool,
   /// Whether the `nomodule` boolean attribute is present.
@@ -262,17 +275,6 @@ pub struct ScriptElementSpec {
   /// When building specs during HTML parsing, this should be `true`. Best-effort DOM scans may set
   /// this to `true` as a default, but dynamically inserted scripts should use `false`.
   pub parser_inserted: bool,
-  /// Whether the script element's "force async" flag is set.
-  ///
-  /// HTML's script processing model uses an internal "force async" flag to decide whether a
-  /// classic external script should be treated as async-by-default when the `async` attribute is
-  /// not present.
-  ///
-  /// Expected defaults:
-  /// - DOM-created `<script>` elements (e.g. `document.createElement("script")`): `true`
-  /// - Parser-created scripts (full document parsing): `false`
-  /// - Fragment-parser-created scripts (e.g. `innerHTML` parsing): `false`
-  pub force_async: bool,
   /// `dom2` node ID for the `<script>` element, if known.
   ///
   /// This is used for `Document.currentScript` bookkeeping during execution. For post-parse DOM
@@ -287,6 +289,15 @@ impl ScriptElementSpec {
   /// Whether this script should be suppressed due to the `nomodule` attribute.
   pub fn is_suppressed_by_nomodule(&self, options: &JsExecutionOptions) -> bool {
     options.supports_module_scripts && self.script_type == ScriptType::Classic && self.nomodule_attr
+  }
+
+  /// Whether the script should be treated as "async" for scheduling purposes.
+  ///
+  /// This mirrors the platform behavior where the async IDL attribute reflects both:
+  /// - the presence of the `async` content attribute, and
+  /// - the internal "force async" flag used for dynamic scripts.
+  pub fn is_effectively_async(&self) -> bool {
+    self.async_attr || self.force_async
   }
 }
 

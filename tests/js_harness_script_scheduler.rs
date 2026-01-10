@@ -13,6 +13,7 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
     src_attr_present: true,
     inline_text: String::new(),
     async_attr,
+    force_async: false,
     defer_attr,
     nomodule_attr: false,
     crossorigin: None,
