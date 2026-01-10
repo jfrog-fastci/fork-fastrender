@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vm_js::{
-  GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, MicrotaskQueue, RealmId, RootId, Scope,
-  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  ExecutionContext, GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, MicrotaskQueue, RealmId,
+  RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 #[derive(Debug, Default)]
@@ -270,6 +270,65 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_even_on_erro
   job.run(&mut rt, &mut noop_hooks)?;
 
   assert_eq!(counter.load(Ordering::SeqCst), 1);
+  Ok(())
+}
+
+#[test]
+fn call_without_host_respects_host_hooks_override() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let schedule = rt.exec_script(
+    r#"
+      function schedule() {
+        Promise.resolve().then(function () {});
+      }
+      schedule
+    "#,
+  )?;
+
+  assert_eq!(
+    rt.vm.microtask_queue().len(),
+    0,
+    "VM microtask queue should start empty"
+  );
+
+  let exec_ctx = ExecutionContext {
+    realm: rt.realm().id(),
+    script_or_module: None,
+  };
+
+  let mut host_queue = MicrotaskQueue::new();
+
+  {
+    // Split borrows so we can hold a `Scope` and a `&mut Vm` at the same time.
+    let vm = &mut rt.vm;
+    let heap = &mut rt.heap;
+
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+    let mut scope = heap.scope();
+
+    vm_ctx.with_host_hooks_override(&mut host_queue, |vm| {
+      vm.call_without_host(&mut scope, schedule, Value::Undefined, &[])
+        .expect("schedule() call failed");
+    });
+  }
+
+  assert!(
+    host_queue.len() > 0,
+    "Promise.resolve().then(..) should enqueue at least one job onto the active host hooks override"
+  );
+  assert_eq!(
+    rt.vm.microtask_queue().len(),
+    0,
+    "call_without_host should not enqueue onto the VM-owned microtask queue when an override is active"
+  );
+
+  // Ensure any persistent roots held by queued jobs are cleaned up before dropping the runtime.
+  let errors = host_queue.perform_microtask_checkpoint(&mut rt);
+  assert!(errors.is_empty());
+
   Ok(())
 }
 

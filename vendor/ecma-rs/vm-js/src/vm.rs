@@ -1232,8 +1232,10 @@ impl Vm {
     result
   }
 
-  /// Convenience wrapper around [`Vm::call`] that passes a dummy host context (`()`) and uses the
-  /// VM-owned microtask queue.
+  /// Convenience wrapper around [`Vm::call`] that passes a dummy host context (`()`).
+  ///
+  /// This uses the currently-active host hook implementation (either an embedder-installed host
+  /// hooks override, or the VM-owned microtask queue).
   ///
   /// This exists for internal engine/tests that do not have embedder state available. Host
   /// embeddings should prefer [`Vm::call`] so native handlers can access real host context.
@@ -1245,10 +1247,8 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut hooks = mem::take(&mut self.microtasks);
-    let result = self.call_with_host(scope, &mut hooks, callee, this, args);
-    self.microtasks = hooks;
-    result
+    let mut dummy_host = ();
+    self.call(&mut dummy_host, scope, callee, this, args)
   }
 
   /// Calls `callee` with the provided `this` value and arguments, using a custom host hook
@@ -1491,8 +1491,10 @@ impl Vm {
     result
   }
 
-  /// Convenience wrapper around [`Vm::construct`] that passes a dummy host context (`()`) and uses
-  /// the VM-owned microtask queue.
+  /// Convenience wrapper around [`Vm::construct`] that passes a dummy host context (`()`).
+  ///
+  /// This uses the currently-active host hook implementation (either an embedder-installed host
+  /// hooks override, or the VM-owned microtask queue).
   pub fn construct_without_host(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1500,10 +1502,8 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let mut hooks = mem::take(&mut self.microtasks);
-    let result = self.construct_with_host(scope, &mut hooks, callee, args, new_target);
-    self.microtasks = hooks;
-    result
+    let mut dummy_host = ();
+    self.construct(&mut dummy_host, scope, callee, args, new_target)
   }
 
   /// Constructs `callee` with the provided arguments and `new_target`, using a custom host hook
