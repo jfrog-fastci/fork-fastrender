@@ -574,11 +574,14 @@ impl TreeSink for Dom2TreeSink {
 
     let mut doc = self.document.borrow_mut();
     let id = doc.push_node(kind, None, inert_subtree);
-    if is_html_script {
-      doc.node_mut(id).script_force_async = false;
-      doc.node_mut(id).script_parser_document = true;
+    {
+      let node = doc.node_mut(id);
+      node.mathml_annotation_xml_integration_point = flags.mathml_annotation_xml_integration_point;
+      if is_html_script {
+        node.script_force_async = false;
+        node.script_parser_document = true;
+      }
     }
-    doc.node_mut(id).mathml_annotation_xml_integration_point = flags.mathml_annotation_xml_integration_point;
     id
   }
 
