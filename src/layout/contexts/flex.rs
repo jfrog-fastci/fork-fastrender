@@ -9873,7 +9873,12 @@ impl FlexFormattingContext {
                   manual_row_positions = true;
                   fallback_cursor_x = rect.origin.x;
                 }
-                if child_loc_x < rect.origin.x - rect.width().abs().max(wrap_eps) {
+                // Flex items are allowed to overflow the container on the main axis (e.g.
+                // `justify-content:center` with negative free space). Only treat an off-screen
+                // negative main-axis offset as a "runaway" signal when the item is entirely to the
+                // left of the container.
+                let child_max_x = child_loc_x + resolved_width;
+                if child_max_x < rect.origin.x - rect.width().abs().max(wrap_eps) {
                   manual_row_positions = true;
                   fallback_cursor_x = rect.origin.x;
                 }
@@ -10366,7 +10371,12 @@ impl FlexFormattingContext {
                     manual_row_positions = true;
                     fallback_cursor_x = rect.origin.x;
                   }
-                  if child_loc_x < rect.origin.x - rect.width().abs().max(wrap_eps) {
+                  // Flex items are allowed to overflow the container on the main axis (e.g.
+                  // `justify-content:center` with negative free space). Only treat an off-screen
+                  // negative main-axis offset as a "runaway" signal when the item is entirely to the
+                  // left of the container.
+                  let child_max_x = child_loc_x + resolved_width;
+                  if child_max_x < rect.origin.x - rect.width().abs().max(wrap_eps) {
                     manual_row_positions = true;
                     fallback_cursor_x = rect.origin.x;
                   }
