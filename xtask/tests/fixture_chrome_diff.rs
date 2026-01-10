@@ -1054,6 +1054,10 @@ fn dry_run_prints_deterministic_plan_and_forwards_args() {
     .find(|line| line.contains("chrome-baseline-fixtures"))
     .expect("chrome-baseline-fixtures command line should be printed");
   assert!(
+    chrome_line.contains("scripts/run_limited.sh"),
+    "expected chrome-baseline-fixtures to run under scripts/run_limited.sh; got:\n{chrome_line}"
+  );
+  assert!(
     chrome_line.contains("--timeout 12"),
     "chrome-baseline-fixtures should receive timeout; got:\n{chrome_line}"
   );

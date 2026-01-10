@@ -773,7 +773,8 @@ fn build_inspect_frag_command(
 
 fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
   let xtask = std::env::current_exe().context("resolve current xtask executable path")?;
-  let mut cmd = Command::new(xtask);
+  let mut cmd = crate::cmd::run_limited_xtask_command(repo_root);
+  cmd.arg(xtask);
   cmd
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")

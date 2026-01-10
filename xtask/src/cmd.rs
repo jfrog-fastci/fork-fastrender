@@ -8,6 +8,12 @@ use std::process::Command;
 /// capped.
 pub const DEFAULT_LIMIT_AS: &str = "64G";
 
+/// Default address-space limit for nested xtask invocations that may spawn Chrome.
+///
+/// This intentionally matches the default used by `scripts/cargo_agent.sh` for `xtask` runs, since
+/// Chrome currently reserves ~75GiB of virtual address space up front in headless mode.
+pub const DEFAULT_XTASK_LIMIT_AS: &str = "96G";
+
 /// Construct a `Command` that runs cargo through the agent-safe wrapper:
 ///
 /// ```text
@@ -35,6 +41,20 @@ pub fn run_limited_command(repo_root: &Path, as_limit: &str) -> Command {
 /// Convenience wrapper for `run_limited_command` using [`DEFAULT_LIMIT_AS`].
 pub fn run_limited_command_default(repo_root: &Path) -> Command {
   run_limited_command(repo_root, DEFAULT_LIMIT_AS)
+}
+
+/// Construct a `Command` that executes another command under the xtask-friendly address-space cap.
+///
+/// When `xtask` subcommands (page-loop, fixture-chrome-diff) spawn nested `xtask` processes for the
+/// Chrome baseline step, those child processes should still run under a safe-but-sufficient
+/// RLIMIT_AS value. We default to [`DEFAULT_XTASK_LIMIT_AS`] and allow overrides via the same
+/// `FASTR_XTASK_LIMIT_AS` environment variable supported by `scripts/cargo_agent.sh`.
+pub fn run_limited_xtask_command(repo_root: &Path) -> Command {
+  let env_limit = std::env::var("FASTR_XTASK_LIMIT_AS")
+    .ok()
+    .filter(|s| !s.trim().is_empty());
+  let limit = env_limit.as_deref().unwrap_or(DEFAULT_XTASK_LIMIT_AS);
+  run_limited_command(repo_root, limit)
 }
 
 #[cfg(test)]

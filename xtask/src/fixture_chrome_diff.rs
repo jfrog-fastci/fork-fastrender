@@ -1624,7 +1624,8 @@ fn build_chrome_baseline_command(
   layout: &Layout,
 ) -> Result<Command> {
   let xtask = std::env::current_exe().context("resolve current xtask executable path")?;
-  let mut cmd = Command::new(xtask);
+  let mut cmd = xtask::cmd::run_limited_xtask_command(repo_root);
+  cmd.arg(xtask);
   cmd.arg("chrome-baseline-fixtures");
   cmd.arg("--fixture-dir").arg(fixtures_root);
   cmd.arg("--out-dir").arg(&layout.chrome);

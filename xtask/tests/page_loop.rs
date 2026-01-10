@@ -74,6 +74,14 @@ fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
     stdout.contains("chrome-baseline-fixtures"),
     "expected chrome-baseline-fixtures command in plan; got:\n{stdout}"
   );
+  let chrome_line = stdout
+    .lines()
+    .find(|line| line.contains("chrome-baseline-fixtures"))
+    .expect("chrome-baseline-fixtures command line should be printed");
+  assert!(
+    chrome_line.contains("scripts/run_limited.sh"),
+    "expected chrome-baseline-fixtures to run under scripts/run_limited.sh; got:\n{chrome_line}"
+  );
   assert!(
     stdout.contains("--bin diff_renders") || stdout.contains("diff_renders"),
     "expected diff_renders commands in plan; got:\n{stdout}"
