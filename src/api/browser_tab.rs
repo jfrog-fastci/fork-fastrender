@@ -1153,6 +1153,7 @@ mod tests {
   use std::rc::Rc;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
+  use std::ptr::NonNull;
 
   struct TestExecutor {
     log: Rc<RefCell<Vec<String>>>,
@@ -1349,6 +1350,76 @@ mod tests {
         "microtask:A".to_string()
       ]
     );
+    Ok(())
+  }
+
+  struct DomSourceGuard {
+    id: u64,
+  }
+
+  impl Drop for DomSourceGuard {
+    fn drop(&mut self) {
+      crate::js::window_realm::unregister_dom_source(self.id);
+    }
+  }
+
+  fn value_to_string(realm: &crate::js::WindowRealm, value: vm_js::Value) -> String {
+    let vm_js::Value::String(s) = value else {
+      panic!("expected string, got {value:?}");
+    };
+    realm.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn vm_js_document_ready_state_tracks_document_lifecycle_transitions() -> Result<()> {
+    let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    let mut event_loop = EventLoop::<BrowserTabHost>::new();
+
+    let dom_source_id =
+      crate::js::window_realm::register_dom_source(NonNull::from(host.dom_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = crate::js::WindowRealm::new(
+      crate::js::WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let ready_state = realm
+      .exec_script("document.readyState")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(&realm, ready_state), "loading");
+
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    let ready_state = realm
+      .exec_script("document.readyState")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(&realm, ready_state), "interactive");
+
+    assert!(event_loop.run_next_task(&mut host)?);
+    let ready_state = realm
+      .exec_script("document.readyState")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(&realm, ready_state), "interactive");
+
+    assert!(event_loop.run_next_task(&mut host)?);
+    let ready_state = realm
+      .exec_script("document.readyState")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(&realm, ready_state), "interactive");
+
+    assert!(event_loop.run_next_task(&mut host)?);
+    let ready_state = realm
+      .exec_script("document.readyState")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(&realm, ready_state), "complete");
+
     Ok(())
   }
 }

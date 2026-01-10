@@ -6424,6 +6424,40 @@ fn document_current_script_get_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn document_ready_state_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::String(scope.alloc_string("complete")?));
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Ok(Value::String(scope.alloc_string("complete")?));
+    }
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::String(scope.alloc_string("complete")?));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  Ok(Value::String(scope.alloc_string(dom.ready_state().as_str())?))
+}
+
 fn document_cookie_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6769,20 +6803,27 @@ fn init_window_globals(
 
   // Document state shims.
   //
-  // These are frequently read by real-world scripts (e.g. to decide whether to run animations) and
-  // should exist even though FastRender does not currently model lifecycle state transitions.
+  // These are frequently read by real-world scripts (e.g. to decide whether to run animations).
   let ready_state_key = alloc_key(&mut scope, "readyState")?;
-  let ready_state_s = scope.alloc_string("complete")?;
-  scope.push_root(Value::String(ready_state_s))?;
+  let ready_state_call_id = vm.register_native_call(document_ready_state_get_native)?;
+  let ready_state_name = scope.alloc_string("get readyState")?;
+  scope.push_root(Value::String(ready_state_name))?;
+  let ready_state_func =
+    scope.alloc_native_function(ready_state_call_id, None, ready_state_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    ready_state_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(ready_state_func))?;
   scope.define_property(
     document_obj,
     ready_state_key,
     PropertyDescriptor {
       enumerable: false,
       configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::String(ready_state_s),
-        writable: false,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(ready_state_func),
+        set: Value::Undefined,
       },
     },
   )?;
@@ -8653,6 +8694,35 @@ mod tests {
     assert_eq!(get_string(realm.heap(), visibility), "visible");
 
     assert_eq!(realm.exec_script("document.hidden")?, Value::Bool(false));
+
+    Ok(())
+  }
+
+  #[test]
+  fn document_ready_state_reflects_dom2_document_ready_state() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    for (state, expected) in [
+      (crate::web::dom::DocumentReadyState::Loading, "loading"),
+      (crate::web::dom::DocumentReadyState::Interactive, "interactive"),
+      (crate::web::dom::DocumentReadyState::Complete, "complete"),
+    ] {
+      dom.set_ready_state(state);
+      let ready_state = realm.exec_script("document.readyState")?;
+      assert_eq!(get_string(realm.heap(), ready_state), expected);
+    }
+
+    dom.set_ready_state(crate::web::dom::DocumentReadyState::Loading);
+    realm.exec_script("document.readyState = 'complete'")?;
+    let ready_state = realm.exec_script("document.readyState")?;
+    assert_eq!(get_string(realm.heap(), ready_state), "loading");
 
     Ok(())
   }
