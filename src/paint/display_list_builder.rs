@@ -4367,7 +4367,7 @@ impl DisplayListBuilder {
               let resolved_src = image_cache.resolve_url(src);
               match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
                 Ok(cached) => {
-                  if cached.image.color().has_alpha() {
+                  if cached.is_vector || cached.has_alpha {
                     MaskMode::Alpha
                   } else {
                     MaskMode::Luminance
@@ -4436,7 +4436,7 @@ impl DisplayListBuilder {
             let resolved_src = image_cache.resolve_url(src);
             match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
               Ok(cached) => {
-                if cached.is_vector || cached.image.color().has_alpha() {
+                if cached.is_vector || cached.has_alpha {
                   MaskBorderMode::Alpha
                 } else {
                   MaskBorderMode::Luminance

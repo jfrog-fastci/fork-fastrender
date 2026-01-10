@@ -2484,6 +2484,13 @@ pub struct CachedImage {
   pub orientation: Option<OrientationTransform>,
   /// Resolution in image pixels per CSS px (dppx) when provided by metadata.
   pub resolution: Option<f32>,
+  /// True when the decoded source image contains alpha information.
+  ///
+  /// Note: Some bitmap decoders normalize to RGBA (adding an opaque alpha channel) even when the
+  /// original image format did not include alpha. This flag preserves whether the source image
+  /// actually provided alpha so features like `mask-mode: match-source` can distinguish
+  /// alpha-masks vs luminance-masks.
+  pub has_alpha: bool,
   /// Whether this image originated from a vector source (SVG).
   pub is_vector: bool,
   /// Intrinsic aspect ratio when known. SVGs that opt out of aspect-ratio preservation keep this
@@ -2774,6 +2781,7 @@ fn about_url_placeholder_image() -> Arc<CachedImage> {
       image: Arc::new(DynamicImage::ImageRgba8(img)),
       orientation: None,
       resolution: None,
+      has_alpha: true,
       is_vector: false,
       intrinsic_ratio: None,
       aspect_ratio_none: false,
@@ -4926,8 +4934,16 @@ impl ImageCache {
     let fetch_ms = fetch_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
     let decode_timer = Instant::now();
     let decode_start = profile_enabled.then_some(decode_timer);
-    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) =
-      match {
+    let (
+      img,
+      has_alpha,
+      orientation,
+      resolution,
+      is_vector,
+      intrinsic_ratio,
+      aspect_ratio_none,
+      svg_content,
+    ) = match {
         // Image decoding can be triggered deep inside nested deadline budgets (e.g. display-list
         // builder time slices). Those scoped budgets are meant to bound renderer algorithm choice
         // (e.g. fall back to legacy paint) but should not cause subresource decoding to be dropped
@@ -4951,6 +4967,7 @@ impl ImageCache {
       image: Arc::new(img),
       orientation,
       resolution,
+      has_alpha,
       is_vector,
       intrinsic_ratio,
       aspect_ratio_none,
@@ -5028,8 +5045,16 @@ impl ImageCache {
     let total_start = profile_enabled.then(Instant::now);
     let decode_timer = Instant::now();
     let decode_start = profile_enabled.then_some(decode_timer);
-    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) =
-      {
+    let (
+      img,
+      has_alpha,
+      orientation,
+      resolution,
+      is_vector,
+      intrinsic_ratio,
+      aspect_ratio_none,
+      svg_content,
+    ) = {
         // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
         let deadline = render_control::root_deadline();
         render_control::with_deadline(deadline.as_ref(), || {
@@ -5044,6 +5069,7 @@ impl ImageCache {
       image: Arc::new(img),
       orientation,
       resolution,
+      has_alpha,
       is_vector,
       intrinsic_ratio,
       aspect_ratio_none,
@@ -5423,6 +5449,7 @@ impl ImageCache {
       image: Arc::new(img),
       orientation: None,
       resolution: None,
+      has_alpha: true,
       is_vector: true,
       intrinsic_ratio,
       aspect_ratio_none,
@@ -5731,6 +5758,7 @@ impl ImageCache {
     url: &str,
   ) -> Result<(
     DynamicImage,
+    bool,
     Option<OrientationTransform>,
     Option<f32>,
     bool,
@@ -5745,6 +5773,7 @@ impl ImageCache {
       let img = RgbaImage::new(1, 1);
       return Ok((
         DynamicImage::ImageRgba8(img),
+        true,
         None,
         None,
         false,
@@ -5773,7 +5802,7 @@ impl ImageCache {
         let svg_content: Arc<str> = Arc::from(content);
         let (img, ratio, aspect_none) =
           self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
-        return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+        return Ok((img, true, None, None, true, ratio, aspect_none, Some(svg_content)));
       }
     } else if url_is_svgz || mime_is_svg {
       if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
@@ -5782,7 +5811,7 @@ impl ImageCache {
             let svg_content: Arc<str> = Arc::from(content);
             let (img, ratio, aspect_none) =
               self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
-            return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+            return Ok((img, true, None, None, true, ratio, aspect_none, Some(svg_content)));
           }
 
           // Decompressed to UTF-8 but doesn't look like SVG markup; treat as a (possibly mislabelled)
@@ -5790,14 +5819,14 @@ impl ImageCache {
           let (orientation, resolution) = Self::exif_metadata(&decompressed);
           return self
             .decode_bitmap(&decompressed, content_type, url)
-            .map(|img| (img, orientation, resolution, false, None, false, None));
+            .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None));
         }
 
         // Not valid UTF-8 after decompression; treat as a (possibly mislabelled) bitmap.
         let (orientation, resolution) = Self::exif_metadata(&decompressed);
         return self
           .decode_bitmap(&decompressed, content_type, url)
-          .map(|img| (img, orientation, resolution, false, None, false, None));
+          .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None));
       }
     }
 
@@ -5805,7 +5834,7 @@ impl ImageCache {
     let (orientation, resolution) = Self::exif_metadata(bytes);
     self
       .decode_bitmap(bytes, content_type, url)
-      .map(|img| (img, orientation, resolution, false, None, false, None))
+      .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None))
   }
 
   fn probe_resource(&self, resource: &FetchedResource, url: &str) -> Result<CachedImageMetadata> {
@@ -5906,7 +5935,7 @@ impl ImageCache {
     bytes: &[u8],
     content_type: Option<&str>,
     url: &str,
-  ) -> Result<DynamicImage> {
+  ) -> Result<(DynamicImage, bool)> {
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     let format_from_content_type = Self::format_from_content_type(content_type);
     let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
@@ -5927,7 +5956,11 @@ impl ImageCache {
       || matches!(sniffed_format, Some(ImageFormat::Avif))
     {
       match Self::decode_avif(bytes) {
-        Ok(img) => return self.finish_bitmap_decode(img, url),
+        Ok(img) => {
+          let has_alpha = img.color().has_alpha();
+          let img = self.finish_bitmap_decode(img, url)?;
+          return Ok((img, has_alpha));
+        }
         Err(AvifDecodeError::Timeout(err)) => return Err(Error::Render(err)),
         Err(AvifDecodeError::Image(err)) => last_error = Some(self.decode_error(url, err)),
       }
@@ -5937,7 +5970,10 @@ impl ImageCache {
       if format != ImageFormat::Avif {
         check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
-          Ok(img) => return self.finish_bitmap_decode(img, url),
+          Ok((img, has_alpha)) => {
+            let img = self.finish_bitmap_decode(img, url)?;
+            return Ok((img, has_alpha));
+          }
           Err(err) => {
             if let Error::Render(_) = err {
               return Err(err);
@@ -5952,7 +5988,10 @@ impl ImageCache {
       if Some(format) != format_from_content_type && format != ImageFormat::Avif {
         check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
-          Ok(img) => return self.finish_bitmap_decode(img, url),
+          Ok((img, has_alpha)) => {
+            let img = self.finish_bitmap_decode(img, url)?;
+            return Ok((img, has_alpha));
+          }
           Err(err) => {
             if let Error::Render(_) = err {
               return Err(err);
@@ -5965,7 +6004,10 @@ impl ImageCache {
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     match self.decode_with_guess(bytes, url) {
-      Ok(img) => self.finish_bitmap_decode(img, url),
+      Ok(img) => {
+        let has_alpha = img.color().has_alpha();
+        self.finish_bitmap_decode(img, url).map(|img| (img, has_alpha))
+      }
       Err(err) => Err(match err {
         Error::Render(_) => err,
         _ => panic_error.or(last_error).unwrap_or(err),
@@ -6081,14 +6123,14 @@ impl ImageCache {
     bytes: &[u8],
     format: ImageFormat,
     url: &str,
-  ) -> Result<DynamicImage> {
+  ) -> Result<(DynamicImage, bool)> {
     if format == ImageFormat::Jpeg {
       // The `image` crate's JPEG backend (zune-jpeg) can produce pixel values that differ
       // substantially from Chrome/libjpeg, which shows up as large fixture diffs even when the
       // rendered geometry is correct. Decode JPEGs with `jpeg-decoder` instead to match
       // browser output more closely.
       if let Ok(img) = self.decode_jpeg(bytes, url) {
-        return Ok(img);
+        return Ok((img, false));
       }
       // Fall back to `image` if the JPEG payload uses an unsupported colorspace.
     }
@@ -6196,6 +6238,10 @@ impl ImageCache {
         .map_err(|e| map_png_error(url, &e))?;
       buf.truncate(frame.buffer_size());
 
+      let has_alpha = matches!(
+        frame.color_type,
+        png::ColorType::Rgba | png::ColorType::GrayscaleAlpha
+      );
       let rgba = match (frame.color_type, frame.bit_depth) {
         (png::ColorType::Rgba, png::BitDepth::Eight) => {
           if buf.len() != rgba_len {
@@ -6366,13 +6412,16 @@ impl ImageCache {
         }
       };
 
-      return Ok(DynamicImage::ImageRgba8(rgba));
+      return Ok((DynamicImage::ImageRgba8(rgba), has_alpha));
     }
 
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       ImageReader::with_format(DeadlineCursor::new(bytes), format).decode()
     })) {
-      Ok(Ok(img)) => Ok(img),
+      Ok(Ok(img)) => {
+        let has_alpha = img.color().has_alpha();
+        Ok((img, has_alpha))
+      }
       Ok(Err(err)) => Err(self.decode_error(url, err)),
       Err(panic) => Err(Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
@@ -10268,6 +10317,7 @@ mod tests {
       image: Arc::new(DynamicImage::ImageRgba8(RgbaImage::new(100, 200))),
       orientation: None,
       resolution: None,
+      has_alpha: true,
       is_vector: false,
       intrinsic_ratio: None,
       aspect_ratio_none: false,

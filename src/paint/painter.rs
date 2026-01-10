@@ -4252,7 +4252,7 @@ impl Painter {
                 });
                 if trimmed.starts_with('<') {
                   MaskMode::Alpha
-                } else if image.image.color().has_alpha() {
+                } else if image.is_vector || image.has_alpha {
                   MaskMode::Alpha
                 } else {
                   MaskMode::Luminance
@@ -4661,7 +4661,7 @@ impl Painter {
         };
         let resolved_mode = match style.mask_border.mode {
           MaskBorderMode::MatchSource => {
-            if image.is_vector || image.image.color().has_alpha() {
+            if image.is_vector || image.has_alpha {
               MaskMode::Alpha
             } else {
               MaskMode::Luminance

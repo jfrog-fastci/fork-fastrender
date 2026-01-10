@@ -49,6 +49,10 @@ fn svg_data_url(svg: &str) -> String {
   format!("data:image/svg+xml;base64,{encoded}")
 }
 
+fn png_data_url(base64_png: &str) -> String {
+  format!("data:image/png;base64,{base64_png}")
+}
+
 fn html_for_mask_border_with_fill(source_url: &str, mode: &str, fill: bool) -> String {
   let slice = if fill { "2 fill" } else { "2" };
   format!(
@@ -101,6 +105,52 @@ fn html_for_webkit_mask_box_image(source_url: &str, mode: &str) -> String {
       <div id="target"></div>
     "#
   )
+}
+
+#[test]
+fn mask_border_match_source_uses_luminance_for_rgb_png_without_alpha() {
+  // RGB PNG (no alpha channel): `match-source` should resolve to luminance, so a black center masks
+  // out the element interior.
+  let url = png_data_url(
+    "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAF0lEQVR4nGP4jxcwECXNgAGGijSZ/gYA07O/QZIg/4gAAAAASUVORK5CYII=",
+  );
+  let html = html_for_mask_border(&url, "match-source");
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 20, 100),
+      &format!("{backend}: expected masked border ring to remain visible"),
+    );
+    assert_is_white(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected center to be masked out via match-source luminance mode"),
+    );
+  }
+}
+
+#[test]
+fn mask_border_match_source_uses_alpha_for_rgba_png_with_transparent_center() {
+  // RGBA PNG (alpha channel present): `match-source` should resolve to alpha, so the transparent
+  // center masks out the element interior even though the RGB pixels are white.
+  let url = png_data_url(
+    "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAGUlEQVR4nGP4TyRgIEchAw48vBXiBUQrBACg5mqkEjwiewAAAABJRU5ErkJggg==",
+  );
+  let html = html_for_mask_border(&url, "match-source");
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(&html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 20, 100),
+      &format!("{backend}: expected masked border ring to remain visible"),
+    );
+    assert_is_white(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected center to be masked out via match-source alpha mode"),
+    );
+  }
 }
 
 #[test]
