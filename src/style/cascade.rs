@@ -36830,6 +36830,21 @@ fn svg_presentation_attribute_hints(
   if let Some(value) = node.get_attribute_ref("stroke-opacity") {
     push_parsed(&mut declarations, "stroke-opacity", value);
   }
+  if let Some(value) = node.get_attribute_ref("stop-color") {
+    push_parsed(&mut declarations, "stop-color", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stop-opacity") {
+    push_parsed(&mut declarations, "stop-opacity", value);
+  }
+  if let Some(value) = node.get_attribute_ref("marker-start") {
+    push_parsed(&mut declarations, "marker-start", value);
+  }
+  if let Some(value) = node.get_attribute_ref("marker-mid") {
+    push_parsed(&mut declarations, "marker-mid", value);
+  }
+  if let Some(value) = node.get_attribute_ref("marker-end") {
+    push_parsed(&mut declarations, "marker-end", value);
+  }
 
   // SVG can set `color` and font properties as presentation attributes.
   if let Some(value) = node.get_attribute_ref("color") {
@@ -36893,6 +36908,15 @@ fn svg_presentation_attribute_hints(
   }
   if let Some(value) = node.get_attribute_ref("font-style") {
     push_parsed(&mut declarations, "font-style", value);
+  }
+  if let Some(value) = node.get_attribute_ref("letter-spacing") {
+    push_parsed(&mut declarations, "letter-spacing", value);
+  }
+  if let Some(value) = node.get_attribute_ref("word-spacing") {
+    push_parsed(&mut declarations, "word-spacing", value);
+  }
+  if let Some(value) = node.get_attribute_ref("text-anchor") {
+    push_parsed(&mut declarations, "text-anchor", value);
   }
 
   // Commonly-used properties affecting SVG element visibility and foreignObject capture.

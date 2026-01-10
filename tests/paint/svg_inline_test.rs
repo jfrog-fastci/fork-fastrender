@@ -182,6 +182,120 @@ fn inline_svg_respects_opacity_when_document_css_injection_disabled_display_list
 }
 
 #[test]
+fn inline_svg_visibility_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { visibility: visible; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" visibility="hidden" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "computed visibility:visible should override the markup visibility attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_display_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { display: inline; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" display="none" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "computed display should override the markup display attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_fill_attribute_overridden_by_css_inherit_is_serialized_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { fill: inherit; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <g fill="rgb(255, 0, 0)">
+          <rect width="20" height="20" fill="rgb(0, 0, 255)" />
+        </g>
+      </svg>
+      "#;
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "computed fill should inherit from the parent instead of using the stale fill attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_opacity_attribute_overridden_by_css_is_serialized_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { opacity: 1; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" opacity="0" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "computed opacity should override the markup opacity attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_serializes_css_transform_for_child_elements_when_document_css_injection_disabled() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

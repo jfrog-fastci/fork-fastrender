@@ -1132,6 +1132,44 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
   }
 }
 
+fn svg_inlined_presentation_attr(name: &str) -> bool {
+  name.eq_ignore_ascii_case("fill")
+    || name.eq_ignore_ascii_case("stroke")
+    || name.eq_ignore_ascii_case("stroke-width")
+    || name.eq_ignore_ascii_case("fill-rule")
+    || name.eq_ignore_ascii_case("clip-rule")
+    || name.eq_ignore_ascii_case("stroke-linecap")
+    || name.eq_ignore_ascii_case("stroke-linejoin")
+    || name.eq_ignore_ascii_case("stroke-miterlimit")
+    || name.eq_ignore_ascii_case("stroke-dasharray")
+    || name.eq_ignore_ascii_case("stroke-dashoffset")
+    || name.eq_ignore_ascii_case("fill-opacity")
+    || name.eq_ignore_ascii_case("stroke-opacity")
+    || name.eq_ignore_ascii_case("stop-color")
+    || name.eq_ignore_ascii_case("stop-opacity")
+    || name.eq_ignore_ascii_case("marker-start")
+    || name.eq_ignore_ascii_case("marker-mid")
+    || name.eq_ignore_ascii_case("marker-end")
+    || name.eq_ignore_ascii_case("display")
+    || name.eq_ignore_ascii_case("visibility")
+    || name.eq_ignore_ascii_case("opacity")
+    || name.eq_ignore_ascii_case("font-family")
+    || name.eq_ignore_ascii_case("font-size")
+    || name.eq_ignore_ascii_case("font-weight")
+    || name.eq_ignore_ascii_case("font-style")
+    || name.eq_ignore_ascii_case("letter-spacing")
+    || name.eq_ignore_ascii_case("word-spacing")
+    || name.eq_ignore_ascii_case("text-anchor")
+}
+
+fn attrs_need_svg_inlined_presentation_stripping(attrs: &[(String, String)]) -> bool {
+  attrs.iter().any(|(name, _)| svg_inlined_presentation_attr(name))
+}
+
+fn strip_svg_inlined_presentation_attrs(attrs: &mut Vec<(String, String)>) {
+  attrs.retain(|(name, _)| !svg_inlined_presentation_attr(name));
+}
+
 fn svg_transform_attribute(style: &ComputedStyle) -> Option<String> {
   use crate::css::types::{RotateValue, ScaleValue, Transform as CssTransform, TranslateValue};
   use std::fmt::Write as _;
@@ -2038,6 +2076,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
           if let Some(extra) = svg_transform_style_declaration(&styled.styles) {
             merge_style_attribute(&mut attrs, &extra);
           }
+        }
+        if attrs_need_svg_inlined_presentation_stripping(&attrs) {
+          strip_svg_inlined_presentation_attrs(&mut attrs);
         }
       }
       let mut namespaces: Vec<(String, String)> = inherited_xmlns.to_vec();
@@ -2971,11 +3012,16 @@ fn serialize_svg_subtree(
         if is_root {
           let include_fill_current_color = root_style_includes_fill_current_color(attributes);
           let mut attrs = attributes.clone();
-          // If the authored SVG root has a `transform` attribute, it participates in the CSS
-          // cascade as a presentation hint. The replaced-element renderer will apply it as a CSS
-          // box transform, so remove it from the serialized SVG markup to avoid double-applying it
-          // internally.
-          attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+          if current_ns == SVG_NAMESPACE {
+            // If the authored SVG root has a `transform` attribute, it participates in the CSS
+            // cascade as a presentation hint. The replaced-element renderer will apply it as a CSS
+            // box transform, so remove it from the serialized SVG markup to avoid double-applying it
+            // internally.
+            attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+            if attrs_need_svg_inlined_presentation_stripping(&attrs) {
+              strip_svg_inlined_presentation_attrs(&mut attrs);
+            }
+          }
           let has_xmlns = attrs
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("xmlns"));
@@ -3009,6 +3055,11 @@ fn serialize_svg_subtree(
             attrs.push(("xmlns".to_string(), current_ns.to_string()));
             owned_attrs = Some(attrs);
           }
+        }
+
+        if current_ns == SVG_NAMESPACE && attrs_need_svg_inlined_presentation_stripping(attributes) {
+          let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+          strip_svg_inlined_presentation_attrs(attrs_mut);
         }
 
         if current_ns == SVG_NAMESPACE {
