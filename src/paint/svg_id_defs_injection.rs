@@ -1,5 +1,6 @@
 use crate::dom::SVG_NAMESPACE;
 use roxmltree::Document;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -13,6 +14,16 @@ fn parse_svg_fragment(fragment: &str) -> Option<Document<'_>> {
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+  let bytes = haystack.as_bytes();
+  bytes.windows(needle.len()).any(|window| {
+    window
+      .iter()
+      .zip(needle)
+      .all(|(a, b)| a.to_ascii_lowercase() == *b)
+  })
 }
 
 fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
@@ -69,13 +80,19 @@ fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
   }
 }
 
-fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
+#[derive(Default)]
+struct SvgFragmentAnalysis {
+  ids: HashSet<String>,
+  refs: HashSet<String>,
+}
+
+fn analyze_svg_fragment(fragment: &str) -> SvgFragmentAnalysis {
   let Some(doc) = parse_svg_fragment(fragment) else {
-    return HashSet::new();
+    return SvgFragmentAnalysis::default();
   };
 
-  let mut refs = HashSet::new();
-  fn walk(node: roxmltree::Node, in_svg_style: bool, out: &mut HashSet<String>) {
+  let mut analysis = SvgFragmentAnalysis::default();
+  fn walk(node: roxmltree::Node, in_svg_style: bool, analysis: &mut SvgFragmentAnalysis) {
     if node.is_element() {
       let tag = node.tag_name();
       let is_svg = tag.namespace() == Some(SVG_NAMESPACE);
@@ -85,63 +102,45 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
       if is_svg {
         for attr in node.attributes() {
           let name = attr.name();
+          if name.eq_ignore_ascii_case("id") {
+            let id = attr.value();
+            if !id.is_empty() {
+              analysis.ids.insert(id.to_string());
+            }
+          }
           if name.eq_ignore_ascii_case("href")
             || name
               .rsplit_once(':')
               .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
           {
             let trimmed = trim_ascii_whitespace(attr.value());
-            if let Some(id) = trimmed.strip_prefix('#') {
-              if !id.is_empty() {
-                out.insert(id.to_string());
-              }
+            if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+              analysis.refs.insert(id.to_string());
             }
           }
-          extract_url_fragment_ids(attr.value(), out);
+          extract_url_fragment_ids(attr.value(), &mut analysis.refs);
         }
       }
 
       for child in node.children() {
-        walk(child, next_in_svg_style, out);
+        walk(child, next_in_svg_style, analysis);
       }
       return;
     }
 
     if node.is_text() && in_svg_style {
       if let Some(text) = node.text() {
-        extract_url_fragment_ids(text, out);
+        extract_url_fragment_ids(text, &mut analysis.refs);
       }
     }
 
     for child in node.children() {
-      walk(child, in_svg_style, out);
+      walk(child, in_svg_style, analysis);
     }
   }
 
-  walk(doc.root(), false, &mut refs);
-  refs
-}
-
-fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
-  let Some(doc) = parse_svg_fragment(fragment) else {
-    return HashSet::new();
-  };
-
-  let mut ids = HashSet::new();
-  for node in doc
-    .descendants()
-    .filter(|node| node.is_element() && node.tag_name().namespace() == Some(SVG_NAMESPACE))
-  {
-    if let Some(value) = node
-      .attributes()
-      .find(|attr| attr.name().eq_ignore_ascii_case("id"))
-      .map(|attr| attr.value())
-      .filter(|v| !v.is_empty())
-    {
-      ids.insert(value.to_string());
-    }
-  }
-  ids
+  walk(doc.root(), false, &mut analysis);
+  analysis
 }
 
 fn contains_xlink_prefix(value: &str) -> bool {
@@ -200,6 +199,7 @@ fn svg_ids_to_inline(
 ) -> Vec<String> {
   let mut required: HashSet<String> = HashSet::new();
   let mut queue: VecDeque<String> = VecDeque::new();
+  let mut analysis_cache: HashMap<String, SvgFragmentAnalysis> = HashMap::new();
 
   for root in root_ids {
     if already_defined.contains(&root) {
@@ -211,30 +211,40 @@ fn svg_ids_to_inline(
   }
 
   while let Some(id) = queue.pop_front() {
-    let Some(fragment) = defs.get(&id) else {
+    match analysis_cache.entry(id.clone()) {
+      Entry::Occupied(_) => {}
+      Entry::Vacant(entry) => {
+        let Some(fragment) = defs.get(&id) else {
+          continue;
+        };
+        entry.insert(analyze_svg_fragment(fragment));
+      }
+    }
+    let Some(analysis) = analysis_cache.get(&id) else {
       continue;
     };
-    for reference in collect_svg_fragment_references(fragment) {
-      if already_defined.contains(&reference) {
+
+    for reference in analysis.refs.iter() {
+      if already_defined.contains(reference) {
         continue;
       }
-      if !defs.contains_key(&reference) {
+      if !defs.contains_key(reference) {
         continue;
       }
       if required.insert(reference.clone()) {
-        queue.push_back(reference);
+        queue.push_back(reference.clone());
       }
     }
   }
 
   let mut nested: HashSet<String> = HashSet::new();
   for id in required.iter() {
-    let Some(fragment) = defs.get(id) else {
+    let Some(analysis) = analysis_cache.get(id) else {
       continue;
     };
-    for contained_id in collect_svg_fragment_ids(fragment) {
-      if contained_id != *id && required.contains(&contained_id) {
-        nested.insert(contained_id);
+    for contained_id in analysis.ids.iter() {
+      if contained_id != id && required.contains(contained_id) {
+        nested.insert(contained_id.clone());
       }
     }
   }
@@ -259,8 +269,19 @@ pub(crate) fn inject_svg_id_defs_raw(
     return None;
   }
 
-  let defined_ids = collect_svg_fragment_ids(svg);
-  let referenced_ids = collect_svg_fragment_references(svg);
+  // Avoid parsing unless it looks like there might be fragment references.
+  if !contains_ascii_case_insensitive(svg, b"href")
+    && !contains_ascii_case_insensitive(svg, b"url(")
+  {
+    return None;
+  }
+
+  let analysis = analyze_svg_fragment(svg);
+  if analysis.refs.is_empty() {
+    return None;
+  }
+  let defined_ids = analysis.ids;
+  let referenced_ids = analysis.refs;
   let missing_roots = referenced_ids
     .into_iter()
     .filter(|id| !defined_ids.contains(id))

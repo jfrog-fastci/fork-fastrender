@@ -255,21 +255,11 @@ fn clone_starting_style(style: &Option<Arc<ComputedStyle>>) -> Option<Arc<Comput
   style.as_ref().map(Arc::clone)
 }
 
-#[derive(Clone)]
-struct SvgIdIndexEntry<'a> {
-  node: &'a StyledNode,
-  /// In-scope `xmlns*` declarations needed to serialize `node` as standalone markup.
-  namespaces: Arc<Vec<(String, String)>>,
-}
-
-type SvgIdIndex<'a> = HashMap<String, SvgIdIndexEntry<'a>>;
-
 struct BoxGenerationPrepass<'a> {
   document_css: String,
   svg_document_css: SvgDocumentCssPolicy,
   picture_sources: PictureSourceLookup,
   styled_lookup: StyledLookup<'a>,
-  svg_id_index: SvgIdIndex<'a>,
 }
 
 struct StyledLookup<'a> {
@@ -351,7 +341,6 @@ fn collect_box_generation_prepass<'a>(
     },
     picture_sources: PictureSourceLookup::new(),
     styled_lookup: StyledLookup::new(),
-    svg_id_index: HashMap::new(),
   };
   let mut css = CssState { enabled: true };
   // Avoid recursion for extremely deep trees by using an explicit stack.
@@ -359,23 +348,19 @@ fn collect_box_generation_prepass<'a>(
     node: &'a StyledNode,
     css_allowed: bool,
     svg_count_allowed: bool,
-    namespaces: Arc<Vec<(String, String)>>,
   }
 
   let mut stack: Vec<Frame<'a>> = Vec::new();
-  let empty_namespaces: Arc<Vec<(String, String)>> = Arc::new(Vec::new());
   stack.push(Frame {
     node: styled,
     css_allowed: true,
     svg_count_allowed: true,
-    namespaces: Arc::clone(&empty_namespaces),
   });
 
   while let Some(Frame {
     node,
     css_allowed,
     svg_count_allowed,
-    namespaces,
   }) = stack.pop()
   {
     check_active_periodic(
@@ -385,80 +370,6 @@ fn collect_box_generation_prepass<'a>(
     )?;
 
     out.styled_lookup.insert(node.node_id, node);
-    let mut namespaces = namespaces;
-    if let DomNodeType::Element {
-      namespace,
-      attributes,
-      ..
-    } = &node.node.node_type
-    {
-      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
-        let mut updated = (*namespaces).clone();
-        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-          if let Some(existing) = updated
-            .iter_mut()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-          {
-            existing.1 = value.clone();
-          } else {
-            updated.push((name.clone(), value.clone()));
-          }
-        }
-        namespaces = Arc::new(updated);
-      }
-
-      if namespace == SVG_NAMESPACE {
-        if let Some(id) = node
-          .node
-          .get_attribute_ref("id")
-          .filter(|id| !id.is_empty())
-        {
-          out
-            .svg_id_index
-            .entry(id.to_string())
-            .or_insert_with(|| SvgIdIndexEntry {
-              node,
-              namespaces: Arc::clone(&namespaces),
-            });
-        }
-      }
-    } else if let DomNodeType::Slot {
-      namespace,
-      attributes,
-      ..
-    } = &node.node.node_type
-    {
-      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
-        let mut updated = (*namespaces).clone();
-        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-          if let Some(existing) = updated
-            .iter_mut()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-          {
-            existing.1 = value.clone();
-          } else {
-            updated.push((name.clone(), value.clone()));
-          }
-        }
-        namespaces = Arc::new(updated);
-      }
-
-      if namespace == SVG_NAMESPACE {
-        if let Some(id) = node
-          .node
-          .get_attribute_ref("id")
-          .filter(|id| !id.is_empty())
-        {
-          out
-            .svg_id_index
-            .entry(id.to_string())
-            .or_insert_with(|| SvgIdIndexEntry {
-              node,
-              namespaces: Arc::clone(&namespaces),
-            });
-        }
-      }
-    }
     if let Some((img_id, sources)) = picture_sources_for(node) {
       out.picture_sources.insert(img_id, sources);
     }
@@ -507,7 +418,6 @@ fn collect_box_generation_prepass<'a>(
         node: child,
         css_allowed: children_css_allowed,
         svg_count_allowed: children_svg_count_allowed,
-        namespaces: Arc::clone(&namespaces),
       });
     }
   }
@@ -558,7 +468,6 @@ fn build_box_tree_root(
     svg_document_css,
     mut picture_sources,
     styled_lookup,
-    svg_id_index,
   } = collect_box_generation_prepass(styled, deadline_counter)?;
   let mut counters = CounterManager::new_with_styles(styled.styles.counter_styles.clone());
   counters.enter_scope();
@@ -574,7 +483,6 @@ fn build_box_tree_root(
     true,
     &document_css,
     svg_document_css.embedded_style_element.as_ref(),
-    &svg_id_index,
     &mut picture_sources,
     options,
     deadline_counter,
@@ -3251,7 +3159,6 @@ fn serialize_svg_subtree(
   styled: &StyledNode,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
-  svg_id_index: &SvgIdIndex<'_>,
 ) -> SvgContent {
   let profile_start = SVG_SERIALIZATION_PROFILE
     .with(|cell| cell.borrow().is_some())
@@ -3440,197 +3347,7 @@ fn serialize_svg_subtree(
     node.children.iter().any(svg_uses_xlink_prefix)
   }
 
-  /// SVG sprite sheets often live in a separate `<svg style="display:none">` in the HTML document
-  /// and are referenced via `<use href="#id">`. We rasterize each inline `<svg>` in isolation, so
-  /// fragment-only `<use>` references would otherwise fail to resolve.
-  ///
-  /// Collect any required `id` targets from the *document* SVG index and inline them as `<defs>`
-  /// before rasterization.
-  fn svg_use_defs_for_inline_svg(
-    styled: &StyledNode,
-    svg_id_index: &SvgIdIndex<'_>,
-  ) -> Vec<String> {
-    fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
-      let bytes = value.as_bytes();
-      let mut idx = 0usize;
-      while idx + 4 <= bytes.len() {
-        let b = bytes[idx];
-        if (b == b'u' || b == b'U')
-          && (bytes[idx + 1] == b'r' || bytes[idx + 1] == b'R')
-          && (bytes[idx + 2] == b'l' || bytes[idx + 2] == b'L')
-          && bytes[idx + 3] == b'('
-        {
-          idx += 4;
-          while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-            idx += 1;
-          }
-          let mut quote: Option<u8> = None;
-          if idx < bytes.len() && (bytes[idx] == b'\'' || bytes[idx] == b'"') {
-            quote = Some(bytes[idx]);
-            idx += 1;
-            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-              idx += 1;
-            }
-          }
-          if idx < bytes.len() && bytes[idx] == b'#' {
-            idx += 1;
-            let start = idx;
-            while idx < bytes.len() {
-              let ch = bytes[idx];
-              if ch == b')' || ch.is_ascii_whitespace() {
-                break;
-              }
-              if quote.is_some_and(|q| q == ch) {
-                break;
-              }
-              idx += 1;
-            }
-            if start < idx {
-              out.insert(value[start..idx].to_string());
-            }
-          }
-          while idx < bytes.len() && bytes[idx] != b')' {
-            idx += 1;
-          }
-          if idx < bytes.len() {
-            idx += 1;
-          }
-        } else {
-          idx += 1;
-        }
-      }
-    }
-
-    fn is_href_attr(name: &str) -> bool {
-      if name.eq_ignore_ascii_case("href") {
-        return true;
-      }
-      name
-        .rsplit_once(':')
-        .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
-    }
-
-    fn collect_local_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
-      let mut stack = vec![styled];
-      while let Some(node) = stack.pop() {
-        if let crate::dom::DomNodeType::Element { namespace, .. } = &node.node.node_type {
-          if namespace == SVG_NAMESPACE {
-            if let Some(id) = node
-              .node
-              .get_attribute_ref("id")
-              .filter(|id| !id.is_empty())
-            {
-              out.insert(id.to_string());
-            }
-          }
-        }
-        for child in &node.children {
-          stack.push(child);
-        }
-      }
-    }
-
-    fn collect_referenced_svg_ids(
-      styled: &StyledNode,
-      in_svg_style: bool,
-      out: &mut HashSet<String>,
-    ) {
-      let mut stack = vec![(styled, in_svg_style)];
-      while let Some((node, in_svg_style)) = stack.pop() {
-        match &node.node.node_type {
-          crate::dom::DomNodeType::Element {
-            tag_name,
-            namespace,
-            attributes,
-          } => {
-            let is_svg = namespace == SVG_NAMESPACE;
-            let is_style = is_svg && tag_name.eq_ignore_ascii_case("style");
-            let next_in_svg_style = in_svg_style || is_style;
-            if is_svg {
-              for (name, value) in attributes {
-                if is_href_attr(name) {
-                  let trimmed = trim_ascii_whitespace(value);
-                  if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
-                    out.insert(id.to_string());
-                  }
-                }
-                extract_url_fragment_ids(value, out);
-              }
-            }
-            for child in &node.children {
-              stack.push((child, next_in_svg_style));
-            }
-          }
-          crate::dom::DomNodeType::Text { content } => {
-            if in_svg_style {
-              extract_url_fragment_ids(content, out);
-            }
-          }
-          _ => {
-            for child in &node.children {
-              stack.push((child, in_svg_style));
-            }
-          }
-        }
-      }
-    }
-
-    if svg_id_index.is_empty() {
-      return Vec::new();
-    }
-
-    let mut local_ids = HashSet::new();
-    collect_local_svg_ids(styled, &mut local_ids);
-
-    let mut referenced = HashSet::new();
-    collect_referenced_svg_ids(styled, false, &mut referenced);
-    if referenced.is_empty() {
-      return Vec::new();
-    }
-
-    let mut required: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
-    for id in referenced {
-      if local_ids.contains(&id) {
-        continue;
-      }
-      if svg_id_index.contains_key(&id) && required.insert(id.clone()) {
-        queue.push_back(id);
-      }
-    }
-
-    while let Some(id) = queue.pop_front() {
-      let Some(entry) = svg_id_index.get(&id) else {
-        continue;
-      };
-      let mut refs = HashSet::new();
-      collect_referenced_svg_ids(entry.node, false, &mut refs);
-      for reference in refs {
-        if local_ids.contains(&reference) {
-          continue;
-        }
-        if !svg_id_index.contains_key(&reference) {
-          continue;
-        }
-        if required.insert(reference.clone()) {
-          queue.push_back(reference);
-        }
-      }
-    }
-
-    let mut ids: Vec<String> = required.into_iter().collect();
-    ids.sort();
-    ids
-  }
-
-  let use_def_ids = svg_use_defs_for_inline_svg(styled, svg_id_index);
-  let injected_uses_xlink_prefix = use_def_ids.iter().any(|id| {
-    svg_id_index
-      .get(id)
-      .is_some_and(|entry| svg_uses_xlink_prefix(entry.node))
-  });
-
-  let needs_xmlns_xlink = (svg_uses_xlink_prefix(styled) || injected_uses_xlink_prefix)
+  let needs_xmlns_xlink = svg_uses_xlink_prefix(styled)
     && matches!(
       &styled.node.node_type,
       crate::dom::DomNodeType::Element { attributes, .. }
@@ -3638,23 +3355,6 @@ fn serialize_svg_subtree(
           .iter()
           .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
     );
-
-  let use_defs_injection = if use_def_ids.is_empty() {
-    None
-  } else {
-    let mut defs = String::new();
-    defs.push_str("<defs>");
-    for id in &use_def_ids {
-      let Some(entry) = svg_id_index.get(id) else {
-        continue;
-      };
-      let mut serialized = String::new();
-      serialize_node_with_namespaces(entry.node, entry.namespaces.as_slice(), &mut serialized);
-      defs.push_str(&serialized);
-    }
-    defs.push_str("</defs>");
-    Some(defs)
-  };
 
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
@@ -3836,7 +3536,6 @@ fn serialize_svg_subtree(
     svg_viewport: Option<SvgViewportSize>,
     needs_xmlns_xlink: bool,
     root_fill_current_color_injection: bool,
-    use_defs_injection: Option<&str>,
     is_root: bool,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -3855,7 +3554,6 @@ fn serialize_svg_subtree(
             svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
-            None,
             false,
             out,
             fallback_out,
@@ -3875,7 +3573,6 @@ fn serialize_svg_subtree(
             svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
-            None,
             false,
             out,
             fallback_out,
@@ -4171,12 +3868,6 @@ fn serialize_svg_subtree(
           if record_document_css && document_css_insert_pos.is_none() {
             *document_css_insert_pos = Some(out.len());
           }
-          if let Some(defs) = use_defs_injection {
-            out.push_str(defs);
-            if let Some(fallback_out) = fallback_out.as_mut() {
-              fallback_out.push_str(defs);
-            }
-          }
         }
 
         for child in &styled.children {
@@ -4188,7 +3879,6 @@ fn serialize_svg_subtree(
             next_svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
-            None,
             false,
             out,
             fallback_out,
@@ -4226,7 +3916,6 @@ fn serialize_svg_subtree(
     None,
     needs_xmlns_xlink,
     false,
-    use_defs_injection.as_deref(),
     true,
     &mut out,
     &mut fallback_out,
@@ -4288,7 +3977,6 @@ fn generate_boxes_for_styled_into(
   _is_root: bool,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
-  svg_id_index: &SvgIdIndex<'_>,
   picture_sources: &mut PictureSourceLookup,
   options: &BoxGenerationOptions,
   deadline_counter: &mut usize,
@@ -4698,7 +4386,6 @@ fn generate_boxes_for_styled_into(
               style,
               document_css,
               svg_document_css_style_element,
-              svg_id_index,
               picture_sources_for_img,
               site_compat,
             ) {
@@ -7258,7 +6945,6 @@ fn create_replaced_box_from_styled(
   style: Arc<ComputedStyle>,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
-  svg_id_index: &SvgIdIndex<'_>,
   mut picture_sources: Vec<PictureSource>,
   site_compat: bool,
 ) -> Option<BoxNode> {
@@ -7357,12 +7043,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Canvas
   } else if tag.eq_ignore_ascii_case("svg") {
     ReplacedType::Svg {
-      content: serialize_svg_subtree(
-        styled,
-        document_css,
-        svg_document_css_style_element,
-        svg_id_index,
-      ),
+      content: serialize_svg_subtree(styled, document_css, svg_document_css_style_element),
     }
   } else if tag.eq_ignore_ascii_case("iframe") {
     // HTML iframes default to about:blank when `src` is missing/empty.
@@ -10104,7 +9785,6 @@ mod tests {
         style.clone(),
         "",
         None,
-        &HashMap::new(),
         Vec::new(),
         false,
       )
@@ -10142,7 +9822,6 @@ mod tests {
       default_style(),
       "",
       None,
-      &HashMap::new(),
       Vec::new(),
       true,
     )
@@ -10173,7 +9852,6 @@ mod tests {
       default_style(),
       "",
       None,
-      &HashMap::new(),
       Vec::new(),
       false,
     )
