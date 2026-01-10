@@ -572,7 +572,7 @@ impl GradientLut {
     if self.stop_positions.is_empty() || self.stop_colors.is_empty() {
       return [0.0, 0.0, 0.0, 0.0];
     }
-    let t = t.clamp(0.0, self.period);
+    let t = t.clamp(0.0, self.span);
     if t <= self.stop_positions[0] {
       return self.stop_colors[0];
     }
@@ -621,10 +621,14 @@ impl GradientLut {
 
   #[inline(always)]
   fn sample_pad_f32(&self, t: f32) -> [f32; 4] {
-    if self.last_idx == 0 || !t.is_finite() || t < 0.0 {
+    if self.last_idx == 0 || !t.is_finite() {
       return Self::pm_u8_to_f32(self.first);
     }
-    if t >= self.period {
+    let t = t - self.offset;
+    if t < 0.0 {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    if t >= self.span {
       return Self::pm_u8_to_f32(self.last);
     }
     self.sample_mapped_f32(t)
@@ -635,7 +639,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return Self::pm_u8_to_f32(self.first);
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return Self::pm_u8_to_f32(self.first);
     }
@@ -651,7 +656,8 @@ impl GradientLut {
     if self.last_idx == 0 || !t.is_finite() {
       return Self::pm_u8_to_f32(self.first);
     }
-    let p = self.period;
+    t -= self.offset;
+    let p = self.span;
     if p <= 0.0 {
       return Self::pm_u8_to_f32(self.first);
     }
@@ -865,7 +871,9 @@ fn build_gradient_lut(
   let span = span.max(1e-6);
   let mut colors = Vec::with_capacity(step_count);
   let mut segments = Vec::with_capacity(step_count);
-  let stop_positions: Vec<f32> = stops.iter().map(|(pos, _)| *pos).collect();
+  // Store stop positions relative to the first stop so callers can subtract `offset` once and
+  // treat the gradient as spanning [0, span] regardless of where the stop range begins.
+  let stop_positions: Vec<f32> = stops.iter().map(|(pos, _)| *pos - offset).collect();
   let stop_colors: Vec<[f32; 4]> = stops
     .iter()
     .map(|(_, c)| {
