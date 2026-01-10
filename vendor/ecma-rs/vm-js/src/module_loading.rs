@@ -379,6 +379,45 @@ impl ModuleLoadPayload {
 /// represented by [`VmError`].
 pub type ModuleCompletion = Result<ModuleId, VmError>;
 
+fn try_clone_string(value: &str) -> Result<String, VmError> {
+  let mut out = String::new();
+  out.try_reserve_exact(value.len()).map_err(|_| VmError::OutOfMemory)?;
+  out.push_str(value);
+  Ok(out)
+}
+
+fn try_clone_import_attribute(value: &ImportAttribute) -> Result<ImportAttribute, VmError> {
+  Ok(ImportAttribute {
+    key: try_clone_string(&value.key)?,
+    value: try_clone_string(&value.value)?,
+  })
+}
+
+fn try_clone_module_request(value: &ModuleRequest) -> Result<ModuleRequest, VmError> {
+  let mut attributes: Vec<ImportAttribute> = Vec::new();
+  attributes
+    .try_reserve_exact(value.attributes.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for attr in &value.attributes {
+    attributes.push(try_clone_import_attribute(attr)?);
+  }
+  Ok(ModuleRequest {
+    specifier: try_clone_string(&value.specifier)?,
+    attributes,
+  })
+}
+
+fn try_clone_module_requests(values: &[ModuleRequest]) -> Result<Vec<ModuleRequest>, VmError> {
+  let mut out: Vec<ModuleRequest> = Vec::new();
+  out
+    .try_reserve_exact(values.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for v in values {
+    out.push(try_clone_module_request(v)?);
+  }
+  Ok(out)
+}
+
 /// Implements ECMA-262 `LoadRequestedModules(hostDefined?)` for cyclic modules.
 ///
 /// This starts the module graph loading state machine and returns a Promise that is fulfilled once
@@ -391,6 +430,7 @@ pub fn load_requested_modules(
   module: ModuleId,
   host_defined: HostDefined,
 ) -> Result<Value, VmError> {
+  vm.tick()?;
   let (state, promise) = GraphLoadingState::new(vm, scope, host, host_defined)?;
   if let Err(err) = inner_module_loading(vm, scope, modules, host, &state, module) {
     // `GraphLoadingState` owns persistent roots for the promise capability. If we abort the
@@ -412,6 +452,7 @@ pub fn inner_module_loading(
   state: &GraphLoadingState,
   module: ModuleId,
 ) -> Result<(), VmError> {
+  vm.tick()?;
   let Some(record) = modules.get_module(module) else {
     state.set_is_loading(false);
     state.reject_promise(vm, scope, host, VmError::InvalidHandle)?;
@@ -420,7 +461,7 @@ pub fn inner_module_loading(
 
   let should_traverse = record.status == ModuleStatus::New && !state.visited_contains(module);
   let requested_modules = if should_traverse {
-    record.requested_modules.clone()
+    try_clone_module_requests(&record.requested_modules)?
   } else {
     Vec::new()
   };
@@ -430,6 +471,7 @@ pub fn inner_module_loading(
     state.inc_pending(requested_modules.len())?;
 
     for request in requested_modules {
+      vm.tick()?;
       // `AllImportAttributesSupported`.
       let supported = host.host_get_supported_import_attributes();
       if !all_import_attributes_supported(supported, &request.attributes) {
@@ -501,7 +543,11 @@ pub fn inner_module_loading(
   state.set_is_loading(false);
   {
     let visited = state.0.borrow();
-    for &visited_id in &visited.visited {
+    const STATUS_UPDATE_TICK_INTERVAL: usize = 64;
+    for (i, &visited_id) in visited.visited.iter().enumerate() {
+      if i % STATUS_UPDATE_TICK_INTERVAL == 0 {
+        vm.tick()?;
+      }
       if let Some(module) = modules.get_module_mut(visited_id) {
         if module.status == ModuleStatus::New {
           module.status = ModuleStatus::Unlinked;
@@ -527,6 +573,8 @@ pub fn finish_loading_imported_module(
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
+  vm.tick()?;
+
   // 1. `FinishLoadingImportedModule` caching invariant:
   //    If a `(referrer, moduleRequest)` pair resolves normally more than once, it must resolve to
   //    the same Module Record each time.
@@ -623,6 +671,7 @@ pub fn continue_module_loading(
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
+  vm.tick()?;
   let ModuleLoadPayloadInner::GraphLoadingState(state) = payload.0 else {
     return Err(VmError::InvariantViolation(
       "ContinueModuleLoading called with non-GraphLoadingState payload",
@@ -668,8 +717,42 @@ pub enum ImportCallTypeError {
   UnsupportedImportAttribute { key: String },
 }
 
+const MAX_IMPORT_ATTRIBUTE_STRING_CODE_UNITS: usize = 1024;
+
 fn clone_heap_string_to_string(heap: &crate::Heap, s: GcString) -> Result<String, VmError> {
-  Ok(heap.get_string(s)?.to_utf8_lossy())
+  let js = heap.get_string(s)?;
+  if js.len_code_units() > MAX_IMPORT_ATTRIBUTE_STRING_CODE_UNITS {
+    return Err(VmError::LimitExceeded(
+      "import attribute keys/values are limited to 1024 UTF-16 code units",
+    ));
+  }
+
+  // `String::from_utf16_lossy` is infallible and aborts the process on allocator OOM.
+  // Convert into a pre-reserved buffer so we can surface OOM as `VmError::OutOfMemory` instead.
+  let mut out = String::new();
+
+  let units = js.as_code_units();
+  let max_utf8_len = units
+    .len()
+    // Maximum UTF-8 bytes per UTF-16 code unit is 3:
+    // - non-BMP characters are 4 bytes but take *two* code units,
+    // - invalid surrogate halves become U+FFFD (3 bytes).
+    .checked_mul(3)
+    .ok_or(VmError::LimitExceeded(
+      "import attribute keys/values are too large to convert to UTF-8",
+    ))?;
+  out
+    .try_reserve_exact(max_utf8_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for r in std::char::decode_utf16(units.iter().copied()) {
+    match r {
+      Ok(ch) => out.push(ch),
+      Err(_) => out.push('\u{FFFD}'),
+    }
+  }
+
+  Ok(out)
 }
 
 fn make_key_string(scope: &mut Scope<'_>, s: &str) -> Result<GcString, VmError> {
@@ -712,6 +795,7 @@ pub fn import_attributes_from_options(
   options: Value,
   supported_keys: &[&str],
 ) -> Result<Vec<ImportAttribute>, ImportCallError> {
+  vm.tick().map_err(ImportCallError::Vm)?;
   if matches!(options, Value::Undefined) {
     return Ok(Vec::new());
   }
@@ -741,8 +825,12 @@ pub fn import_attributes_from_options(
     .map_err(ImportCallError::Vm)?;
 
   let mut attributes = Vec::<ImportAttribute>::new();
+  attributes
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| ImportCallError::Vm(VmError::OutOfMemory))?;
 
   for key in own_keys {
+    vm.tick().map_err(ImportCallError::Vm)?;
     let PropertyKey::String(key_string) = key else {
       continue;
     };
@@ -778,6 +866,7 @@ pub fn import_attributes_from_options(
 
   // `AllImportAttributesSupported`.
   for attribute in &attributes {
+    vm.tick().map_err(ImportCallError::Vm)?;
     if !supported_keys
       .iter()
       .any(|supported| *supported == attribute.key.as_str())
