@@ -7,6 +7,7 @@
 //! <https://www.w3.org/TR/CSS21/visuren.html#box-gen>
 
 use crate::compat::CompatProfile;
+use crate::css::types::TranslateValue;
 use crate::debug::runtime;
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
@@ -18,6 +19,7 @@ use crate::geometry::Size;
 use crate::html::image_attrs;
 use crate::html::images::is_supported_image_mime;
 use crate::render_control::check_active_periodic;
+use crate::resource::ReferrerPolicy;
 use crate::style::color::Rgba;
 use crate::style::computed::Visibility;
 use crate::style::content::ContentContext;
@@ -45,25 +47,23 @@ use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
-use crate::css::types::TranslateValue;
 use crate::svg::parse_svg_length;
 use crate::svg::parse_svg_length_px;
 use crate::svg::parse_svg_view_box;
 use crate::svg::svg_intrinsic_dimensions_from_attributes;
 use crate::svg::SvgLength;
-use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::anonymous::inherited_style;
+use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::CrossOriginAttribute;
-use crate::tree::box_tree::ImageDecodingAttribute;
-use crate::tree::box_tree::ImageLoadingAttribute;
-use crate::resource::ReferrerPolicy;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::GeneratedPseudoElement;
+use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ImageLoadingAttribute;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::MathReplaced;
 use crate::tree::box_tree::PictureSource;
@@ -104,7 +104,9 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn trim_ascii_whitespace_end(value: &str) -> &str {
-  value.trim_end_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_end_matches(|c: char| {
+    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+  })
 }
 
 // ============================================================================
@@ -253,11 +255,21 @@ fn clone_starting_style(style: &Option<Arc<ComputedStyle>>) -> Option<Arc<Comput
   style.as_ref().map(Arc::clone)
 }
 
+#[derive(Clone)]
+struct SvgIdIndexEntry<'a> {
+  node: &'a StyledNode,
+  /// In-scope `xmlns*` declarations needed to serialize `node` as standalone markup.
+  namespaces: Arc<Vec<(String, String)>>,
+}
+
+type SvgIdIndex<'a> = HashMap<String, SvgIdIndexEntry<'a>>;
+
 struct BoxGenerationPrepass<'a> {
   document_css: String,
   svg_document_css: SvgDocumentCssPolicy,
   picture_sources: PictureSourceLookup,
   styled_lookup: StyledLookup<'a>,
+  svg_id_index: SvgIdIndex<'a>,
 }
 
 struct StyledLookup<'a> {
@@ -339,6 +351,7 @@ fn collect_box_generation_prepass<'a>(
     },
     picture_sources: PictureSourceLookup::new(),
     styled_lookup: StyledLookup::new(),
+    svg_id_index: HashMap::new(),
   };
   let mut css = CssState { enabled: true };
   // Avoid recursion for extremely deep trees by using an explicit stack.
@@ -346,19 +359,23 @@ fn collect_box_generation_prepass<'a>(
     node: &'a StyledNode,
     css_allowed: bool,
     svg_count_allowed: bool,
+    namespaces: Arc<Vec<(String, String)>>,
   }
 
   let mut stack: Vec<Frame<'a>> = Vec::new();
+  let empty_namespaces: Arc<Vec<(String, String)>> = Arc::new(Vec::new());
   stack.push(Frame {
     node: styled,
     css_allowed: true,
     svg_count_allowed: true,
+    namespaces: Arc::clone(&empty_namespaces),
   });
 
   while let Some(Frame {
     node,
     css_allowed,
     svg_count_allowed,
+    namespaces,
   }) = stack.pop()
   {
     check_active_periodic(
@@ -368,6 +385,80 @@ fn collect_box_generation_prepass<'a>(
     )?;
 
     out.styled_lookup.insert(node.node_id, node);
+    let mut namespaces = namespaces;
+    if let DomNodeType::Element {
+      namespace,
+      attributes,
+      ..
+    } = &node.node.node_type
+    {
+      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
+        let mut updated = (*namespaces).clone();
+        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+          if let Some(existing) = updated
+            .iter_mut()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+          {
+            existing.1 = value.clone();
+          } else {
+            updated.push((name.clone(), value.clone()));
+          }
+        }
+        namespaces = Arc::new(updated);
+      }
+
+      if namespace == SVG_NAMESPACE {
+        if let Some(id) = node
+          .node
+          .get_attribute_ref("id")
+          .filter(|id| !id.is_empty())
+        {
+          out
+            .svg_id_index
+            .entry(id.to_string())
+            .or_insert_with(|| SvgIdIndexEntry {
+              node,
+              namespaces: Arc::clone(&namespaces),
+            });
+        }
+      }
+    } else if let DomNodeType::Slot {
+      namespace,
+      attributes,
+      ..
+    } = &node.node.node_type
+    {
+      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
+        let mut updated = (*namespaces).clone();
+        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+          if let Some(existing) = updated
+            .iter_mut()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+          {
+            existing.1 = value.clone();
+          } else {
+            updated.push((name.clone(), value.clone()));
+          }
+        }
+        namespaces = Arc::new(updated);
+      }
+
+      if namespace == SVG_NAMESPACE {
+        if let Some(id) = node
+          .node
+          .get_attribute_ref("id")
+          .filter(|id| !id.is_empty())
+        {
+          out
+            .svg_id_index
+            .entry(id.to_string())
+            .or_insert_with(|| SvgIdIndexEntry {
+              node,
+              namespaces: Arc::clone(&namespaces),
+            });
+        }
+      }
+    }
     if let Some((img_id, sources)) = picture_sources_for(node) {
       out.picture_sources.insert(img_id, sources);
     }
@@ -416,6 +507,7 @@ fn collect_box_generation_prepass<'a>(
         node: child,
         css_allowed: children_css_allowed,
         svg_count_allowed: children_svg_count_allowed,
+        namespaces: Arc::clone(&namespaces),
       });
     }
   }
@@ -448,13 +540,15 @@ fn build_box_tree_root(
   // The styled tree's root is the document node, but the document element (<html>) establishes the
   // writing-mode and direction used for layout and fragmentation.
   let document_axes = if matches!(styled.node.node_type, DomNodeType::Document { .. }) {
-    styled.children.iter().find_map(|child| match child.node.node_type {
-      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => Some((
-        child.styles.writing_mode,
-        child.styles.direction,
-      )),
-      _ => None,
-    })
+    styled
+      .children
+      .iter()
+      .find_map(|child| match child.node.node_type {
+        DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
+          Some((child.styles.writing_mode, child.styles.direction))
+        }
+        _ => None,
+      })
   } else {
     None
   };
@@ -464,6 +558,7 @@ fn build_box_tree_root(
     svg_document_css,
     mut picture_sources,
     styled_lookup,
+    svg_id_index,
   } = collect_box_generation_prepass(styled, deadline_counter)?;
   let mut counters = CounterManager::new_with_styles(styled.styles.counter_styles.clone());
   counters.enter_scope();
@@ -479,6 +574,7 @@ fn build_box_tree_root(
     true,
     &document_css,
     svg_document_css.embedded_style_element.as_ref(),
+    &svg_id_index,
     &mut picture_sources,
     options,
     deadline_counter,
@@ -558,7 +654,11 @@ fn root_element_axes(styled: &StyledNode) -> Option<(usize, WritingMode, Directi
   let mut stack: Vec<&StyledNode> = styled.children.iter().rev().collect();
   while let Some(node) = stack.pop() {
     if matches!(node.node.node_type, DomNodeType::Element { .. }) {
-      return Some((node.node_id, node.styles.writing_mode, node.styles.direction));
+      return Some((
+        node.node_id,
+        node.styles.writing_mode,
+        node.styles.direction,
+      ));
     }
 
     stack.extend(node.children.iter().rev());
@@ -1123,7 +1223,8 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
     .iter_mut()
     .find(|(name, _)| name.eq_ignore_ascii_case("style"))
   {
-    if !trim_ascii_whitespace_end(value).ends_with(';') && !trim_ascii_whitespace(value).is_empty() {
+    if !trim_ascii_whitespace_end(value).ends_with(';') && !trim_ascii_whitespace(value).is_empty()
+    {
       value.push(';');
     }
     value.push_str(extra);
@@ -1577,8 +1678,8 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_color_or_none = |out: &mut String, value: &ColorOrNone, current_color: Rgba| {
-    match value {
+  let mut push_color_or_none =
+    |out: &mut String, value: &ColorOrNone, current_color: Rgba| match value {
       ColorOrNone::None => out.push_str("none"),
       ColorOrNone::Color(color) => {
         let _ = write!(
@@ -1605,8 +1706,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
         out.push_str(url.as_ref());
         out.push(')');
       }
-    }
-  };
+    };
 
   let effective_color_or_none = |value: &ColorOrNone, current_color: Rgba| -> ColorOrNone {
     match value {
@@ -1637,8 +1737,11 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
 
   if let Some(fill) = style.svg_fill.as_ref() {
     let effective = effective_color_or_none(fill, style.color);
-    let parent_effective =
-      parent.and_then(|p| p.svg_fill.as_ref().map(|value| effective_color_or_none(value, p.color)));
+    let parent_effective = parent.and_then(|p| {
+      p.svg_fill
+        .as_ref()
+        .map(|value| effective_color_or_none(value, p.color))
+    });
     if parent_effective.as_ref() != Some(&effective) {
       start_decl(&mut out, &mut any);
       out.push_str("fill: ");
@@ -2624,25 +2727,35 @@ pub fn collect_svg_mask_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     masks: &mut HashMap<String, String>,
   ) {
-    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
-    let mut namespaces = inherited_xmlns;
+    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
+      &styled.node.node_type
+    {
+      attributes
+        .iter()
+        .any(|(name, _)| name.starts_with("xmlns"))
+        .then(|| {
+          let mut updated = inherited_xmlns.to_vec();
+          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+            if let Some(existing) = updated
+              .iter_mut()
+              .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            {
+              existing.1 = value.clone();
+            } else {
+              updated.push((name.clone(), value.clone()));
+            }
+          }
+          updated
+        })
+    } else {
+      None
+    };
+    let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
     if let crate::dom::DomNodeType::Element {
       tag_name,
-      attributes,
       ..
     } = &styled.node.node_type
     {
-      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
-        let mut updated = inherited_xmlns.to_vec();
-        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
-            updated.push((name.clone(), value.clone()));
-          }
-        }
-        owned_namespaces = Some(updated);
-        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
-      }
-
       if tag_name.eq_ignore_ascii_case("mask") {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !masks.contains_key(id) {
@@ -2681,25 +2794,35 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     filters: &mut HashMap<String, String>,
   ) {
-    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
-    let mut namespaces = inherited_xmlns;
+    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
+      &styled.node.node_type
+    {
+      attributes
+        .iter()
+        .any(|(name, _)| name.starts_with("xmlns"))
+        .then(|| {
+          let mut updated = inherited_xmlns.to_vec();
+          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+            if let Some(existing) = updated
+              .iter_mut()
+              .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            {
+              existing.1 = value.clone();
+            } else {
+              updated.push((name.clone(), value.clone()));
+            }
+          }
+          updated
+        })
+    } else {
+      None
+    };
+    let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
     if let crate::dom::DomNodeType::Element {
       tag_name,
-      attributes,
       ..
     } = &styled.node.node_type
     {
-      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
-        let mut updated = inherited_xmlns.to_vec();
-        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
-            updated.push((name.clone(), value.clone()));
-          }
-        }
-        owned_namespaces = Some(updated);
-        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
-      }
-
       if tag_name.eq_ignore_ascii_case("filter") {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !filters.contains_key(id) {
@@ -2913,28 +3036,42 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     out: &mut HashMap<String, IndexedNode<'a>>,
   ) {
-    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
-    let mut namespaces = inherited_xmlns;
+    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
+      &styled.node.node_type
+    {
+      attributes
+        .iter()
+        .any(|(name, _)| name.starts_with("xmlns"))
+        .then(|| {
+          let mut updated = inherited_xmlns.to_vec();
+          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+            if let Some(existing) = updated
+              .iter_mut()
+              .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            {
+              existing.1 = value.clone();
+            } else {
+              updated.push((name.clone(), value.clone()));
+            }
+          }
+          updated
+        })
+    } else {
+      None
+    };
+    let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
 
     if let crate::dom::DomNodeType::Element {
       namespace,
-      attributes,
       ..
     } = &styled.node.node_type
     {
-      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
-        let mut updated = inherited_xmlns.to_vec();
-        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
-            updated.push((name.clone(), value.clone()));
-          }
-        }
-        owned_namespaces = Some(updated);
-        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
-      }
-
       if namespace == SVG_NAMESPACE {
-        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+        if let Some(id) = styled
+          .node
+          .get_attribute_ref("id")
+          .filter(|id| !id.is_empty())
+        {
           if !out.contains_key(id) {
             out.insert(
               id.to_string(),
@@ -2953,7 +3090,11 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
-  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg_style: bool, out: &mut HashSet<String>) {
+  fn collect_referenced_svg_ids(
+    styled: &StyledNode,
+    in_svg_style: bool,
+    out: &mut HashSet<String>,
+  ) {
     match &styled.node.node_type {
       crate::dom::DomNodeType::Element {
         tag_name,
@@ -3101,14 +3242,15 @@ fn serialize_svg_subtree(
   styled: &StyledNode,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
+  svg_id_index: &SvgIdIndex<'_>,
 ) -> SvgContent {
   let profile_start = SVG_SERIALIZATION_PROFILE
     .with(|cell| cell.borrow().is_some())
     .then(Instant::now);
 
   fn root_style_base(style: &ComputedStyle) -> String {
-    use std::fmt::Write as _;
     use crate::style::types::SvgTextAnchor;
+    use std::fmt::Write as _;
 
     let mut out = String::with_capacity(64);
     out.push_str("color: rgba(");
@@ -3185,7 +3327,9 @@ fn serialize_svg_subtree(
       return true;
     };
     let declarations = crate::css::parser::parse_declarations(style);
-    !declarations.iter().any(|decl| decl.property.as_str() == "fill")
+    !declarations
+      .iter()
+      .any(|decl| decl.property.as_str() == "fill")
   }
 
   let embed_document_css = svg_document_css_style_element.is_some();
@@ -3287,7 +3431,197 @@ fn serialize_svg_subtree(
     node.children.iter().any(svg_uses_xlink_prefix)
   }
 
-  let needs_xmlns_xlink = svg_uses_xlink_prefix(styled)
+  /// SVG sprite sheets often live in a separate `<svg style="display:none">` in the HTML document
+  /// and are referenced via `<use href="#id">`. We rasterize each inline `<svg>` in isolation, so
+  /// fragment-only `<use>` references would otherwise fail to resolve.
+  ///
+  /// Collect any required `id` targets from the *document* SVG index and inline them as `<defs>`
+  /// before rasterization.
+  fn svg_use_defs_for_inline_svg(
+    styled: &StyledNode,
+    svg_id_index: &SvgIdIndex<'_>,
+  ) -> Vec<String> {
+    fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
+      let bytes = value.as_bytes();
+      let mut idx = 0usize;
+      while idx + 4 <= bytes.len() {
+        let b = bytes[idx];
+        if (b == b'u' || b == b'U')
+          && (bytes[idx + 1] == b'r' || bytes[idx + 1] == b'R')
+          && (bytes[idx + 2] == b'l' || bytes[idx + 2] == b'L')
+          && bytes[idx + 3] == b'('
+        {
+          idx += 4;
+          while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+          }
+          let mut quote: Option<u8> = None;
+          if idx < bytes.len() && (bytes[idx] == b'\'' || bytes[idx] == b'"') {
+            quote = Some(bytes[idx]);
+            idx += 1;
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+              idx += 1;
+            }
+          }
+          if idx < bytes.len() && bytes[idx] == b'#' {
+            idx += 1;
+            let start = idx;
+            while idx < bytes.len() {
+              let ch = bytes[idx];
+              if ch == b')' || ch.is_ascii_whitespace() {
+                break;
+              }
+              if quote.is_some_and(|q| q == ch) {
+                break;
+              }
+              idx += 1;
+            }
+            if start < idx {
+              out.insert(value[start..idx].to_string());
+            }
+          }
+          while idx < bytes.len() && bytes[idx] != b')' {
+            idx += 1;
+          }
+          if idx < bytes.len() {
+            idx += 1;
+          }
+        } else {
+          idx += 1;
+        }
+      }
+    }
+
+    fn is_href_attr(name: &str) -> bool {
+      if name.eq_ignore_ascii_case("href") {
+        return true;
+      }
+      name
+        .rsplit_once(':')
+        .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+    }
+
+    fn collect_local_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
+      let mut stack = vec![styled];
+      while let Some(node) = stack.pop() {
+        if let crate::dom::DomNodeType::Element { namespace, .. } = &node.node.node_type {
+          if namespace == SVG_NAMESPACE {
+            if let Some(id) = node
+              .node
+              .get_attribute_ref("id")
+              .filter(|id| !id.is_empty())
+            {
+              out.insert(id.to_string());
+            }
+          }
+        }
+        for child in &node.children {
+          stack.push(child);
+        }
+      }
+    }
+
+    fn collect_referenced_svg_ids(
+      styled: &StyledNode,
+      in_svg_style: bool,
+      out: &mut HashSet<String>,
+    ) {
+      let mut stack = vec![(styled, in_svg_style)];
+      while let Some((node, in_svg_style)) = stack.pop() {
+        match &node.node.node_type {
+          crate::dom::DomNodeType::Element {
+            tag_name,
+            namespace,
+            attributes,
+          } => {
+            let is_svg = namespace == SVG_NAMESPACE;
+            let is_style = is_svg && tag_name.eq_ignore_ascii_case("style");
+            let next_in_svg_style = in_svg_style || is_style;
+            if is_svg {
+              for (name, value) in attributes {
+                if is_href_attr(name) {
+                  let trimmed = trim_ascii_whitespace(value);
+                  if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+                    out.insert(id.to_string());
+                  }
+                }
+                extract_url_fragment_ids(value, out);
+              }
+            }
+            for child in &node.children {
+              stack.push((child, next_in_svg_style));
+            }
+          }
+          crate::dom::DomNodeType::Text { content } => {
+            if in_svg_style {
+              extract_url_fragment_ids(content, out);
+            }
+          }
+          _ => {
+            for child in &node.children {
+              stack.push((child, in_svg_style));
+            }
+          }
+        }
+      }
+    }
+
+    if svg_id_index.is_empty() {
+      return Vec::new();
+    }
+
+    let mut local_ids = HashSet::new();
+    collect_local_svg_ids(styled, &mut local_ids);
+
+    let mut referenced = HashSet::new();
+    collect_referenced_svg_ids(styled, false, &mut referenced);
+    if referenced.is_empty() {
+      return Vec::new();
+    }
+
+    let mut required: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for id in referenced {
+      if local_ids.contains(&id) {
+        continue;
+      }
+      if svg_id_index.contains_key(&id) && required.insert(id.clone()) {
+        queue.push_back(id);
+      }
+    }
+
+    while let Some(id) = queue.pop_front() {
+      let Some(entry) = svg_id_index.get(&id) else {
+        continue;
+      };
+      let mut refs = HashSet::new();
+      collect_referenced_svg_ids(entry.node, false, &mut refs);
+      for reference in refs {
+        if local_ids.contains(&reference) {
+          continue;
+        }
+        if !svg_id_index.contains_key(&reference) {
+          continue;
+        }
+        if required.insert(reference.clone()) {
+          queue.push_back(reference);
+        }
+      }
+    }
+
+    let mut ids: Vec<String> = required.into_iter().collect();
+    ids.sort();
+    ids
+  }
+
+  let use_def_ids = svg_use_defs_for_inline_svg(styled, svg_id_index);
+  let injected_uses_xlink_prefix = use_def_ids.iter().any(|id| {
+    svg_id_index
+      .get(id)
+      .is_some_and(|entry| svg_uses_xlink_prefix(entry.node))
+  });
+
+  let needs_xmlns_xlink = (svg_uses_xlink_prefix(styled) || injected_uses_xlink_prefix)
     && matches!(
       &styled.node.node_type,
       crate::dom::DomNodeType::Element { attributes, .. }
@@ -3295,6 +3629,30 @@ fn serialize_svg_subtree(
           .iter()
           .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
     );
+
+  let use_defs_injection = if use_def_ids.is_empty() {
+    None
+  } else {
+    let mut defs = String::new();
+    defs.push_str("<defs>");
+    for id in &use_def_ids {
+      let Some(entry) = svg_id_index.get(id) else {
+        continue;
+      };
+      let mut serialized = String::new();
+      serialize_svg_mask_subtree_with_namespaces(
+        entry.node,
+        entry.namespaces.as_slice(),
+        None,
+        None,
+        true,
+        &mut serialized,
+      );
+      defs.push_str(&serialized);
+    }
+    defs.push_str("</defs>");
+    Some(defs)
+  };
 
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
@@ -3476,6 +3834,7 @@ fn serialize_svg_subtree(
     svg_viewport: Option<SvgViewportSize>,
     needs_xmlns_xlink: bool,
     root_fill_current_color_injection: bool,
+    use_defs_injection: Option<&str>,
     is_root: bool,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -3494,6 +3853,7 @@ fn serialize_svg_subtree(
             svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
+            None,
             false,
             out,
             fallback_out,
@@ -3513,6 +3873,7 @@ fn serialize_svg_subtree(
             svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
+            None,
             false,
             out,
             fallback_out,
@@ -3567,6 +3928,71 @@ fn serialize_svg_subtree(
             attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
             if attrs_need_svg_inlined_presentation_stripping(&attrs) {
               strip_svg_inlined_presentation_attrs(&mut attrs);
+            }
+
+            // Inline `<svg>` elements in HTML commonly rely on CSS `width`/`height` instead of SVG
+            // attributes. When we rasterize the serialized SVG out-of-context (via `usvg`/`resvg`),
+            // missing root dimensions can change how `<use>` instantiates `<symbol>` because
+            // percentage sizing and viewBox mapping depend on the root viewport size.
+            //
+            // To keep rasterization consistent with the HTML box size, synthesize missing root
+            // `width`/`height` attributes from computed CSS lengths when we can resolve them to
+            // absolute pixels without needing layout (i.e. avoid percentages/container-query units).
+            if tag_name.eq_ignore_ascii_case("svg") {
+              let resolve_css_dimension_px =
+                |len: Length, style: &ComputedStyle| -> Option<String> {
+                  if !len.value.is_finite() {
+                    return None;
+                  }
+                  if let Some(calc) = len.calc {
+                    if calc.has_percentage()
+                      || calc.has_viewport_relative()
+                      || calc.has_container_query_relative()
+                    {
+                      return None;
+                    }
+                  } else if len.unit.is_percentage()
+                    || len.unit.is_viewport_relative()
+                    || len.unit.is_container_query_relative()
+                    || !(len.unit.is_absolute() || len.unit.is_font_relative())
+                  {
+                    return None;
+                  }
+
+                  let px = len.resolve_with_context(
+                    None,
+                    0.0,
+                    0.0,
+                    style.font_size,
+                    style.root_font_size,
+                  )?;
+                  (px.is_finite() && px > 0.0).then_some(px.to_string())
+                };
+
+              if !attrs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("width"))
+              {
+                if let Some(width) = styled
+                  .styles
+                  .width
+                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles))
+                {
+                  attrs.push(("width".to_string(), width));
+                }
+              }
+              if !attrs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("height"))
+              {
+                if let Some(height) = styled
+                  .styles
+                  .height
+                  .and_then(|len| resolve_css_dimension_px(len, &styled.styles))
+                {
+                  attrs.push(("height".to_string(), height));
+                }
+              }
             }
           }
           let has_xmlns = attrs
@@ -3760,6 +4186,12 @@ fn serialize_svg_subtree(
           if record_document_css && document_css_insert_pos.is_none() {
             *document_css_insert_pos = Some(out.len());
           }
+          if let Some(defs) = use_defs_injection {
+            out.push_str(defs);
+            if let Some(fallback_out) = fallback_out.as_mut() {
+              fallback_out.push_str(defs);
+            }
+          }
         }
 
         for child in &styled.children {
@@ -3771,6 +4203,7 @@ fn serialize_svg_subtree(
             next_svg_viewport,
             needs_xmlns_xlink,
             root_fill_current_color_injection,
+            None,
             false,
             out,
             fallback_out,
@@ -3808,6 +4241,7 @@ fn serialize_svg_subtree(
     None,
     needs_xmlns_xlink,
     false,
+    use_defs_injection.as_deref(),
     true,
     &mut out,
     &mut fallback_out,
@@ -3869,6 +4303,7 @@ fn generate_boxes_for_styled_into(
   _is_root: bool,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
+  svg_id_index: &SvgIdIndex<'_>,
   picture_sources: &mut PictureSourceLookup,
   options: &BoxGenerationOptions,
   deadline_counter: &mut usize,
@@ -4067,13 +4502,15 @@ fn generate_boxes_for_styled_into(
           }
         }
 
-        let in_footnote = stack
-          .last()
-          .map(|frame| frame.in_footnote)
-          .unwrap_or(false);
+        let in_footnote = stack.last().map(|frame| frame.in_footnote).unwrap_or(false);
 
         counters.enter_scope();
-        apply_counter_properties_from_style(styled, counters, in_footnote, options.enable_footnote_floats);
+        apply_counter_properties_from_style(
+          styled,
+          counters,
+          in_footnote,
+          options.enable_footnote_floats,
+        );
         if let Some(frame) = stack.last_mut() {
           frame.entered_counter_scope = true;
         }
@@ -4157,7 +4594,10 @@ fn generate_boxes_for_styled_into(
         // descendants can participate in layout, e.g. inline-flex icon+text buttons.)
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
-          if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
+          if !matches!(
+            form_control.appearance,
+            crate::style::types::Appearance::None
+          ) {
             // Form controls short-circuit box generation as replaced elements, but we still need to
             // honor authored ::before/::after pseudo-elements so real-world patterns like styled
             // search icons render. To keep layout complexity manageable, only attach out-of-flow
@@ -4238,7 +4678,9 @@ fn generate_boxes_for_styled_into(
               .get_attribute_ref("type")
               .is_some_and(|t| t.eq_ignore_ascii_case("image"));
 
-          if (is_replaced_element(tag) || is_input_image) && styled.styles.display != Display::Contents {
+          if (is_replaced_element(tag) || is_input_image)
+            && styled.styles.display != Display::Contents
+          {
             let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
               picture_sources.take(styled.node_id)
             } else {
@@ -4254,6 +4696,7 @@ fn generate_boxes_for_styled_into(
               style,
               document_css,
               svg_document_css_style_element,
+              svg_id_index,
               picture_sources_for_img,
               site_compat,
             ) {
@@ -4398,7 +4841,7 @@ fn generate_boxes_for_styled_into(
             }
           }
         }
- 
+
         if let Some(child) = next_child {
           let child_in_footnote = stack
             .last()
@@ -4500,9 +4943,11 @@ fn generate_boxes_for_styled_into(
                 return false;
               };
               match &styled_node.node.node_type {
-                DomNodeType::Element { tag_name, namespace, .. } => {
-                  namespace == HTML_NAMESPACE && tag_name.eq_ignore_ascii_case("legend")
-                }
+                DomNodeType::Element {
+                  tag_name,
+                  namespace,
+                  ..
+                } => namespace == HTML_NAMESPACE && tag_name.eq_ignore_ascii_case("legend"),
                 _ => false,
               }
             };
@@ -4518,7 +4963,8 @@ fn generate_boxes_for_styled_into(
 
             let mut wrapper_style = inherited_style(base_style.as_ref());
             wrapper_style.display = Display::Block;
-            let wrapper = BoxNode::new_anonymous_fieldset_content(Arc::new(wrapper_style), children);
+            let wrapper =
+              BoxNode::new_anonymous_fieldset_content(Arc::new(wrapper_style), children);
 
             children = if let Some(legend) = legend {
               vec![legend, wrapper]
@@ -4578,7 +5024,8 @@ fn generate_boxes_for_styled_into(
         box_node.first_line_style = styled.first_line_styles.as_ref().map(Arc::clone);
         box_node.first_letter_style = styled.first_letter_styles.as_ref().map(Arc::clone);
 
-        if options.enable_footnote_floats && styled.styles.float == Float::Footnote && !in_footnote {
+        if options.enable_footnote_floats && styled.styles.float == Float::Footnote && !in_footnote
+        {
           let mut body_box = box_node;
           // The footnote body is laid out in the per-page footnote area; it should not itself be a
           // footnote float.
@@ -4768,8 +5215,9 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
       box_node.table_cell_span = None;
     }
     if tag.eq_ignore_ascii_case("col") || tag.eq_ignore_ascii_case("colgroup") {
-      box_node.table_column_span =
-        Some(parse_html_table_span_attr_min_1(styled.node.get_attribute_ref("span")));
+      box_node.table_column_span = Some(parse_html_table_span_attr_min_1(
+        styled.node.get_attribute_ref("span"),
+      ));
     } else {
       box_node.table_column_span = None;
     }
@@ -4911,8 +5359,9 @@ fn create_pseudo_element_box(
   // Generated content items behave like anonymous child boxes of the pseudo-element. They inherit
   // inheritable properties (font, color, etc.) from the pseudo-element but should not copy
   // layout-affecting properties like `display` or `position`.
-  let generated_content_style =
-    Arc::new(crate::tree::anonymous::inherited_style(pseudo_style.as_ref()));
+  let generated_content_style = Arc::new(crate::tree::anonymous::inherited_style(
+    pseudo_style.as_ref(),
+  ));
 
   let mut context = ContentContext::new();
   for (name, value) in styled.node.attributes_iter() {
@@ -5142,12 +5591,36 @@ fn create_box_from_style(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> O
     | Display::RubyBaseContainer
     | Display::RubyTextContainer => Some(BoxNode::new_inline(style, children)),
     Display::InlineBlock => Some(BoxNode::new_inline_block(style, fc_type, children)),
-    Display::Flex => Some(BoxNode::new_block(style, FormattingContextType::Flex, children)),
-    Display::InlineFlex => Some(BoxNode::new_inline_block(style, FormattingContextType::Flex, children)),
-    Display::Grid => Some(BoxNode::new_block(style, FormattingContextType::Grid, children)),
-    Display::InlineGrid => Some(BoxNode::new_inline_block(style, FormattingContextType::Grid, children)),
-    Display::Table => Some(BoxNode::new_block(style, FormattingContextType::Table, children)),
-    Display::InlineTable => Some(BoxNode::new_inline_block(style, FormattingContextType::Table, children)),
+    Display::Flex => Some(BoxNode::new_block(
+      style,
+      FormattingContextType::Flex,
+      children,
+    )),
+    Display::InlineFlex => Some(BoxNode::new_inline_block(
+      style,
+      FormattingContextType::Flex,
+      children,
+    )),
+    Display::Grid => Some(BoxNode::new_block(
+      style,
+      FormattingContextType::Grid,
+      children,
+    )),
+    Display::InlineGrid => Some(BoxNode::new_inline_block(
+      style,
+      FormattingContextType::Grid,
+      children,
+    )),
+    Display::Table => Some(BoxNode::new_block(
+      style,
+      FormattingContextType::Table,
+      children,
+    )),
+    Display::InlineTable => Some(BoxNode::new_inline_block(
+      style,
+      FormattingContextType::Table,
+      children,
+    )),
     Display::TableRow
     | Display::TableCell
     | Display::TableRowGroup
@@ -5155,7 +5628,11 @@ fn create_box_from_style(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> O
     | Display::TableFooterGroup
     | Display::TableColumn
     | Display::TableColumnGroup
-    | Display::TableCaption => Some(BoxNode::new_block(style, FormattingContextType::Block, children)),
+    | Display::TableCaption => Some(BoxNode::new_block(
+      style,
+      FormattingContextType::Block,
+      children,
+    )),
     Display::Contents => Some(BoxNode::new_inline(style, children)),
   }
 }
@@ -5198,7 +5675,10 @@ fn build_appearance_none_form_control_fallback(
       } else if preedit.is_none() {
         if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
         text = Some(ph.clone());
-        if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
+        if let Some(ph_style) = placeholder_style
+          .as_ref()
+          .or(form_control.placeholder_style.as_ref())
+        {
           style = Arc::clone(ph_style);
           pseudo = Some(GeneratedPseudoElement::Placeholder);
         }
@@ -5253,7 +5733,10 @@ fn build_appearance_none_form_control_fallback(
       } else if preedit.is_none() {
         if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
         text = Some(ph.clone());
-        if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
+        if let Some(ph_style) = placeholder_style
+          .as_ref()
+          .or(form_control.placeholder_style.as_ref())
+        {
           style = Arc::clone(ph_style);
           pseudo = Some(GeneratedPseudoElement::Placeholder);
         }
@@ -5286,7 +5769,12 @@ fn build_appearance_none_form_control_fallback(
         .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
         && !label.is_empty()
       {
-        push_text(&mut children, Arc::clone(&styled.styles), label.clone(), None);
+        push_text(
+          &mut children,
+          Arc::clone(&styled.styles),
+          label.clone(),
+          None,
+        );
       }
     }
     FormControlKind::Select(select) => {
@@ -5297,13 +5785,22 @@ fn build_appearance_none_form_control_fallback(
         .and_then(|&idx| match select.items.get(idx) {
           Some(SelectItem::Option { label, value, .. }) => {
             let trimmed = trim_ascii_whitespace(label);
-            if trimmed.is_empty() { Some(value.as_str()) } else { Some(label.as_str()) }
+            if trimmed.is_empty() {
+              Some(value.as_str())
+            } else {
+              Some(label.as_str())
+            }
           }
           _ => None,
         })
         .unwrap_or("Select");
       if !label.is_empty() {
-        push_text(&mut children, Arc::clone(&styled.styles), label.to_string(), None);
+        push_text(
+          &mut children,
+          Arc::clone(&styled.styles),
+          label.to_string(),
+          None,
+        );
       }
     }
     FormControlKind::Range { value, min, max } => {
@@ -5350,7 +5847,10 @@ fn build_appearance_none_form_control_fallback(
         style.top = InsetValue::Length(Length::new(50.0, LengthUnit::Percent));
         style.bottom = InsetValue::Auto;
         style.translate = TranslateValue::Values {
-          x: Length::new(if is_rtl { clamped_pct } else { -clamped_pct }, LengthUnit::Percent),
+          x: Length::new(
+            if is_rtl { clamped_pct } else { -clamped_pct },
+            LengthUnit::Percent,
+          ),
           y: Length::new(-50.0, LengthUnit::Percent),
           z: Length::px(0.0),
         };
@@ -5378,18 +5878,30 @@ fn build_appearance_none_form_control_fallback(
         text_box.generated_pseudo = Some(GeneratedPseudoElement::FileSelectorButton);
         button_children.push(text_box);
 
-        if let Some(mut button_node) = create_box_from_style(Arc::clone(button_style), button_children) {
+        if let Some(mut button_node) =
+          create_box_from_style(Arc::clone(button_style), button_children)
+        {
           button_node.styled_node_id = Some(styled_id);
           button_node.generated_pseudo = Some(GeneratedPseudoElement::FileSelectorButton);
           children.push(button_node);
         }
       }
 
-      push_text(&mut children, Arc::clone(&styled.styles), file_label.to_string(), None);
+      push_text(
+        &mut children,
+        Arc::clone(&styled.styles),
+        file_label.to_string(),
+        None,
+      );
     }
     FormControlKind::Unknown { label } => {
       if let Some(text) = label.as_ref().filter(|t| !t.is_empty()) {
-        push_text(&mut children, Arc::clone(&styled.styles), text.clone(), None);
+        push_text(
+          &mut children,
+          Arc::clone(&styled.styles),
+          text.clone(),
+          None,
+        );
       }
     }
     FormControlKind::Checkbox { .. }
@@ -5796,8 +6308,8 @@ fn list_item_count(styled: &StyledNode) -> usize {
     if tag.is_some_and(|tag| {
       tag.eq_ignore_ascii_case("source")
         || tag.eq_ignore_ascii_case("track")
-      || tag.eq_ignore_ascii_case("option")
-      || tag.eq_ignore_ascii_case("optgroup")
+        || tag.eq_ignore_ascii_case("option")
+        || tag.eq_ignore_ascii_case("optgroup")
     }) {
       continue;
     }
@@ -6020,9 +6532,7 @@ fn select_placeholder_label_option_index(control: &SelectControl, required: bool
     match item {
       SelectItem::OptGroupLabel { .. } => continue,
       SelectItem::Option {
-        value,
-        in_optgroup,
-        ..
+        value, in_optgroup, ..
       } => {
         if !*in_optgroup && value.is_empty() {
           return Some(idx);
@@ -6098,11 +6608,9 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     focused = false;
     focus_visible = false;
   }
-  let textarea_value = tag
-    .eq_ignore_ascii_case("textarea")
-    .then(|| {
-      crate::dom::textarea_current_value_from_text_content(&styled.node, collect_text_content(styled))
-    });
+  let textarea_value = tag.eq_ignore_ascii_case("textarea").then(|| {
+    crate::dom::textarea_current_value_from_text_content(&styled.node, collect_text_content(styled))
+  });
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));
@@ -6118,10 +6626,15 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         invalid = false;
       } else if let Some(control) = select_control.as_ref() {
         invalid = if control.multiple || control.size != 1 {
-          !control.selected.iter().any(|&idx| matches!(
-            control.items.get(idx),
-            Some(SelectItem::Option { disabled: false, .. })
-          ))
+          !control.selected.iter().any(|&idx| {
+            matches!(
+              control.items.get(idx),
+              Some(SelectItem::Option {
+                disabled: false,
+                ..
+              })
+            )
+          })
         } else {
           control.selected.is_empty()
             || select_placeholder_label_option_index(control, required)
@@ -6188,7 +6701,9 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       max = min;
     }
 
-    let value = parse_f32_attr(&styled.node, "value").unwrap_or(min).clamp(min, max);
+    let value = parse_f32_attr(&styled.node, "value")
+      .unwrap_or(min)
+      .clamp(min, max);
     let mut low = parse_f32_attr(&styled.node, "low").map(|v| v.clamp(min, max));
     let mut high = parse_f32_attr(&styled.node, "high").map(|v| v.clamp(min, max));
     if let (Some(low_v), Some(high_v)) = (low, high) {
@@ -6279,8 +6794,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         .node
         .get_attribute_ref("value")
         .filter(|v| !v.is_empty());
-      let sanitized = crate::dom::input_color_value_string(&styled.node)
-        .unwrap_or_else(|| "#000000".to_string());
+      let sanitized =
+        crate::dom::input_color_value_string(&styled.node).unwrap_or_else(|| "#000000".to_string());
       let color_value = parse_color_attribute(&sanitized).unwrap_or(Rgba {
         r: 0,
         g: 0,
@@ -6347,9 +6862,11 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           styled.slider_track_styles.clone(),
           None,
         ),
-        FormControlKind::File { .. } => (None, None, None, styled.file_selector_button_styles.clone()),
+        FormControlKind::File { .. } => {
+          (None, None, None, styled.file_selector_button_styles.clone())
+        }
         _ => (None, None, None, None),
-    };
+      };
 
     let ime_preedit = match &control {
       FormControlKind::Text { .. } => styled
@@ -6486,7 +7003,8 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
   // FastRender supports rendering `<object>` external resources when they are images, or when the
   // resource is an HTML document that can be rendered as an embedded iframe.
   fn is_supported_object_mime(mime: &str) -> bool {
-    let normalized = trim_ascii_whitespace(mime.split(';').next().unwrap_or("")).to_ascii_lowercase();
+    let normalized =
+      trim_ascii_whitespace(mime.split(';').next().unwrap_or("")).to_ascii_lowercase();
     if normalized.is_empty() {
       return false;
     }
@@ -6619,6 +7137,7 @@ fn create_replaced_box_from_styled(
   style: Arc<ComputedStyle>,
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
+  svg_id_index: &SvgIdIndex<'_>,
   picture_sources: Vec<PictureSource>,
   site_compat: bool,
 ) -> Option<BoxNode> {
@@ -6704,7 +7223,12 @@ fn create_replaced_box_from_styled(
     ReplacedType::Canvas
   } else if tag.eq_ignore_ascii_case("svg") {
     ReplacedType::Svg {
-      content: serialize_svg_subtree(styled, document_css, svg_document_css_style_element),
+      content: serialize_svg_subtree(
+        styled,
+        document_css,
+        svg_document_css_style_element,
+        svg_id_index,
+      ),
     }
   } else if tag.eq_ignore_ascii_case("iframe") {
     // HTML iframes default to about:blank when `src` is missing/empty.
@@ -7159,8 +7683,14 @@ mod tests {
       let BoxType::Replaced(replaced) = &node.box_type else {
         panic!("expected replaced box, got {:?}", node.box_type);
       };
-      assert_eq!(replaced.intrinsic_size, None, "unexpected intrinsic size for img {idx}");
-      assert_eq!(replaced.aspect_ratio, None, "unexpected aspect ratio for img {idx}");
+      assert_eq!(
+        replaced.intrinsic_size, None,
+        "unexpected intrinsic size for img {idx}"
+      );
+      assert_eq!(
+        replaced.aspect_ratio, None,
+        "unexpected aspect ratio for img {idx}"
+      );
     }
 
     let node = &tree.root.children[3];
@@ -7333,7 +7863,14 @@ mod tests {
     set_attr(&mut img_invalid, "decoding", "wat");
 
     let mut root = styled_element("div");
-    root.children = vec![img_default, img_empty, img_async, img_sync, img_auto, img_invalid];
+    root.children = vec![
+      img_default,
+      img_empty,
+      img_async,
+      img_sync,
+      img_auto,
+      img_invalid,
+    ];
 
     let tree = generate_box_tree(&root);
     assert_eq!(tree.root.children.len(), 6);
@@ -7400,7 +7937,14 @@ mod tests {
     set_attr(&mut img_invalid, "loading", "wat");
 
     let mut root = styled_element("div");
-    root.children = vec![img_default, img_empty, img_lazy, img_eager, img_auto, img_invalid];
+    root.children = vec![
+      img_default,
+      img_empty,
+      img_lazy,
+      img_eager,
+      img_auto,
+      img_invalid,
+    ];
 
     let tree = generate_box_tree(&root);
     assert_eq!(tree.root.children.len(), 6);
@@ -7802,7 +8346,8 @@ mod tests {
 
   #[test]
   fn object_with_image_data_url_is_replaced_when_type_missing() {
-    let html = "<html><body><object data=\"data:image/png,hello\"><p>fallback</p></object></body></html>";
+    let html =
+      "<html><body><object data=\"data:image/png,hello\"><p>fallback</p></object></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -7880,7 +8425,11 @@ mod tests {
 
     let (src, poster) =
       first_video_src_and_poster(&box_tree.root).expect("expected a replaced video");
-    assert_eq!(src, format!("v.mp4{nbsp}"), "video src should preserve NBSP");
+    assert_eq!(
+      src,
+      format!("v.mp4{nbsp}"),
+      "video src should preserve NBSP"
+    );
     assert_eq!(
       poster,
       Some(format!("poster.png{nbsp}")),
@@ -8038,7 +8587,8 @@ mod tests {
       "<input type=image> should not be generated as a native form control"
     );
 
-    let replaced = find_image_with_src(&box_tree.root, "icon.png").expect("expected image replaced box");
+    let replaced =
+      find_image_with_src(&box_tree.root, "icon.png").expect("expected image replaced box");
     match &replaced.replaced_type {
       ReplacedType::Image { alt, .. } => {
         assert_eq!(alt.as_deref(), Some("Submit"));
@@ -8125,10 +8675,9 @@ mod tests {
 
     let html = "<html><body><input class=\"file\" type=\"file\"></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
-    let stylesheet = parse_stylesheet(
-      ".file::-webkit-file-upload-button { background-color: rgb(11, 22, 33); }",
-    )
-    .expect("parse css");
+    let stylesheet =
+      parse_stylesheet(".file::-webkit-file-upload-button { background-color: rgb(11, 22, 33); }")
+        .expect("parse css");
     let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
     let box_tree = generate_box_tree(&styled);
 
@@ -8979,18 +9528,16 @@ mod tests {
       "file inputs should be captured as file form controls (value is never pre-filled from markup)"
     );
     assert!(
-      controls
-        .iter()
-        .any(|c| matches!(
-          &c.control,
-          FormControlKind::Text {
-            kind: TextControlKind::Plain,
-            placeholder,
-            value,
-            ..
-          } if placeholder.as_deref() == Some("mystery") && value.is_empty()
-        ) && c.focus_visible
-          && c.focused),
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Text {
+          kind: TextControlKind::Plain,
+          placeholder,
+          value,
+          ..
+        } if placeholder.as_deref() == Some("mystery") && value.is_empty()
+      ) && c.focus_visible
+        && c.focused),
       "unknown types should fall back to plain text controls and keep focus-visible hint"
     );
     assert!(
@@ -9221,7 +9768,9 @@ mod tests {
     );
 
     fn find_placeholder(node: &BoxNode) -> Option<&BoxNode> {
-      if node.generated_pseudo == Some(GeneratedPseudoElement::Placeholder) && node.text() == Some("hello") {
+      if node.generated_pseudo == Some(GeneratedPseudoElement::Placeholder)
+        && node.text() == Some("hello")
+      {
         return Some(node);
       }
       node.children.iter().find_map(find_placeholder)
@@ -9259,13 +9808,22 @@ mod tests {
       "-webkit-appearance:none should disable native control replacement"
     );
 
-    fn find_node_id_by_id_attr(node: &crate::style::cascade::StyledNode, id: &str) -> Option<usize> {
+    fn find_node_id_by_id_attr(
+      node: &crate::style::cascade::StyledNode,
+      id: &str,
+    ) -> Option<usize> {
       if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
-        if attributes.iter().any(|(name, value)| name == "id" && value == id) {
+        if attributes
+          .iter()
+          .any(|(name, value)| name == "id" && value == id)
+        {
           return Some(node.node_id);
         }
       }
-      node.children.iter().find_map(|child| find_node_id_by_id_attr(child, id))
+      node
+        .children
+        .iter()
+        .find_map(|child| find_node_id_by_id_attr(child, id))
     }
     let input_node_id =
       find_node_id_by_id_attr(&styled, "plain").expect("expected <input id=plain> in styled tree");
@@ -9274,7 +9832,10 @@ mod tests {
       if node.styled_node_id == Some(node_id) && node.generated_pseudo.is_none() {
         return Some(node);
       }
-      node.children.iter().find_map(|child| find_box_by_node_id(child, node_id))
+      node
+        .children
+        .iter()
+        .find_map(|child| find_box_by_node_id(child, node_id))
     }
     let input_box = find_box_by_node_id(&box_tree.root, input_node_id)
       .expect("expected <input id=plain> to produce a box tree node");
@@ -9311,13 +9872,22 @@ mod tests {
       "-moz-appearance:none should disable native control replacement"
     );
 
-    fn find_node_id_by_id_attr(node: &crate::style::cascade::StyledNode, id: &str) -> Option<usize> {
+    fn find_node_id_by_id_attr(
+      node: &crate::style::cascade::StyledNode,
+      id: &str,
+    ) -> Option<usize> {
       if let DomNodeType::Element { attributes, .. } = &node.node.node_type {
-        if attributes.iter().any(|(name, value)| name == "id" && value == id) {
+        if attributes
+          .iter()
+          .any(|(name, value)| name == "id" && value == id)
+        {
           return Some(node.node_id);
         }
       }
-      node.children.iter().find_map(|child| find_node_id_by_id_attr(child, id))
+      node
+        .children
+        .iter()
+        .find_map(|child| find_node_id_by_id_attr(child, id))
     }
     let input_node_id =
       find_node_id_by_id_attr(&styled, "plain").expect("expected <input id=plain> in styled tree");
@@ -9326,7 +9896,10 @@ mod tests {
       if node.styled_node_id == Some(node_id) && node.generated_pseudo.is_none() {
         return Some(node);
       }
-      node.children.iter().find_map(|child| find_box_by_node_id(child, node_id))
+      node
+        .children
+        .iter()
+        .find_map(|child| find_box_by_node_id(child, node_id))
     }
     let input_box = find_box_by_node_id(&box_tree.root, input_node_id)
       .expect("expected <input id=plain> to produce a box tree node");
@@ -9350,8 +9923,16 @@ mod tests {
           _ => panic!("expected element"),
         }
       }
-      let box_node = create_replaced_box_from_styled(&styled, style.clone(), "", None, Vec::new(), false)
-        .expect("expected replaced box");
+      let box_node = create_replaced_box_from_styled(
+        &styled,
+        style.clone(),
+        "",
+        None,
+        &HashMap::new(),
+        Vec::new(),
+        false,
+      )
+      .expect("expected replaced box");
       match &box_node.box_type {
         BoxType::Replaced(replaced) => {
           assert_eq!(
@@ -9380,9 +9961,16 @@ mod tests {
       _ => panic!("expected element"),
     }
 
-    let box_node =
-      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), true)
-        .expect("expected replaced box");
+    let box_node = create_replaced_box_from_styled(
+      &styled,
+      default_style(),
+      "",
+      None,
+      &HashMap::new(),
+      Vec::new(),
+      true,
+    )
+    .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {
@@ -9404,9 +9992,16 @@ mod tests {
       _ => panic!("expected element"),
     }
 
-    let box_node =
-      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), false)
-        .expect("expected replaced box");
+    let box_node = create_replaced_box_from_styled(
+      &styled,
+      default_style(),
+      "",
+      None,
+      &HashMap::new(),
+      Vec::new(),
+      false,
+    )
+    .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {
@@ -9608,7 +10203,8 @@ mod tests {
 
   #[test]
   fn video_src_with_media_fragment_wins_over_source_children() {
-    let html = "<html><body><video src=\"parent.mp4#t=10\"><source src=\"child.mp4\"></video></body></html>";
+    let html =
+      "<html><body><video src=\"parent.mp4#t=10\"><source src=\"child.mp4\"></video></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -10199,7 +10795,8 @@ mod tests {
     use crate::style::content::ContentValue;
 
     let mut before_style = ComputedStyle::default();
-    before_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+    before_style.content_value =
+      ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
 
     let base_style = ComputedStyle::default();
     let styled = StyledNode {
@@ -10267,7 +10864,8 @@ mod tests {
     li_style.display = Display::ListItem;
 
     let mut marker_style = ComputedStyle::default();
-    marker_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+    marker_style.content_value =
+      ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
 
     let styled = StyledNode {
       node_id: 0,
@@ -10304,8 +10902,8 @@ mod tests {
     };
 
     let mut quote_depth = 0usize;
-    let marker_box =
-      create_marker_box(&styled, &mut CounterManager::default(), &mut quote_depth).expect("marker box");
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default(), &mut quote_depth)
+      .expect("marker box");
     let BoxType::Marker(marker) = &marker_box.box_type else {
       panic!("expected marker box");
     };
@@ -14635,9 +15233,15 @@ mod tests {
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
-    let pseudo_box =
-      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters, &mut quote_depth)
-        .expect("empty string content should still generate the pseudo-element box");
+    let pseudo_box = create_pseudo_element_box(
+      &styled,
+      &pseudo_style,
+      None,
+      "before",
+      &mut counters,
+      &mut quote_depth,
+    )
+    .expect("empty string content should still generate the pseudo-element box");
     assert!(
       pseudo_box.children.is_empty(),
       "empty string content shouldn't implicitly create placeholder text children"
@@ -14683,7 +15287,9 @@ fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> 
     }
     ListStyleType::Georgian => registry.format_marker_string(value, CounterStyle::Georgian),
     ListStyleType::LowerGreek => registry.format_marker_string(value, CounterStyle::LowerGreek),
-    ListStyleType::DisclosureOpen => registry.format_marker_string(value, CounterStyle::DisclosureOpen),
+    ListStyleType::DisclosureOpen => {
+      registry.format_marker_string(value, CounterStyle::DisclosureOpen)
+    }
     ListStyleType::DisclosureClosed => {
       let symbol = match marker_style.writing_mode {
         WritingMode::HorizontalTb => match marker_style.direction {

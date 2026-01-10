@@ -84,6 +84,139 @@ fn inline_svg_applies_document_css_and_current_color() {
 }
 
 #[test]
+fn inline_svg_use_resolves_symbols_from_other_document_svg_elements() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+      </style>
+
+      <svg id="sprite" aria-hidden="true">
+        <symbol id="icon-rect" viewBox="0 0 20 20">
+          <rect width="20" height="20" fill="rgb(255, 0, 0)"></rect>
+        </symbol>
+      </svg>
+
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <use xlink:href="#icon-rect"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg use");
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_use_inherits_fill_from_host_svg_element() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+        .icon { fill: rgb(255, 0, 0); }
+      </style>
+
+      <svg id="sprite" aria-hidden="true">
+        <symbol id="icon-rect" viewBox="0 0 20 20">
+          <rect width="20" height="20"></rect>
+        </symbol>
+      </svg>
+
+      <svg class="icon" width="20" height="20" viewBox="0 0 20 20">
+        <use xlink:href="#icon-rect"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg use");
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_use_renders_when_host_svg_has_only_css_size() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+        svg.icon { width: 20px; height: 20px; fill: rgb(255, 0, 0); }
+      </style>
+
+      <svg id="sprite" aria-hidden="true">
+        <symbol id="icon-rect" viewBox="0 0 20 20">
+          <rect width="20" height="20"></rect>
+        </symbol>
+      </svg>
+
+      <svg class="icon">
+        <use xlink:href="#icon-rect"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg use");
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_use_renders_symbol_with_large_viewbox_when_host_svg_is_css_sized() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+        svg.icon { width: 490px; height: 112px; fill: rgb(255, 0, 0); overflow: hidden; }
+      </style>
+
+      <svg id="sprite" aria-hidden="true">
+        <symbol id="wide-rect" viewBox="0 0 1564 358">
+          <rect width="1564" height="358"></rect>
+        </symbol>
+      </svg>
+
+      <svg class="icon">
+        <use xlink:href="#wide-rect"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer
+        .render_html(html, 500, 200)
+        .expect("render svg use");
+      assert_eq!(pixel(&pixmap, 250, 50), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_currentcolor_resolves_after_color_even_when_color_declared_later() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
@@ -98,7 +231,8 @@ fn inline_svg_currentcolor_resolves_after_color_even_when_color_declared_later()
         <rect width="20" height="20" style="fill: currentColor; color: rgb(255,0,0)" />
       </svg>
       "#;
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
     })
     .unwrap()
@@ -194,7 +328,8 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled_display
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
     })
     .unwrap()
@@ -203,7 +338,8 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled_display
 }
 
 #[test]
-fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_display_list_backend() {
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_display_list_backend()
+{
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -219,7 +355,8 @@ fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_di
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
     })
     .unwrap()
@@ -244,7 +381,8 @@ fn inline_svg_respects_opacity_when_document_css_injection_disabled_display_list
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
     })
     .unwrap()
@@ -383,7 +521,8 @@ fn inline_svg_serializes_css_transform_for_child_elements_when_document_css_inje
       </svg>
       "#;
 
-      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
       assert_eq!(
         pixel(&pixmap, 5, 5),
         [255, 255, 255, 255],
@@ -739,8 +878,14 @@ fn inline_svg_root_opacity_is_not_double_applied() {
 
       let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
       let sample = pixel(&pixmap, 5, 5);
-      assert_eq!(sample[0], 255, "expected red channel to stay max, got {sample:?}");
-      assert_eq!(sample[3], 255, "expected opaque output pixel, got {sample:?}");
+      assert_eq!(
+        sample[0], 255,
+        "expected red channel to stay max, got {sample:?}"
+      );
+      assert_eq!(
+        sample[3], 255,
+        "expected opaque output pixel, got {sample:?}"
+      );
       assert!(
         (120..=140).contains(&sample[1]) && (120..=140).contains(&sample[2]),
         "expected opacity 0.5 to blend once (g/b ~128), got {sample:?}"
@@ -2016,7 +2161,8 @@ fn foreign_object_overflow_x_clip_y_visible_allows_vertical_content_overflow() {
 }
 
 #[test]
-fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_legacy_paint_backend() {
+fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_legacy_paint_backend()
+{
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -2033,10 +2179,7 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_le
       "#;
 
       let toggles = RuntimeToggles::from_map(HashMap::from([
-        (
-          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
-          "0".to_string(),
-        ),
+        ("FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(), "0".to_string()),
         ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
       ]));
       let options = RenderOptions::new()
@@ -2058,7 +2201,8 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_le
 }
 
 #[test]
-fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_with_legacy_paint_backend() {
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_with_legacy_paint_backend(
+) {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -2075,10 +2219,7 @@ fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_wi
       "#;
 
       let toggles = RuntimeToggles::from_map(HashMap::from([
-        (
-          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
-          "0".to_string(),
-        ),
+        ("FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(), "0".to_string()),
         ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
       ]));
       let options = RenderOptions::new()
@@ -2117,10 +2258,7 @@ fn inline_svg_respects_opacity_when_document_css_injection_disabled_with_legacy_
       "#;
 
       let toggles = RuntimeToggles::from_map(HashMap::from([
-        (
-          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
-          "0".to_string(),
-        ),
+        ("FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(), "0".to_string()),
         ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
       ]));
       let options = RenderOptions::new()
