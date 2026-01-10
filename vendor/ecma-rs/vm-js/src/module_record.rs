@@ -813,7 +813,12 @@ fn expr_contains_top_level_await(
               break;
             }
           }
-          LitArrElem::Empty => {}
+          LitArrElem::Empty => {
+            // Array literals can contain arbitrarily many elisions (`[,,,,]`) without any nested
+            // expressions. Budget traversal so module record parsing can't do `O(N)` work without
+            // calling the cancel/budget hook.
+            ctx.budget_tick()?;
+          }
         }
       }
       found
@@ -888,6 +893,10 @@ fn arr_pat_contains_top_level_await(
 
   for elem in &pat.elements {
     let Some(elem) = elem.as_ref() else {
+      // Array patterns can contain arbitrarily many elisions (`[,,,,x]`) without any nested
+      // patterns/expressions. Budget traversal so top-level-await scanning can't do `O(N)` work
+      // without calling the cancel/budget hook.
+      ctx.budget_tick()?;
       continue;
     };
     if pat_contains_top_level_await(&elem.target, ctx)? {

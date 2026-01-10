@@ -54,3 +54,47 @@ fn module_record_parse_is_interruptible_during_parsing() {
   let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
+
+#[test]
+fn module_record_top_level_await_scan_budgets_holey_array_literals() {
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    // Budget small enough that parsing succeeds but module record extraction (top-level await scan)
+    // terminates once the holey array literal is traversed.
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // `[, , , ...]` can contain arbitrarily many elisions without any nested expressions. Module
+  // record parsing scans expressions to detect top-level `await`; ensure that holey arrays are
+  // budgeted so that scan can't do unbounded work within a single tick.
+  let mut src = String::from("[");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("];");
+
+  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn module_record_top_level_await_scan_budgets_holey_array_patterns() {
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Array destructuring patterns can also contain elisions (`var [,,,,x] = a`). Ensure that
+  // top-level-await scanning budgets traversal even when most pattern elements are holes.
+  let mut src = String::from("var [");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("x] = a;");
+  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
