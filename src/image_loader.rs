@@ -4989,6 +4989,13 @@ impl ImageCache {
     if resource.bytes.is_empty() {
       return Ok(self.cache_placeholder_image(cache_key));
     }
+    // `ResourceFetcher` implementations (notably the offline fixture tooling) may substitute missing
+    // image responses with a deterministic 1×1 transparent PNG. This is a "missing image" sentinel
+    // and must behave like our internal `about:` placeholder so callers can reliably detect it
+    // (e.g. replaced `<img>` fallback UI / broken-image icon).
+    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if should_substitute_markup_payload_for_image(
       resolved_url,
       resource.final_url.as_deref(),
@@ -7559,6 +7566,41 @@ mod tests {
       .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
       .expect("encode png");
     png
+  }
+
+  #[test]
+  fn offline_fixture_placeholder_png_is_detected_as_placeholder_image_after_probe_cache_reuse() {
+    let url = "test://missing.png";
+    let mut res = FetchedResource::new(
+      crate::resource::offline_placeholder_png_bytes().to_vec(),
+      Some("image/png".to_string()),
+    );
+    res.status = Some(200);
+    res.final_url = Some(url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    // Probe should cache the small bytes so a later decode can reuse them without fetching again.
+    cache.probe(url).expect("probe should succeed");
+    assert_eq!(
+      fetcher.requests().len(),
+      1,
+      "expected probe to fetch exactly once"
+    );
+
+    // Load should reuse the probed bytes and, because the payload matches the offline placeholder,
+    // return the shared `about:` placeholder image.
+    let img = cache.load(url).expect("image should load");
+    assert_eq!(
+      fetcher.requests().len(),
+      1,
+      "expected load() to reuse the probed bytes without issuing another fetch"
+    );
+    assert!(
+      cache.is_placeholder_image(&img),
+      "offline placeholder PNG payload should map to the shared placeholder image"
+    );
   }
 
   #[derive(Clone)]
