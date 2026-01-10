@@ -832,8 +832,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
-          // HTML: module scripts are fetched in CORS mode; the `crossorigin` attribute only controls the
-          // credentials mode ("anonymous" vs "use-credentials", defaulting to same-origin).
+          // HTML: module scripts are fetched in CORS mode regardless of the `crossorigin`
+          // attribute. The attribute only controls the credentials mode ("anonymous" vs
+          // "use-credentials", defaulting to same-origin).
           let destination = FetchDestination::ScriptCors;
           let credentials_mode = element
             .crossorigin
@@ -2726,6 +2727,66 @@ mod state_machine_tests {
         FetchDestination::ScriptCors,
         FetchCredentialsMode::Include,
       )]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_module_scripts_start_fetch_in_cors_mode_with_default_same_origin_credentials() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let script_id = h.discover_dynamic(module_external_dynamic(
+      "https://example.com/a.js",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic module scripts must not block parsing"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_async_module_script_crossorigin_use_credentials_sets_credentials_mode_include() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let mut spec = module_external_dynamic(
+      "https://example.com/a.js",
+      /* async_attr */ false,
+      /* force_async */ true,
+    );
+    spec.crossorigin = Some(crate::resource::CorsMode::UseCredentials);
+    let script_id = h.discover_dynamic(spec)?;
+
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::Include,
+      )]
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic module scripts must not block parsing"
     );
     Ok(())
   }
