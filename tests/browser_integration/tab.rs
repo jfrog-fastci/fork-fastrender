@@ -63,6 +63,17 @@ impl BrowserTabJsExecutor for QueuedMutationExecutor {
 
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
 }
 
 #[derive(Default)]
@@ -78,6 +89,17 @@ impl BrowserTabJsExecutor for NoopExecutor {
     _event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     Ok(())
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
   }
 }
 
@@ -103,6 +125,17 @@ fn browser_tab_script_src_uses_base_url_at_discovery() -> Result<()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .push(script_text.to_string());
       Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &fastrender::js::ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut fastrender::BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
     }
   }
 
@@ -256,6 +289,17 @@ impl BrowserTabJsExecutor for ErrorThenMutationExecutor {
 
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
 }
 
 #[test]
@@ -338,6 +382,17 @@ impl BrowserTabJsExecutor for TimerMutationExecutor {
     })?;
 
     Ok(())
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
   }
 }
 
@@ -430,6 +485,17 @@ impl BrowserTabJsExecutor for ParseTimeDomAssertionExecutor {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .push(code);
     Ok(())
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
   }
 }
 
@@ -648,6 +714,17 @@ impl BrowserTabJsExecutor for NavigateUrlParseTimeExecutor {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .push(code);
     Ok(())
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
   }
 }
 

@@ -75,6 +75,19 @@ impl BrowserTabJsExecutor for DynamicScriptInsertionExecutor {
     }
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    // This integration test suite focuses on dynamic insertion semantics for classic scripts; treat
+    // module scripts identically for the purposes of the executor stub.
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
 }
 
 #[test]

@@ -407,7 +407,7 @@ where
   }
 }
 
-/// A deterministic, event-driven scheduler for classic `<script>` elements.
+/// A deterministic, event-driven scheduler for HTML `<script>` elements.
 ///
 /// This models a subset of the HTML Standard script processing model:
 /// - Inline classic scripts execute immediately and block parsing.
@@ -419,10 +419,12 @@ where
 ///   - non-parser-inserted, not async-like: execute in insertion order as soon as possible (HTML
 ///     "in-order-asap" list).
 ///   - async-like: execute ASAP on fetch completion, not ordered.
+/// - Module scripts (`type="module"`) execute asynchronously (as tasks) and are deferred-by-default
+///   for parser-inserted scripts unless `async` is set.
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
-/// - Module scripts (`type="module"`) and import maps.
+/// - Import map processing (`type="importmap"`).
 /// - CSP, stylesheet-blocking scripts, and `document.write`.
 ///
 /// ## Orchestrator contract
@@ -586,7 +588,7 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   pub(crate) fn trace_metadata(&self, script_id: ScriptId) -> Option<ScriptTraceMetadata<'_>> {
     let entry = self.scripts.get(&script_id)?;
     Some(ScriptTraceMetadata {
-      url: Some(entry.url.as_str()),
+      url: (!entry.url.is_empty()).then_some(entry.url.as_str()),
       async_attr: entry.async_attr,
       defer_attr: entry.defer_attr,
       parser_inserted: entry.parser_inserted,
@@ -723,10 +725,24 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         }
       }
       ScriptType::Module => {
+        if !self.options.supports_module_scripts {
+          // Treat module scripts as unsupported when the embedding does not enable module execution.
+          // This mirrors browser behavior where unsupported `<script type="module">` is ignored.
+          return Ok(DiscoveredScript { id, actions });
+        }
+
+        // Module scripts execute asynchronously (as tasks) and are deferred-by-default (unless
+        // `async` is set or the script is dynamically inserted).
+        let mode = if !element.parser_inserted || element.async_attr {
+          ExternalMode::Async
+        } else {
+          ExternalMode::Defer
+        };
+
         if element.src_attr_present {
           // HTML: module scripts with `src` present but empty/invalid also queue `error` and do not
           // fall back to inline execution.
-          let Some(_url) = element.src.filter(|s| !s.is_empty()) else {
+          let Some(url) = element.src.filter(|s| !s.is_empty()) else {
             actions.push(ScriptSchedulerAction::QueueScriptEventTask {
               script_id: id,
               node_id,
@@ -735,12 +751,65 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             return Ok(DiscoveredScript { id, actions });
           };
 
-          // TODO: Module graph fetching/execution is not yet modeled by this scheduler.
-          return Ok(DiscoveredScript { id, actions });
-       }
- 
-       // Inline module scripts are currently out-of-scope.
-        return Ok(DiscoveredScript { id, actions });
+          if mode == ExternalMode::Defer {
+            self.defer_queue.push(id);
+          }
+
+          self.scripts.insert(
+            id,
+            ExternalScriptEntry {
+              node_id: node_id.clone(),
+              base_url_at_discovery,
+              url: url.clone(),
+              async_attr: element.async_attr,
+              defer_attr: element.defer_attr,
+              parser_inserted: element.parser_inserted,
+              mode,
+              fetch_completed: false,
+              source_text: None,
+              queued_for_execution: false,
+            },
+          );
+
+          let destination = if element.crossorigin.is_some() {
+            FetchDestination::ScriptCors
+          } else {
+            FetchDestination::Script
+          };
+          actions.push(ScriptSchedulerAction::StartFetch {
+            script_id: id,
+            node_id: node_id.clone(),
+            url,
+            destination,
+          });
+        } else if mode == ExternalMode::Async {
+          actions.push(ScriptSchedulerAction::QueueTask {
+            script_id: id,
+            node_id,
+            source_text: element.inline_text,
+          });
+        } else {
+          // Inline module scripts are deferred-by-default for parser-inserted scripts.
+          self.defer_queue.push(id);
+          self.scripts.insert(
+            id,
+            ExternalScriptEntry {
+              node_id: node_id.clone(),
+              base_url_at_discovery,
+              url: String::new(),
+              async_attr: element.async_attr,
+              defer_attr: element.defer_attr,
+              parser_inserted: element.parser_inserted,
+              mode,
+              fetch_completed: true,
+              source_text: Some(element.inline_text),
+              queued_for_execution: false,
+            },
+          );
+          if self.parsing_completed {
+            actions.extend(self.queue_defer_scripts_if_ready()?);
+          }
+        }
       }
       ScriptType::ImportMap => {
         // HTML: import maps must be inline; `src` is invalid and must queue `error`.

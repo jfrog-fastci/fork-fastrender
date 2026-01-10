@@ -47,6 +47,17 @@ impl BrowserTabJsExecutor for LogExecutor {
       .push(script_text.to_string());
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
 }
 
 fn read_http_request(stream: &mut TcpStream) -> (String, HashMap<String, String>) {

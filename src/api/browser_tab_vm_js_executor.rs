@@ -1,18 +1,30 @@
 use crate::error::{Error, Result};
 use crate::js::runtime::with_event_loop;
+use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, CurrentScriptStateHandle, JsExecutionOptions,
-  LocationNavigationRequest, ScriptElementSpec, WindowFetchBindings, WindowFetchEnv,
+  install_window_timers_bindings,
+  url_resolve::{resolve_url, UrlResolveError},
+  CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec,
+  WindowFetchBindings, WindowFetchEnv,
+};
+use crate::resource::{
+  ensure_http_success, ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher,
 };
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
+use encoding_rs::UTF_8;
+use std::collections::HashMap;
 use std::sync::Arc;
-use vm_js::SourceText;
+use vm_js::{
+  HostDefined, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
+  ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey, RealmId, Scope,
+  SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext,
+};
 
 use super::BrowserDocumentDom2;
 use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
@@ -25,6 +37,10 @@ use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
 pub struct VmJsBrowserTabExecutor {
   realm: Option<WindowRealm>,
   fetch_bindings: Option<WindowFetchBindings>,
+  module_graph: Option<ModuleGraph>,
+  module_map: HashMap<String, ModuleId>,
+  js_execution_options: JsExecutionOptions,
+  inline_module_id_counter: u64,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
 }
@@ -34,6 +50,10 @@ impl VmJsBrowserTabExecutor {
     Self {
       realm: None,
       fetch_bindings: None,
+      module_graph: None,
+      module_map: HashMap::new(),
+      js_execution_options: JsExecutionOptions::default(),
+      inline_module_id_counter: 0,
       pending_navigation: None,
       diagnostics: None,
     }
@@ -42,6 +62,15 @@ impl VmJsBrowserTabExecutor {
   fn record_js_exception(diag: &SharedRenderDiagnostics, realm: &mut WindowRealm, err: vm_js::VmError) {
     let (message, stack) = vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
     diag.record_js_exception(message, stack);
+  }
+
+  fn next_inline_module_id(&mut self, spec: &ScriptElementSpec) -> String {
+    if let Some(node_id) = spec.node_id {
+      return format!("inline-module-{}", node_id.index());
+    }
+    let id = self.inline_module_id_counter;
+    self.inline_module_id_counter = self.inline_module_id_counter.saturating_add(1);
+    format!("inline-module-{id}")
   }
 }
 
@@ -81,6 +110,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // navigations.
     self.fetch_bindings = None;
     self.realm = None;
+    self.module_graph = None;
+    self.module_map.clear();
+    self.js_execution_options = js_execution_options;
+    self.inline_module_id_counter = 0;
 
     let dom_source_id = document.ensure_dom_source_registered();
 
@@ -134,6 +167,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     self.fetch_bindings = Some(fetch_bindings);
     self.realm = Some(realm);
+    self.module_graph = Some(ModuleGraph::new());
     Ok(())
   }
 
@@ -197,6 +231,136 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     }
 
     exec_result
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    _current_script: Option<crate::dom2::NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let entry_specifier = if spec.src_attr_present {
+      // External module script: use the resolved `src` URL as the module's specifier.
+      let Some(entry_url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
+        // HTML: modules with `src` present but empty/invalid do not execute.
+        return Ok(());
+      };
+      entry_url.to_string()
+    } else {
+      // Inline module script: synthesize an opaque URL using the document base URL at discovery so
+      // relative imports resolve correctly.
+      let base_url = spec.base_url.as_deref().unwrap_or("about:blank");
+      let inline_id = self.next_inline_module_id(spec);
+      synthesize_inline_module_url(base_url, &inline_id)
+    };
+
+    let Some(realm) = self.realm.as_mut() else {
+      return Err(Error::Other(
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+      ));
+    };
+    let Some(module_graph) = self.module_graph.as_mut() else {
+      return Err(Error::Other(
+        "VmJsBrowserTabExecutor has no active ModuleGraph; did reset_for_navigation run?".to_string(),
+      ));
+    };
+
+    update_time_bindings_clock(realm.heap(), event_loop.clock())
+      .map_err(|err| Error::Other(err.to_string()))?;
+    realm.set_base_url(spec.base_url.clone());
+    realm.reset_interrupt();
+
+    let entry_module = if let Some(id) = self.module_map.get(&entry_specifier).copied() {
+      id
+    } else {
+      let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
+      let record = match SourceTextModuleRecord::parse_source(source) {
+        Ok(record) => record,
+        Err(err) => {
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            if let Some(diag) = &self.diagnostics {
+              let (message, stack) =
+                vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+              diag.record_js_exception(message, stack);
+            }
+            return Ok(());
+          }
+          return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err));
+        }
+      };
+      let id = module_graph.add_module(record);
+      self.module_map.insert(entry_specifier.clone(), id);
+      id
+    };
+
+    // Route Promise jobs (including module-loading promise reactions) through FastRender's
+    // microtask queue.
+    let mut hooks = ModuleLoaderHooks {
+      inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+      fetcher: document.fetcher(),
+      max_script_bytes: self.js_execution_options.max_script_bytes,
+      module_map: &mut self.module_map,
+    };
+
+    let result: std::result::Result<(), VmError> = with_event_loop(event_loop, || {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+
+      // Load all modules in the static import graph.
+      let load_promise = vm_js::load_requested_modules(
+        vm,
+        &mut scope,
+        module_graph,
+        &mut hooks,
+        entry_module,
+        HostDefined::default(),
+      )?;
+      scope.push_root(load_promise)?;
+      ensure_promise_fulfilled(scope.heap(), load_promise)?;
+
+      // Link + evaluate the entry module.
+      let eval_promise = module_graph.evaluate(
+        vm,
+        scope.heap_mut(),
+        realm_ref.global_object(),
+        realm_ref.id(),
+        entry_module,
+        document,
+        &mut hooks,
+      )?;
+      scope.push_root(eval_promise)?;
+      ensure_promise_fulfilled(scope.heap(), eval_promise)?;
+
+      Ok(())
+    });
+
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+
+    match result {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        if let Some(req) = realm.take_pending_navigation_request() {
+          realm.reset_interrupt();
+          self.pending_navigation = Some(req);
+          return Ok(());
+        }
+
+        if vm_error_format::vm_error_is_js_exception(&err) {
+          if let Some(diag) = &self.diagnostics {
+            let (message, stack) =
+              vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+            diag.record_js_exception(message, stack);
+          }
+          Ok(())
+        } else {
+          Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
+        }
+      }
+    }
   }
 
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -276,5 +440,265 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
   fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
     self.realm.as_mut()
+  }
+}
+
+fn synthesize_inline_module_url(base_url: &str, inline_id: &str) -> String {
+  match url::Url::parse(base_url) {
+    Ok(mut url) => {
+      url.set_fragment(Some(inline_id));
+      url.to_string()
+    }
+    Err(_) => format!("about:blank#{inline_id}"),
+  }
+}
+
+fn ensure_promise_fulfilled(heap: &vm_js::Heap, promise: Value) -> std::result::Result<(), VmError> {
+  let Value::Object(promise_obj) = promise else {
+    return Err(VmError::InvariantViolation("expected a Promise object"));
+  };
+  match heap.promise_state(promise_obj)? {
+    PromiseState::Pending => Err(VmError::Unimplemented(
+      "asynchronous module loading/evaluation is not supported",
+    )),
+    PromiseState::Fulfilled => Ok(()),
+    PromiseState::Rejected => {
+      let reason = heap.promise_result(promise_obj)?.unwrap_or(Value::Undefined);
+      Err(VmError::Throw(reason))
+    }
+  }
+}
+
+struct ModuleLoaderHooks<'a> {
+  inner: VmJsEventLoopHooks<BrowserTabHost>,
+  fetcher: Arc<dyn ResourceFetcher>,
+  max_script_bytes: usize,
+  module_map: &'a mut HashMap<String, ModuleId>,
+}
+
+impl ModuleLoaderHooks<'_> {
+  fn finish(self, heap: &mut vm_js::Heap) -> Option<crate::error::Error> {
+    self.inner.finish(heap)
+  }
+
+  fn referrer_url_for_resolution<'a>(
+    modules: &'a ModuleGraph,
+    referrer: ModuleReferrer,
+  ) -> Option<&'a str> {
+    match referrer {
+      ModuleReferrer::Module(module_id) => modules
+        .get_module(module_id)
+        .and_then(|m| m.source.as_ref())
+        .map(|s| s.name.as_ref()),
+      _ => None,
+    }
+  }
+
+  fn resolve_module_specifier_without_import_maps(
+    specifier: &str,
+    base_url: &str,
+  ) -> std::result::Result<String, String> {
+    let allowed_relative =
+      specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
+    if allowed_relative {
+      return resolve_url(specifier, Some(base_url)).map_err(|err| err.to_string());
+    }
+
+    match resolve_url(specifier, None) {
+      Ok(abs) => Ok(abs),
+      Err(UrlResolveError::RelativeUrlWithoutBase) => Err(format!(
+        "unsupported bare module specifier {specifier:?} (import maps are not yet supported)"
+      )),
+      Err(err) => Err(err.to_string()),
+    }
+  }
+
+  fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> std::result::Result<Value, VmError> {
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+    vm_js::new_type_error_object(scope, &intr, message)
+  }
+
+  fn throw_syntax_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> std::result::Result<Value, VmError> {
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+    vm_js::new_syntax_error_object(scope, &intr, message)
+  }
+
+  fn load_module_by_url(
+    &mut self,
+    vm: &Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    url: &str,
+    referrer_url: Option<&str>,
+  ) -> std::result::Result<ModuleId, VmError> {
+    if let Some(id) = self.module_map.get(url).copied() {
+      return Ok(id);
+    }
+
+    let max_fetch = self.max_script_bytes.saturating_add(1);
+    let mut req = FetchRequest::new(url, FetchDestination::ScriptCors);
+    if let Some(referrer_url) = referrer_url {
+      req = req.with_referrer_url(referrer_url);
+    }
+    let fetched =
+      match self.fetcher.fetch_partial_with_request(req, max_fetch) {
+        Ok(fetched) => fetched,
+        Err(err) => {
+          let message = format!("failed to fetch module {url}: {err}");
+          let value = Self::throw_type_error(vm, scope, &message)?;
+          return Err(VmError::Throw(value));
+        }
+      };
+    if let Err(err) = ensure_http_success(&fetched, url) {
+      let message = err.to_string();
+      let value = Self::throw_type_error(vm, scope, &message)?;
+      return Err(VmError::Throw(value));
+    }
+    if let Err(err) = ensure_script_mime_sane(&fetched, url) {
+      let message = err.to_string();
+      let value = Self::throw_type_error(vm, scope, &message)?;
+      return Err(VmError::Throw(value));
+    }
+
+    if fetched.bytes.len() > self.max_script_bytes {
+      let message = format!(
+        "module {url} is too large ({} bytes > max {})",
+        fetched.bytes.len(),
+        self.max_script_bytes
+      );
+      let value = Self::throw_type_error(vm, scope, &message)?;
+      return Err(VmError::Throw(value));
+    }
+
+    let source_text = decode_classic_script_bytes(&fetched.bytes, fetched.content_type.as_deref(), UTF_8);
+    let source = Arc::new(SourceText::new(url, source_text));
+    let record = match SourceTextModuleRecord::parse_source(source) {
+      Ok(record) => record,
+      Err(VmError::Syntax(diags)) => {
+        let message = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+        let value = Self::throw_syntax_error(vm, scope, &message)?;
+        return Err(VmError::Throw(value));
+      }
+      Err(other) => return Err(other),
+    };
+
+    let id = modules.add_module(record);
+    self.module_map.insert(url.to_string(), id);
+    Ok(id)
+  }
+}
+
+impl VmHostHooks for ModuleLoaderHooks<'_> {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    self.inner.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_exotic_get(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> std::result::Result<Option<Value>, VmError> {
+    self.inner.host_exotic_get(scope, obj, key, receiver)
+  }
+
+  fn host_exotic_set(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: PropertyKey,
+    value: Value,
+    receiver: Value,
+  ) -> std::result::Result<Option<bool>, VmError> {
+    self.inner.host_exotic_set(scope, obj, key, value, receiver)
+  }
+
+  fn host_exotic_delete(
+    &mut self,
+    scope: &mut Scope<'_>,
+    obj: vm_js::GcObject,
+    key: PropertyKey,
+  ) -> std::result::Result<Option<bool>, VmError> {
+    self.inner.host_exotic_delete(scope, obj, key)
+  }
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    vm_js::VmHostHooks::as_any_mut(&mut self.inner)
+  }
+
+  fn host_make_job_callback(&mut self, callback: vm_js::GcObject) -> JobCallback {
+    self.inner.host_make_job_callback(callback)
+  }
+
+  fn host_call_job_callback(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    callback: &JobCallback,
+    this_argument: Value,
+    arguments: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    self
+      .inner
+      .host_call_job_callback(ctx, callback, this_argument, arguments)
+  }
+
+  fn host_promise_rejection_tracker(&mut self, promise: PromiseHandle, operation: PromiseRejectionOperation) {
+    self.inner.host_promise_rejection_tracker(promise, operation);
+  }
+
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    self.inner.host_get_supported_import_attributes()
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> std::result::Result<(), VmError> {
+    let _ = host_defined;
+
+    let base_url = Self::referrer_url_for_resolution(modules, referrer).unwrap_or("about:blank");
+    let resolved_url = match Self::resolve_module_specifier_without_import_maps(&module_request.specifier, base_url) {
+      Ok(url) => url,
+      Err(message) => {
+        let err_value = Self::throw_type_error(vm, scope, &message)?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    };
+
+    let referrer_url = Self::referrer_url_for_resolution(modules, referrer)
+      .map(|s| s.to_string());
+    let completion = match self.load_module_by_url(
+      vm,
+      scope,
+      modules,
+      &resolved_url,
+      referrer_url.as_deref(),
+    ) {
+      Ok(id) => Ok(id),
+      Err(err) => Err(err),
+    };
+
+    vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, completion)?;
+    Ok(())
   }
 }

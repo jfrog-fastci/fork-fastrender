@@ -113,6 +113,17 @@ impl BrowserTabJsExecutor for NoopExecutor {
     ) -> Result<()> {
         Ok(())
     }
+
+    fn execute_module_script(
+        &mut self,
+        _script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut fastrender::BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn main() -> Result<()> {

@@ -68,6 +68,17 @@ impl BrowserTabJsExecutor for LoggingExecutor {
     }
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
 }
 
 #[test]
@@ -123,4 +134,3 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
 
   Ok(())
 }
-

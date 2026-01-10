@@ -49,6 +49,15 @@ pub trait BrowserTabJsExecutor {
     event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()>;
 
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()>;
+
   /// Returns and clears any navigation request emitted by the JS embedding (for example via
   /// `window.location.href = ...`).
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -1185,19 +1194,43 @@ impl BrowserTabHost {
       .scheduler
       .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
     if discovered.actions.is_empty() {
-      return Ok(discovered.id);
+      // Most of the time an empty action list means the script should be ignored (e.g. unknown type
+      // or `nomodule` suppression). However, parser-inserted *inline* module scripts are deferred by
+      // default and only become runnable once parsing completes, so the scheduler will produce work
+      // later via `parsing_completed()`. In that case we must still register the script in the host
+      // tables so later scheduler actions can resolve `script_id -> ScriptElementSpec`.
+      let should_register_without_actions = self.js_execution_options.supports_module_scripts
+        && spec_for_table.script_type == ScriptType::Module
+        && spec_for_table.parser_inserted
+        && !spec_for_table.async_attr
+        && !spec_for_table.src_attr_present;
+      if !should_register_without_actions {
+        return Ok(discovered.id);
+      }
     }
-    let is_deferred = spec_for_table.script_type == ScriptType::Classic
-      && spec_for_table.parser_inserted
-      && spec_for_table.src_attr_present
-      && spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty())
-      && spec_for_table.defer_attr
-      && !spec_for_table.async_attr
-      && !nomodule_blocked;
-    if spec_for_table.script_type == ScriptType::Classic
-      && !spec_for_table.src_attr_present
-      && !nomodule_blocked
-    {
+    let is_deferred = match spec_for_table.script_type {
+      ScriptType::Classic => {
+        spec_for_table.parser_inserted
+          && spec_for_table.src_attr_present
+          && spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty())
+          && spec_for_table.defer_attr
+          && !spec_for_table.async_attr
+          && !nomodule_blocked
+      }
+      ScriptType::Module => {
+        // HTML: module scripts are deferred-by-default (unless `async`) and block DOMContentLoaded.
+        spec_for_table.parser_inserted
+          && !spec_for_table.async_attr
+          && (!spec_for_table.src_attr_present
+            || spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty()))
+      }
+      ScriptType::ImportMap | ScriptType::Unknown => false,
+    };
+    let should_check_inline_source =
+      !spec_for_table.src_attr_present
+        && matches!(spec_for_table.script_type, ScriptType::Classic | ScriptType::Module)
+        && (spec_for_table.script_type == ScriptType::Module || !nomodule_blocked);
+    if should_check_inline_source {
       self
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
@@ -1226,7 +1259,9 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
-    if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
+    if matches!(spec_for_table.script_type, ScriptType::Classic | ScriptType::Module)
+      && !spec_for_table.src_attr_present
+    {
       self
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
@@ -1522,10 +1557,6 @@ impl BrowserTabHost {
         _script: NodeId,
         script_type: ScriptType,
       ) -> Result<()> {
-        if script_type != ScriptType::Classic {
-          return Ok(());
-        }
-
         let mut span = host.trace.span("js.script.execute", "js");
         span.arg_u64("script_id", self.script_id.as_u64());
         if let Some(url) = self.spec.src.as_deref() {
@@ -1536,13 +1567,23 @@ impl BrowserTabHost {
         span.arg_bool("parser_inserted", self.spec.parser_inserted);
 
         let current_script = host.current_script_node();
-        let result = host.executor.execute_classic_script(
-          self.source_text,
-          self.spec,
-          current_script,
-          &mut host.document,
-          self.event_loop,
-        );
+        let result = match script_type {
+          ScriptType::Classic => host.executor.execute_classic_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            &mut host.document,
+            self.event_loop,
+          ),
+          ScriptType::Module => host.executor.execute_module_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            &mut host.document,
+            self.event_loop,
+          ),
+          ScriptType::ImportMap | ScriptType::Unknown => Ok(()),
+        };
         if let Some(req) = host.executor.take_navigation_request() {
           host.pending_navigation = Some(req);
         }
@@ -1619,7 +1660,7 @@ impl BrowserTabHost {
       .scripts
       .get(&script_id)
       .is_some_and(|entry| {
-        entry.spec.parser_inserted
+        entry.spec.parser_inserted && entry.spec.script_type == ScriptType::Classic
           && entry.spec.src_attr_present
           && !entry.spec.async_attr
           && !entry.spec.defer_attr
@@ -3029,6 +3070,27 @@ mod tests {
       })?;
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .log
+        .borrow_mut()
+        .push(format!("module:{script_text}"));
+      let log = Rc::clone(&self.log);
+      let name = script_text.to_string();
+      event_loop.queue_microtask(move |_host, _event_loop| {
+        log.borrow_mut().push(format!("microtask:{name}"));
+        Ok(())
+      })?;
+      Ok(())
+    }
   }
 
   fn build_host_with_options(
@@ -3243,6 +3305,17 @@ mod tests {
     ) -> Result<()> {
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      Ok(())
+    }
   }
 
   struct WindowRealmExecutor {
@@ -3277,6 +3350,17 @@ mod tests {
       result
         .map(|_value| ())
         .map_err(|err| Error::Other(err.to_string()))
+    }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
     }
   }
 
@@ -3356,6 +3440,20 @@ mod tests {
         _document: &mut BrowserDocumentDom2,
         _event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        // Tests in this module primarily cover classic script execution; implement module execution
+        // by reusing the same "log the script text" behavior.
         self.log.borrow_mut().push(script_text.to_string());
         Ok(())
       }
@@ -3741,6 +3839,21 @@ mod tests {
         }
         Ok(())
       }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        if script_text == "bad" {
+          return Err(Error::Other("boom".to_string()));
+        }
+        Ok(())
+      }
     }
 
     let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -4002,6 +4115,17 @@ mod tests {
       ) -> Result<()> {
         self.seen.borrow_mut().push(spec.force_async);
         Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
     }
 
@@ -4278,6 +4402,17 @@ html, body { margin: 0; padding: 0; }
       *self.result.borrow_mut() = Some(value);
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    }
   }
 
   #[test]
@@ -4462,6 +4597,17 @@ html, body { margin: 0; padding: 0; }
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .push(format!("exec:{script_text}"));
       Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
     }
   }
 
@@ -4748,6 +4894,17 @@ html, body { margin: 0; padding: 0; }
           .push(format!("{script_text}:before={has_before} after={has_after}"));
         Ok(())
       }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
     }
 
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -4806,6 +4963,17 @@ html, body { margin: 0; padding: 0; }
           spec.src.as_deref().unwrap_or_default()
         ));
         Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
     }
 
@@ -4974,6 +5142,23 @@ html, body { margin: 0; padding: 0; }
  
     impl BrowserTabJsExecutor for NavigationRequestExecutor {
       fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: false,
+          });
+        }
+        Ok(())
+      }
+
+      fn execute_module_script(
         &mut self,
         script_text: &str,
         _spec: &ScriptElementSpec,
@@ -5207,7 +5392,7 @@ html, body { margin: 0; padding: 0; }
       next: usize,
       pending: Option<LocationNavigationRequest>,
     }
- 
+
     impl BrowserTabJsExecutor for RedirectExecutor {
       fn execute_classic_script(
         &mut self,
@@ -5227,6 +5412,17 @@ html, body { margin: 0; padding: 0; }
           }
         }
         Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
  
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -5359,6 +5555,17 @@ html, body { margin: 0; padding: 0; }
           });
         }
         Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
       }
 
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
@@ -5653,6 +5860,51 @@ html, body { margin: 0; padding: 0; }
         "load".to_string(),
         "checkpoint".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_execute_and_can_mutate_dom() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          document.body.setAttribute("data-module-ran", "1");
+          document.body.setAttribute(
+            "data-current-script-null",
+            document.currentScript === null ? "1" : "0",
+          );
+          document.body.setAttribute(
+            "data-top-level-this-undefined",
+            this === undefined ? "1" : "0",
+          );
+        </script>
+      </body>"#,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-module-ran")
+        .expect("get_attribute should succeed"),
+      Some("1")
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-current-script-null")
+        .expect("get_attribute should succeed"),
+      Some("1")
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-top-level-this-undefined")
+        .expect("get_attribute should succeed"),
+      Some("1")
     );
     Ok(())
   }

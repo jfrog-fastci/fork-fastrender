@@ -38,6 +38,17 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
       }
       Ok(())
     }
+
+    fn execute_module_script(
+      &mut self,
+      script_text: &str,
+      spec: &ScriptElementSpec,
+      current_script: Option<NodeId>,
+      document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    }
   }
 
   let mut tab = BrowserTab::from_html(html, options, DummyExecutor).expect("create tab");

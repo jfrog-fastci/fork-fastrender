@@ -21,6 +21,18 @@ impl BrowserTabJsExecutor for LogExecutor {
     self.log.borrow_mut().push(script_text.to_string());
     Ok(())
   }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    _spec: &ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self.log.borrow_mut().push(script_text.to_string());
+    Ok(())
+  }
 }
 
 #[test]
@@ -130,4 +142,3 @@ fn csp_script_allows_inline_with_matching_sha256_hash() -> Result<()> {
   assert_eq!(&*log.borrow(), &[script_text.to_string()]);
   Ok(())
 }
-
