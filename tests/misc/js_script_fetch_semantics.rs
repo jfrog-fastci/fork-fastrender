@@ -242,6 +242,73 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
 }
 
 #[test]
+fn sri_cross_origin_with_crossorigin_anonymous_allows_matching_digest() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("sri cors document server") else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("sri cors script server") else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let script_url = format!("http://{}/script.js", script_addr);
+
+  let script_body = "EXTERNAL";
+  let digest = Sha256::digest(script_body.as_bytes());
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script src="{script_url}" crossorigin="anonymous" integrity="sha256-{b64}"></script>
+        <script>INLINE</script>
+      </head><body></body></html>"#
+    );
+    write_http_response(stream, "200 OK", "text/html", &body, &[]);
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    let (mut stream, _) = script_listener.accept().expect("accept script");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let allow_origin = format!("http://{}", doc_addr);
+    write_http_response(
+      stream,
+      "200 OK",
+      "application/javascript",
+      script_body,
+      &[("Access-Control-Allow-Origin", &allow_origin)],
+    );
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(
+    executor.take_log(),
+    vec!["EXTERNAL".to_string(), "INLINE".to_string()],
+    "expected SRI + CORS-mode cross-origin scripts to execute when the digest matches"
+  );
+  Ok(())
+}
+
+#[test]
 fn crossorigin_anonymous_enforces_cors_and_blocks_on_missing_acao() -> Result<()> {
   let _net_lock = net_test_lock();
   let Some(doc_listener) = try_bind_localhost("cors script document server") else {
