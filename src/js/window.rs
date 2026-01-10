@@ -102,7 +102,7 @@ impl WindowHost {
     with_event_loop(event_loop, || {
       let window = host.window_mut();
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-      let result = window.exec_script_with_host(&mut hooks, source);
+      let result = window.exec_script_with_hooks(&mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);

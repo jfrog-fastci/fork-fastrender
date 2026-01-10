@@ -215,7 +215,7 @@ impl WindowRealm {
     self.runtime.exec_script(source)
   }
 
-  pub(crate) fn exec_script_with_host(
+  pub(crate) fn exec_script_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
     source: &str,
