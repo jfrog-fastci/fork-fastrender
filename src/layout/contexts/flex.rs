@@ -3570,7 +3570,7 @@ impl FormattingContext for FlexFormattingContext {
         let taffy_border_box =
           Size::new(root_layout.size.width, root_layout.size.height);
         let desired_border_box =
-          self.desired_flex_root_border_box_size(box_node, &constraints, taffy_border_box);
+          self.desired_flex_root_border_box_size(box_node, &constraints, taffy_border_box)?;
 
         let needs_width_rerun = (!taffy_border_box.width.is_finite()
           || (desired_border_box.width - taffy_border_box.width).abs() > rect_eps)
@@ -4107,9 +4107,11 @@ impl FormattingContext for FlexFormattingContext {
       && matches!(style.display, Display::Flex)
     {
       if let CrateAvailableSpace::Definite(w) = constraints.available_width {
+        let base = w.max(0.0);
+        let used = self.clamp_border_box_width_to_min_max(box_node, style, constraints, base)?;
         fragment.bounds = Rect::new(
           fragment.bounds.origin,
-          Size::new(w.max(0.0), fragment.bounds.height()),
+          Size::new(used, fragment.bounds.height()),
         );
       }
     }
@@ -8447,6 +8449,127 @@ impl FlexFormattingContext {
     Ok(border_box.is_finite().then(|| border_box.max(0.0)))
   }
 
+  fn clamp_border_box_width_to_min_max(
+    &self,
+    box_node: &BoxNode,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+    base_border_box_width: f32,
+  ) -> Result<f32, LayoutError> {
+    let base = if base_border_box_width.is_finite() {
+      base_border_box_width.max(0.0)
+    } else {
+      0.0
+    };
+
+    if style.min_width.is_none()
+      && style.min_width_keyword.is_none()
+      && style.max_width.is_none()
+      && style.max_width_keyword.is_none()
+    {
+      return Ok(base);
+    }
+
+    let percentage_base = constraints
+      .width()
+      .or(constraints.inline_percentage_base)
+      .unwrap_or(self.viewport_size.width.max(0.0));
+    let percentage_base = if percentage_base.is_finite() {
+      percentage_base.max(0.0)
+    } else {
+      0.0
+    };
+
+    let horizontal_edges = self.axis_padding_border_px(style, Axis::Horizontal, percentage_base);
+
+    let resolve_length_px = |len: Length| -> Option<f32> {
+      let resolved = self.resolve_length_for_width(len, percentage_base, style);
+      (resolved.is_finite()).then(|| resolved.max(0.0))
+    };
+    let to_border_box = |value: f32| -> f32 {
+      border_size_from_box_sizing(value.max(0.0), horizontal_edges, style.box_sizing).max(0.0)
+    };
+
+    let mut intrinsic_sizes: Option<Option<(f32, f32)>> = None;
+    let mut intrinsic_range = || -> Result<Option<(f32, f32)>, LayoutError> {
+      if let Some(cached) = intrinsic_sizes {
+        return Ok(cached);
+      }
+      let resolved = match crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+        self,
+        box_node,
+        PhysicalAxis::X,
+      ) {
+        Ok((min_intrinsic, max_intrinsic)) => {
+          let min_intrinsic = if min_intrinsic.is_finite() {
+            min_intrinsic.max(0.0)
+          } else {
+            0.0
+          };
+          let max_intrinsic = if max_intrinsic.is_finite() {
+            max_intrinsic.max(0.0)
+          } else {
+            min_intrinsic
+          };
+          Some((min_intrinsic, max_intrinsic))
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => None,
+      };
+      intrinsic_sizes = Some(resolved);
+      Ok(resolved)
+    };
+
+    let keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Result<Option<f32>, LayoutError> {
+      match kw {
+        IntrinsicSizeKeyword::FillAvailable => Ok(Some(base)),
+        IntrinsicSizeKeyword::MinContent => Ok(intrinsic_range()?.map(|(min, _)| min)),
+        IntrinsicSizeKeyword::MaxContent => Ok(intrinsic_range()?.map(|(_, max)| max)),
+        IntrinsicSizeKeyword::FitContent { limit } => {
+          let Some((min_intrinsic, max_intrinsic)) = intrinsic_range()? else {
+            return Ok(None);
+          };
+          let preferred_border_box = limit
+            .and_then(resolve_length_px)
+            .map(to_border_box);
+          let fit = crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+            Some(base),
+            preferred_border_box,
+            min_intrinsic,
+            max_intrinsic,
+          );
+          Ok(Some(fit.max(0.0)))
+        }
+      }
+    };
+
+    let min_bound = if let Some(kw) = style.min_width_keyword {
+      keyword_to_bound(kw)?.unwrap_or(0.0)
+    } else {
+      style
+        .min_width
+        .and_then(resolve_length_px)
+        .map(to_border_box)
+        .unwrap_or(0.0)
+    };
+
+    let mut max_bound = if let Some(kw) = style.max_width_keyword {
+      keyword_to_bound(kw)?.unwrap_or(f32::INFINITY)
+    } else {
+      style
+        .max_width
+        .and_then(resolve_length_px)
+        .map(to_border_box)
+        .unwrap_or(f32::INFINITY)
+    };
+    if max_bound.is_finite() && max_bound < min_bound {
+      max_bound = min_bound;
+    }
+
+    let clamped = crate::layout::utils::clamp_with_order(base, min_bound, max_bound);
+    Ok(if clamped.is_finite() { clamped.max(0.0) } else { base })
+  }
+
   /// Computes the size for a node
   ///
   /// For block-level flex containers, `width:auto` is resolved later in `layout()` once the
@@ -8478,7 +8601,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     constraints: &LayoutConstraints,
     mut border_box: Size,
-  ) -> Size {
+  ) -> Result<Size, LayoutError> {
     let rect_eps = 0.01;
     // Flex formatting contexts can be invoked with two different constraint signals:
     // - `available_width`: the containing block’s available inline size (for percentage bases).
@@ -8520,13 +8643,20 @@ impl FlexFormattingContext {
     // sized flex containers: they are allowed to overflow their containing block.
     if physical_width_is_auto(&box_node.style) {
       if let Some(def_w) = resolved_definite_width() {
-        if border_box.width > def_w + rect_eps {
-          border_box.width = def_w;
+        let clamp_target = if constraints.used_border_box_width.is_none()
+          && matches!(box_node.style.display, Display::Flex)
+        {
+          self.clamp_border_box_width_to_min_max(box_node, &box_node.style, constraints, def_w)?
+        } else {
+          def_w
+        };
+        if border_box.width > clamp_target + rect_eps {
+          border_box.width = clamp_target;
         }
       }
     }
 
-    border_box
+    Ok(border_box)
   }
 
   /// Converts Taffy layout back to FragmentNode tree
