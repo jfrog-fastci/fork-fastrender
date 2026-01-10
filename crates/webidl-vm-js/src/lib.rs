@@ -10,6 +10,7 @@
 //! normal workspace member (and carry embedder-specific adjustments) without depending on the
 //! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
+use std::ptr::NonNull;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
   PropertyKey as VmPropertyKey, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -43,6 +44,104 @@ pub fn split_js_runtime(rt: &mut VmJsRuntime) -> (&mut Vm, &mut Heap, &Realm) {
   let heap = &mut rt.heap;
   let realm = unsafe { &*realm_ptr };
   (vm, heap, realm)
+}
+
+/// TypeError message used when vm-js WebIDL bindings cannot find an embedder host dispatch object.
+pub const WEBIDL_BINDINGS_HOST_NOT_AVAILABLE: &str =
+  "WebIDL bindings host not available: VmHostHooks::as_any_mut did not expose WebIdlBindingsHostSlot";
+
+/// Host-facing dispatch API used by vm-js realm WebIDL bindings.
+///
+/// `vm-js` native call handlers (`vm_js::NativeCall`) receive both:
+/// - `host: &mut dyn vm_js::VmHost` (embedder-provided context), and
+/// - `hooks: &mut dyn vm_js::VmHostHooks` (host hooks for Promise jobs, job callbacks, etc).
+///
+/// Many real call paths (including FastRender's script evaluator) use `Vm::call_with_host`, which
+/// supplies a dummy `VmHost` (`()`). This means native handlers must not rely on downcasting
+/// `VmHost` for access to embedder state.
+///
+/// The canonical mechanism for vm-js WebIDL bindings to reach embedder state is:
+/// 1) the embedding stores a pointer to an implementation of this trait inside a
+///    [`WebIdlBindingsHostSlot`], and
+/// 2) the embedding's `VmHostHooks` implementation exposes that slot via
+///    `VmHostHooks::as_any_mut()`.
+///
+/// Generated WebIDL `NativeCall` wrappers should then use [`host_from_hooks`] to retrieve the host.
+pub trait WebIdlBindingsHost: 'static {
+  /// Dispatch a WebIDL operation/constructor into the embedding.
+  ///
+  /// - `receiver` is `None` for static operations and constructors.
+  /// - `interface`/`operation`/`overload` identify which overload was selected by the generated
+  ///   binding wrapper.
+  ///
+  /// The embedding may use `vm`/`scope` to allocate return values or perform additional JS-visible
+  /// work.
+  fn call_operation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[Value],
+  ) -> Result<Value, VmError>;
+}
+
+/// Sized container used for exposing a `dyn WebIdlBindingsHost` through `VmHostHooks::as_any_mut`.
+///
+/// Rust's `Any::downcast_mut` requires a **sized** concrete type. Since `dyn WebIdlBindingsHost` is
+/// unsized, embeddings must store a pointer to it in this slot, then return the slot from
+/// `VmHostHooks::as_any_mut()`.
+#[derive(Debug, Default)]
+pub struct WebIdlBindingsHostSlot {
+  host: Option<NonNull<dyn WebIdlBindingsHost>>,
+}
+
+impl WebIdlBindingsHostSlot {
+  /// Create a slot pointing at `host`.
+  #[inline]
+  pub fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
+    Self {
+      host: Some(NonNull::from(host)),
+    }
+  }
+
+  /// Replace the host pointer stored in this slot.
+  #[inline]
+  pub fn set(&mut self, host: &mut dyn WebIdlBindingsHost) {
+    self.host = Some(NonNull::from(host));
+  }
+
+  /// Clears the slot (subsequent [`host_from_hooks`] calls will throw a TypeError).
+  #[inline]
+  pub fn clear(&mut self) {
+    self.host = None;
+  }
+
+  fn get_mut(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+    let mut ptr = self.host?;
+    // SAFETY: The embedding is responsible for ensuring the stored pointer is valid for the
+    // duration of any native calls that may access it via `host_from_hooks`.
+    Some(unsafe { ptr.as_mut() })
+  }
+}
+
+/// Retrieves the embedder WebIDL bindings host from `hooks`.
+///
+/// This is the canonical plumbing used by generated vm-js WebIDL `NativeCall` wrappers.
+pub fn host_from_hooks<'a>(
+  hooks: &'a mut dyn VmHostHooks,
+) -> Result<&'a mut dyn WebIdlBindingsHost, VmError> {
+  let Some(any) = hooks.as_any_mut() else {
+    return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
+  };
+  let Some(slot) = any.downcast_mut::<WebIdlBindingsHostSlot>() else {
+    return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
+  };
+  slot
+    .get_mut()
+    .ok_or(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE))
 }
 
 /// `webidl` conversion context backed by `vm-js`.

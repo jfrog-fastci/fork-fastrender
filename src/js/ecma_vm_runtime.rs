@@ -12,6 +12,7 @@ use vm_js::{
   Budget, Heap, HeapLimits, Job, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks, VmJobContext, VmOptions,
 };
+use webidl_vm_js::{WebIdlBindingsHost, WebIdlBindingsHostSlot};
 
 use super::event_loop::{EventLoop, TimerId};
 use super::script_scheduler::ScriptExecutor;
@@ -27,7 +28,7 @@ use super::ScriptElementSpec;
 ///
 /// Note: `vm-js` is still early-stage; this runtime includes a small AST interpreter for a subset
 /// of JavaScript needed by FastRender's early scripting and scheduling tests.
-pub struct EcmaVmRuntime<State: 'static> {
+pub struct EcmaVmRuntime<State: WebIdlBindingsHost + 'static> {
   pub state: State,
   heap: Heap,
   vm: Vm,
@@ -71,7 +72,7 @@ struct TimerEntry {
   args: Vec<RootId>,
 }
 
-impl<State: 'static> EcmaVmRuntime<State> {
+impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
   pub fn new(state: State, config: EcmaVmRuntimeConfig) -> Result<Self> {
     let heap = Heap::new(config.heap_limits);
 
@@ -243,8 +244,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
     let intrinsics = *self.realm.intrinsics();
     // `vm-js` Promise built-ins require a host hook implementation to enqueue jobs. We use a small
     // adapter that forwards to `EcmaVmRuntime` while keeping the VM/heap borrowable.
-    let host_ptr: *mut EcmaVmRuntime<State> = self;
-    let mut hooks = RuntimeHostHooks { host: host_ptr };
+    let mut hooks = RuntimeHostHooks::new(self);
     let mut evaluator = Evaluator {
       vm: &mut self.vm,
       env: &mut self.env,
@@ -264,6 +264,23 @@ impl<State: 'static> EcmaVmRuntime<State> {
     }
 
     Ok(())
+  }
+}
+
+impl<State: WebIdlBindingsHost + 'static> WebIdlBindingsHost for EcmaVmRuntime<State> {
+  fn call_operation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    self
+      .state
+      .call_operation(vm, scope, receiver, interface, operation, overload, args)
   }
 }
 
@@ -487,7 +504,7 @@ impl Evaluator<'_> {
   }
 }
 
-impl<State: 'static> Drop for EcmaVmRuntime<State> {
+impl<State: WebIdlBindingsHost + 'static> Drop for EcmaVmRuntime<State> {
   fn drop(&mut self) {
     self.realm.teardown(&mut self.heap);
   }
@@ -510,7 +527,7 @@ struct ExecCtxGuard {
 }
 
 impl ExecCtxGuard {
-  fn install<State: 'static>(
+  fn install<State: WebIdlBindingsHost + 'static>(
     host: &mut EcmaVmRuntime<State>,
     event_loop: &mut EventLoop<EcmaVmRuntime<State>>,
   ) -> Self {
@@ -526,7 +543,7 @@ impl ExecCtxGuard {
     Self { previous }
   }
 
-  fn with_current<State: 'static, R>(
+  fn with_current<State: WebIdlBindingsHost + 'static, R>(
     f: impl FnOnce(*mut EcmaVmRuntime<State>, *mut EventLoop<EcmaVmRuntime<State>>) -> R,
   ) -> R {
     EXEC_CTX.with(|cell| {
@@ -553,16 +570,30 @@ impl Drop for ExecCtxGuard {
   }
 }
 
-struct RuntimeHostHooks<State: 'static> {
+struct RuntimeHostHooks<State: WebIdlBindingsHost + 'static> {
   host: *mut EcmaVmRuntime<State>,
+  bindings_host: WebIdlBindingsHostSlot,
 }
 
-impl<State: 'static> VmHostHooks for RuntimeHostHooks<State> {
+impl<State: WebIdlBindingsHost + 'static> RuntimeHostHooks<State> {
+  fn new(host: &mut EcmaVmRuntime<State>) -> Self {
+    Self {
+      host: host as *mut _,
+      bindings_host: WebIdlBindingsHostSlot::new(host),
+    }
+  }
+}
+
+impl<State: WebIdlBindingsHost + 'static> VmHostHooks for RuntimeHostHooks<State> {
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
     // SAFETY: `RuntimeHostHooks` is only constructed while an `EcmaVmRuntime` is actively
     // executing a task/microtask. The raw pointer indirection is required because `vm-js` host
     // hooks are invoked from within `Vm::call` without access to the Rust host borrow.
     unsafe { (&mut *self.host).host_enqueue_promise_job(job, realm) }
+  }
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    Some(&mut self.bindings_host)
   }
 
   fn host_call_job_callback(
@@ -580,7 +611,7 @@ impl<State: 'static> VmHostHooks for RuntimeHostHooks<State> {
 
 // --- vm-js host hooks ---
 
-impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
+impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
   fn host_enqueue_promise_job(&mut self, job: Job, _realm: Option<RealmId>) {
     // This hook cannot return `Result`, so we stash enqueue errors and surface them at the next
     // script/job boundary.
@@ -607,8 +638,9 @@ impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
           host.reset_budget_for_run();
 
           let mut ctx = FastRenderJobContext::new(host);
+          let mut hooks = RuntimeHostHooks::new(host);
           job
-            .run(&mut ctx, host)
+            .run(&mut ctx, &mut hooks)
             .map_err(|err| map_vm_error(&mut host.heap, err))?;
           if let Some(err) = host.pending_host_error.take() {
             return Err(err);
@@ -633,8 +665,9 @@ impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
     this_argument: Value,
     arguments: &[Value],
   ) -> std::result::Result<Value, VmError> {
+    let mut hooks = RuntimeHostHooks::new(self);
     ctx.call(
-      self,
+      &mut hooks,
       Value::Object(callback.callback_object()),
       this_argument,
       arguments,
@@ -648,7 +681,7 @@ struct FastRenderJobContext {
 }
 
 impl FastRenderJobContext {
-  fn new<State: 'static>(host: &mut EcmaVmRuntime<State>) -> Self {
+  fn new<State: WebIdlBindingsHost + 'static>(host: &mut EcmaVmRuntime<State>) -> Self {
     Self {
       vm: &mut host.vm as *mut Vm,
       heap: &mut host.heap as *mut Heap,
@@ -702,7 +735,7 @@ impl VmJobContext for FastRenderJobContext {
 }
 // --- ScriptScheduler adapter ---
 
-impl<State: 'static> ScriptExecutor for EcmaVmRuntime<State> {
+impl<State: WebIdlBindingsHost + 'static> ScriptExecutor for EcmaVmRuntime<State> {
   fn execute_classic_script(
     &mut self,
     script_text: &str,
@@ -827,7 +860,7 @@ fn normalize_timer_id(
 
 // --- Native web API globals ---
 
-fn native_queue_microtask<State: 'static>(
+fn native_queue_microtask<State: WebIdlBindingsHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -866,7 +899,8 @@ fn native_queue_microtask<State: 'static>(
 
       // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
       let mut ctx = FastRenderJobContext::new(host);
-      let result = ctx.call(host, callback, Value::Undefined, &[]);
+      let mut hooks = RuntimeHostHooks::new(host);
+      let result = ctx.call(&mut hooks, callback, Value::Undefined, &[]);
       host.heap.remove_root(callback_root);
       result
         .map(|_| ())
@@ -892,7 +926,7 @@ fn native_queue_microtask<State: 'static>(
   Ok(Value::Undefined)
 }
 
-fn native_set_timeout<State: 'static>(
+fn native_set_timeout<State: WebIdlBindingsHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -965,7 +999,8 @@ fn native_set_timeout<State: 'static>(
 
       let global_this = Value::Object(host.realm.global_object());
       let mut ctx = FastRenderJobContext::new(host);
-      let result = ctx.call(host, callback, global_this, &call_args);
+      let mut hooks = RuntimeHostHooks::new(host);
+      let result = ctx.call(&mut hooks, callback, global_this, &call_args);
 
       host.heap.remove_root(entry.callback);
       for root in entry.args {
@@ -1010,7 +1045,7 @@ fn native_set_timeout<State: 'static>(
   Ok(Value::Number(id as f64))
 }
 
-fn native_clear_timeout<State: 'static>(
+fn native_clear_timeout<State: WebIdlBindingsHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1033,7 +1068,7 @@ fn native_clear_timeout<State: 'static>(
   Ok(Value::Undefined)
 }
 
-fn native_set_interval<State: 'static>(
+fn native_set_interval<State: WebIdlBindingsHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1146,7 +1181,7 @@ fn native_set_interval<State: 'static>(
   Ok(Value::Number(id as f64))
 }
 
-fn native_clear_interval<State: 'static>(
+fn native_clear_interval<State: WebIdlBindingsHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -1216,6 +1251,24 @@ mod tests {
     log: Vec<&'static str>,
     interval_count: usize,
     interval_id: Option<TimerId>,
+  }
+
+  impl WebIdlBindingsHost for TestState {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: &[Value],
+    ) -> std::result::Result<Value, VmError> {
+      // The EcmaVmRuntime test harness does not currently install any generated WebIDL bindings.
+      // This implementation exists to satisfy the runtime's generic bound and to provide a clear
+      // failure mode if a test accidentally routes a generated binding through this host.
+      Err(VmError::Unimplemented("WebIDL bindings host not implemented for TestState"))
+    }
   }
 
   fn classic_spec() -> ScriptElementSpec {
@@ -1794,8 +1847,7 @@ mod tests {
   fn set_timeout_throws_type_error_object_for_non_callable_callback() -> Result<()> {
     let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
     let intr = *host.realm.intrinsics();
-    let host_ptr: *mut EcmaVmRuntime<TestState> = &mut host;
-    let mut hooks = RuntimeHostHooks { host: host_ptr };
+    let mut hooks = RuntimeHostHooks::new(&mut host);
     let mut dummy_host = ();
 
     let mut scope = host.heap.scope();
@@ -1831,8 +1883,7 @@ mod tests {
   fn clear_timeout_throws_type_error_object_for_symbol_handle() -> Result<()> {
     let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
     let intr = *host.realm.intrinsics();
-    let host_ptr: *mut EcmaVmRuntime<TestState> = &mut host;
-    let mut hooks = RuntimeHostHooks { host: host_ptr };
+    let mut hooks = RuntimeHostHooks::new(&mut host);
     let mut dummy_host = ();
 
     let mut scope = host.heap.scope();
