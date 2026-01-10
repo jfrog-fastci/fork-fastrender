@@ -316,6 +316,9 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
 pub struct VmJsWebIdlBindingsCx<'a, Host> {
   state: &'a VmJsWebIdlBindingsState<Host>,
   cx: webidl_vm_js::VmJsWebIdlCx<'a>,
+  cached_next_key: Option<PropertyKey>,
+  cached_done_key: Option<PropertyKey>,
+  cached_value_key: Option<PropertyKey>,
 }
 
 impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
@@ -325,7 +328,13 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     state: &'a VmJsWebIdlBindingsState<Host>,
   ) -> Self {
     let cx = webidl_vm_js::VmJsWebIdlCx::new(vm, heap, state.limits, state.hooks.as_ref());
-    Self { state, cx }
+    Self {
+      state,
+      cx,
+      cached_next_key: None,
+      cached_done_key: None,
+      cached_value_key: None,
+    }
   }
 
   pub fn new_in_scope(
@@ -334,7 +343,13 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     state: &'a VmJsWebIdlBindingsState<Host>,
   ) -> Self {
     let cx = webidl_vm_js::VmJsWebIdlCx::new_in_scope(vm, scope, state.limits, state.hooks.as_ref());
-    Self { state, cx }
+    Self {
+      state,
+      cx,
+      cached_next_key: None,
+      cached_done_key: None,
+      cached_value_key: None,
+    }
   }
 
   fn intrinsics(&self) -> Result<Intrinsics, VmError> {
@@ -581,9 +596,46 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   }
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
-    let s = self.cx.scope.alloc_string(name)?;
-    self.cx.scope.push_root(Value::String(s))?;
-    Ok(PropertyKey::from_string(s))
+    // WebIDL conversions can call `property_key("done")`/`property_key("value")` inside tight loops
+    // (e.g. `sequence<T>` from an iterator). Cache the hottest iterator protocol keys to avoid
+    // allocating and rooting millions of duplicate strings in a single conversion.
+    match name {
+      "next" => {
+        if let Some(key) = self.cached_next_key {
+          return Ok(key);
+        }
+        let s = self.cx.scope.alloc_string("next")?;
+        self.cx.scope.push_root(Value::String(s))?;
+        let key = PropertyKey::from_string(s);
+        self.cached_next_key = Some(key);
+        Ok(key)
+      }
+      "done" => {
+        if let Some(key) = self.cached_done_key {
+          return Ok(key);
+        }
+        let s = self.cx.scope.alloc_string("done")?;
+        self.cx.scope.push_root(Value::String(s))?;
+        let key = PropertyKey::from_string(s);
+        self.cached_done_key = Some(key);
+        Ok(key)
+      }
+      "value" => {
+        if let Some(key) = self.cached_value_key {
+          return Ok(key);
+        }
+        let s = self.cx.scope.alloc_string("value")?;
+        self.cx.scope.push_root(Value::String(s))?;
+        let key = PropertyKey::from_string(s);
+        self.cached_value_key = Some(key);
+        Ok(key)
+      }
+      _ => {
+        let s = self.cx.scope.alloc_string(name)?;
+        self.cx.scope.push_root(Value::String(s))?;
+        Ok(PropertyKey::from_string(s))
+      }
+    }
   }
 
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {

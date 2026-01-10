@@ -343,3 +343,216 @@ fn generated_bindings_enforce_max_sequence_length() -> Result<(), VmError> {
   assert!(!host.called, "host should not be called on conversion error");
   Ok(())
 }
+
+#[test]
+fn generated_bindings_sequence_conversion_throws_type_error_on_non_object() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesSequence");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesSequence",
+      1,
+      takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[Value::Number(1.0)])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_sequence_conversion_throws_type_error_on_non_iterable() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesSequence");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesSequence",
+      1,
+      takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let obj = rt.alloc_object_value()?;
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[obj])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_sequence_conversion_throws_type_error_on_non_callable_iterator() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesSequence");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesSequence",
+      1,
+      takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let obj = rt.alloc_object_value()?;
+  rt.with_stack_roots(&[obj], |rt| {
+    let iterator_sym = webidl_js_runtime::WebIdlJsRuntime::symbol_iterator(rt)?;
+    webidl_js_runtime::JsRuntime::define_data_property(
+      rt,
+      obj,
+      iterator_sym,
+      Value::Number(1.0),
+      true,
+    )
+  })?;
+
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[obj])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_object() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesFrozenArray");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesFrozenArray",
+      1,
+      takes_frozen_array_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[Value::Number(1.0)])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_iterable() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesFrozenArray");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesFrozenArray",
+      1,
+      takes_frozen_array_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let obj = rt.alloc_object_value()?;
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[obj])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_frozen_array_conversion_throws_type_error_on_non_callable_iterator() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesFrozenArray");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesFrozenArray",
+      1,
+      takes_frozen_array_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let obj = rt.alloc_object_value()?;
+  rt.with_stack_roots(&[obj], |rt| {
+    let iterator_sym = webidl_js_runtime::WebIdlJsRuntime::symbol_iterator(rt)?;
+    webidl_js_runtime::JsRuntime::define_data_property(
+      rt,
+      obj,
+      iterator_sym,
+      Value::Number(1.0),
+      true,
+    )
+  })?;
+
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[obj])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "TypeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_enforce_max_frozen_array_length() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  rt.set_webidl_limits(WebIdlLimits {
+    max_sequence_length: 1,
+    ..WebIdlLimits::default()
+  });
+  let mut host = SeqHost::new("takesFrozenArray");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesFrozenArray",
+      1,
+      takes_frozen_array_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let iterable = make_numeric_iterable(&mut rt, vec![Value::Number(1.0), Value::Number(2.0)])?;
+  let err = rt
+    .with_host_context(&mut host, |rt| {
+      let this = rt.js_undefined();
+      rt.call(func, this, &[iterable])
+    })
+    .expect_err("expected conversion to throw");
+  assert_eq!(thrown_error_name(&mut rt, err)?, "RangeError");
+  assert!(!host.called, "host should not be called on conversion error");
+  Ok(())
+}
