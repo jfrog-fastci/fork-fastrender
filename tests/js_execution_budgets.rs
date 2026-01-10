@@ -1,9 +1,11 @@
 use fastrender::dom2::Document as Dom2Document;
 use fastrender::js::{JsExecutionOptions, WindowHost, WindowRealm, WindowRealmConfig};
 use fastrender::render_control;
+use fastrender::{Error, FetchedResource, ResourceFetcher};
 use selectors::context::QuirksMode;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use vm_js::{PropertyKey, TerminationReason, Value, VmError};
 
@@ -42,6 +44,37 @@ fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
   scope.push_root(Value::String(key_s)).expect("push root key");
   let key = PropertyKey::from_string(key_s);
   vm.get(&mut scope, global, key).expect("get global prop")
+}
+
+#[derive(Clone, Default)]
+struct MockFetcher {
+  responses: Arc<Mutex<HashMap<String, FetchedResource>>>,
+}
+
+impl MockFetcher {
+  fn with_bytes(self, url: &str, bytes: Vec<u8>, content_type: Option<&str>) -> Self {
+    self.responses.lock().unwrap().insert(
+      url.to_string(),
+      FetchedResource::with_final_url(
+        bytes,
+        content_type.map(str::to_string),
+        Some(url.to_string()),
+      ),
+    );
+    self
+  }
+}
+
+impl ResourceFetcher for MockFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+    self
+      .responses
+      .lock()
+      .unwrap()
+      .get(url)
+      .cloned()
+      .ok_or_else(|| Error::Other(format!("no mock response for {url}")))
+  }
 }
 
 #[test]
@@ -268,6 +301,63 @@ fn vm_js_infinite_loop_in_request_animation_frame_callback_is_bounded() {
 
   assert!(matches!(
     get_global_prop(&mut host, "__raf_ran"),
+    Value::Bool(true)
+  ));
+}
+
+#[test]
+fn vm_js_infinite_loop_in_fetch_then_callback_is_bounded() {
+  let mut js_opts = JsExecutionOptions::default();
+  js_opts.event_loop_run_limits.max_wall_time = None;
+  // Small enough to ensure termination is quick in debug builds while allowing the fetch resolution
+  // and promise callback to start and set the sentinel flag.
+  js_opts.max_instruction_count = Some(5_000);
+
+  let data_url = "https://example.com/data.txt";
+  let fetcher = MockFetcher::default().with_bytes(data_url, b"ok".to_vec(), Some("text/plain"));
+  let fetcher = Arc::new(fetcher) as Arc<dyn ResourceFetcher>;
+
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host =
+    WindowHost::new_with_fetcher_and_options(dom, "https://example.com/", fetcher, js_opts)
+      .expect("create WindowHost");
+
+  host
+    .exec_script(&format!(
+      "globalThis.__fetch_then_ran = false;\n\
+       globalThis.__fetch_p = fetch('{data_url}').then(function () {{\n\
+         globalThis.__fetch_then_ran = true;\n\
+         while (true) {{}}\n\
+       }});\n"
+    ))
+    .expect("script should complete without throwing");
+
+  let (err, watchdog_fired) = with_interrupt_watchdog(Duration::from_secs(2), || {
+    host
+      .run_until_idle(fastrender::js::RunLimits {
+        max_tasks: 10,
+        max_microtasks: 1_000,
+        max_wall_time: None,
+      })
+      .expect_err("expected fetch callback loop to terminate")
+  });
+  assert!(
+    !watchdog_fired,
+    "watchdog should not need to interrupt a budget-terminated fetch then callback"
+  );
+
+  let msg = err.to_string();
+  assert!(
+    msg.contains("out of fuel") || msg.contains("deadline exceeded"),
+    "expected a budget termination error, got: {msg}"
+  );
+  assert!(
+    !msg.contains("interrupted"),
+    "expected termination due to budget, but watchdog interrupt fired: {msg}"
+  );
+
+  assert!(matches!(
+    get_global_prop(&mut host, "__fetch_then_ran"),
     Value::Bool(true)
   ));
 }
