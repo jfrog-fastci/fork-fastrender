@@ -8219,11 +8219,16 @@ fn compute_inline_box_metrics(
     content_height = content_height.max(child_metrics.height);
   }
 
+  // CSS 2.1 defines the baseline of an inline box as the baseline of its *last* in-flow line box.
+  // In the common single-line case, that corresponds to the last baseline-relative child in the
+  // inline box, not the first. Using the first child here can incorrectly anchor the baseline to a
+  // leading replaced element (e.g. an icon) and inflate the line box height.
   let baseline_child = effective_children
     .iter()
+    .rev()
     .copied()
     .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or(effective_children[0]);
+    .unwrap_or_else(|| *effective_children.last().unwrap());
   let child_metrics = baseline_child.baseline_metrics();
 
   // Baseline metrics are expressed in the coordinate space of the inline box's *content strut*
@@ -8276,11 +8281,14 @@ fn compute_inline_box_line_metrics(
     content_height = content_height.max(metrics_for_item(child).height);
   }
 
+  // See `compute_inline_box_metrics`: the inline box baseline is taken from the last in-flow line,
+  // which is best approximated by the last baseline-relative child.
   let baseline_child = effective_children
     .iter()
+    .rev()
     .copied()
     .find(|c| c.vertical_align().is_baseline_relative())
-    .unwrap_or(effective_children[0]);
+    .unwrap_or_else(|| *effective_children.last().unwrap());
   let child_metrics = metrics_for_item(baseline_child);
 
   let baseline_offset = child_metrics
