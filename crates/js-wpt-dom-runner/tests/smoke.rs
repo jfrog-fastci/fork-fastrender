@@ -43,6 +43,27 @@ fn run_test_id_all_backends(
   out
 }
 
+fn run_test_id_backend(
+  id: &str,
+  backend: BackendSelection,
+  config: RunnerConfig,
+) -> js_wpt_dom_runner::RunResult {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == id)
+    .unwrap_or_else(|| panic!("missing test {id}"));
+
+  let mut config = config.clone();
+  config.backend = backend;
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, config);
+  runner.run_test(test).expect("run test")
+}
+
 fn assert_wpt_pass(id: &str) {
   for (backend, result) in run_test_id_all_backends(id, RunnerConfig::default()) {
     assert_eq!(
@@ -264,4 +285,23 @@ fn runs_event_loop_tests() {
 #[test]
 fn runs_get_element_by_id_test() {
   assert_wpt_pass("dom/document_get_element_by_id.window.js");
+}
+
+#[test]
+#[cfg(feature = "vmjs")]
+fn runs_urlsearchparams_live_test_vmjs() {
+  let result = run_test_id_backend(
+    "url/urlsearchparams-live.window.js",
+    BackendSelection::VmJs,
+    RunnerConfig::default(),
+  );
+  assert_eq!(
+    result.outcome,
+    RunOutcome::Pass,
+    "urlsearchparams-live should pass under vmjs"
+  );
+  let report = result
+    .wpt_report
+    .expect("urlsearchparams-live should include report payload under vmjs");
+  assert_eq!(report.file_status, "pass");
 }

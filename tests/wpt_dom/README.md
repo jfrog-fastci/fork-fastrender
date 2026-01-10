@@ -55,6 +55,8 @@ tests/wpt_dom/
       *.window.js
     events/                # Curated EventTarget/Event semantics tests
       *.window.js
+    url/                   # Curated URL + URLSearchParams tests
+      *.window.js
 ```
 
 ## URL mapping (WPT origin → filesystem)
