@@ -7,7 +7,7 @@ use fastrender::ui::messages::{
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Clipboard tests exercise real worker threads and rendering; allow some slack on CI.
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -27,6 +27,37 @@ fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
   match msg {
     WorkerToUi::SetClipboardText { text, .. } => text,
     other => panic!("unexpected message while waiting for SetClipboardText: {other:?}"),
+  }
+}
+
+fn next_frame_ready_with_probe_color(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  probe: (u32, u32),
+  expected: [u8; 4],
+  context: &'static str,
+) -> RenderedFrame {
+  let start = Instant::now();
+  let mut last_probe = None;
+  loop {
+    let remaining = TIMEOUT.saturating_sub(start.elapsed());
+    if remaining.is_zero() {
+      panic!(
+        "timed out waiting for FrameReady ({context}) for tab {tab_id:?}; last probe at {:?} was {last_probe:?}",
+        probe
+      );
+    }
+    let msg = support::recv_for_tab(rx, tab_id, remaining, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
+      .unwrap_or_else(|| panic!("timed out waiting for FrameReady ({context}) for tab {tab_id:?}"));
+    let frame = match msg {
+      WorkerToUi::FrameReady { frame, .. } => frame,
+      other => panic!("unexpected message while waiting for FrameReady ({context}): {other:?}"),
+    };
+    let got = support::rgba_at(&frame.pixmap, probe.0, probe.1);
+    last_probe = Some(got);
+    if got == expected {
+      return frame;
+    }
   }
 }
 
@@ -133,12 +164,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
   // Cut: should set clipboard and clear the input value (probe turns red).
   ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
-  let frame_cut = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_cut.pixmap, 20, 60),
-    [255, 0, 0, 255],
-    "expected probe to reflect value after cut"
-  );
+  let _frame_cut =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 60), [255, 0, 0, 255], "after cut");
 
   // Paste: should insert at the caret and update the value (probe turns blue).
   ui_tx
@@ -147,12 +174,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
       text: "world".to_string(),
     })
     .expect("paste");
-  let frame_paste = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_paste.pixmap, 20, 60),
-    [0, 0, 255, 255],
-    "expected probe to reflect value after paste"
-  );
+  let _frame_paste =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 60), [0, 0, 255, 255], "after paste");
 
   drop(ui_tx);
   join.join().expect("join ui worker thread");
@@ -260,12 +283,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
   // Cut: should set clipboard and clear the textarea (probe turns red).
   ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
-  let frame_cut = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_cut.pixmap, 20, 80),
-    [255, 0, 0, 255],
-    "expected probe to reflect value after cut"
-  );
+  let _frame_cut =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 80), [255, 0, 0, 255], "after cut");
 
   // Paste: should insert at the caret and make textarea non-empty again.
   ui_tx
@@ -274,12 +293,8 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
       text: "world".to_string(),
     })
     .expect("paste");
-  let frame_paste = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_paste.pixmap, 20, 80),
-    [0, 255, 0, 255],
-    "expected probe to reflect value after paste"
-  );
+  let _frame_paste =
+    next_frame_ready_with_probe_color(&ui_rx, tab_id, (20, 80), [0, 255, 0, 255], "after paste");
 
   // Copy again to ensure the pasted text landed in the DOM.
   ui_tx
@@ -401,11 +416,12 @@ fn ui_clipboard_respects_readonly_input() {
       reason: RepaintReason::Explicit,
     })
     .expect("request repaint after cut");
-  let frame_cut = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_cut.pixmap, 20, 60),
+  let _frame_cut = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected readonly input value to remain unchanged after cut"
+    "after cut (readonly)",
   );
 
   // Paste: should be ignored for readonly controls.
@@ -421,11 +437,12 @@ fn ui_clipboard_respects_readonly_input() {
       reason: RepaintReason::Explicit,
     })
     .expect("request repaint after paste");
-  let frame_paste = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_paste.pixmap, 20, 60),
+  let _frame_paste = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 255, 0, 255],
-    "expected readonly input value to remain unchanged after paste"
+    "after paste (readonly)",
   );
 
   // Copy again to ensure the value stayed intact.
@@ -550,11 +567,12 @@ fn ui_clipboard_copy_cut_respects_selection() {
   // Cut should copy the selection and delete it, leaving only the last character (value="o").
   ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hell");
-  let frame_cut = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_cut.pixmap, 20, 60),
+  let _frame_cut = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [255, 255, 0, 255],
-    "expected probe to reflect value after cutting selection"
+    "after cut selection",
   );
 
   drop(ui_tx);
@@ -669,11 +687,12 @@ fn ui_clipboard_paste_replaces_selection() {
       text: "world".to_string(),
     })
     .expect("paste");
-  let frame_paste = next_frame_ready(&ui_rx, tab_id);
-  assert_eq!(
-    support::rgba_at(&frame_paste.pixmap, 20, 60),
+  let _frame_paste = next_frame_ready_with_probe_color(
+    &ui_rx,
+    tab_id,
+    (20, 60),
     [0, 0, 255, 255],
-    "expected paste to replace selection"
+    "after paste replace selection",
   );
 
   // Copy again to ensure the pasted value landed in the DOM.
