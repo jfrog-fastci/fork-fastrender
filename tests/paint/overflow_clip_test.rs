@@ -2,7 +2,9 @@ use fastrender::geometry::Rect;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::position::Position;
-use fastrender::style::types::{BorderCornerRadius, ClipComponent, ClipRect, Overflow};
+use fastrender::style::types::{
+  BorderCornerRadius, BorderStyle, ClipComponent, ClipRect, Overflow,
+};
 use fastrender::style::values::Length;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
@@ -118,5 +120,55 @@ fn clip_rect_clips_descendants_without_stacking_context() {
   // Only the region inside the clip rect paints red.
   assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 5, 2), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 2, 2), (255, 0, 0, 255));
+}
+
+#[test]
+fn overflow_hidden_clip_does_not_snap_outwards_into_border() {
+  // Regression for `news.ycombinator.com` (Hacker News): a fractional clip origin paired with an
+  // integer clip size was being snapped using truncation, expanding the clip into the 1px border
+  // and allowing the child contents to overdraw it.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.background_color = Rgba::rgb(255, 102, 0);
+  parent_style.overflow_x = Overflow::Hidden;
+  parent_style.overflow_y = Overflow::Hidden;
+  parent_style.border_top_width = Length::px(1.0);
+  parent_style.border_right_width = Length::px(1.0);
+  parent_style.border_bottom_width = Length::px(1.0);
+  parent_style.border_left_width = Length::px(1.0);
+  parent_style.border_top_style = BorderStyle::Solid;
+  parent_style.border_right_style = BorderStyle::Solid;
+  parent_style.border_bottom_style = BorderStyle::Solid;
+  parent_style.border_left_style = BorderStyle::Solid;
+  parent_style.border_top_color = Rgba::WHITE;
+  parent_style.border_right_color = Rgba::WHITE;
+  parent_style.border_bottom_color = Rgba::WHITE;
+  parent_style.border_left_color = Rgba::WHITE;
+  let parent_style = Arc::new(parent_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.background_color = Rgba::RED;
+  let child_style = Arc::new(child_style);
+
+  // Child paints everywhere but should be clipped to the parent's padding box.
+  let child =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 6.0, 6.0), vec![], child_style);
+
+  // Parent positioned at a fractional x so its padding box starts at x=1.8 (border=1px).
+  let parent = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.8, 0.0, 4.0, 4.0),
+    vec![child],
+    parent_style,
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 6.0, 6.0), vec![parent]);
+
+  let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+  let pixmap = DisplayListRenderer::new(6, 6, Rgba::rgb(255, 102, 0), FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  // Left border pixel stays white; interior paints red.
+  assert_eq!(pixel(&pixmap, 1, 2), (255, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 2, 2), (255, 0, 0, 255));
 }

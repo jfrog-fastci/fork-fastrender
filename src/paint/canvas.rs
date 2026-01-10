@@ -3160,32 +3160,77 @@ impl Canvas {
       return None;
     }
 
-    // Fast path: axis-aligned rectangular clips with identity transforms don't need the
-    // full pixmap rasterization step. Filling the mask directly avoids allocating a
-    // temporary RGBA pixmap (4 bytes/pixel) per clip.
-    if radii.is_zero() && self.current_state.transform == Transform::identity() {
-      return self.build_clip_mask_fast_rect(rect);
+    // Fast path: axis-aligned rectangular clips don't need the full pixmap rasterization step.
+    // Filling the mask directly avoids allocating a temporary RGBA pixmap (4 bytes/pixel) per
+    // clip.
+    if radii.is_zero() {
+      if let Some(mask) = self.build_clip_mask_fast_rect(rect) {
+        return Some(mask);
+      }
     }
 
     self.build_clip_mask_slow_path(rect, radii)
   }
 
   fn build_clip_mask_fast_rect(&self, rect: Rect) -> Option<Mask> {
+    let transform = self.current_state.transform;
+    if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
+      return None;
+    }
+    if transform.sx.abs() < 1e-6 || transform.sy.abs() < 1e-6 {
+      return None;
+    }
+    if !transform.sx.is_finite()
+      || !transform.sy.is_finite()
+      || !transform.tx.is_finite()
+      || !transform.ty.is_finite()
+    {
+      return None;
+    }
+
+    // Rasterize the rect directly using a pixel-center rule so fractional edges do not expand into
+    // adjacent pixels.
+    let dx0 = rect.min_x() * transform.sx + transform.tx;
+    let dx1 = rect.max_x() * transform.sx + transform.tx;
+    let dy0 = rect.min_y() * transform.sy + transform.ty;
+    let dy1 = rect.max_y() * transform.sy + transform.ty;
+    if !dx0.is_finite() || !dx1.is_finite() || !dy0.is_finite() || !dy1.is_finite() {
+      return None;
+    }
+
+    let min_x = dx0.min(dx1);
+    let max_x = dx0.max(dx1);
+    let min_y = dy0.min(dy1);
+    let max_y = dy0.max(dy1);
+
     let mut mask = Mask::new(self.width(), self.height())?;
     mask.data_mut().fill(0);
 
-    let paint = {
-      let mut p = Paint::default();
-      p.set_color_rgba8(255, 255, 255, 255);
-      p
-    };
-    let path = self.build_rounded_rect_path(rect, BorderRadii::ZERO)?;
-    mask.fill_path(
-      &path,
-      FillRule::Winding,
-      paint.anti_alias,
-      self.current_state.transform,
-    );
+    let w_i64 = self.width() as i64;
+    let h_i64 = self.height() as i64;
+
+    let x0 = (min_x - 0.5).ceil() as i64;
+    let y0 = (min_y - 0.5).ceil() as i64;
+    let x1 = (max_x - 0.5).ceil() as i64;
+    let y1 = (max_y - 0.5).ceil() as i64;
+
+    let x0 = x0.clamp(0, w_i64);
+    let y0 = y0.clamp(0, h_i64);
+    let x1 = x1.clamp(0, w_i64);
+    let y1 = y1.clamp(0, h_i64);
+    if x1 <= x0 || y1 <= y0 {
+      return Some(mask);
+    }
+
+    let stride = self.width() as usize;
+    let data = mask.data_mut();
+    let x0 = x0 as usize;
+    let x1 = x1 as usize;
+    for y in y0 as usize..y1 as usize {
+      let start = y * stride + x0;
+      data[start..start + (x1 - x0)].fill(255);
+    }
+
     Some(mask)
   }
 

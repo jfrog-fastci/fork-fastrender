@@ -4564,6 +4564,11 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn round_rect_origin_to_device_pixels(rect: Rect) -> Rect {
+    Rect::from_xywh(rect.x().round(), rect.y().round(), rect.width(), rect.height())
+  }
+
+  #[inline]
   fn is_translation_only_transform(transform: Transform) -> bool {
     let eps = 1e-6;
     (transform.sx - 1.0).abs() <= eps
@@ -4591,11 +4596,22 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn round_rect_origin_to_device_pixels_with_translation(rect: Rect, transform: Transform) -> Rect {
+    let eff_x = rect.x() + transform.tx;
+    let eff_y = rect.y() + transform.ty;
+    Rect::from_xywh(
+      eff_x.round() - transform.tx,
+      eff_y.round() - transform.ty,
+      rect.width(),
+      rect.height(),
+    )
+  }
+
+  #[inline]
   fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect, radii: Option<BorderRadii>) -> Rect {
     // tiny-skia uses floating-point transforms for `draw_pixmap` / mask rasterization. For
-    // axis-aligned integer-sized clips, snapping the origin to integer device pixels matches
-    // the legacy painter (which truncates to `i32`) and tends to align better with Chrome's
-    // pixel grid behavior.
+    // axis-aligned integer-sized clips, snapping the origin to integer device pixels tends to
+    // align better with Chrome's pixel grid behavior.
     let transform = self.canvas.transform();
     if transform != Transform::identity()
       && (!Self::is_translation_only_transform(transform)
@@ -4620,9 +4636,9 @@ impl DisplayListRenderer {
       return rect;
     }
     if transform == Transform::identity() {
-      Self::snap_rect_origin_to_device_pixels(rect)
+      Self::round_rect_origin_to_device_pixels(rect)
     } else {
-      Self::snap_rect_origin_to_device_pixels_with_translation(rect, transform)
+      Self::round_rect_origin_to_device_pixels_with_translation(rect, transform)
     }
   }
 

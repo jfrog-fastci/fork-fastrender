@@ -196,10 +196,16 @@ fn opaque_axis_aligned_rect_fills_inside_clips_are_pixel_snapped() {
   canvas.draw_rect(Rect::from_xywh(2.0, 10.6, 6.0, 5.0), Rgba::rgb(0, 38, 118));
 
   let p10 = canvas.pixmap().pixel(2, 10).unwrap();
-  assert_eq!((p10.red(), p10.green(), p10.blue(), p10.alpha()), (255, 255, 255, 255));
+  assert_eq!(
+    (p10.red(), p10.green(), p10.blue(), p10.alpha()),
+    (255, 255, 255, 255)
+  );
 
   let p11 = canvas.pixmap().pixel(2, 11).unwrap();
-  assert_eq!((p11.red(), p11.green(), p11.blue(), p11.alpha()), (0, 38, 118, 255));
+  assert_eq!(
+    (p11.red(), p11.green(), p11.blue(), p11.alpha()),
+    (0, 38, 118, 255)
+  );
 }
 
 #[test]
@@ -466,6 +472,36 @@ fn test_clip_rect() {
   canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Rgba::rgb(0, 0, 255));
 
   let _ = canvas.into_pixmap();
+}
+
+#[test]
+fn fractional_rect_clips_do_not_overdraw_adjacent_border_pixels() {
+  // Regression for `news.ycombinator.com` (Hacker News): the clipped logo image over-drew the 1px
+  // white border when the clip rect started at a fractional x (e.g. x=99.8).
+  let mut canvas = Canvas::new(4, 4, Rgba::rgb(255, 102, 0)).unwrap();
+
+  // White "border" stripe at x=1.
+  canvas.draw_rect(Rect::from_xywh(1.0, 0.0, 1.0, 4.0), Rgba::WHITE);
+
+  // Clip begins inside that border pixel by 0.2px. The center of pixel x=1 is at 1.5, which is
+  // outside the clip, so drawing inside the clip must not affect the border pixel.
+  canvas
+    .set_clip(Rect::from_xywh(1.8, 0.0, 2.0, 4.0))
+    .unwrap();
+
+  // Semi-transparent fill avoids the opaque-rect snapping path and ensures we detect any clip
+  // expansion into the border pixel.
+  canvas.draw_rect(
+    Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    Rgba::GREEN.with_alpha(0.5),
+  );
+
+  let p = canvas.pixmap().pixel(1, 2).unwrap();
+  assert_eq!(
+    (p.red(), p.green(), p.blue(), p.alpha()),
+    (255, 255, 255, 255),
+    "expected the border pixel to remain untouched by the clipped fill"
+  );
 }
 
 // ============================================================================
