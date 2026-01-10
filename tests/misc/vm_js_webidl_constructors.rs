@@ -203,8 +203,7 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
     )?;
 
     let arg = Value::String(scope.alloc_string("a=b")?);
-    let value = vm.construct_with_host_and_hooks(
-      &mut host,
+    let value = vm.construct_with_host(
       &mut scope,
       &mut hooks,
       urlsp_ctor,
@@ -230,7 +229,7 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       &mut vm,
       &mut scope,
       err,
-      "URLSearchParams constructor must be called with new",
+      "Illegal constructor",
     );
 
     Ok(())

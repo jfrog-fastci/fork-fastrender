@@ -318,7 +318,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("EventTarget constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -504,7 +504,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("URL constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -976,7 +976,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("URLSearchParams constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -1867,7 +1867,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("EventTarget constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -2053,7 +2053,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("URL constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -2525,7 +2525,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    Err(rt.throw_type_error("URLSearchParams constructor must be called with new"))
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]

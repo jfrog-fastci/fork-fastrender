@@ -4792,7 +4792,7 @@ fn write_constructor_wrapper_vmjs(
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str(&format!(
     "  Err(rt.throw_type_error({msg_lit}))\n",
-    msg_lit = rust_string_literal(&format!("{interface} constructor must be called with new"))
+    msg_lit = rust_string_literal("Illegal constructor")
   ));
   out.push_str("}\n\n");
 
