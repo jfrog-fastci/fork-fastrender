@@ -6525,6 +6525,19 @@ impl InlineFormattingContext {
         for child in &mut b.children {
           Self::apply_internal_justification(child, mode, gap_extra);
         }
+        b.justify_gaps.clear();
+        if gap_extra > 0.0 {
+          for i in 0..b.children.len().saturating_sub(1) {
+            let prev = &b.children[i];
+            let next = &b.children[i + 1];
+            let extra = if Self::is_justifiable_pair(prev, next, mode) {
+              gap_extra
+            } else {
+              0.0
+            };
+            b.justify_gaps.push(extra);
+          }
+        }
       }
       InlineItem::Ruby(_) => {}
       InlineItem::SoftBreak
@@ -6545,49 +6558,56 @@ impl InlineFormattingContext {
     internal + Self::count_justifiable_gaps(items, mode)
   }
 
-  fn count_justifiable_gaps(items: &[PositionedItem], mode: TextJustify) -> usize {
-    if matches!(mode, TextJustify::InterCharacter) {
-      return items
-        .windows(2)
-        .filter(|pair| allows_inter_character_gap(&pair[0].item, &pair[1].item))
-        .count();
+  fn is_justifiable_pair(prev: &InlineItem, next: &InlineItem, mode: TextJustify) -> bool {
+    match mode {
+      TextJustify::InterCharacter => allows_inter_character_gap(prev, next),
+      TextJustify::Distribute => allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next),
+      _ => is_space_boundary_between(prev, next),
     }
-    if matches!(mode, TextJustify::Distribute) {
-      return items
-        .windows(2)
-        .filter(|pair| {
-          let prev = &pair[0].item;
-          let next = &pair[1].item;
-          allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next)
-        })
-        .count();
-    }
+  }
 
-    items
+  fn count_nested_justifiable_gaps(item: &InlineItem, mode: TextJustify) -> usize {
+    match item {
+      InlineItem::InlineBox(b) => {
+        let mut count = b
+          .children
+          .windows(2)
+          .filter(|pair| Self::is_justifiable_pair(&pair[0], &pair[1], mode))
+          .count();
+        for child in &b.children {
+          count += Self::count_nested_justifiable_gaps(child, mode);
+        }
+        count
+      }
+      InlineItem::Ruby(_) => 0,
+      InlineItem::SoftBreak
+      | InlineItem::Tab(_)
+      | InlineItem::HardBreak
+      | InlineItem::Text(_)
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => 0,
+    }
+  }
+
+  fn count_justifiable_gaps(items: &[PositionedItem], mode: TextJustify) -> usize {
+    let between = items
       .windows(2)
-      .filter(|pair| {
-        let prev = &pair[0].item;
-        let next = &pair[1].item;
-        is_space_boundary_between(prev, next)
-      })
-      .count()
+      .filter(|pair| Self::is_justifiable_pair(&pair[0].item, &pair[1].item, mode))
+      .count();
+    let nested: usize = items
+      .iter()
+      .map(|p| Self::count_nested_justifiable_gaps(&p.item, mode))
+      .sum();
+    between + nested
   }
 
   fn is_justifiable_gap(items: &[PositionedItem], index: usize, mode: TextJustify) -> bool {
     if index + 1 >= items.len() {
       return false;
     }
-    if matches!(mode, TextJustify::InterCharacter) {
-      return allows_inter_character_gap(&items[index].item, &items[index + 1].item);
-    }
-    if matches!(mode, TextJustify::Distribute) {
-      let prev = &items[index].item;
-      let next = &items[index + 1].item;
-      return allows_inter_character_gap(prev, next) || is_space_boundary_between(prev, next);
-    }
-    let prev = &items[index].item;
-    let next = &items[index + 1].item;
-    is_space_boundary_between(prev, next)
+    Self::is_justifiable_pair(&items[index].item, &items[index + 1].item, mode)
   }
 
   /// Creates a fragment for an inline item in block/inline coordinates.
@@ -6782,29 +6802,32 @@ impl InlineFormattingContext {
             .or_insert(new_cb);
         };
 
-        if inline_vertical {
-          let (baseline, _height, child_offsets) =
-            compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
-          let mut child_inline = box_item.start_edge;
-          let mut children = Vec::with_capacity(box_item.children.len());
-          for (idx, child) in box_item.children.iter().enumerate() {
-            let child_block =
-              box_item.content_offset_y + baseline + child_offsets[idx]
-                - child.baseline_metrics().baseline_offset;
-            let fragment = self.create_item_fragment_oriented(
-              child,
-              child_block,
-              child_inline,
-              inline_vertical,
-              line_origin,
-              parent_offset_in_line.translate(Point::new(block_pos, inline_pos)),
-              relative_cb,
-              anchor_positions.as_deref_mut(),
-              positioned_containing_blocks.as_deref_mut(),
-            );
-            child_inline += child.width();
-            children.push(fragment);
-          }
+          if inline_vertical {
+            let (baseline, _height, child_offsets) =
+              compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
+            let mut child_inline = box_item.start_edge;
+            let mut children = Vec::with_capacity(box_item.children.len());
+            for (idx, child) in box_item.children.iter().enumerate() {
+              let child_block =
+                box_item.content_offset_y + baseline + child_offsets[idx]
+                  - child.baseline_metrics().baseline_offset;
+              let fragment = self.create_item_fragment_oriented(
+                child,
+                child_block,
+                child_inline,
+                inline_vertical,
+                line_origin,
+                parent_offset_in_line.translate(Point::new(block_pos, inline_pos)),
+                relative_cb,
+                anchor_positions.as_deref_mut(),
+                positioned_containing_blocks.as_deref_mut(),
+              );
+              child_inline += child.width();
+              if let Some(extra) = box_item.justify_gaps.get(idx) {
+                child_inline += *extra;
+              }
+              children.push(fragment);
+            }
           let bounds = Rect::from_xywh(
             block_pos,
             inline_pos,
@@ -6847,6 +6870,9 @@ impl InlineFormattingContext {
               positioned_containing_blocks.as_deref_mut(),
             );
             child_x += child.width();
+            if let Some(extra) = box_item.justify_gaps.get(idx) {
+              child_x += *extra;
+            }
             children.push(fragment);
           }
 
@@ -14053,7 +14079,12 @@ fn item_has_interchar_opportunity(item: &InlineItem) -> bool {
       t.count_inter_character_justify_opportunities() > 0
     }
     InlineItem::SoftBreak => false,
-    InlineItem::InlineBox(b) => b.children.iter().any(item_has_interchar_opportunity),
+    InlineItem::InlineBox(b) => {
+      b.children
+        .windows(2)
+        .any(|pair| allows_inter_character_gap(&pair[0], &pair[1]))
+        || b.children.iter().any(item_has_interchar_opportunity)
+    }
     InlineItem::Ruby(r) => r
       .segments
       .iter()
@@ -14071,7 +14102,12 @@ fn item_has_space_boundary(item: &InlineItem) -> bool {
   match item {
     InlineItem::Text(t) => text_has_space_boundary(&t.text),
     InlineItem::SoftBreak => false,
-    InlineItem::InlineBox(b) => b.children.iter().any(item_has_space_boundary),
+    InlineItem::InlineBox(b) => {
+      b.children
+        .windows(2)
+        .any(|pair| is_space_boundary_between(&pair[0], &pair[1]))
+        || b.children.iter().any(item_has_space_boundary)
+    }
     InlineItem::Ruby(r) => r
       .segments
       .iter()
@@ -18709,6 +18745,69 @@ mod tests {
     assert!(
       gap > 10.0,
       "inter-character justify should expand space between styled spans; gap={gap}"
+    );
+  }
+
+  #[test]
+  fn text_justify_inter_character_spans_nested_inline_boxes() {
+    let mut root_style = ComputedStyle::default();
+    root_style.text_align = TextAlign::Justify;
+    root_style.text_justify = TextJustify::InterCharacter;
+    root_style.text_align_last = crate::style::types::TextAlignLast::Justify;
+    root_style.width = Some(Length::px(200.0));
+    root_style.width_keyword = None;
+    let root_style = Arc::new(root_style);
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.color = Rgba::GREEN;
+    let outer_style = Arc::new(outer_style);
+
+    let text_style_a = Arc::new(ComputedStyle::default());
+    let mut text_style_b = ComputedStyle::default();
+    text_style_b.color = Rgba::BLUE;
+    let text_style_b = Arc::new(text_style_b);
+
+    let inner_a = BoxNode::new_inline(
+      text_style_a.clone(),
+      vec![BoxNode::new_text(text_style_a.clone(), "漢".into())],
+    );
+    let inner_b = BoxNode::new_inline(
+      text_style_b.clone(),
+      vec![BoxNode::new_text(text_style_b.clone(), "字".into())],
+    );
+    let outer = BoxNode::new_inline(outer_style, vec![inner_a, inner_b]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![outer]);
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let line = fragment.children.first().expect("line fragment");
+
+    fn collect_text_bounds(node: &FragmentNode, offset: Point, out: &mut Vec<Rect>) {
+      let origin = offset.translate(Point::new(node.bounds.x(), node.bounds.y()));
+      if matches!(node.content, FragmentContent::Text { .. }) {
+        out.push(Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height()));
+      }
+      for child in &node.children {
+        collect_text_bounds(child, origin, out);
+      }
+    }
+
+    let mut text_bounds = Vec::new();
+    collect_text_bounds(line, Point::ZERO, &mut text_bounds);
+    assert!(
+      text_bounds.len() >= 2,
+      "expected at least two text fragments, got {}",
+      text_bounds.len()
+    );
+    text_bounds.sort_by(|a, b| a.x().partial_cmp(&b.x()).unwrap());
+    let min_x = text_bounds.first().unwrap().min_x();
+    let max_x = text_bounds.last().unwrap().max_x();
+    let span = max_x - min_x;
+    assert!(
+      (span - line.bounds.width()).abs() < 1.0,
+      "expected nested inline boxes to still participate in inter-character justification span={span:.2} line_width={:.2}",
+      line.bounds.width()
     );
   }
 

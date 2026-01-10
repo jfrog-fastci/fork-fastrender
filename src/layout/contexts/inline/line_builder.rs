@@ -318,6 +318,7 @@ impl InlineItem {
         let InlineBoxItem {
           box_id,
           children,
+          justify_gaps: _,
           start_edge,
           end_edge,
           content_offset_y,
@@ -382,6 +383,7 @@ impl InlineItem {
             out.push(InlineItem::InlineBox(InlineBoxItem {
               box_id,
               children: segment_children,
+              justify_gaps: Vec::new(),
               start_edge,
               end_edge,
               content_offset_y,
@@ -2158,6 +2160,14 @@ pub struct InlineBoxItem {
   /// Child items within this inline box
   pub children: Vec<InlineItem>,
 
+  /// Additional inline-axis spacing inserted between consecutive children when justifying.
+  ///
+  /// Each entry corresponds to the gap **after** `children[i]` (so this is typically
+  /// `children.len().saturating_sub(1)` long). The gap is part of this inline box's
+  /// used width, but is *not* attributed to any particular child item, so child bounds
+  /// do not inflate when justification inserts space between styled runs.
+  pub justify_gaps: Vec<f32>,
+
   /// Opening edge width (left border + padding)
   pub start_edge: f32,
 
@@ -2211,6 +2221,7 @@ impl InlineBoxItem {
     Self {
       box_id: 0,
       children: Vec::new(),
+      justify_gaps: Vec::new(),
       start_edge,
       end_edge,
       content_offset_y,
@@ -2285,7 +2296,8 @@ impl InlineBoxItem {
   /// Returns the total width of this inline box
   pub fn width(&self) -> f32 {
     let content_width: f32 = self.children.iter().map(|c| c.width()).sum();
-    self.start_edge + content_width + self.end_edge
+    let gap_width: f32 = self.justify_gaps.iter().copied().sum();
+    self.start_edge + content_width + gap_width + self.end_edge
   }
 }
 
