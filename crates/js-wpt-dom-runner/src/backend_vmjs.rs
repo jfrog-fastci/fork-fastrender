@@ -834,6 +834,7 @@ struct JsWptRuntime {
   promise_prototype: Option<GcObject>,
   array_prototype: Option<GcObject>,
   error_prototype: Option<GcObject>,
+  type_error_prototype: Option<GcObject>,
   string_char_code_at: Option<GcObject>,
   event_target_proto: Option<GcObject>,
   node_proto: Option<GcObject>,
@@ -904,6 +905,7 @@ impl JsWptRuntime {
       promise_prototype: None,
       array_prototype: None,
       error_prototype: None,
+      type_error_prototype: None,
       string_char_code_at: None,
       event_target_proto: None,
       node_proto: None,
@@ -1760,8 +1762,26 @@ impl JsWptRuntime {
     };
     self.define_data_prop(ctor, prototype_key, Value::Object(proto))?;
     self.env.set("Error", Value::Object(ctor));
+    let error_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Error")?)
+    };
+    self.define_data_prop(self.global_object, error_key, Value::Object(ctor))?;
+
+    // TypeError constructor + prototype (inherits Error.prototype).
+    let type_proto = self.alloc_object()?;
+    self.heap.object_set_prototype(type_proto, Some(proto))?;
+    let type_ctor = self.alloc_native_function(native_type_error_ctor)?;
+    self.define_data_prop(type_ctor, prototype_key, Value::Object(type_proto))?;
+    self.env.set("TypeError", Value::Object(type_ctor));
+    let type_error_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("TypeError")?)
+    };
+    self.define_data_prop(self.global_object, type_error_key, Value::Object(type_ctor))?;
 
     self.error_prototype = Some(proto);
+    self.type_error_prototype = Some(type_proto);
     Ok(())
   }
 
@@ -4380,11 +4400,23 @@ fn native_fastrender_resolve_url(
 ) -> Result<Value, JsError> {
   let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let base_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  if matches!(base_value, Value::Undefined | Value::Null) {
-    return dom_throw_named_error(rt, "TypeError", "relative URL without base");
-  }
   let input = rt.heap.to_string(input_value)?;
   let input = rt.heap.get_string(input)?.to_utf8_lossy();
+
+  // The legacy helper treats `null`/`undefined` as "no base provided" (mirroring the QuickJS
+  // backend's shim). When there's no base:
+  // - absolute URLs are returned as-is
+  // - relative URLs throw TypeError
+  if matches!(base_value, Value::Undefined | Value::Null) {
+    return match Url::parse(&input) {
+      Ok(url) => Ok(rt.alloc_string_value(url.as_str())?),
+      Err(url::ParseError::RelativeUrlWithoutBase) => {
+        dom_throw_named_error(rt, "TypeError", "relative URL without base")
+      }
+      Err(_) => dom_throw_named_error(rt, "TypeError", "Invalid URL"),
+    };
+  }
+
   let base = rt.heap.to_string(base_value)?;
   let base = rt.heap.get_string(base)?.to_utf8_lossy();
 
@@ -4605,6 +4637,37 @@ fn native_error_ctor(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
   };
 
   let name_value = rt.alloc_string_value("Error")?;
+  rt.define_data_prop(obj, name_key, name_value)?;
+
+  let message_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let message_value = if message_value == Value::Undefined {
+    rt.alloc_string_value("")?
+  } else {
+    Value::String(rt.heap.to_string(message_value)?)
+  };
+  rt.define_data_prop(obj, message_key, message_value)?;
+
+  Ok(Value::Object(obj))
+}
+
+fn native_type_error_ctor(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let proto = rt
+    .type_error_prototype
+    .ok_or_else(|| JsError::Vm(VmError::Unimplemented("TypeError prototype")))?;
+
+  let obj = rt.alloc_object()?;
+  rt.heap.object_set_prototype(obj, Some(proto))?;
+
+  let name_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("name")?)
+  };
+  let message_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("message")?)
+  };
+
+  let name_value = rt.alloc_string_value("TypeError")?;
   rt.define_data_prop(obj, name_key, name_value)?;
 
   let message_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -6458,6 +6521,22 @@ fn dispatch_listeners(
 
 fn dom_throw_named_error(rt: &mut JsWptRuntime, name: &str, message: &str) -> Result<Value, JsError> {
   let obj = rt.alloc_object()?;
+
+  // Best-effort prototype assignment so JS `instanceof TypeError` works in smoke tests. The runner
+  // does not fully implement the built-in Error hierarchy, but we at least thread TypeError through
+  // `TypeError.prototype` when available.
+  if name == "TypeError" {
+    if let Some(proto) = rt
+      .type_error_prototype
+      .or(rt.error_prototype)
+    {
+      rt.heap.object_set_prototype(obj, Some(proto))?;
+    }
+  } else if name.ends_with("Error") {
+    if let Some(proto) = rt.error_prototype {
+      rt.heap.object_set_prototype(obj, Some(proto))?;
+    }
+  }
 
   let name_key = {
     let mut scope = rt.heap.scope();
