@@ -112,7 +112,7 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
 
 /// Validates an at-rule for use in `@supports at-rule(...)` queries.
 ///
-/// This supports only a minimal subset needed for real-world stylesheets.
+/// Returns `true` for at-rules that FastRender parses/uses and `false` otherwise.
 pub fn supports_at_rule(rule: &str) -> bool {
   let trimmed = trim_ascii_whitespace(rule);
   if trimmed.is_empty() {
@@ -121,7 +121,20 @@ pub fn supports_at_rule(rule: &str) -> bool {
 
   let name = trimmed.strip_prefix('@').unwrap_or(trimmed);
   match name.to_ascii_lowercase().as_str() {
-    "position-try" => true,
+    "layer"
+    | "container"
+    | "supports"
+    | "media"
+    | "scope"
+    | "starting-style"
+    | "property"
+    | "font-face"
+    | "keyframes"
+    | "font-palette-values"
+    | "font-feature-values"
+    | "counter-style"
+    | "page"
+    | "position-try" => true,
     _ => false,
   }
 }

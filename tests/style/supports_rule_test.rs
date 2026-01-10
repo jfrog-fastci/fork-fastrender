@@ -195,3 +195,27 @@ fn supports_font_tech_string_arguments_do_not_match_keywords() {
   let css = r#"@supports not font-tech("variations") { div { display: inline; } }"#;
   assert_eq!(render_div_display(css), "inline");
 }
+
+#[test]
+fn supports_at_rule_layer_matches() {
+  let css = r"@supports at-rule(@layer) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_at_rule_container_matches() {
+  let css = r"@supports at-rule(@container) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_at_rule_property_matches() {
+  let css = r"@supports at-rule(@property) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_not_at_rule_unknown_matches() {
+  let css = r"@supports not at-rule(@unknown-at-rule) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
