@@ -17,6 +17,11 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
   Stage { tab_id: TabId, stage: StageHeartbeat },
+  Favicon {
+    tab_id: TabId,
+    width: u32,
+    height: u32,
+  },
   FrameReady {
     tab_id: TabId,
     viewport_css: (u32, u32),
@@ -52,6 +57,7 @@ pub enum WorkerToUiEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerEventKind {
   Stage,
+  Favicon,
   FrameReady,
   OpenSelectDropdown,
   RequestOpenInNewTab,
@@ -70,6 +76,7 @@ impl WorkerToUiEvent {
   pub fn kind(&self) -> WorkerEventKind {
     match self {
       WorkerToUiEvent::Stage { .. } => WorkerEventKind::Stage,
+      WorkerToUiEvent::Favicon { .. } => WorkerEventKind::Favicon,
       WorkerToUiEvent::FrameReady { .. } => WorkerEventKind::FrameReady,
       WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
       WorkerToUiEvent::RequestOpenInNewTab { .. } => WorkerEventKind::RequestOpenInNewTab,
@@ -89,6 +96,19 @@ impl WorkerToUiEvent {
 fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
   match msg {
     WorkerToUi::Stage { tab_id, stage } => (WorkerToUiEvent::Stage { tab_id, stage }, None),
+    WorkerToUi::Favicon {
+      tab_id,
+      rgba: _,
+      width,
+      height,
+    } => (
+      WorkerToUiEvent::Favicon {
+        tab_id,
+        width,
+        height,
+      },
+      None,
+    ),
     WorkerToUi::FrameReady { tab_id, frame } => {
       let event = WorkerToUiEvent::FrameReady {
         tab_id,

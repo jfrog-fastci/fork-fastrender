@@ -6,6 +6,7 @@ pub mod color_scheme;
 pub mod content_security_policy;
 pub mod dom2_tree_sink;
 pub mod encoding;
+pub mod favicon;
 pub mod image_attrs;
 pub mod image_prefetch;
 pub mod images;
@@ -16,6 +17,7 @@ pub mod streaming_parser;
 pub mod title;
 pub mod viewport;
 
+pub use favicon::find_document_favicon_url;
 pub use title::find_document_title;
 
 use crate::css::loader::resolve_href;

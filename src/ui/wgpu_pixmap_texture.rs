@@ -17,6 +17,7 @@ pub struct WgpuPixmapTexture {
   size_px: (u32, u32),
   staging: Vec<u8>,
   padded_bytes_per_row: u32,
+  filter: wgpu::FilterMode,
 }
 
 /// Filter mode used for displaying rasterized page content.
@@ -85,8 +86,21 @@ impl WgpuPixmapTexture {
     egui_renderer: &mut egui_wgpu::Renderer,
     pixmap: &Pixmap,
   ) -> Self {
+    Self::new_with_filter(device, egui_renderer, pixmap, PAGE_TEXTURE_FILTER_MODE)
+  }
+
+  /// Create a texture with an explicit filter mode.
+  ///
+  /// This is used by browser-UI integrations for small UI assets (e.g. favicons) where linear
+  /// filtering is usually preferable when the UI scales the icon to match DPI.
+  pub fn new_with_filter(
+    device: &wgpu::Device,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    pixmap: &Pixmap,
+    filter: wgpu::FilterMode,
+  ) -> Self {
     let (w, h) = (pixmap.width(), pixmap.height());
-    let (texture, view, id) = create_and_register_texture(device, egui_renderer, w, h);
+    let (texture, view, id) = create_and_register_texture(device, egui_renderer, w, h, filter);
 
     let padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let mut staging = Vec::new();
@@ -99,6 +113,7 @@ impl WgpuPixmapTexture {
       size_px: (w, h),
       staging,
       padded_bytes_per_row,
+      filter,
     }
   }
 
@@ -118,7 +133,8 @@ impl WgpuPixmapTexture {
       &mut self.id,
       (w, h),
       |egui_renderer| {
-        let (texture, view, id) = create_and_register_texture(device, egui_renderer, w, h);
+        let (texture, view, id) =
+          create_and_register_texture(device, egui_renderer, w, h, self.filter);
         ((texture, view), id)
       },
     ) {
@@ -213,6 +229,7 @@ fn create_and_register_texture(
   egui_renderer: &mut impl EguiWgpuTextureRegistry,
   width: u32,
   height: u32,
+  filter: wgpu::FilterMode,
 ) -> (wgpu::Texture, wgpu::TextureView, egui::TextureId) {
   let texture = device.create_texture(&wgpu::TextureDescriptor {
     label: Some("fastrender_pixmap"),
@@ -232,7 +249,7 @@ fn create_and_register_texture(
 
   let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-  let id = egui_renderer.register_native_texture(device, &view, PAGE_TEXTURE_FILTER_MODE);
+  let id = egui_renderer.register_native_texture(device, &view, filter);
   (texture, view, id)
 }
 

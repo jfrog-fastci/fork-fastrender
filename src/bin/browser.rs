@@ -517,6 +517,7 @@ struct App {
   browser_state: fastrender::ui::BrowserAppState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
+  tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
   /// Pending `FrameReady` pixmaps coalesced until the next window redraw.
   ///
@@ -674,6 +675,7 @@ impl App {
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
+      tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       page_rect_points: None,
@@ -880,6 +882,9 @@ impl App {
     for (_, tex) in std::mem::take(&mut self.tab_textures) {
       tex.destroy(&mut self.egui_renderer);
     }
+    for (_, tex) in std::mem::take(&mut self.tab_favicons) {
+      tex.destroy(&mut self.egui_renderer);
+    }
   }
 
   fn close_context_menu(&mut self) {
@@ -1072,6 +1077,18 @@ impl App {
       _ => {}
     }
 
+    // Navigations reset a tab's favicon; drop any cached favicon textures eagerly so GPU resources
+    // don't accumulate when switching between many pages.
+    match &msg {
+      fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. } => {
+        if let Some(tex) = self.tab_favicons.remove(tab_id) {
+          tex.destroy(&mut self.egui_renderer);
+        }
+      }
+      _ => {}
+    }
+
     let mut request_redraw = false;
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
@@ -1125,6 +1142,28 @@ impl App {
         self
           .pending_frame_uploads
           .push_for_active_tab(self.browser_state.active_tab_id(), frame_ready);
+      }
+    }
+
+    if let Some(favicon_ready) = update.favicon_ready {
+      // Ignore stale favicons for tabs that have already been closed.
+      if self.browser_state.tab(favicon_ready.tab_id).is_some() {
+        let size = tiny_skia::IntSize::from_wh(favicon_ready.width, favicon_ready.height);
+        let pixmap = size.and_then(|size| tiny_skia::Pixmap::from_vec(favicon_ready.rgba, size));
+        if let Some(pixmap) = pixmap {
+          if let Some(tex) = self.tab_favicons.get_mut(&favicon_ready.tab_id) {
+            tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+          } else {
+            let mut tex = fastrender::ui::WgpuPixmapTexture::new_with_filter(
+              &self.device,
+              &mut self.egui_renderer,
+              &pixmap,
+              wgpu::FilterMode::Linear,
+            );
+            tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+            self.tab_favicons.insert(favicon_ready.tab_id, tex);
+          }
+        }
       }
     }
 
@@ -2209,6 +2248,9 @@ impl App {
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
+          if let Some(tex) = self.tab_favicons.remove(&tab_id) {
+            tex.destroy(&mut self.egui_renderer);
+          }
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
@@ -2381,7 +2423,9 @@ impl App {
 
     let ctx = self.egui_ctx.clone();
 
-    let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state);
+    let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state, |tab_id| {
+      self.tab_favicons.get(&tab_id).map(|tex| tex.id())
+    });
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 

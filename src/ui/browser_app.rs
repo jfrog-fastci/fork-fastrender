@@ -26,6 +26,8 @@ pub struct AppUpdate {
   pub set_window_title: Option<String>,
   /// A new pixmap is ready for upload; the state model does not store pixel buffers.
   pub frame_ready: Option<FrameReadyUpdate>,
+  /// A new favicon is ready for upload.
+  pub favicon_ready: Option<FaviconReadyUpdate>,
   /// The worker requested opening a `<select>` dropdown for a specific tab.
   ///
   /// Front-ends are expected to pick an anchor position (typically current pointer position or the
@@ -38,6 +40,28 @@ pub struct FrameReadyUpdate {
   pub pixmap: tiny_skia::Pixmap,
   pub viewport_css: (u32, u32),
   pub dpr: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FaviconMeta {
+  pub size_px: (u32, u32),
+}
+
+pub struct FaviconReadyUpdate {
+  pub tab_id: TabId,
+  pub rgba: Vec<u8>,
+  pub width: u32,
+  pub height: u32,
+}
+
+impl std::fmt::Debug for FaviconReadyUpdate {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("FaviconReadyUpdate")
+      .field("tab_id", &self.tab_id)
+      .field("size_px", &(self.width, self.height))
+      .field("rgba_len", &self.rgba.len())
+      .finish()
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +125,7 @@ pub struct BrowserTabState {
   pub zoom: f32,
   pub scroll_state: ScrollState,
   pub latest_frame_meta: Option<LatestFrameMeta>,
+  pub favicon_meta: Option<FaviconMeta>,
   debug_log: VecDeque<String>,
 }
 
@@ -123,6 +148,7 @@ impl BrowserTabState {
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
       scroll_state: ScrollState::default(),
       latest_frame_meta: None,
+      favicon_meta: None,
       debug_log: VecDeque::new(),
     }
   }
@@ -587,6 +613,7 @@ impl BrowserAppState {
           tab.loading = true;
           tab.error = None;
           tab.stage = None;
+          tab.favicon_meta = None;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -632,11 +659,31 @@ impl BrowserAppState {
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
           tab.title = None;
+          tab.favicon_meta = None;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
         }
         update.request_redraw = true;
+      }
+      WorkerToUi::Favicon {
+        tab_id,
+        rgba,
+        width,
+        height,
+      } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.favicon_meta = Some(FaviconMeta {
+            size_px: (width, height),
+          });
+        }
+        update.request_redraw = true;
+        update.favicon_ready = Some(FaviconReadyUpdate {
+          tab_id,
+          rgba,
+          width,
+          height,
+        });
       }
       WorkerToUi::RequestOpenInNewTab { .. } => {
         // The UI owns tab identifiers; front-ends are expected to handle this message directly by

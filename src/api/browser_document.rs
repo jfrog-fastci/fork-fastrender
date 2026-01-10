@@ -444,6 +444,14 @@ impl BrowserDocument {
     self.prepared.as_mut()
   }
 
+  /// Returns the shared image cache used by this document's renderer.
+  ///
+  /// This is exposed for browser-UI integrations that want to fetch/decode small extra resources
+  /// (e.g. favicons) using the same resource policy, fetcher, and caches as normal page rendering.
+  pub(crate) fn image_cache(&self) -> &crate::image_loader::ImageCache {
+    &self.renderer.image_cache
+  }
+
   /// Updates the document URL used for origin/referrer policy decisions.
   ///
   /// This is intentionally distinct from the effective base URL derived from `<base href>`, which

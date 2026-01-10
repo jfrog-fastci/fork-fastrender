@@ -231,6 +231,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::Stage { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::Favicon { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::FrameReady { tab_id, .. } = msg {
     return Some(*tab_id);
   }
@@ -313,6 +316,23 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         frame.pixmap.height(),
         frame.viewport_css,
         frame.dpr
+      );
+      continue;
+    }
+    if let WorkerToUi::Favicon {
+      tab_id,
+      width,
+      height,
+      rgba,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "Favicon(tab={}, size={}x{}, rgba_len={})",
+        tab_id.0,
+        width,
+        height,
+        rgba.len()
       );
       continue;
     }

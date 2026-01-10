@@ -355,6 +355,16 @@ pub enum WorkerToUi {
     tab_id: TabId,
     stage: StageHeartbeat,
   },
+  /// Best-effort favicon for the currently committed page.
+  ///
+  /// The payload is a small premultiplied RGBA8 buffer intended for immediate upload into a UI
+  /// texture (e.g. wgpu). Workers should keep this bounded (small dimensions and byte length).
+  Favicon {
+    tab_id: TabId,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+  },
   FrameReady {
     tab_id: TabId,
     frame: RenderedFrame,

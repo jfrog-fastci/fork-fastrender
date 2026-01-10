@@ -25,7 +25,11 @@ pub enum ChromeAction {
   AddressBarFocusChanged(bool),
 }
 
-pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
+pub fn chrome_ui(
+  ctx: &egui::Context,
+  app: &mut BrowserAppState,
+  mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
+) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
 
   // -----------------------------------------------------------------------------
@@ -233,6 +237,26 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       for tab in &app.tabs {
         let is_active = app.active_tab_id() == Some(tab.id);
         let title = tab.display_title();
+
+        if let Some(tex_id) = favicon_for_tab(tab.id) {
+          if let Some(meta) = tab.favicon_meta {
+            let (w, h) = meta.size_px;
+            if w > 0 && h > 0 {
+              let height_points = 16.0;
+              let aspect = (w as f32) / (h as f32);
+              let width_points = (height_points * aspect).clamp(8.0, 32.0);
+              if ui
+                .add(
+                  egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
+                    .sense(egui::Sense::click()),
+                )
+                .clicked()
+              {
+                actions.push(ChromeAction::ActivateTab(tab.id));
+              }
+            }
+          }
+        }
 
         if ui.selectable_label(is_active, title).clicked() {
           actions.push(ChromeAction::ActivateTab(tab.id));
@@ -451,7 +475,7 @@ mod tests {
     app.chrome.address_bar_editing = true;
 
     let ctx = new_context();
-    let _actions = chrome_ui(&ctx, &mut app);
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
@@ -469,7 +493,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::L, modifiers);
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -488,7 +512,7 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::K, modifiers);
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -504,7 +528,7 @@ mod tests {
     let mut app = BrowserAppState::new();
 
     let ctx = new_context_with_key(egui::Key::F5, Default::default());
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -528,7 +552,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -550,7 +574,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -605,7 +629,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -629,7 +653,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -728,7 +752,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -756,7 +780,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -782,7 +806,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -803,7 +827,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -822,7 +846,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -843,7 +867,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -866,12 +890,12 @@ mod tests {
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: let egui apply the focus request.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus, "expected address bar to be focused");
@@ -890,7 +914,7 @@ mod tests {
       &ctx,
       vec![egui::Event::Text("x".to_string())],
     );
-    let _ = chrome_ui(&ctx, &mut app);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_editing);

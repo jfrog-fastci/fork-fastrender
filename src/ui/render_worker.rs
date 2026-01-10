@@ -7,14 +7,15 @@
 
 use crate::api::{BrowserDocument, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions};
 use crate::geometry::{Point, Rect};
-use crate::html::find_document_title;
+use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
   dom_mutation, fragment_tree_with_scroll, hit_test_dom, HitTestKind, InteractionAction,
   InteractionEngine,
 };
-use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
+use crate::render_control::{push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
+use crate::style::types::OrientationTransform;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
@@ -24,6 +25,7 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
+use image::imageops::FilterType;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -95,6 +97,19 @@ struct NavigationRequest {
 // and eventually JS timers). The UI does not provide a timestamp, so we advance a fixed amount of
 // time per tick to keep behaviour deterministic for tests.
 const TICK_ANIMATION_STEP_MS: f32 = 16.0;
+
+// -----------------------------------------------------------------------------
+// Favicon loading
+// -----------------------------------------------------------------------------
+
+/// Target maximum size for decoded favicons.
+///
+/// The UI renders favicons at a small logical size (e.g. 16 points). Keeping the decoded buffer
+/// bounded avoids untrusted pages sending arbitrarily large payloads over the UI protocol.
+const FAVICON_MAX_EDGE_PX: u32 = 32;
+
+/// Maximum bytes allowed in a `WorkerToUi::Favicon` payload.
+const MAX_FAVICON_BYTES: usize = (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
 
 struct TabState {
   history: TabHistory,
@@ -187,6 +202,101 @@ fn normalize_url_without_fragment(mut url: url::Url) -> url::Url {
 
 fn resolve_href_against(base: &url::Url, href: &str) -> Option<url::Url> {
   url::Url::parse(href).ok().or_else(|| base.join(href).ok())
+}
+
+fn favicon_fallback_url_for_origin(committed_url: &str) -> Option<String> {
+  let parsed = url::Url::parse(committed_url).ok()?;
+  match parsed.scheme() {
+    "http" | "https" => {}
+    _ => return None,
+  }
+  parsed
+    .join("/favicon.ico")
+    .ok()
+    .map(|url| url.to_string())
+}
+
+fn discover_favicon_url(doc: &BrowserDocument, committed_url: &str, base_url: Option<&str>) -> Option<String> {
+  // Don't attempt favicon discovery for internal `about:` pages.
+  if about_pages::is_about_url(committed_url) {
+    return None;
+  }
+
+  let base_for_resolution = base_url.unwrap_or(committed_url);
+  find_document_favicon_url(doc.dom(), base_for_resolution)
+    .or_else(|| favicon_fallback_url_for_origin(committed_url))
+}
+
+fn load_favicon_rgba_from_image_cache(
+  image_cache: &crate::image_loader::ImageCache,
+  favicon_url: &str,
+) -> Option<(Vec<u8>, u32, u32)> {
+  let image = image_cache.load(favicon_url).ok()?;
+
+  if image.is_vector {
+    let svg = image.svg_content.as_deref()?;
+    let pixmap = image_cache
+      .render_svg_pixmap_at_size(
+        svg,
+        FAVICON_MAX_EDGE_PX,
+        FAVICON_MAX_EDGE_PX,
+        favicon_url,
+        1.0,
+      )
+      .ok()?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    if w == 0 || h == 0 {
+      return None;
+    }
+    if w > FAVICON_MAX_EDGE_PX || h > FAVICON_MAX_EDGE_PX {
+      return None;
+    }
+    let rgba = pixmap.data().to_vec();
+    let expected_len = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+    if rgba.len() != expected_len || rgba.len() > MAX_FAVICON_BYTES {
+      return None;
+    }
+    return Some((rgba, w, h));
+  }
+
+  let orientation = image.orientation.unwrap_or(OrientationTransform::IDENTITY);
+  let mut rgba = image.to_oriented_rgba(orientation);
+
+  let (src_w, src_h) = rgba.dimensions();
+  if src_w == 0 || src_h == 0 {
+    return None;
+  }
+
+  // Downscale (never upscale) each axis independently toward our cap.
+  let target_w = src_w.min(FAVICON_MAX_EDGE_PX);
+  let target_h = src_h.min(FAVICON_MAX_EDGE_PX);
+  if target_w != src_w || target_h != src_h {
+    rgba = image::imageops::resize(&rgba, target_w, target_h, FilterType::Triangle);
+  }
+
+  let (w, h) = rgba.dimensions();
+  if w == 0 || h == 0 {
+    return None;
+  }
+  if w > FAVICON_MAX_EDGE_PX || h > FAVICON_MAX_EDGE_PX {
+    return None;
+  }
+
+  let mut data = rgba.into_raw();
+  let expected_len = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+  if data.len() != expected_len || data.len() > MAX_FAVICON_BYTES {
+    return None;
+  }
+
+  // Premultiply alpha for egui/wgpu rendering (egui uses premultiplied-alpha textures).
+  for pixel in data.chunks_exact_mut(4) {
+    let alpha = pixel[3] as f32 / 255.0;
+    pixel[0] = (pixel[0] as f32 * alpha).round() as u8;
+    pixel[1] = (pixel[1] as f32 * alpha).round() as u8;
+    pixel[2] = (pixel[2] as f32 * alpha).round() as u8;
+  }
+
+  Some((data, w, h))
 }
 
 /// Returns the fully-resolved target URL when `href` is a same-document navigation that only
@@ -2059,6 +2169,48 @@ impl BrowserRuntime {
       return None;
     }
 
+    // -----------------------------
+    // Favicon discovery/fetch
+    // -----------------------------
+    //
+    // Do this before committing navigation state/history so a nav-bump during favicon fetch does
+    // not leave behind a committed-but-never-reported history entry.
+    let favicon = discover_favicon_url(&doc, &committed_url, base_url.as_deref()).and_then(|url| {
+      let cancel_callback = snapshot.cancel_callback_for_prepare(&cancel);
+      let deadline = deadline_for(cancel_callback, None);
+      let _guard = DeadlineGuard::install(Some(&deadline));
+      let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        load_favicon_rgba_from_image_cache(doc.image_cache(), &url)
+      }))
+      .ok()
+      .flatten();
+      loaded.and_then(|(rgba, width, height)| {
+        // Defensive: ensure the payload remains bounded.
+        let expected_len = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+        if width == 0
+          || height == 0
+          || width > FAVICON_MAX_EDGE_PX
+          || height > FAVICON_MAX_EDGE_PX
+          || rgba.len() != expected_len
+          || rgba.len() > MAX_FAVICON_BYTES
+        {
+          return None;
+        }
+        Some(WorkerToUi::Favicon {
+          tab_id,
+          rgba,
+          width,
+          height,
+        })
+      })
+    });
+
+    // If a new navigation was initiated while we were fetching the favicon, drop the result.
+    if !snapshot.is_still_current_for_prepare(&cancel) {
+      let _ = self.reinsert_document(tab_id, doc);
+      return None;
+    }
+
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
@@ -2099,6 +2251,10 @@ impl BrowserRuntime {
       can_go_back: tab.history.can_go_back(),
       can_go_forward: tab.history.can_go_forward(),
     });
+
+    if let Some(msg) = favicon {
+      msgs.push(msg);
+    }
 
     // Only emit FrameReady when the paint snapshot is still current. If the UI bumped paint while
     // we were rendering, skip this frame and let the subsequent repaint win.

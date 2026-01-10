@@ -113,6 +113,7 @@ mod ui_worker_renderer_reuse;
 mod ui_worker_tabs;
 mod ui_worker_title;
 mod ui_worker_about_pages;
+mod ui_worker_favicon;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;
 mod ui_worker_prioritization_preemption;

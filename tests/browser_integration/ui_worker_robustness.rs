@@ -60,6 +60,7 @@ fn send_noise_messages(tx: &Sender<UiToWorker>, tab_id: TabId) {
 fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
   match msg {
     WorkerToUi::Stage { tab_id: msg_tab, .. }
+    | WorkerToUi::Favicon { tab_id: msg_tab, .. }
     | WorkerToUi::FrameReady { tab_id: msg_tab, .. }
     | WorkerToUi::OpenSelectDropdown { tab_id: msg_tab, .. }
     | WorkerToUi::SelectDropdownOpened { tab_id: msg_tab, .. }
