@@ -22,11 +22,12 @@ use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
 use encoding_rs::UTF_8;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
   HostDefined, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
   ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey, RealmId, Scope,
-  SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext,
+  SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 
 use super::BrowserDocumentDom2;
@@ -47,6 +48,12 @@ pub struct VmJsBrowserTabExecutor {
   inline_module_id_counter: u64,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
+  /// Cached `vm-js` host context for Rust-driven event dispatch.
+  ///
+  /// `BrowserTabHost` owns the `BrowserDocumentDom2` for the lifetime of this executor, so we can
+  /// store a stable pointer during navigation reset and reuse it when invoking JS event listeners
+  /// from Rust (`BrowserTab::dispatch_click_event`, script load/error events, etc).
+  vm_host: Option<NonNull<dyn VmHost>>,
 }
 
 impl VmJsBrowserTabExecutor {
@@ -61,6 +68,7 @@ impl VmJsBrowserTabExecutor {
       inline_module_id_counter: 0,
       pending_navigation: None,
       diagnostics: None,
+      vm_host: None,
     }
   }
 
@@ -99,8 +107,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // SAFETY: The returned invoker is stored alongside this executor in `BrowserTabHost`, so the
     // pointer remains valid for the lifetime of the host. All access occurs on the host thread.
     let realm_ptr = (&self.realm as *const Option<WindowRealm>) as *mut Option<WindowRealm>;
+    let vm_host_ptr = (&self.vm_host as *const Option<NonNull<dyn VmHost>>) as *mut _;
     Some(Box::new(
-      crate::js::window_realm::WindowRealmDomEventListenerInvoker::new(realm_ptr),
+      crate::js::window_realm::WindowRealmDomEventListenerInvoker::<BrowserTabHost>::new(
+        realm_ptr, vm_host_ptr,
+      ),
     ))
   }
 
@@ -120,6 +131,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   ) -> Result<()> {
     self.pending_navigation = None;
     self.diagnostics = document.shared_diagnostics();
+    self.vm_host = Some(NonNull::from(document as &mut dyn VmHost));
 
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.

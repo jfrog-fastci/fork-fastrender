@@ -3518,6 +3518,7 @@ mod tests {
 
   use crate::api::FastRender;
   use crate::js::runtime::with_event_loop;
+  use crate::js::window_timers::VmJsEventLoopHooks;
   use crate::js::window_realm::{register_dom_source, unregister_dom_source};
   use crate::js::{WindowRealm, WindowRealmConfig};
   use crate::resource::{FetchedResource, ResourceFetcher};
@@ -5111,6 +5112,45 @@ mod tests {
     Ok(PropertyKey::from_string(s))
   }
 
+  fn record_host_native(
+    _vm: &mut Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    if host.as_any_mut().downcast_mut::<BrowserDocumentDom2>().is_some() {
+      Ok(Value::Bool(true))
+    } else {
+      Err(VmError::TypeError(
+        "recordHost called without the embedder BrowserDocumentDom2 VmHost context",
+      ))
+    }
+  }
+
+  fn install_record_host_global(realm: &mut WindowRealm) -> std::result::Result<(), VmError> {
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm_ref.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let call_id = vm.register_native_call(record_host_native)?;
+    let name_s = scope.alloc_string("recordHost")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm_ref.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+
+    let key = PropertyKey::from_string(name_s);
+    scope.define_property(global, key, data_desc(Value::Object(func)))?;
+    Ok(())
+  }
+
   fn data_desc(value: Value) -> PropertyDescriptor {
     PropertyDescriptor {
       enumerable: true,
@@ -5120,6 +5160,72 @@ mod tests {
         writable: true,
       },
     }
+  }
+
+  #[test]
+  fn host_dispatched_click_event_listener_runs_with_real_vm_host() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::default(),
+    )?;
+
+    // Create a clickable target node.
+    let button_id = tab.host.mutate_dom(|dom| {
+      let button = dom.create_element("button", "");
+      dom.set_attribute(button, "id", "btn").expect("set_attribute");
+      let body = dom.body().expect("expected <body>");
+      dom.append_child(body, button).expect("append_child");
+      (button, true)
+    });
+
+    // Install `recordHost()` in the vm-js realm.
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("vm-js executor should expose a WindowRealm");
+      install_record_host_global(realm).map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    // Add a JS click handler that requires a real `BrowserDocumentDom2` VmHost context.
+    {
+      let (host, event_loop) = (&mut tab.host, &mut tab.event_loop);
+      with_event_loop(event_loop, || {
+        let (document, executor) = (&mut host.document, &mut host.executor);
+        let realm = executor
+          .window_realm_mut()
+          .expect("vm-js executor should expose a WindowRealm");
+        let host_ctx: &mut dyn VmHost = document.as_mut();
+        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+        realm
+          .exec_script_with_host_and_hooks(
+            host_ctx,
+            &mut hooks,
+            r#"
+            globalThis.__host_ok = false;
+            window.addEventListener('click', () => { globalThis.__host_ok = recordHost(); });
+            "#,
+          )
+          .map_err(|err| Error::Other(err.to_string()))?;
+        if let Some(err) = hooks.finish(realm.heap_mut()) {
+          return Err(err);
+        }
+        Ok(())
+      })?;
+    }
+
+    // Host dispatch: should invoke the JS listener with a real vm-js `VmHost`.
+    tab.dispatch_click_event(button_id)?;
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("vm-js executor should expose a WindowRealm");
+    let ok = realm.exec_script("globalThis.__host_ok").map_err(|err| Error::Other(err.to_string()))?;
+    assert!(matches!(ok, Value::Bool(true)));
+    Ok(())
   }
 
   fn install_queue_microtask_test_global(

@@ -10,6 +10,7 @@ use crate::js::document_write::{current_document_write_state_mut, DocumentWriteL
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
+use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState};
 use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
@@ -27,6 +28,7 @@ use parking_lot::Mutex;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -6154,17 +6156,28 @@ impl Drop for ActiveDomEventGuard {
 /// listener invocation. This is sufficient for `preventDefault()`/propagation control (which
 /// mutate the shared Rust [`web_events::Event`]) and keeps the invoker independent from any
 /// long-lived `vm-js` scope borrows.
-pub(crate) struct WindowRealmDomEventListenerInvoker {
+pub(crate) struct WindowRealmDomEventListenerInvoker<Host: WindowRealmHost + 'static> {
   /// Pointer to the owning executor's `Option<WindowRealm>` slot.
   ///
   /// This is used so Rust-driven DOM event dispatch can invoke JS listeners without requiring the
   /// caller to thread `&mut WindowRealm` through `web_events::dispatch_event`.
   realm: *mut Option<WindowRealm>,
+  /// Pointer to the owning executor's current `VmHost` context.
+  ///
+  /// When the JS callback runs we must pass the real embedder `VmHost` so native functions invoked
+  /// inside listeners (e.g. `fetch`, WebIDL ops, embedder test hooks) can access per-document host
+  /// state.
+  vm_host: *mut Option<NonNull<dyn VmHost>>,
+  _marker: PhantomData<fn() -> Host>,
 }
 
-impl WindowRealmDomEventListenerInvoker {
-  pub(crate) fn new(realm: *mut Option<WindowRealm>) -> Self {
-    Self { realm }
+impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
+  pub(crate) fn new(realm: *mut Option<WindowRealm>, vm_host: *mut Option<NonNull<dyn VmHost>>) -> Self {
+    Self {
+      realm,
+      vm_host,
+      _marker: PhantomData,
+    }
   }
 
   fn js_value_for_target(
@@ -6298,7 +6311,7 @@ impl WindowRealmDomEventListenerInvoker {
   }
 }
 
-impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
+impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker<Host> {
   fn invoke(
     &mut self,
     listener_id: web_events::ListenerId,
@@ -6395,11 +6408,28 @@ impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
     };
 
     // Invoke callback, swallowing exceptions to match web platform behavior.
-    let mut host_ctx = ();
+    let Some(mut host_ptr) = (unsafe { *self.vm_host }) else {
+      // No host context available; treat as no-op.
+      return Ok(());
+    };
+    // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
+    // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
+    let host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
+
+    // Route Promise jobs (and other hooks) through the host event loop microtask queue.
+    let mut host_hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
+
     let call_result: Result<(), VmError> = (|| {
       let event_value = Value::Object(event_obj);
       if scope.heap().is_callable(callback)? {
-        vm.call(&mut host_ctx, &mut scope, callback, current_target, &[event_value])?;
+        vm.call_with_host_and_hooks(
+          host_ctx,
+          &mut scope,
+          &mut host_hooks,
+          callback,
+          current_target,
+          &[event_value],
+        )?;
         Ok(())
       } else if let Value::Object(callback_obj) = callback {
         let handle_event_key = alloc_key(&mut scope, "handleEvent")?;
@@ -6409,7 +6439,14 @@ impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
             "EventTarget listener callback has no callable handleEvent",
           ));
         }
-        vm.call(&mut host_ctx, &mut scope, handle_event, callback, &[event_value])?;
+        vm.call_with_host_and_hooks(
+          host_ctx,
+          &mut scope,
+          &mut host_hooks,
+          handle_event,
+          callback,
+          &[event_value],
+        )?;
         Ok(())
       } else {
         Err(VmError::TypeError(
@@ -6417,6 +6454,11 @@ impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
         ))
       }
     })();
+
+    if let Some(err) = host_hooks.finish(scope.heap_mut()) {
+      return Err(web_events::DomError::new(err.to_string()));
+    }
+
     if let Err(_err) = call_result {
       // Listener errors should not abort dispatch.
     }
