@@ -140,7 +140,7 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
   let promise_value = rt
     .heap
     .get_root(promise_root)
-    .ok_or(VmError::InvalidHandle)?;
+    .ok_or_else(|| VmError::invalid_handle())?;
   let Value::Object(promise_obj) = promise_value else {
     return Err(VmError::InvariantViolation(
       "promise root should reference an object",
@@ -155,7 +155,7 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
   let promise_value = rt
     .heap
     .get_root(promise_root)
-    .ok_or(VmError::InvalidHandle)?;
+    .ok_or_else(|| VmError::invalid_handle())?;
   let Value::Object(promise_obj) = promise_value else {
     return Err(VmError::InvariantViolation(
       "promise root should reference an object",

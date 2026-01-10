@@ -2914,7 +2914,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
   // If the signal is already aborted, reject immediately and skip queueing any networking task.
   if let Some(signal_root) = signal_root {
-    let signal_value = scope.heap().get_root(signal_root).ok_or(VmError::InvalidHandle)?;
+    let signal_value = scope
+      .heap()
+      .get_root(signal_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
     if let Value::Object(signal_obj) = signal_value {
       let aborted_key = alloc_key(scope, "aborted")?;
       let aborted = vm.get(scope, signal_obj, aborted_key)?;
@@ -2988,7 +2991,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
+              let reject = heap
+                .get_root(reject_root)
+                .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
               let type_error =
                 create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
@@ -3068,8 +3073,12 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
-              let signal_value = heap.get_root(signal_root_id).ok_or(VmError::InvalidHandle)?;
+              let reject = heap
+                .get_root(reject_root)
+                .ok_or_else(|| VmError::invalid_handle())?;
+              let signal_value = heap
+                .get_root(signal_root_id)
+                .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
               let reason = match signal_value {
                 Value::Object(signal_obj) => {
@@ -3149,7 +3158,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 let tick_result = vm.tick();
                 let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
                 let call_result = tick_result.and_then(|_| {
-                  let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
+                  let reject = heap
+                    .get_root(reject_root)
+                    .ok_or_else(|| VmError::invalid_handle())?;
                   let mut scope = heap.scope();
                   let type_error =
                     create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
@@ -3207,7 +3218,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
 
             let call_result = tick_result.and_then(|_| {
-              let resolve = heap.get_root(resolve_root).ok_or(VmError::InvalidHandle)?;
+              let resolve = heap
+                .get_root(resolve_root)
+                .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
 
               let resp_obj =
@@ -3271,7 +3284,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
-              let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
+              let reject = heap
+                .get_root(reject_root)
+                .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
               let type_error =
                 create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;

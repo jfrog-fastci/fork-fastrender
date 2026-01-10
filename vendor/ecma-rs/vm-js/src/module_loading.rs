@@ -764,7 +764,7 @@ pub fn inner_module_loading(
   vm.tick()?;
   let Some(record) = modules.get_module(module) else {
     state.set_is_loading(false);
-    state.reject_promise(vm, scope, host, VmError::InvalidHandle)?;
+    state.reject_promise(vm, scope, host, VmError::invalid_handle())?;
     return Ok(());
   };
 

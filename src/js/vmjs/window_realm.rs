@@ -1002,7 +1002,6 @@ const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
-const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
@@ -1159,7 +1158,7 @@ pub(crate) fn dataset_exotic_get(
   // other object kinds, treat this as "no host slots" rather than failing the property access.
   let slots = match scope.heap().object_host_slots(obj) {
     Ok(slots) => slots,
-    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
     Err(err) => return Err(err),
   };
   let Some(slots) = slots else {
@@ -1213,7 +1212,7 @@ pub(crate) fn dataset_exotic_set(
 ) -> Result<Option<bool>, VmError> {
   let slots = match scope.heap().object_host_slots(obj) {
     Ok(slots) => slots,
-    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
     Err(err) => return Err(err),
   };
   let Some(slots) = slots else {
@@ -1274,7 +1273,7 @@ pub(crate) fn dataset_exotic_delete(
 ) -> Result<Option<bool>, VmError> {
   let slots = match scope.heap().object_host_slots(obj) {
     Ok(slots) => slots,
-    Err(VmError::InvalidHandle) if scope.heap().is_valid_object(obj) => None,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
     Err(err) => return Err(err),
   };
   let Some(slots) = slots else {
@@ -4851,155 +4850,78 @@ struct ResolvedDomEventTarget {
   target_id: web_events::EventTargetId,
 }
 
-fn dom_source_id_from_document(
-  scope: &mut Scope<'_>,
-  document_obj: GcObject,
-) -> Result<Option<u64>, VmError> {
-  let key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-  match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &key)?
-  {
-    None => Ok(None),
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Ok(Some(n as u64)),
-    _ => Err(VmError::TypeError("EventTarget method requires a DOM-backed document")),
-  }
-}
-
-fn window_object_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<GcObject, VmError> {
-  let key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
-  match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &key)?
-  {
-    Some(Value::Object(obj)) => Ok(obj),
-    _ => Err(VmError::InvariantViolation(
-      "document is missing required window backreference",
-    )),
-  }
-}
-
 fn resolve_dom_event_target(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   target_obj: GcObject,
 ) -> Result<(ResolvedDomEventTarget, NonNull<dom2::Document>), VmError> {
-  // Node wrapper: has a backreference to its owning document object.
-  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  if let Some(Value::Object(document_obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
-  {
-    let window_obj = window_object_from_document(scope, document_obj)?;
-    let dom_source_id = dom_source_id_from_document(scope, document_obj)?.ok_or(VmError::TypeError(
-      "EventTarget method requires a DOM-backed document",
-    ))?;
-    let Some(mut dom_ptr) = dom_for_source(dom_source_id) else {
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "WindowRealm is missing required VM user data",
+    ));
+  };
+
+  let Some(window_obj) = data.window_obj else {
+    return Err(VmError::InvariantViolation(
+      "window object missing from WindowRealmUserData",
+    ));
+  };
+
+  let Some(document_obj) = data.document_obj else {
+    return Err(VmError::InvariantViolation(
+      "document object missing from WindowRealmUserData",
+    ));
+  };
+
+  // DOM-backed realm: resolve event targets using DomPlatform wrapper metadata (non-forgeable).
+  if let Some(platform) = data.dom_platform.as_mut() {
+    let dom_source_id = platform.dom_source_id();
+    let target_id = if target_obj == window_obj {
+      web_events::EventTargetId::Window
+    } else {
+      platform.event_target_id_for_value(scope.heap(), Value::Object(target_obj))?
+    };
+
+    let Some(dom_ptr) = dom_for_source(dom_source_id) else {
       return Err(VmError::TypeError(
         "EventTarget method requires a DOM-backed document",
       ));
     };
-    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
-    // the lifetime of the associated host document.
-    let dom = unsafe { dom_ptr.as_mut() };
-
-    let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-    let node_index = match scope
-      .heap()
-      .object_get_own_data_property_value(target_obj, &node_id_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-      _ => {
-        return Err(VmError::TypeError(
-          "EventTarget method requires a node-backed event target",
-        ))
-      }
-    };
-    let node_id = dom
-      .node_id_from_index(node_index)
-      .map_err(|_| VmError::TypeError("EventTarget method requires a node-backed event target"))?;
 
     return Ok((
       ResolvedDomEventTarget {
         window_obj,
         document_obj,
         dom_source_id,
-        target_id: web_events::EventTargetId::Node(node_id).normalize(),
+        target_id,
       },
       dom_ptr,
     ));
   }
 
-  // Document event target: identified by the presence of the internal window backreference.
-  let window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
-  if matches!(
-    scope
-      .heap()
-      .object_get_own_data_property_value(target_obj, &window_key)?,
-    Some(Value::Object(_))
-  ) {
-    let document_obj = target_obj;
-    let window_obj = window_object_from_document(scope, document_obj)?;
-    let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-    let dom_ptr = if let Some(dom_source_id) = dom_source_id {
-      dom_for_source(dom_source_id).ok_or(VmError::TypeError(
-        "EventTarget method requires a DOM-backed document",
-      ))?
-    } else {
-      let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation(
-          "WindowRealm is missing required VM user data",
-        ));
-      };
-      NonNull::from(&mut user_data.events_dom_fallback)
-    };
+  // Minimal realm (no host DOM): allow only the realm's `window` and `document`.
+  let dom_ptr = NonNull::from(&mut data.events_dom_fallback);
+  if target_obj == window_obj {
     return Ok((
       ResolvedDomEventTarget {
         window_obj,
         document_obj,
-        dom_source_id: dom_source_id.unwrap_or(0),
-        target_id: web_events::EventTargetId::Document,
+        dom_source_id: 0,
+        target_id: web_events::EventTargetId::Window,
       },
       dom_ptr,
     ));
   }
-
-  // Window event target: has an own `document` property that points at the document shim.
-  let document_key = alloc_key(scope, "document")?;
-  if let Some(Value::Object(document_obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(target_obj, &document_key)?
-  {
-    let window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
-    if matches!(
-      scope
-      .heap()
-      .object_get_own_data_property_value(document_obj, &window_key)?,
-      Some(Value::Object(_))
-    ) {
-      let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-      let dom_ptr = if let Some(dom_source_id) = dom_source_id {
-        dom_for_source(dom_source_id).ok_or(VmError::TypeError(
-          "EventTarget method requires a DOM-backed document",
-        ))?
-      } else {
-        let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
-          return Err(VmError::InvariantViolation(
-            "WindowRealm is missing required VM user data",
-          ));
-        };
-        NonNull::from(&mut user_data.events_dom_fallback)
-      };
-      return Ok((
-        ResolvedDomEventTarget {
-          window_obj: target_obj,
-          document_obj,
-          dom_source_id: dom_source_id.unwrap_or(0),
-          target_id: web_events::EventTargetId::Window,
-        },
-        dom_ptr,
-      ));
-    }
+  if target_obj == document_obj {
+    return Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj,
+        dom_source_id: 0,
+        target_id: web_events::EventTargetId::Document,
+      },
+      dom_ptr,
+    ));
   }
 
   Err(VmError::TypeError("Illegal invocation"))
@@ -5039,23 +4961,34 @@ fn resolve_event_target(
       }
 
       let window_obj = event_target_context_global_from_callee(scope, callee)?;
-      let document_key = alloc_key(scope, "document")?;
-      let document_obj = match vm.get(scope, window_obj, document_key)? {
-        Value::Object(obj) => obj,
-        _ => return Err(VmError::TypeError("Illegal invocation")),
-      };
-      let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-      let dom_ptr = if let Some(dom_source_id) = dom_source_id {
-        dom_for_source(dom_source_id).ok_or(VmError::TypeError(
-          "EventTarget method requires a DOM-backed document",
-        ))?
-      } else {
-        let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      let (document_obj, dom_ptr, dom_source_id) = {
+        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
           return Err(VmError::InvariantViolation(
-            "WindowRealm is missing required VM user data",
+            "missing WindowRealmUserData for event target resolution",
           ));
         };
-        NonNull::from(&mut user_data.events_dom_fallback)
+        if data.window_obj != Some(window_obj) {
+          return Err(VmError::InvariantViolation(
+            "EventTarget global mismatch for WindowRealm user data",
+          ));
+        }
+        let Some(document_obj) = data.document_obj else {
+          return Err(VmError::InvariantViolation(
+            "document object missing from WindowRealmUserData",
+          ));
+        };
+        if let Some(platform) = data.dom_platform.as_ref() {
+          let dom_source_id = platform.dom_source_id();
+          let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+            return Err(VmError::TypeError(
+              "EventTarget method requires a DOM-backed document",
+            ));
+          };
+          (document_obj, dom_ptr, dom_source_id)
+        } else {
+          let dom_ptr = NonNull::from(&mut data.events_dom_fallback);
+          (document_obj, dom_ptr, 0)
+        }
       };
 
       return Ok(ResolvedEventTarget {
@@ -5063,7 +4996,7 @@ fn resolve_event_target(
         resolved: ResolvedDomEventTarget {
           window_obj,
           document_obj,
-          dom_source_id: dom_source_id.unwrap_or(0),
+          dom_source_id,
           target_id: web_events::EventTargetId::Opaque(gc_object_id(target_obj)),
         },
         dom_ptr,
@@ -5493,14 +5426,23 @@ impl web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker {
     }
 
     // Best-effort cleanup: remove callback roots for `{ once: true }` listeners.
-    if let Ok(Some(dom_source_id)) = dom_source_id_from_document(&mut scope, document_obj) {
-      if let Some(dom_ptr) = dom_for_source(dom_source_id) {
-        // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid
-        // for the lifetime of the associated host document.
-        let dom = unsafe { dom_ptr.as_ref() };
-        let _ =
-          remove_listener_root_if_unused(&mut scope, document_obj, dom.events(), listener_id, None);
-      }
+    if let Some(registry) = (&*vm)
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| {
+        if let Some(platform) = data.dom_platform.as_ref() {
+          let dom_source_id = platform.dom_source_id();
+          dom_for_source(dom_source_id).map(|dom_ptr| {
+            // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is
+            // valid for the lifetime of the associated host document.
+            let dom = unsafe { dom_ptr.as_ref() };
+            dom.events()
+          })
+        } else {
+          Some(data.events_dom_fallback.events())
+        }
+      })
+    {
+      let _ = remove_listener_root_if_unused(&mut scope, document_obj, registry, listener_id, None);
     }
 
     Ok(())
@@ -10369,21 +10311,6 @@ fn init_window_globals(
     },
   )?;
 
-  // Backreference used by DOM event dispatch to map `EventTargetId::Window` back into the JS realm.
-  let document_window_key = alloc_key(&mut scope, DOCUMENT_WINDOW_KEY)?;
-  scope.define_property(
-    document_obj,
-    document_window_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Object(global),
-        writable: false,
-      },
-    },
-  )?;
-
   // `Document.referrer`.
   //
   // Many real-world scripts assume this is a string (even if empty) and call string methods on it.
@@ -12913,8 +12840,12 @@ fn init_window_globals(
     match_media_guard.id(),
   )?;
 
-  if let Some(platform) = dom_platform.take() {
-    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+    // `window.document` is writable/configurable, so store canonical handles in host-owned state for
+    // receiver branding and event dispatch.
+    data.window_obj = Some(global);
+    data.document_obj = Some(document_obj);
+    if let Some(platform) = dom_platform.take() {
       data.dom_platform = Some(platform);
     }
   }

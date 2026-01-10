@@ -58,7 +58,7 @@ fn function_traces_its_name_string() -> Result<(), VmError> {
 
   // Stack roots were removed when the scope was dropped.
   heap.collect_garbage();
-  assert!(matches!(heap.get_string(name), Err(VmError::InvalidHandle)));
+  assert!(matches!(heap.get_string(name), Err(VmError::InvalidHandle { .. })));
   assert!(!heap.is_valid_object(func));
   Ok(())
 }

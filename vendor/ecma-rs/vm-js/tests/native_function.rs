@@ -54,7 +54,7 @@ fn calling_collected_native_function_returns_invalid_handle() -> Result<(), VmEr
   let err = heap
     .call(&mut vm, &mut host, Value::Object(func), Value::Undefined, &[])
     .unwrap_err();
-  assert!(matches!(err, VmError::InvalidHandle));
+  assert!(matches!(err, VmError::InvalidHandle { .. }));
   Ok(())
 }
 
@@ -109,7 +109,7 @@ fn property_descriptor_tracing_keeps_native_functions_alive() -> Result<(), VmEr
   let err = heap
     .call(&mut vm, &mut host, Value::Object(func_dead), Value::Undefined, &[])
     .unwrap_err();
-  assert!(matches!(err, VmError::InvalidHandle));
+  assert!(matches!(err, VmError::InvalidHandle { .. }));
 
   heap.remove_root(owner_root);
   Ok(())

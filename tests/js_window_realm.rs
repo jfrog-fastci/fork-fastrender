@@ -970,6 +970,43 @@ controller.abort();
 }
 
 #[test]
+fn event_target_methods_reject_forged_dom_receivers() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__err_name = "";
+globalThis.__err_msg = "";
+try {
+  // This object would previously be treated as a DOM node wrapper because it has the same
+  // `__fastrender_*` shape as real wrappers.
+  const fake = {};
+  Object.defineProperty(fake, "__fastrender_wrapper_document", { value: document });
+  Object.defineProperty(fake, "__fastrender_node_id", { value: 0 });
+  document.addEventListener.call(fake, "x", function () {});
+  globalThis.__err_name = "no throw";
+} catch (e) {
+  globalThis.__err_name = e && e.name;
+  globalThis.__err_msg = e && e.message;
+}
+"#,
+  )?;
+
+  let (name, msg) = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let name = get_data_prop(&mut scope, global, "__err_name");
+    let msg = get_data_prop(&mut scope, global, "__err_msg");
+    (get_string(scope.heap(), name), get_string(scope.heap(), msg))
+  };
+  assert_eq!(name, "TypeError");
+  assert_eq!(msg, "Illegal invocation");
+  Ok(())
+}
+
+#[test]
 fn request_animation_frame_callbacks_can_access_dom_shims() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
@@ -1658,7 +1695,17 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
      <div id=b class=wrap><span id=b_inner class=inner></span></div>\
      </body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  // This test exercises multiple selector queries (including `:scope` and invalid selectors).
+  // The default per-spin JS wall-time budget is intentionally conservative for hostile scripts,
+  // so relax it here to focus on correctness of selector APIs.
+  let mut opts = fastrender::js::JsExecutionOptions::default();
+  opts.event_loop_run_limits.max_wall_time = Some(std::time::Duration::from_millis(500));
+  let mut host = WindowHostState::new_with_fetcher_and_options(
+    Dom2Document::from_renderer_dom(&renderer_dom),
+    "https://example.com/",
+    Arc::new(fastrender::resource::HttpFetcher::new()),
+    opts,
+  )?;
 
   {
     let realm = host.window_mut();

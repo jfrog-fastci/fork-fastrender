@@ -30,10 +30,10 @@ fn gc_collects_unreachable_objects() -> Result<(), VmError> {
   assert_eq!(heap.used_bytes(), 0);
 
   assert!(!heap.is_valid_object(obj));
-  assert!(matches!(heap.get_string(s), Err(VmError::InvalidHandle)));
+  assert!(matches!(heap.get_string(s), Err(VmError::InvalidHandle { .. })));
   assert!(matches!(
     heap.get_symbol_description(sym),
-    Err(VmError::InvalidHandle)
+    Err(VmError::InvalidHandle { .. })
   ));
 
   Ok(())

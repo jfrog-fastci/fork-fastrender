@@ -25,7 +25,10 @@ fn promise_result_value_is_traced() -> Result<(), VmError> {
   // Stack roots were removed when the scope was dropped.
   heap.collect_garbage();
   assert!(!heap.is_valid_object(promise));
-  assert!(matches!(heap.get_string(result_string), Err(VmError::InvalidHandle)));
+  assert!(matches!(
+    heap.get_string(result_string),
+    Err(VmError::InvalidHandle { .. })
+  ));
   Ok(())
 }
 

@@ -277,7 +277,9 @@ impl CallbackHandle {
 
   /// Returns the current rooted callback value.
   pub fn value(&self, heap: &Heap) -> Result<Value, VmError> {
-    heap.get_root(self.root).ok_or(VmError::InvalidHandle)
+    heap
+      .get_root(self.root)
+      .ok_or_else(|| VmError::invalid_handle())
   }
 
   /// Unregister the underlying persistent root.

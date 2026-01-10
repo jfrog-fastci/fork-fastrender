@@ -202,11 +202,11 @@ impl DomBindingsContext {
 
     let idx_u64 = slots.a;
     if idx_u64 > (usize::MAX as u64) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     let idx = idx_u64 as usize;
     if idx >= self.dom.nodes_len() {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     Ok(NodeId::from_index(idx))
   }

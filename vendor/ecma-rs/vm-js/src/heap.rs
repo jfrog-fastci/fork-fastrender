@@ -725,37 +725,61 @@ impl Heap {
   /// This is intended for platform bindings (e.g. DOM wrappers) to attach small metadata
   /// such as a `NodeId` or wrapper kind to a `GcObject` without exposing it to JS.
   pub fn object_set_host_slots(&mut self, obj: GcObject, slots: HostSlots) -> Result<(), VmError> {
-    let idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     match self.slots[idx].value {
-      Some(HeapObject::Object(_) | HeapObject::Function(_)) => {
+      Some(
+        HeapObject::Object(_)
+        | HeapObject::ArrayBuffer(_)
+        | HeapObject::Uint8Array(_)
+        | HeapObject::Function(_)
+        | HeapObject::Promise(_),
+      ) => {
         self.slots[idx].host_slots = Some(slots);
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   /// Gets a host-only internal slot payload from an object, if set.
   pub fn object_host_slots(&self, obj: GcObject) -> Result<Option<HostSlots>, VmError> {
-    let idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     match self.slots[idx].value {
-      Some(HeapObject::Object(_) | HeapObject::Function(_)) => Ok(self.slots[idx].host_slots),
-      _ => Err(VmError::InvalidHandle),
+      Some(
+        HeapObject::Object(_)
+        | HeapObject::ArrayBuffer(_)
+        | HeapObject::Uint8Array(_)
+        | HeapObject::Function(_)
+        | HeapObject::Promise(_),
+      ) => Ok(self.slots[idx].host_slots),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   /// Clears any host-only internal slot payload from an object.
   pub fn object_clear_host_slots(&mut self, obj: GcObject) -> Result<(), VmError> {
-    let idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     match self.slots[idx].value {
-      Some(HeapObject::Object(_) | HeapObject::Function(_)) => {
+      Some(
+        HeapObject::Object(_)
+        | HeapObject::ArrayBuffer(_)
+        | HeapObject::Uint8Array(_)
+        | HeapObject::Function(_)
+        | HeapObject::Promise(_),
+      ) => {
         self.slots[idx].host_slots = None;
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -813,14 +837,14 @@ impl Heap {
     args: &[Value],
   ) -> Result<Value, VmError> {
     if !self.debug_value_is_valid_or_primitive(callee) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     if !self.debug_value_is_valid_or_primitive(this) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     for &arg in args {
       if !self.debug_value_is_valid_or_primitive(arg) {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       }
     }
 
@@ -832,7 +856,7 @@ impl Heap {
   pub fn get_string(&self, s: GcString) -> Result<&JsString, VmError> {
     match self.get_heap_object(s.0)? {
       HeapObject::String(s) => Ok(s),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -840,7 +864,7 @@ impl Heap {
   pub fn get_symbol_description(&self, sym: GcSymbol) -> Result<Option<GcString>, VmError> {
     match self.get_heap_object(sym.0)? {
       HeapObject::Symbol(sym) => Ok(sym.description()),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -854,7 +878,7 @@ impl Heap {
   pub fn get_symbol_id(&self, sym: GcSymbol) -> Result<u64, VmError> {
     match self.get_heap_object(sym.0)? {
       HeapObject::Symbol(sym) => Ok(sym.id()),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -865,7 +889,7 @@ impl Heap {
       HeapObject::Uint8Array(a) => Ok(&a.base),
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -876,20 +900,20 @@ impl Heap {
       HeapObject::Uint8Array(a) => Ok(&mut a.base),
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
   fn get_env(&self, env: GcEnv) -> Result<&EnvRecord, VmError> {
     match self.get_heap_object(env.0)? {
       HeapObject::Env(e) => Ok(e),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   fn get_env_mut(&mut self, env: GcEnv) -> Result<&mut EnvRecord, VmError> {
     match self.get_heap_object_mut(env.0)? {
       HeapObject::Env(e) => Ok(e),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -1041,7 +1065,9 @@ impl Heap {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<bool, VmError> {
-    let slot_idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
+    let slot_idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     // Two-phase borrow to avoid holding `&mut HeapObject` while calling back into `&self` for
     // string comparisons in `property_key_eq`.
@@ -1063,7 +1089,7 @@ impl Heap {
     let (idx, target_kind, property_count) = {
       let slot = &self.slots[slot_idx];
       let Some(obj) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       match obj {
         HeapObject::Object(obj) => (
@@ -1119,7 +1145,7 @@ impl Heap {
           },
           p.object.base.properties.len(),
         ),
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       }
     };
 
@@ -1178,13 +1204,13 @@ impl Heap {
           buf.extend_from_slice(&p.object.base.properties[..idx]);
           buf.extend_from_slice(&p.object.base.properties[idx + 1..]);
         }
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       }
     }
 
     let properties = buf.into_boxed_slice();
     let Some(obj) = self.slots[slot_idx].value.as_mut() else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     match obj {
       HeapObject::Object(obj) => obj.base.properties = properties,
@@ -1192,7 +1218,7 @@ impl Heap {
       HeapObject::Uint8Array(obj) => obj.base.properties = properties,
       HeapObject::Function(func) => func.base.properties = properties,
       HeapObject::Promise(p) => p.object.base.properties = properties,
-      _ => return Err(VmError::InvalidHandle),
+      _ => return Err(VmError::invalid_handle()),
     }
 
     // This is a net-shrinking operation, so no `ensure_can_allocate` call is needed.
@@ -1669,21 +1695,21 @@ impl Heap {
   fn get_array_buffer(&self, obj: GcObject) -> Result<&JsArrayBuffer, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::ArrayBuffer(b) => Ok(b),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   fn get_array_buffer_mut(&mut self, obj: GcObject) -> Result<&mut JsArrayBuffer, VmError> {
     match self.get_heap_object_mut(obj.0)? {
       HeapObject::ArrayBuffer(b) => Ok(b),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   fn get_uint8_array(&self, obj: GcObject) -> Result<&JsUint8Array, VmError> {
     match self.get_heap_object(obj.0)? {
       HeapObject::Uint8Array(a) => Ok(a),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -1738,14 +1764,14 @@ impl Heap {
   fn get_promise(&self, promise: GcObject) -> Result<&JsPromise, VmError> {
     match self.get_heap_object(promise.0)? {
       HeapObject::Promise(p) => Ok(p),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   fn get_promise_mut(&mut self, promise: GcObject) -> Result<&mut JsPromise, VmError> {
     match self.get_heap_object_mut(promise.0)? {
       HeapObject::Promise(p) => Ok(p),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -1809,12 +1835,14 @@ impl Heap {
       "promise_set_state_and_result given invalid GC handle"
     );
 
-    let idx = self.validate(promise.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(promise.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let new_bytes = {
       let promise = match self.slots[idx].value.as_mut() {
         Some(HeapObject::Promise(p)) => p,
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       };
 
       promise.state = state;
@@ -1861,12 +1889,14 @@ impl Heap {
       ));
     }
 
-    let idx = self.validate(promise.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(promise.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let (fulfill_reactions, reject_reactions, new_bytes) = {
       let promise = match self.slots[idx].value.as_mut() {
         Some(HeapObject::Promise(p)) => p,
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       };
 
       // Per spec, subsequent resolves/rejects of an already-settled promise are no-ops.
@@ -1925,15 +1955,17 @@ impl Heap {
     is_fulfill_list: bool,
     reaction: PromiseReaction,
   ) -> Result<(), VmError> {
-    let idx = self.validate(promise.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(promise.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let (property_count, fulfill_count, reject_count, old_bytes, state) = {
       let slot = &self.slots[idx];
       let Some(obj) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       let HeapObject::Promise(p) = obj else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       (
         p.object.base.properties.len(),
@@ -1945,7 +1977,7 @@ impl Heap {
     };
 
     if state != PromiseState::Pending {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
 
     let new_fulfill_count = if is_fulfill_list {
@@ -1982,16 +2014,16 @@ impl Heap {
     {
       let slot = &self.slots[idx];
       let Some(HeapObject::Promise(p)) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       if is_fulfill_list {
         let Some(list) = p.fulfill_reactions.as_deref() else {
-          return Err(VmError::InvalidHandle);
+          return Err(VmError::invalid_handle());
         };
         buf.extend_from_slice(list);
       } else {
         let Some(list) = p.reject_reactions.as_deref() else {
-          return Err(VmError::InvalidHandle);
+          return Err(VmError::invalid_handle());
         };
         buf.extend_from_slice(list);
       }
@@ -2003,7 +2035,7 @@ impl Heap {
     {
       let promise = match self.slots[idx].value.as_mut() {
         Some(HeapObject::Promise(p)) => p,
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       };
       if is_fulfill_list {
         promise.fulfill_reactions = Some(new_list);
@@ -2152,12 +2184,14 @@ impl Heap {
     func: GcObject,
     name: GcString,
   ) -> Result<(), VmError> {
-    let idx = self.validate(func.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(func.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
     let Some(obj) = self.slots[idx].value.as_mut() else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     let HeapObject::Function(func) = obj else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     func.name = name;
     Ok(())
@@ -2168,12 +2202,14 @@ impl Heap {
     func: GcObject,
     length: u32,
   ) -> Result<(), VmError> {
-    let idx = self.validate(func.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(func.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
     let Some(obj) = self.slots[idx].value.as_mut() else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     let HeapObject::Function(func) = obj else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     func.length = length;
     Ok(())
@@ -2366,12 +2402,14 @@ impl Heap {
   }
 
   fn env_add_binding(&mut self, env: GcEnv, binding: EnvBinding) -> Result<(), VmError> {
-    let idx = self.validate(env.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(env.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let (binding_count, old_bytes) = {
       let slot = &self.slots[idx];
       let Some(HeapObject::Env(env)) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       let EnvRecord::Declarative(env) = env else {
         return Err(VmError::Unimplemented("object environment record"));
@@ -2396,7 +2434,7 @@ impl Heap {
     {
       let slot = &self.slots[idx];
       let Some(HeapObject::Env(env)) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       let EnvRecord::Declarative(env) = env else {
         return Err(VmError::Unimplemented("object environment record"));
@@ -2412,7 +2450,7 @@ impl Heap {
     let bindings = buf.into_boxed_slice();
 
     let Some(HeapObject::Env(env)) = self.slots[idx].value.as_mut() else {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     };
     let EnvRecord::Declarative(env) = env else {
       return Err(VmError::Unimplemented("object environment record"));
@@ -2438,7 +2476,9 @@ impl Heap {
       PropertyKey::Symbol(_) => None,
     };
 
-    let idx = self.validate(obj.0).ok_or(VmError::InvalidHandle)?;
+    let idx = self
+      .validate(obj.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     // Integer-indexed exotic behaviour for typed arrays:
     // - writing an in-bounds integer index updates the view's underlying ArrayBuffer
@@ -2489,7 +2529,7 @@ impl Heap {
     let (target_kind, property_count, old_bytes, existing_idx, array_len) = {
       let slot = &self.slots[idx];
       let Some(obj) = slot.value.as_ref() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       match obj {
         HeapObject::Object(obj) => {
@@ -2573,7 +2613,7 @@ impl Heap {
             None,
           )
         }
-        _ => return Err(VmError::InvalidHandle),
+        _ => return Err(VmError::invalid_handle()),
       }
     };
 
@@ -2611,7 +2651,7 @@ impl Heap {
           Some(HeapObject::Uint8Array(obj)) => obj.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Function(func)) => func.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Promise(p)) => p.object.base.properties[existing_idx].desc = desc,
-          _ => return Err(VmError::InvalidHandle),
+          _ => return Err(VmError::invalid_handle()),
         }
       }
       None => {
@@ -2657,7 +2697,7 @@ impl Heap {
             Some(HeapObject::Uint8Array(obj)) => buf.extend_from_slice(&obj.base.properties),
             Some(HeapObject::Function(func)) => buf.extend_from_slice(&func.base.properties),
             Some(HeapObject::Promise(p)) => buf.extend_from_slice(&p.object.base.properties),
-            _ => return Err(VmError::InvalidHandle),
+            _ => return Err(VmError::invalid_handle()),
           }
         }
 
@@ -2670,7 +2710,7 @@ impl Heap {
           Some(HeapObject::Uint8Array(obj)) => obj.base.properties = properties,
           Some(HeapObject::Function(func)) => func.base.properties = properties,
           Some(HeapObject::Promise(p)) => p.object.base.properties = properties,
-          _ => return Err(VmError::InvalidHandle),
+          _ => return Err(VmError::invalid_handle()),
         }
 
         self.update_slot_bytes(idx, new_bytes);
@@ -2682,7 +2722,7 @@ impl Heap {
 
     if let Some(new_len) = new_array_length {
       let Some(HeapObject::Object(obj)) = self.slots[idx].value.as_mut() else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       obj.set_array_length(new_len);
     }
@@ -2692,7 +2732,7 @@ impl Heap {
       if array_len.is_some() {
         let new_len = index.wrapping_add(1);
         let Some(HeapObject::Object(obj)) = self.slots[idx].value.as_mut() else {
-          return Err(VmError::InvalidHandle);
+          return Err(VmError::invalid_handle());
         };
         if let Some(current_len) = obj.array_length() {
           if new_len > current_len {
@@ -2706,13 +2746,21 @@ impl Heap {
   }
 
   fn get_heap_object(&self, id: HeapId) -> Result<&HeapObject, VmError> {
-    let idx = self.validate(id).ok_or(VmError::InvalidHandle)?;
-    self.slots[idx].value.as_ref().ok_or(VmError::InvalidHandle)
+    let idx = self.validate(id).ok_or_else(|| VmError::invalid_handle())?;
+    self
+      .slots[idx]
+      .value
+      .as_ref()
+      .ok_or_else(|| VmError::invalid_handle())
   }
 
   fn get_heap_object_mut(&mut self, id: HeapId) -> Result<&mut HeapObject, VmError> {
-    let idx = self.validate(id).ok_or(VmError::InvalidHandle)?;
-    self.slots[idx].value.as_mut().ok_or(VmError::InvalidHandle)
+    let idx = self.validate(id).ok_or_else(|| VmError::invalid_handle())?;
+    self
+      .slots[idx]
+      .value
+      .as_mut()
+      .ok_or_else(|| VmError::invalid_handle())
   }
   fn validate(&self, id: HeapId) -> Option<usize> {
     let idx = id.index() as usize;
@@ -3010,7 +3058,7 @@ impl Heap {
   pub(crate) fn get_function_name(&self, func: GcObject) -> Result<GcString, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.name),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3024,21 +3072,21 @@ impl Heap {
   pub(crate) fn get_function_data(&self, func: GcObject) -> Result<FunctionData, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.data),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   pub(crate) fn get_function_this_mode(&self, func: GcObject) -> Result<ThisMode, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.this_mode),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
   pub(crate) fn get_function_realm(&self, func: GcObject) -> Result<Option<GcObject>, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.realm),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3052,7 +3100,7 @@ impl Heap {
   pub(crate) fn get_function_closure_env(&self, func: GcObject) -> Result<Option<GcEnv>, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.closure_env),
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3066,7 +3114,7 @@ impl Heap {
         f.bound_this = Some(bound_this);
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3080,7 +3128,7 @@ impl Heap {
         f.bound_new_target = Some(bound_new_target);
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3090,7 +3138,7 @@ impl Heap {
         f.realm = Some(realm);
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3100,7 +3148,7 @@ impl Heap {
         f.job_realm = Some(realm);
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3114,7 +3162,7 @@ impl Heap {
         f.data = data;
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 
@@ -3128,7 +3176,7 @@ impl Heap {
         f.closure_env = env;
         Ok(())
       }
-      _ => Err(VmError::InvalidHandle),
+      _ => Err(VmError::invalid_handle()),
     }
   }
 }
@@ -3756,7 +3804,7 @@ impl<'a> Scope<'a> {
     // we're pushing roots, any not-yet-pushed binding values could otherwise be collected.
     if let Some(outer) = outer {
       if !scope.heap().is_valid_env(outer) {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       }
     }
 
@@ -3783,7 +3831,7 @@ impl<'a> Scope<'a> {
         EnvBindingValue::Indirect { env, name } => {
           value_roots.push(Value::String(name));
           if !scope.heap().is_valid_env(env) {
-            return Err(VmError::InvalidHandle);
+            return Err(VmError::invalid_handle());
           }
           env_roots.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           env_roots.push(env);
@@ -3856,11 +3904,11 @@ impl<'a> Scope<'a> {
     // Rooting must be robust against GC triggering while we grow root stacks: if GC runs while
     // we're pushing one root, any not-yet-pushed roots could otherwise be collected.
     if !scope.heap().is_valid_object(binding_object) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     if let Some(outer) = outer {
       if !scope.heap().is_valid_env(outer) {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       }
     }
 
@@ -3967,7 +4015,7 @@ impl<'a> Scope<'a> {
 
     let mut scope = self.reborrow();
     if !scope.heap().is_valid_env(env) || !scope.heap().is_valid_env(target_env) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     // Root inputs across allocations/GC while creating the strings and growing the binding table.
     scope.push_env_root(env)?;

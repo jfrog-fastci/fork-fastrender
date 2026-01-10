@@ -96,7 +96,7 @@ impl ModuleGraph {
 
     if let Some(cache) = self.modules[idx].namespace.as_ref() {
       let Some(Value::Object(obj)) = scope.heap().get_root(cache.object) else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       return Ok(obj);
     }
@@ -254,7 +254,7 @@ impl ModuleGraph {
           let env = inner
             .heap()
             .get_env_root(env_root)
-            .ok_or(VmError::InvalidHandle)?;
+            .ok_or_else(|| VmError::invalid_handle())?;
 
           let mut fn_scope = inner.reborrow();
           let binding_name = fn_scope.alloc_string(&local_name)?;
@@ -346,7 +346,7 @@ impl ModuleGraph {
     let status = self
       .modules
       .get(idx)
-      .ok_or(VmError::InvalidHandle)?
+      .ok_or_else(|| VmError::invalid_handle())?
       .status;
 
     match status {
@@ -394,7 +394,7 @@ impl ModuleGraph {
     let module_env = scope
       .heap()
       .get_env_root(env_root)
-      .ok_or(VmError::InvalidHandle)?;
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     // Create import bindings.
     for entry in import_entries {
@@ -441,7 +441,7 @@ impl ModuleGraph {
               let target_env = scope
                 .heap()
                 .get_env_root(target_env_root)
-                .ok_or(VmError::InvalidHandle)?;
+                .ok_or_else(|| VmError::invalid_handle())?;
               scope.env_create_import_binding(
                 module_env,
                 &entry.local_name,
@@ -620,7 +620,7 @@ impl ModuleGraph {
     let module_env = scope
       .heap()
       .get_env_root(env_root)
-      .ok_or(VmError::InvalidHandle)?;
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let source = self.modules[idx]
       .source

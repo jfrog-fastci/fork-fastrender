@@ -20,8 +20,10 @@ pub enum VmError {
 
   /// A GC handle was used after the underlying allocation was freed (or the handle is otherwise
   /// malformed).
-  #[error("invalid handle")]
-  InvalidHandle,
+  #[error("invalid handle ({location})")]
+  InvalidHandle {
+    location: &'static std::panic::Location<'static>,
+  },
 
   /// An attempted prototype mutation would introduce a cycle in the `[[Prototype]]` chain.
   #[error("prototype cycle")]
@@ -79,6 +81,18 @@ pub enum VmError {
 }
 
 impl VmError {
+  /// Constructs [`VmError::InvalidHandle`] with caller location metadata.
+  ///
+  /// `VmError::InvalidHandle` is treated as an engine/embedding bug. Capturing the call site
+  /// makes it much easier to debug which internal handle access produced the error, especially
+  /// when the error is surfaced to the host as a string.
+  #[track_caller]
+  pub fn invalid_handle() -> Self {
+    VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    }
+  }
+
   /// Returns the thrown JavaScript value if this error represents a JS exception.
   pub fn thrown_value(&self) -> Option<Value> {
     match self {

@@ -264,7 +264,7 @@ impl VmJsRuntime {
     for &v in &roots_vec {
       if !self.value_is_valid_or_primitive(v) {
         self.heap.truncate_stack_roots(base_len);
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       }
     }
 
@@ -595,7 +595,7 @@ impl VmJsRuntime {
       return Err(self.throw_type_error("value is not callable"));
     };
     if !self.heap.is_valid_object(func) {
-      return Err(VmError::InvalidHandle);
+      return Err(VmError::invalid_handle());
     }
     let Some(HostObjectKind::Function(f)) = self.host_objects.get(&WeakGcObject::from(func)) else {
       return Err(self.throw_type_error("value is not callable"));

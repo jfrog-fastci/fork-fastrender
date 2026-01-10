@@ -963,7 +963,7 @@ impl Vm {
       let code = self
         .ecma_functions
         .get(id.0 as usize)
-        .ok_or(VmError::InvalidHandle)?;
+        .ok_or_else(|| VmError::invalid_handle())?;
       if let Some(parsed) = &code.parsed {
         return Ok(parsed.clone());
       }
@@ -1211,7 +1211,7 @@ impl Vm {
     let slot = self
       .ecma_functions
       .get_mut(id.0 as usize)
-      .ok_or(VmError::InvalidHandle)?;
+      .ok_or_else(|| VmError::invalid_handle())?;
     slot.parsed = Some(func.clone());
     Ok(func)
   }
@@ -1336,7 +1336,7 @@ impl Vm {
   ) -> Result<GcObject, VmError> {
     if let Some(root) = self.import_meta_cache.get(&module).copied() {
       let Some(Value::Object(obj)) = scope.heap().get_root(root) else {
-        return Err(VmError::InvalidHandle);
+        return Err(VmError::invalid_handle());
       };
       return Ok(obj);
     }
@@ -2111,7 +2111,7 @@ impl Vm {
     let code_meta = self
       .ecma_functions
       .get(code_id.0 as usize)
-      .ok_or(VmError::InvalidHandle)?;
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
@@ -2189,7 +2189,7 @@ impl Vm {
     let code_meta = self
       .ecma_functions
       .get(code_id.0 as usize)
-      .ok_or(VmError::InvalidHandle)?;
+      .ok_or_else(|| VmError::invalid_handle())?;
 
     let result = crate::exec::run_ecma_function(
       self,

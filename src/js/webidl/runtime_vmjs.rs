@@ -742,7 +742,6 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       Ok(None) => {}
       Err(err) => return err,
     }
-
     let intr = match self.intrinsics() {
       Ok(intr) => intr,
       Err(err) => return err,

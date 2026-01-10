@@ -764,7 +764,10 @@ pub fn array_buffer_prototype_slice(
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
 
   let bytes = {
-    let data = scope.heap().array_buffer_data(obj).map_err(|_| VmError::InvalidHandle)?;
+    let data = scope
+      .heap()
+      .array_buffer_data(obj)
+      .map_err(|_| VmError::invalid_handle())?;
     let slice = &data[start..end];
     let mut out: Vec<u8> = Vec::new();
     out
@@ -966,7 +969,10 @@ pub fn uint8_array_prototype_slice(
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
 
   let bytes = {
-    let data = scope.heap().uint8_array_data(obj).map_err(|_| VmError::InvalidHandle)?;
+    let data = scope
+      .heap()
+      .uint8_array_data(obj)
+      .map_err(|_| VmError::invalid_handle())?;
     let slice = &data[start..end];
     let mut out: Vec<u8> = Vec::new();
     out
@@ -1040,7 +1046,7 @@ pub fn error_constructor_construct(
   // Approximate this by:
   // 1. Reading `callee.prototype` as the default.
   // 2. If `new_target` is an object, prefer `new_target.prototype` when it is an object.
-  let prototype_key = PropertyKey::from_string(scope.alloc_string("prototype")?);
+  let prototype_key = string_key(scope, "prototype")?;
   let default_proto_value = scope
     .heap()
     .object_get_own_data_property_value(callee, &prototype_key)?
@@ -1083,14 +1089,14 @@ pub fn error_constructor_construct(
     .heap_mut()
     .object_set_prototype(obj, Some(instance_prototype))?;
 
-  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  let name_key = string_key(scope, "name")?;
   scope.define_property(
     obj,
     name_key,
     data_desc(Value::String(name), true, false, true),
   )?;
 
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let message_key = string_key(scope, "message")?;
   scope.define_property(
     obj,
     message_key,
@@ -1105,7 +1111,7 @@ pub fn error_constructor_construct(
   // passes an Array).
   if is_aggregate_error {
     let errors = args.get(0).copied().unwrap_or(Value::Undefined);
-    let errors_key = PropertyKey::from_string(scope.alloc_string("errors")?);
+    let errors_key = string_key(scope, "errors")?;
     scope.define_property(obj, errors_key, data_desc(errors, true, false, true))?;
   }
 
@@ -1213,12 +1219,15 @@ pub(crate) fn new_promise_capability_with_host_and_hooks(
 
   // executor = CreateBuiltinFunction(...)
   let executor_name = scope.alloc_string("executor")?;
+  // Root the name + function while constructing the promise: `Construct` may allocate and GC.
+  scope.push_root(Value::String(executor_name))?;
   let executor = scope.alloc_native_function(
     intr.promise_capability_executor_call(),
     None,
     executor_name,
     2,
   )?;
+  scope.push_root(Value::Object(executor))?;
   set_function_job_realm_to_current(vm, scope, executor)?;
   scope
     .heap_mut()
@@ -1400,7 +1409,10 @@ fn create_promise_resolving_functions(
   )?;
 
   let resolve_name = scope.alloc_string("resolve")?;
+  // Root the resolve function while allocating the reject function: both share `alreadyResolved`.
+  scope.push_root(Value::String(resolve_name))?;
   let resolve = scope.alloc_native_function(call_id, None, resolve_name, 1)?;
+  scope.push_root(Value::Object(resolve))?;
   set_function_job_realm_to_current(vm, scope, resolve)?;
   scope
     .heap_mut()
@@ -1417,7 +1429,9 @@ fn create_promise_resolving_functions(
     .set_function_closure_env(resolve, Some(already_resolved_env))?;
 
   let reject_name = scope.alloc_string("reject")?;
+  scope.push_root(Value::String(reject_name))?;
   let reject = scope.alloc_native_function(call_id, None, reject_name, 1)?;
+  scope.push_root(Value::Object(reject))?;
   set_function_job_realm_to_current(vm, scope, reject)?;
   scope
     .heap_mut()
@@ -2423,21 +2437,21 @@ pub fn promise_with_resolvers(
     .heap_mut()
     .object_set_prototype(obj, Some(intr.object_prototype()))?;
 
-  let promise_key = PropertyKey::from_string(scope.alloc_string("promise")?);
+  let promise_key = string_key(scope, "promise")?;
   scope.define_property(
     obj,
     promise_key,
     data_desc(capability.promise, true, true, true),
   )?;
 
-  let resolve_key = PropertyKey::from_string(scope.alloc_string("resolve")?);
+  let resolve_key = string_key(scope, "resolve")?;
   scope.define_property(
     obj,
     resolve_key,
     data_desc(capability.resolve, true, true, true),
   )?;
 
-  let reject_key = PropertyKey::from_string(scope.alloc_string("reject")?);
+  let reject_key = string_key(scope, "reject")?;
   scope.define_property(
     obj,
     reject_key,
@@ -2468,7 +2482,7 @@ fn get_promise_resolve(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(constructor)?;
-  let resolve_key = PropertyKey::from_string(key_scope.alloc_string("resolve")?);
+  let resolve_key = string_key(&mut key_scope, "resolve")?;
   let resolve =
     key_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, c, resolve_key, constructor)?;
   if !key_scope.heap().is_callable(resolve)? {
@@ -2496,13 +2510,16 @@ fn create_internal_record(
     .heap_mut()
     .object_set_prototype(obj, Some(prototype))?;
 
-  let value_key = PropertyKey::from_string(record_scope.alloc_string("value")?);
+  let value_key = string_key(&mut record_scope, "value")?;
   record_scope.define_property(obj, value_key, data_desc(initial, true, false, true))?;
   Ok(obj)
 }
 
 fn read_internal_record_value(scope: &mut Scope<'_>, record: GcObject) -> Result<Value, VmError> {
-  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  // Avoid accumulating roots by using a nested scope for the key string.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(record))?;
+  let value_key = string_key(&mut scope, "value")?;
   Ok(
     scope
       .heap()
@@ -2516,7 +2533,11 @@ fn write_internal_record_value(
   record: GcObject,
   value: Value,
 ) -> Result<(), VmError> {
-  let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+  // Avoid accumulating roots by using a nested scope for the key string.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(record))?;
+  scope.push_root(value)?;
+  let value_key = string_key(&mut scope, "value")?;
   scope.define_property(record, value_key, data_desc(value, true, false, true))
 }
 
@@ -2546,7 +2567,7 @@ fn invoke_thenable_then(
     return Err(VmError::Throw(err));
   };
 
-  let then_key = PropertyKey::from_string(invoke_scope.alloc_string("then")?);
+  let then_key = string_key(&mut invoke_scope, "then")?;
   let then =
     invoke_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, then_key, next_promise)?;
   if !invoke_scope.heap().is_callable(then)? {
@@ -2682,6 +2703,8 @@ fn perform_promise_all(
 
     // resolveElement = CreateBuiltinFunction(...)
     let resolve_element_name = step_scope.alloc_string("resolveElement")?;
+    // Root the name string: `alloc_native_function_with_slots` may allocate and trigger GC.
+    step_scope.push_root(Value::String(resolve_element_name))?;
     let slots = [
       Value::Object(values),
       Value::Number(index as f64),
@@ -2699,6 +2722,8 @@ fn perform_promise_all(
     step_scope
       .heap_mut()
       .object_set_prototype(resolve_element, Some(intr.function_prototype()))?;
+    // Root the per-element callback while calling `then`: the `Invoke` path may allocate and GC.
+    step_scope.push_root(Value::Object(resolve_element))?;
 
     // ? Invoke(nextPromise, "then", « resolveElement, capability.reject »).
     invoke_thenable_then(
@@ -2784,17 +2809,19 @@ fn perform_promise_race(
       return Ok(capability.promise);
     };
 
-    let next_promise = vm.call_with_host_and_hooks(
-      host,
-      scope,
-      hooks,
-      promise_resolve,
-      constructor,
-      &[next_value],
-    )?;
+    // Use a nested scope so per-element roots do not accumulate.
+    let mut step_scope = scope.reborrow();
+    // Root the iterator value: `Call(promiseResolve, ...)` can allocate and trigger GC.
+    step_scope.push_root(next_value)?;
+
+    let next_promise =
+      vm.call_with_host_and_hooks(host, &mut step_scope, hooks, promise_resolve, constructor, &[next_value])?;
+    // Root the promise while invoking `.then` on it.
+    step_scope.push_root(next_promise)?;
+
     invoke_thenable_then(
       vm,
-      scope,
+      &mut step_scope,
       host,
       hooks,
       next_promise,
@@ -2941,7 +2968,10 @@ fn perform_promise_all_settled(
     write_internal_record_value(&mut step_scope, remaining, Value::Number(n + 1.0))?;
 
     let on_fulfilled_name = step_scope.alloc_string("onFulfilled")?;
+    // Root the first name before allocating the second; allocations may GC.
+    step_scope.push_root(Value::String(on_fulfilled_name))?;
     let on_rejected_name = step_scope.alloc_string("onRejected")?;
+    step_scope.push_root(Value::String(on_rejected_name))?;
     let fulfilled_slots = [
       Value::Object(values),
       Value::Number(index as f64),
@@ -2982,6 +3012,8 @@ fn perform_promise_all_settled(
     step_scope
       .heap_mut()
       .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+    // Root both closures while invoking `.then`: the call path may allocate and GC.
+    step_scope.push_root(Value::Object(on_rejected))?;
 
     invoke_thenable_then(
       vm,
@@ -3084,6 +3116,8 @@ fn perform_promise_any(
       write_internal_record_value(scope, remaining, Value::Number(new_remaining))?;
       if new_remaining == 0.0 {
         let message = scope.alloc_string("All promises were rejected")?;
+        // Root the string + newly constructed aggregate error before calling into JS.
+        scope.push_root(Value::String(message))?;
         let aggregate = vm.construct_with_host_and_hooks(
           host,
           scope,
@@ -3092,6 +3126,7 @@ fn perform_promise_any(
           &[Value::Object(errors), Value::String(message)],
           Value::Object(intr.aggregate_error()),
         )?;
+        scope.push_root(aggregate)?;
         let _ = vm.call_with_host_and_hooks(
           host,
           scope,
@@ -3141,6 +3176,7 @@ fn perform_promise_any(
     write_internal_record_value(&mut step_scope, remaining, Value::Number(n + 1.0))?;
 
     let reject_element_name = step_scope.alloc_string("rejectElement")?;
+    step_scope.push_root(Value::String(reject_element_name))?;
     let slots = [
       Value::Object(errors),
       Value::Number(index as f64),
@@ -3158,6 +3194,7 @@ fn perform_promise_any(
     step_scope
       .heap_mut()
       .object_set_prototype(reject_element, Some(intr.function_prototype()))?;
+    step_scope.push_root(Value::Object(reject_element))?;
 
     // Use resultCapability.[[Resolve]] directly for fulfillment.
     invoke_thenable_then(
@@ -3367,7 +3404,7 @@ pub fn promise_all_settled_element_call(
   let status_value = if is_reject { "rejected" } else { "fulfilled" };
   let status_value = scope.alloc_string(status_value)?;
   scope.push_root(Value::String(status_value))?;
-  let status_key = PropertyKey::from_string(scope.alloc_string("status")?);
+  let status_key = string_key(scope, "status")?;
   scope.define_property(
     obj,
     status_key,
@@ -3375,7 +3412,7 @@ pub fn promise_all_settled_element_call(
   )?;
 
   let value_key_name = if is_reject { "reason" } else { "value" };
-  let value_key = PropertyKey::from_string(scope.alloc_string(value_key_name)?);
+  let value_key = string_key(scope, value_key_name)?;
   scope.define_property(obj, value_key, data_desc(x, true, true, true))?;
 
   // values[index] = obj.
@@ -3480,6 +3517,7 @@ pub fn promise_any_reject_element_call(
   if new_remaining == 0.0 {
     let intr = require_intrinsics(vm)?;
     let message = scope.alloc_string("All promises were rejected")?;
+    scope.push_root(Value::String(message))?;
     let aggregate = vm.construct_with_host_and_hooks(
       host,
       scope,
@@ -3488,8 +3526,8 @@ pub fn promise_any_reject_element_call(
       &[Value::Object(errors), Value::String(message)],
       Value::Object(intr.aggregate_error()),
     )?;
-    let _ =
-      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[aggregate])?;
+    scope.push_root(aggregate)?;
+    let _ = vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[aggregate])?;
   }
 
   Ok(Value::Undefined)

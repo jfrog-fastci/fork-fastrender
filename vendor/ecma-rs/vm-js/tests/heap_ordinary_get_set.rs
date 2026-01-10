@@ -122,8 +122,16 @@ fn heap_ordinary_get_invokes_accessor_getter_with_receiver() -> Result<(), VmErr
     (proto_root, child_root)
   };
 
-  let _proto_obj = heap.get_root(proto).ok_or(VmError::InvalidHandle)?.as_object().unwrap();
-  let child_obj = heap.get_root(child).ok_or(VmError::InvalidHandle)?.as_object().unwrap();
+  let _proto_obj = heap
+    .get_root(proto)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
+  let child_obj = heap
+    .get_root(child)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
 
   let mut scope = heap.scope();
   let key_prop = PropertyKey::String(scope.alloc_string("prop")?);
@@ -177,7 +185,7 @@ fn heap_ordinary_set_invokes_accessor_setter_with_receiver() -> Result<(), VmErr
 
   let child = heap
     .get_root(child_root)
-    .ok_or(VmError::InvalidHandle)?
+    .ok_or_else(|| VmError::invalid_handle())?
     .as_object()
     .unwrap();
 
@@ -256,17 +264,17 @@ fn heap_ordinary_get_and_set_respect_prototype_chain_bounds() -> Result<(), VmEr
 
   let base = heap
     .get_root(base_root)
-    .ok_or(VmError::InvalidHandle)?
+    .ok_or_else(|| VmError::invalid_handle())?
     .as_object()
     .unwrap();
   let leaf = heap
     .get_root(leaf_root)
-    .ok_or(VmError::InvalidHandle)?
+    .ok_or_else(|| VmError::invalid_handle())?
     .as_object()
     .unwrap();
   let too_deep = heap
     .get_root(too_deep_root)
-    .ok_or(VmError::InvalidHandle)?
+    .ok_or_else(|| VmError::invalid_handle())?
     .as_object()
     .unwrap();
 
