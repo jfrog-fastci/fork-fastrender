@@ -492,7 +492,7 @@ impl Display {
       // Vendor-prefixed flexbox keywords used by Safari/legacy IE.
       "-webkit-flex" | "-ms-flexbox" => Ok(Display::Flex),
       "inline-flex" => Ok(Display::InlineFlex),
-      "-webkit-inline-flex" => Ok(Display::InlineFlex),
+      "-webkit-inline-flex" | "-ms-inline-flexbox" => Ok(Display::InlineFlex),
       "grid" => Ok(Display::Grid),
       "inline-grid" => Ok(Display::InlineGrid),
       "table" => Ok(Display::Table),

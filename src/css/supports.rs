@@ -203,6 +203,14 @@ mod tests {
   }
 
   #[test]
+  fn supports_vendor_prefixed_flex_display_values() {
+    assert!(supports_declaration("display", "-webkit-flex"));
+    assert!(supports_declaration("display", "-webkit-inline-flex"));
+    assert!(supports_declaration("display", "-ms-flexbox"));
+    assert!(supports_declaration("display", "-ms-inline-flexbox"));
+  }
+
+  #[test]
   fn supports_webkit_box_orient_keywords_only() {
     assert!(supports_declaration("-webkit-box-orient", "horizontal"));
     assert!(supports_declaration("-webkit-box-orient", "vertical"));

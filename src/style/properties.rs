@@ -24092,6 +24092,25 @@ mod tests {
   }
 
   #[test]
+  fn display_ms_inline_flexbox_parses_as_inline_flex() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    let decl = Declaration {
+      property: "display".into(),
+      value: PropertyValue::Keyword("-ms-inline-flexbox".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.display, Display::InlineFlex);
+    assert!(
+      !styles.display_is_webkit_box,
+      "-ms-inline-flexbox is a prefixed flex keyword, not a legacy `*-box` display"
+    );
+  }
+
+  #[test]
   fn parses_webkit_box_clamp_pattern_from_declarations() {
     let decls = parse_declarations(
       "display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;",
