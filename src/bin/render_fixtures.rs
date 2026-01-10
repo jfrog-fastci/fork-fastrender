@@ -2,7 +2,9 @@
 //!
 //! This binary is intended for deterministic, offline rendering of imported page fixtures.
 //! Network access is denied via `ResourcePolicy` (http/https disabled) and the renderer defaults
-//! to system fonts (with bundled fallbacks enabled).
+//! to bundled fonts (`FontConfig::bundled_only`) so outputs are stable across machines.
+//!
+//! Pass `--system-fonts` to opt into system font discovery (non-deterministic, may be slower).
 
 use fastrender::cli_utils as common;
 
@@ -98,6 +100,13 @@ struct Cli {
   /// Additional deterministic font directories to load (can be repeated).
   #[arg(long, value_name = "DIR")]
   font_dir: Vec<PathBuf>,
+
+  /// Enable system font discovery in addition to bundled fonts.
+  ///
+  /// This makes renders machine-dependent and may be significantly slower on hosts with large font
+  /// installations.
+  #[arg(long)]
+  system_fonts: bool,
 
   /// Render each selected fixture N times to detect nondeterminism.
   ///
@@ -279,6 +288,7 @@ struct RenderMetadataFile {
   #[serde(skip_serializing_if = "Option::is_none")]
   fixture_dir_sha256: Option<String>,
   bundled_fonts: bool,
+  system_fonts: bool,
   font_dirs: Vec<PathBuf>,
   status: &'static str,
   elapsed_ms: u64,
@@ -490,11 +500,10 @@ fn run(cli: Cli) -> io::Result<()> {
   let soft_timeout_ms = compute_soft_timeout_ms(hard_timeout, None);
 
   let font_config = {
-    // Prefer matching Chrome/system rendering for fixture diffs. Keep bundled fonts enabled so
-    // common script/emoji fallbacks remain deterministic even if the host's font set is sparse.
-    let mut config = FontConfig::new()
-      .with_system_fonts(true)
-      .with_bundled_fonts(true);
+    let mut config = FontConfig::bundled_only();
+    if cli.system_fonts {
+      config = config.with_system_fonts(true);
+    }
     if !cli.font_dir.is_empty() {
       config = config.with_font_dirs(cli.font_dir.clone());
     }
@@ -1835,6 +1844,7 @@ fn write_render_metadata_file(
     input_sha256: input_sha256.map(|value| value.to_string()),
     fixture_dir_sha256: fixture_dir_sha256.map(|value| value.to_string()),
     bundled_fonts: shared.font_config.use_bundled_fonts,
+    system_fonts: shared.font_config.use_system_fonts,
     font_dirs: shared.font_config.font_dirs.clone(),
     status: status_label(status),
     elapsed_ms: elapsed_ms.min(u64::MAX as u128) as u64,

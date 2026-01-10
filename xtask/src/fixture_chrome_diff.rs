@@ -1306,6 +1306,7 @@ struct FastRenderFixtureMetadata {
   #[serde(default)]
   fixture_dir_sha256: Option<String>,
   bundled_fonts: Option<bool>,
+  system_fonts: Option<bool>,
   font_dirs: Option<Vec<String>>,
 }
 
@@ -1379,6 +1380,7 @@ fn validate_fastrender_output_metadata(
     let wanted_media = args.media.as_cli_value();
     let wanted_font_dirs_summary = "[]";
     let wanted_bundled_fonts = true;
+    let wanted_system_fonts = false;
     let wanted_fit_canvas_to_content = args.fit_canvas_to_content;
     let wanted_patch_html_for_chrome_baseline = true;
     let mut missing_fields = Vec::<&'static str>::new();
@@ -1387,6 +1389,9 @@ fn validate_fastrender_output_metadata(
     }
     if metadata.bundled_fonts.is_none() {
       missing_fields.push("bundled_fonts");
+    }
+    if metadata.system_fonts.is_none() {
+      missing_fields.push("system_fonts");
     }
     if metadata.font_dirs.is_none() {
       missing_fields.push("font_dirs");
@@ -1417,6 +1422,9 @@ fn validate_fastrender_output_metadata(
     if let Some(bundled_fonts) = metadata.bundled_fonts {
       mismatch |= bundled_fonts != wanted_bundled_fonts;
     }
+    if let Some(system_fonts) = metadata.system_fonts {
+      mismatch |= system_fonts != wanted_system_fonts;
+    }
     if let Some(font_dirs) = metadata.font_dirs.as_ref() {
       mismatch |= !font_dirs.is_empty();
     }
@@ -1428,6 +1436,10 @@ fn validate_fastrender_output_metadata(
         .unwrap_or_else(|| "<missing>".to_string());
       let bundled_fonts_value = metadata
         .bundled_fonts
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<missing>".to_string());
+      let system_fonts_value = metadata
+        .system_fonts
         .map(|v| v.to_string())
         .unwrap_or_else(|| "<missing>".to_string());
       let font_dirs_summary = match metadata.font_dirs.as_deref() {
@@ -1445,8 +1457,8 @@ fn validate_fastrender_output_metadata(
       bail!(
         "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
          Metadata: {}\n\
-        Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
-        Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+        Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, system_fonts {}, font_dirs {}\n\
+        Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, system_fonts {}, font_dirs {}\n\
          Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
         metadata_path.display(),
         args.viewport.0,
@@ -1457,6 +1469,7 @@ fn validate_fastrender_output_metadata(
         wanted_patch_html_for_chrome_baseline,
         args.timeout,
         wanted_bundled_fonts,
+        wanted_system_fonts,
         wanted_font_dirs_summary,
         metadata.viewport.0,
         metadata.viewport.1,
@@ -1466,6 +1479,7 @@ fn validate_fastrender_output_metadata(
         metadata.patch_html_for_chrome_baseline,
         metadata.timeout_secs,
         bundled_fonts_value,
+        system_fonts_value,
         font_dirs_summary,
       );
     }

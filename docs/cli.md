@@ -322,7 +322,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Defaults: fixed, deterministic viewport/DPR (1040x1240 @ 1.0) unless overridden.
 - Offline policy: fixtures are rendered **without network access**; only `file://` and `data:` subresources are allowed.
 - Fixture completeness: any blocked `http(s)://` subresource (network access) is treated as a fixture failure so captures stay self-contained/offline. Other fetch errors are reported in `<fixture>.log` (and in `diagnostics.json` when `--write-snapshot` is enabled).
-- Fonts: uses bundled fonts (`FontConfig::bundled_only`) so outputs are stable across machines.
+- Fonts: uses bundled fonts (`FontConfig::bundled_only`) so outputs are stable across machines (pass `--system-fonts` to opt into system font discovery).
 - Output: by default writes `<fixture>.png` into `target/fixture_renders/` (override with `--out-dir`), plus `<fixture>.log` and `_summary.log`.
 - Optional snapshot: `--write-snapshot` writes `<out-dir>/<fixture>/snapshot.json` and `<out-dir>/<fixture>/diagnostics.json` (for later `diff_snapshots`).
 - Optional determinism harness: `--repeat <N>` renders each fixture multiple times in-process and compares raw pixel output (`Pixmap::data()` bytes) to detect scheduling-dependent nondeterminism.
@@ -335,7 +335,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Paths: `--fixtures-dir <dir>`, `--out-dir <dir>`.
   - Render params: `--viewport <WxH>`, `--dpr <float>`, `--media {screen|print}`, `--timeout <secs>`.
   - Parallelism: `--jobs/-j <n>`, `--shard <index>/<total>`.
-  - Fonts: `--font-dir <dir>` (repeatable).
+  - Fonts: `--system-fonts`, `--font-dir <dir>` (repeatable).
 
 ## `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures`
 

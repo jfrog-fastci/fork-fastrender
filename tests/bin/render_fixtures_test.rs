@@ -114,6 +114,9 @@ fn render_fixtures_writes_png_output() {
   assert_eq!(metadata["fit_canvas_to_content"], false);
   assert_eq!(metadata["timeout_secs"], 2);
   assert_eq!(metadata["status"], "ok");
+  assert_eq!(metadata["bundled_fonts"], true);
+  assert_eq!(metadata["system_fonts"], false);
+  assert_eq!(metadata["font_dirs"], serde_json::json!([]));
   assert!(
     metadata["dpr"].as_f64().unwrap_or_default() > 0.0,
     "expected dpr to be a positive number"
@@ -237,8 +240,9 @@ fn render_fixtures_help_mentions_determinism_flags() {
       && help.contains("--seed")
       && help.contains("--fail-on-nondeterminism")
       && help.contains("--save-variants")
-      && help.contains("--reset-paint-scratch"),
-    "help output should mention determinism flags; got:\n{help}"
+      && help.contains("--reset-paint-scratch")
+      && help.contains("--system-fonts"),
+    "help output should mention determinism flags (and system fonts override); got:\n{help}"
   );
 }
 
