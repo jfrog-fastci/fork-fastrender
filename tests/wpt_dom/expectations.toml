@@ -29,12 +29,6 @@ status = "xfail"
 reason = "Intentional infinite loop to validate timeout handling."
 
 [[expectations]]
-glob = "url/**"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend does not currently provide WHATWG URL/URLSearchParams bindings."
-
-[[expectations]]
 id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"

@@ -147,7 +147,7 @@ fn suite_event_loop_tests_pass() {
 }
 
 #[test]
-fn suite_url_test_passes_or_is_skipped_depending_on_backend() {
+fn suite_url_tests_pass() {
   let corpus_root = corpus_root();
 
   let backend = backend_quickjs_or_vmjs();
@@ -171,24 +171,14 @@ fn suite_url_test_passes_or_is_skipped_depending_on_backend() {
     report.summary.mismatches.is_none(),
     "url suite should have no mismatches: {report:#?}"
   );
-
-  match backend {
-    BackendSelection::VmJs => {
-      assert_eq!(report.summary.skipped, 0);
-      assert_eq!(
-        report.summary.total, report.summary.passed,
-        "all url/** tests should pass under vm-js: {report:#?}"
-      );
-    }
-    BackendSelection::QuickJs => {
-      assert_eq!(report.summary.passed, 0);
-      assert_eq!(
-        report.summary.total, report.summary.skipped,
-        "all url/** tests should be skipped under QuickJS: {report:#?}"
-      );
-    }
-    BackendSelection::Auto => unreachable!("suite smoke should never use BackendSelection::Auto"),
-  }
+  assert_eq!(
+    report.summary.skipped, 0,
+    "url/** tests should run (not skip) under {backend:?}: {report:#?}"
+  );
+  assert_eq!(
+    report.summary.total, report.summary.passed,
+    "all url/** tests should pass under {backend:?}: {report:#?}"
+  );
 }
 
 #[test]

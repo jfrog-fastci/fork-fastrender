@@ -21,6 +21,8 @@ mod backend_vmjs;
 mod dom_shims;
 #[cfg(feature = "quickjs")]
 mod fetch;
+#[cfg(feature = "quickjs")]
+mod url_shims;
 mod window_or_worker_global_scope;
 mod meta;
 mod runner;

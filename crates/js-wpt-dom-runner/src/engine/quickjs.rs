@@ -2,6 +2,7 @@ use super::{Backend, BackendInit, HostEnvironment};
 use crate::cookie_jar::CookieJar;
 use crate::dom_shims::install_dom_shims;
 use crate::fetch::install_fetch_shims;
+use crate::url_shims::install_url_shims;
 use crate::window_or_worker_global_scope::{
   forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
   latin1_encode, serialized_origin_for_document_url,
@@ -412,6 +413,7 @@ fn install_window_shims<'js>(
     .set("btoa", btoa)
     .map_err(|e| RunError::Js(e.to_string()))?;
 
+  install_url_shims(ctx.clone(), globals).map_err(|e| RunError::Js(e.to_string()))?;
   install_fetch_shims(ctx, globals).map_err(|e| RunError::Js(e.to_string()))?;
 
   Ok(())
