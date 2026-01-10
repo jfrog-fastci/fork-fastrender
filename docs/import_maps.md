@@ -159,6 +159,7 @@ Rust type: `ScopesMap { entries: Vec<(String, ModuleSpecifierMap)> }`
 
 * Scope prefixes are normalized to serialized URLs and sorted in **descending UTF-16 code unit
   order**.
+* Type alias: `ScopeMap` is an alias for `ScopesMap` (matching the HTML Standard’s terminology).
 
 ### `ModuleIntegrityMap` (implemented)
 
@@ -186,6 +187,9 @@ Rust type: `ImportMapError`:
 * `ImportMapError::Json` — input is not valid JSON syntax.
 * `ImportMapError::TypeError(String)` — input violates fatal type constraints from the spec (e.g.
   `"imports"` exists but is not a JSON object).
+
+Type alias: `ModuleResolutionError` is currently an alias for `ImportMapError` (it exists so callers
+can name resolution-specific errors distinctly, even though the underlying cases are the same today).
 
 ### `ImportMapParseResult` (implemented)
 
@@ -218,8 +222,10 @@ registration and module loading:
 FastRender models this directly with `ImportMapState`:
 
 * `import_map: ImportMap` — the current merged import map.
-* `resolved_module_set: Vec<SpecifierResolutionRecord>` — records created during
+* `resolved_module_set: ResolvedModuleSet` — records created during
   `resolve_module_specifier(...)` (and consulted during `merge_existing_and_new_import_maps(...)`).
+
+Type alias: `ResolvedModuleSet = Vec<SpecifierResolutionRecord>`.
 
 `SpecifierResolutionRecord` is the stored “specifier resolution record”:
 
