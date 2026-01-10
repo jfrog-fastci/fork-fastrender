@@ -5218,6 +5218,235 @@ mod tests {
   }
 
   #[test]
+  fn forced_column_break_inside_spanning_grid_item_does_not_split_row_band() {
+    let fragmentainer_size = 100.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_after = BreakBetween::Column;
+    let break_style = Arc::new(break_style);
+
+    // Item A spans both row tracks and contains a forced column break inside the first row band.
+    let mut a_part1 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 30.0), vec![], break_style);
+    a_part1.content = FragmentContent::Block { box_id: Some(20) };
+    let mut a_part2 = FragmentNode::new_block(Rect::from_xywh(0.0, 30.0, 100.0, 90.0), vec![]);
+    a_part2.content = FragmentContent::Block { box_id: Some(21) };
+
+    let mut item_a = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![a_part1, a_part2],
+      Arc::clone(&item_style),
+    );
+    item_a.content = FragmentContent::Block { box_id: Some(3) };
+
+    // Item B is a normal sibling in the first row track.
+    let mut item_b = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      vec![],
+      item_style,
+    );
+    item_b.content = FragmentContent::Block { box_id: Some(4) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![item_a, item_b],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 3,
+          row_start: 1,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 4,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Column,
+      default_axes(),
+      false,
+      None,
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+
+    assert!(
+      boundaries
+        .iter()
+        .all(|b| (*b - 30.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
+      "forced breaks inside spanning grid items must not become global forced boundaries: {boundaries:?}"
+    );
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_break - 60.0).abs() < BREAK_EPSILON,
+      "expected row band atomicity to force the first break to the 60px track boundary, got {first_break} (boundaries={boundaries:?})"
+    );
+
+    // After applying the grid forced-break shift pass, the continuation content after the internal
+    // forced break should be translated forward (blank space insertion).
+    let mut shifted = grid.clone();
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut shifted,
+      default_axes(),
+      fragmentainer_size,
+      FragmentationContext::Column,
+    );
+    let shifted_part2_start = shifted.children[0].children[1].bounds.y();
+    assert!(
+      (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
+      "expected the continuation content to be shifted to the next fragmentainer boundary (y≈100), got y={shifted_part2_start}"
+    );
+  }
+
+  #[test]
+  fn forced_break_inside_spanning_grid_item_does_not_split_column_band_in_vertical_writing_mode() {
+    let fragmentainer_size = 100.0;
+    let axes = FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalLr, Direction::Ltr);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    grid_style.writing_mode = WritingMode::VerticalLr;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    item_style.writing_mode = WritingMode::VerticalLr;
+    let item_style = Arc::new(item_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.writing_mode = WritingMode::VerticalLr;
+    break_style.break_after = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    // Item A spans both column tracks and contains a forced page break inside the first column band.
+    let mut a_part1 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 30.0, 100.0), vec![], break_style);
+    a_part1.content = FragmentContent::Block { box_id: Some(30) };
+    let mut a_part2 = FragmentNode::new_block(Rect::from_xywh(30.0, 0.0, 90.0, 100.0), vec![]);
+    a_part2.content = FragmentContent::Block { box_id: Some(31) };
+
+    let mut item_a = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 120.0, 100.0),
+      vec![a_part1, a_part2],
+      Arc::clone(&item_style),
+    );
+    item_a.content = FragmentContent::Block { box_id: Some(5) };
+
+    // Item B is a normal sibling in the first column track.
+    let mut item_b = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 60.0, 100.0),
+      vec![],
+      item_style,
+    );
+    item_b.content = FragmentContent::Block { box_id: Some(6) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 120.0, 100.0),
+      vec![item_a, item_b],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: Vec::new(),
+      columns: vec![(0.0, 60.0), (60.0, 120.0)],
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 5,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 3,
+        },
+        GridItemFragmentationData {
+          box_id: 6,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      axes,
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
+
+    assert!(
+      boundaries
+        .iter()
+        .all(|b| (*b - 30.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
+      "forced breaks inside spanning grid items must not become global forced boundaries: {boundaries:?}"
+    );
+    assert!(
+      forced
+        .iter()
+        .all(|b| (b.position - 30.0).abs() > BREAK_EPSILON || b.position <= BREAK_EPSILON),
+      "forced breaks inside spanning grid items must not be reported as forced boundaries: {forced:?}"
+    );
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_break - 60.0).abs() < BREAK_EPSILON,
+      "expected column band atomicity to force the first break to the 60px track boundary, got {first_break} (boundaries={boundaries:?})"
+    );
+
+    // After applying the grid forced-break shift pass, the continuation content after the internal
+    // forced break should be translated forward (blank space insertion).
+    let mut shifted = grid.clone();
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut shifted,
+      axes,
+      fragmentainer_size,
+      FragmentationContext::Page,
+    );
+    let shifted_part2_start = shifted.children[0].children[1].bounds.x();
+    assert!(
+      (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
+      "expected the continuation content to be shifted to the next fragmentainer boundary (x≈100), got x={shifted_part2_start}"
+    );
+  }
+
+  #[test]
   fn parallel_grid_items_clip_first_fragment_to_remaining_fragmentainer_space() {
     let fragmentainer_size = 100.0;
 
