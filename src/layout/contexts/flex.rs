@@ -4781,7 +4781,7 @@ impl FormattingContext for FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let (_positioned_style, result) =
+        let (layout_positioned_style, result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,
@@ -4792,6 +4792,8 @@ impl FormattingContext for FlexFormattingContext {
             Some(&anchor_index),
             Some(root_box_id),
           )?;
+        let relayout_for_inset_resolved_size =
+          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
         let mut child_fragment = candidate.fragment;
         let border_size = Size::new(
           result.size.width + actual_horizontal,
@@ -4802,7 +4804,8 @@ impl FormattingContext for FlexFormattingContext {
           result.position.y - content_offset.y,
         );
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_inset_resolved_size;
         if needs_relayout {
           let fc_type = candidate
             .layout_child
@@ -5597,8 +5600,8 @@ fn measure_cache_key_and_snap(
 
   (
     (
-      Some(f32_to_canonical_bits(width)),
-      height.map(f32_to_canonical_bits),
+      Some(f32_to_canonical_bits(width) as u64),
+      height.map(|h| f32_to_canonical_bits(h) as u64),
     ),
     snapped_known,
     snapped_avail,
@@ -5892,9 +5895,11 @@ fn flex_cache_key(box_node: &BoxNode) -> u64 {
 fn layout_cache_key(
   constraints: &LayoutConstraints,
   viewport: Size,
-) -> Option<(Option<u32>, Option<u32>)> {
-  let map_space = |space: CrateAvailableSpace, vp: f32, neg_offset: f32| -> Option<u32> {
-    match space {
+) -> Option<FlexCacheKey> {
+  const USED_BORDER_BOX_OVERRIDE_FLAG: u64 = 1u64 << 32;
+  let map_space =
+    |space: CrateAvailableSpace, vp: f32, neg_offset: f32, used_override: bool| -> Option<u64> {
+      match space {
       // Do *not* quantize definite sizes here.
       //
       // The flex layout cache stores a fragment computed with the original constraints. If we
@@ -5902,16 +5907,33 @@ fn layout_cache_key(
       // same key. Then whichever layout runs first determines the stored fragment, and later
       // layouts can reuse an incompatible fragment, making output order-dependent (and therefore
       // non-deterministic under parallel traversal).
-      CrateAvailableSpace::Definite(v) => Some(f32_to_canonical_bits(v)),
-      CrateAvailableSpace::MinContent => Some(f32_to_canonical_bits(-vp - neg_offset)),
-      CrateAvailableSpace::MaxContent => Some(f32_to_canonical_bits(-vp - (neg_offset + 1.0))),
+      CrateAvailableSpace::Definite(v) => Some(f32_to_canonical_bits(v) as u64),
+      CrateAvailableSpace::MinContent => Some(f32_to_canonical_bits(-vp - neg_offset) as u64),
+      CrateAvailableSpace::MaxContent => {
+        Some(f32_to_canonical_bits(-vp - (neg_offset + 1.0)) as u64)
+      }
       CrateAvailableSpace::Indefinite => None,
     }
+    .map(|bits| {
+      if used_override {
+        bits | USED_BORDER_BOX_OVERRIDE_FLAG
+      } else {
+        bits
+      }
+    })
   };
 
   // The flex container's layout is primarily determined by the available space, but when a parent
   // layout mode provides an explicit used border-box size (e.g., sizing a nested inline-flex as a
   // flex/grid item), that override is the effective input for the container's outer size.
+  //
+  // Include whether the value came from `used_border_box_*` in the cache key, even if the numeric
+  // size matches the available space: callers can first layout a box under `width/height:auto` to
+  // obtain intrinsic sizes, then relayout with `used_border_box_*` once CSS absolute positioning
+  // resolves a used size via inset constraints (e.g. `inset:0`). Without this flag, the second
+  // relayout may incorrectly reuse the auto-sized fragment.
+  let width_overridden = constraints.used_border_box_width.is_some();
+  let height_overridden = constraints.used_border_box_height.is_some();
   let width_space = constraints
     .used_border_box_width
     .map(CrateAvailableSpace::Definite)
@@ -5921,8 +5943,18 @@ fn layout_cache_key(
     .map(CrateAvailableSpace::Definite)
     .unwrap_or(constraints.available_height);
 
-  let w = map_space(width_space, viewport.width.max(0.0), 1.0);
-  let h = map_space(height_space, viewport.height.max(0.0), 1.0);
+  let w = map_space(
+    width_space,
+    viewport.width.max(0.0),
+    1.0,
+    width_overridden,
+  );
+  let h = map_space(
+    height_space,
+    viewport.height.max(0.0),
+    1.0,
+    height_overridden,
+  );
   Some((w, h))
 }
 
@@ -10588,6 +10620,8 @@ impl FlexFormattingContext {
                 );
                 let input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
                 let result = abs.layout_absolute(&input, &cb)?;
+                let relayout_for_inset_resolved_size =
+                  crate::layout::absolute_positioning::auto_size_resolved_by_insets(&input.style);
                 let border_size = Size::new(
                   result.size.width + actual_horizontal,
                   result.size.height + actual_vertical,
@@ -10597,7 +10631,8 @@ impl FlexFormattingContext {
                   result.position.y - content_offset.y,
                 );
                 let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-                  || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+                  || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+                  || relayout_for_inset_resolved_size;
                 if needs_relayout {
                   let supports_used_border_box = matches!(
                     fc_type,
@@ -15619,9 +15654,9 @@ mod tests {
       AvailableSpace::Definite(w) => assert_eq!(w, 550.0),
       other => panic!("expected snapped available width to remain definite, got {other:?}"),
     }
-
+ 
     // Ensure the key itself reflects the preserved width.
-    assert_eq!(key.0, Some(super::f32_to_canonical_bits(550.0)));
+    assert_eq!(key.0, Some(super::f32_to_canonical_bits(550.0) as u64));
   }
 
   #[test]

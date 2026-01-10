@@ -10,7 +10,7 @@ use std::time::Instant;
 
 static PROGRESS_NEXT: AtomicU64 = AtomicU64::new(0);
 static HISTOGRAM: OnceLock<
-  std::sync::Mutex<std::collections::HashMap<(usize, (Option<u32>, Option<u32>)), u64>>,
+  std::sync::Mutex<std::collections::HashMap<(usize, (Option<u64>, Option<u64>)), u64>>,
 > = OnceLock::new();
 static NODE_STATS: OnceLock<std::sync::Mutex<HashMap<usize, NodeStats>>> = OnceLock::new();
 
@@ -90,7 +90,7 @@ struct NodeStats {
   lookups: u64,
   measure_hits: u64,
   measure_stores: u64,
-  key_counts: Option<HashMap<(Option<u32>, Option<u32>), u64>>,
+  key_counts: Option<HashMap<(Option<u64>, Option<u64>), u64>>,
 }
 
 fn enabled() -> bool {
@@ -363,7 +363,7 @@ pub fn record_measure_bucket_hit(w: DimState, h: DimState) {
   MEASURE_HIT_BUCKETS[idx].fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_histogram(bucket: usize, key: (Option<u32>, Option<u32>)) {
+pub fn record_histogram(bucket: usize, key: (Option<u64>, Option<u64>)) {
   if !histogram_enabled() {
     return;
   }
@@ -443,7 +443,7 @@ pub fn record_node_layout(id: usize, selector: Option<&str>, start: Option<Insta
   }
 }
 
-pub fn record_node_lookup(id: usize, key: (Option<u32>, Option<u32>)) {
+pub fn record_node_lookup(id: usize, key: (Option<u64>, Option<u64>)) {
   if !node_profile_enabled() {
     return;
   }
@@ -708,16 +708,23 @@ fn log_node_profile() {
           let mut entries: Vec<_> = guard.iter().collect();
           entries.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
           let top = entries.iter().take(10).map(|((bucket, key), count)| {
-            let decode = |v: Option<u32>| -> String {
-              v.map(|b| f32::from_bits(b))
-                .map(|f| {
-                  if f.is_sign_negative() {
-                    format!("{:.1} (sentinel)", f)
-                  } else {
-                    format!("{:.1}", f)
-                  }
-                })
-                .unwrap_or_else(|| "None".into())
+            const USED_BORDER_BOX_OVERRIDE_FLAG: u64 = 1u64 << 32;
+            let decode = |v: Option<u64>| -> String {
+              let Some(bits) = v else {
+                return "None".into();
+              };
+              let used_override = (bits & USED_BORDER_BOX_OVERRIDE_FLAG) != 0;
+              let float_bits = (bits & 0xFFFF_FFFF) as u32;
+              let f = f32::from_bits(float_bits);
+              let mut out = if f.is_sign_negative() {
+                format!("{:.1} (sentinel)", f)
+              } else {
+                format!("{:.1}", f)
+              };
+              if used_override {
+                out.push_str(" [used]");
+              }
+              out
             };
             format!(
               "bucket={} key=({},{}) count={}",

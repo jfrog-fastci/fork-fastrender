@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-pub(crate) type FlexCacheKey = (Option<u32>, Option<u32>);
+pub(crate) type FlexCacheKey = (Option<u64>, Option<u64>);
 
 #[derive(Clone)]
 pub(crate) struct FlexCacheValue {
@@ -484,7 +484,7 @@ mod tests {
     let mut seen: BTreeMap<u64, Vec<FlexCacheKey>> = BTreeMap::new();
     let max = 1u32 << (mask_bits + 3);
     for i in 0..max {
-      let key: FlexCacheKey = (Some(i), Some(0));
+      let key: FlexCacheKey = (Some(i as u64), Some(0));
       let mut hasher = FxHasher::default();
       key.hash(&mut hasher);
       let slot = hasher.finish() & mask;

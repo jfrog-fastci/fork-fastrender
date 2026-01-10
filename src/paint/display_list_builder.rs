@@ -12934,13 +12934,16 @@ impl DisplayListBuilder {
 
     let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
     let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
-    let line_height =
-      compute_line_height_with_metrics_viewport(
-        style,
-        metrics_scaled.as_ref(),
-        viewport,
-        self.font_ctx.root_font_metrics(),
-      );
+    let mut line_height = compute_line_height_with_metrics_viewport(
+      style,
+      metrics_scaled.as_ref(),
+      viewport,
+      self.font_ctx.root_font_metrics(),
+    );
+    if !line_height.is_finite() || line_height <= 0.0 {
+      line_height = style.font_size.max(1.0);
+    }
+
     let metrics =
       InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
     let baseline = rect.y() + metrics.baseline_offset;
@@ -12956,14 +12959,31 @@ impl DisplayListBuilder {
     // without re-running the shaping pipeline for every line.
     let max_width = rect.width();
     let max_height = rect.height();
-    let can_wrap = crate::style::inline_axis_is_horizontal(style.writing_mode)
+
+    let allows_soft_wrap = !matches!(
+      style.white_space,
+      crate::style::types::WhiteSpace::Nowrap | crate::style::types::WhiteSpace::Pre
+    ) && !matches!(style.text_wrap, crate::style::types::TextWrap::NoWrap);
+    let preserves_newlines = matches!(
+      style.white_space,
+      crate::style::types::WhiteSpace::Pre
+        | crate::style::types::WhiteSpace::PreWrap
+        | crate::style::types::WhiteSpace::PreLine
+        | crate::style::types::WhiteSpace::BreakSpaces
+    );
+    let breaks = crate::text::line_break::find_break_opportunities(text);
+    let has_mandatory_break =
+      breaks.iter().any(|brk| brk.is_mandatory() && brk.byte_offset < text.len());
+
+    let needs_wrap = crate::style::inline_axis_is_horizontal(style.writing_mode)
       && max_width.is_finite()
       && max_width > 0.0
       && max_height.is_finite()
       && max_height > 0.0
-      && advance_width > max_width;
+      && ((allows_soft_wrap && advance_width > max_width)
+        || (preserves_newlines && has_mandatory_break));
 
-    if can_wrap {
+    if needs_wrap {
       let baseline0 = baseline;
       let max_lines = if line_height.is_finite() && line_height > 0.0 {
         (max_height / line_height).floor().max(1.0) as usize
@@ -12985,8 +13005,12 @@ impl DisplayListBuilder {
         }
       }
 
-      let breaks = crate::text::line_break::find_break_opportunities(text);
-      let lines = crate::text::line_break::break_lines(&glyphs, max_width, &breaks);
+      let break_opportunities: Vec<crate::text::line_break::BreakOpportunity> = if allows_soft_wrap {
+        breaks
+      } else {
+        breaks.into_iter().filter(|brk| brk.is_mandatory()).collect()
+      };
+      let lines = crate::text::line_break::break_lines(&glyphs, max_width, &break_opportunities);
 
       // Prefix sums for quickly turning glyph index ranges into widths.
       let mut prefix_adv: Vec<f32> = Vec::with_capacity(glyphs.len() + 1);
@@ -12996,6 +13020,15 @@ impl DisplayListBuilder {
         let next = prev + glyph.x_advance;
         prefix_adv.push(next);
       }
+
+      // CSS collapses trailing spaces at the end of wrapped lines for the common collapsing
+      // white-space values. Avoid counting/painting these glyphs so alignment matches browsers.
+      let trim_trailing_spaces = matches!(
+        style.white_space,
+        crate::style::types::WhiteSpace::Normal
+          | crate::style::types::WhiteSpace::Nowrap
+          | crate::style::types::WhiteSpace::PreLine
+      );
 
       for (line_idx, line) in lines.iter().enumerate() {
         if line_idx >= max_lines {
@@ -13009,9 +13042,23 @@ impl DisplayListBuilder {
         }
 
         let glyph_start = segment.glyph_start;
-        let glyph_end = segment.glyph_end().min(glyphs.len());
+        let mut glyph_end = segment.glyph_end().min(glyphs.len());
         if glyph_start >= glyph_end {
           continue;
+        }
+
+        if trim_trailing_spaces {
+          while glyph_end > glyph_start {
+            let cluster = glyphs[glyph_end - 1].cluster as usize;
+            if cluster < text.len() && text.as_bytes()[cluster] == b' ' {
+              glyph_end -= 1;
+              continue;
+            }
+            break;
+          }
+          if glyph_start >= glyph_end {
+            continue;
+          }
         }
 
         let baseline = baseline0 + line_idx as f32 * line_height;
@@ -13080,6 +13127,7 @@ impl DisplayListBuilder {
       }
       return true;
     }
+
     self.emit_shaped_runs(
       &runs,
       style.color,

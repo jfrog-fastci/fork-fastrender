@@ -3742,3 +3742,17 @@ pub(crate) fn intrinsic_edge_sizes(
     + positioned.border_width.bottom;
   (horizontal, vertical)
 }
+
+/// Returns true when an absolutely positioned box's auto size is resolved by its insets.
+///
+/// In CSS2.1 §10.3.7/§10.6.4, if `width/height` are `auto` and both corresponding inset offsets
+/// are specified (e.g. `left:0; right:0`), the used size is determined by the constraint equation
+/// rather than the box's intrinsic content size.
+///
+/// Callers that first lay out the box with `width/height:auto` to obtain intrinsic sizes must
+/// re-run layout with the resolved used border-box size so that descendant layout (e.g. flexbox
+/// `justify-content:end` free-space distribution) observes the definite used size.
+pub(crate) fn auto_size_resolved_by_insets(style: &PositionedStyle) -> bool {
+  (style.width.is_auto() && !style.left.is_auto() && !style.right.is_auto())
+    || (style.height.is_auto() && !style.top.is_auto() && !style.bottom.is_auto())
+}

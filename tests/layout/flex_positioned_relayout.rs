@@ -4,7 +4,7 @@ use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::InsetValue;
+use fastrender::style::types::{FlexDirection, InsetValue, JustifyContent};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -125,4 +125,117 @@ fn flex_positioned_children_relayout_is_stable() {
       "line breaking should stay consistent when caches are reused"
     );
   }
+}
+
+#[test]
+fn flex_positioned_inset_stretch_child_relayout_applies_justify_content_end() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Flex;
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.right = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
+  abs_style.bottom = InsetValue::Length(Length::px(0.0));
+  abs_style.flex_direction = FlexDirection::Column;
+  abs_style.justify_content = JustifyContent::End;
+  abs_style.padding_top = Length::px(10.0);
+  abs_style.padding_right = Length::px(10.0);
+  abs_style.padding_bottom = Length::px(10.0);
+  abs_style.padding_left = Length::px(10.0);
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Block;
+  inner_style.width = Some(Length::px(20.0));
+  inner_style.height = Some(Length::px(20.0));
+  inner_style.flex_shrink = 0.0;
+  let mut inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+  inner.id = 3;
+
+  let mut abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Flex, vec![inner]);
+  abs_child.id = 2;
+  let abs_child_direct = abs_child.clone();
+
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![abs_child],
+  );
+  container.id = 1;
+
+  let fc = FlexFormattingContext::new();
+
+  // Sanity: forcing a used border-box height on an auto-height flex container must still allow
+  // justify-content:end to distribute free space.
+  let direct_fragment = fc
+    .layout(
+      &abs_child_direct,
+      &LayoutConstraints::definite(100.0, 100.0).with_used_border_box_size(Some(100.0), Some(100.0)),
+    )
+    .expect("direct layout succeeds");
+  let direct_inner = direct_fragment
+    .children
+    .iter()
+    .find(|fragment| {
+      matches!(
+        fragment.content,
+        FragmentContent::Block { box_id: Some(box_id) }
+          | FragmentContent::Inline { box_id: Some(box_id), .. }
+          | FragmentContent::Text { box_id: Some(box_id), .. }
+          | FragmentContent::Replaced { box_id: Some(box_id), .. }
+          if box_id == 3
+      )
+    })
+    .unwrap_or_else(|| panic!("missing inner fragment in direct layout: {direct_fragment:#?}"));
+  assert!(
+    (direct_inner.bounds.y() - 70.0).abs() < 0.5,
+    "forced used height should align inner item to bottom (expected y=70, got y={})",
+    direct_inner.bounds.y()
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 100.0))
+    .expect("layout succeeds");
+
+  let abs_fragment = fragment
+    .children
+    .iter()
+    .find(|fragment| {
+      matches!(
+        fragment.content,
+        FragmentContent::Block { box_id: Some(box_id) }
+          | FragmentContent::Inline { box_id: Some(box_id), .. }
+          | FragmentContent::Text { box_id: Some(box_id), .. }
+          | FragmentContent::Replaced { box_id: Some(box_id), .. }
+          if box_id == 2
+      )
+    })
+    .unwrap_or_else(|| panic!("missing positioned child fragment: {fragment:#?}"));
+
+  let inner_fragment = abs_fragment
+    .children
+    .iter()
+    .find(|fragment| {
+      matches!(
+        fragment.content,
+        FragmentContent::Block { box_id: Some(box_id) }
+          | FragmentContent::Inline { box_id: Some(box_id), .. }
+          | FragmentContent::Text { box_id: Some(box_id), .. }
+          | FragmentContent::Replaced { box_id: Some(box_id), .. }
+          if box_id == 3
+      )
+    })
+    .unwrap_or_else(|| panic!("missing inner flex item fragment: {abs_fragment:#?}"));
+
+  let expected_y = 70.0;
+  assert!(
+    (inner_fragment.bounds.y() - expected_y).abs() < 0.5,
+    "inset-stretched absolute flex containers should relayout against the resolved used height so justify-content:end can align to the bottom (expected y={expected_y}, got y={})",
+    inner_fragment.bounds.y()
+  );
 }

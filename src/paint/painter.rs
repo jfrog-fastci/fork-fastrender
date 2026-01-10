@@ -12302,28 +12302,170 @@ impl Painter {
     }
 
     TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
-    let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
-    let start_x = Self::aligned_text_start_x(style, rect, advance_width);
 
     let metrics_scaled = self.resolve_scaled_metrics(style);
-    let line_height = compute_line_height_with_metrics_viewport(
+    let mut line_height = compute_line_height_with_metrics_viewport(
       style,
       metrics_scaled.as_ref(),
       Some(Size::new(self.css_width, self.css_height)),
       self.font_ctx.root_font_metrics(),
     );
-    let metrics = TextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
-    let baseline_y = rect.y() + metrics.baseline_offset;
+    // Fall back to the legacy single-line behaviour when line-height is unusable.
+    if !line_height.is_finite() || line_height <= 0.0 {
+      line_height = style.font_size.max(1.0);
+    }
 
-    self.paint_shaped_runs(
-      &runs,
-      start_x,
-      baseline_y,
-      style.color,
-      Some(style),
-      clip_mask,
+    let metrics = TextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
+
+    // Match browser behaviour for missing-image alt text: wrap to multiple lines when the replaced
+    // box is narrow. Reuse the inline layout engine's line-breaking primitives so wrapping follows
+    // CSS `white-space` / `word-break` / `overflow-wrap` rules.
+    let text_item = TextItem::new(
+      runs,
+      text.to_string(),
+      metrics,
+      crate::text::line_break::find_break_opportunities(text),
+      Vec::new(),
+      Arc::new(style.clone()),
+      style.direction,
     );
-    true
+
+    let max_lines = if rect.height().is_finite() && rect.height() > 0.0 {
+      (rect.height() / line_height).floor() as usize
+    } else {
+      1
+    }
+    .max(1);
+
+    let allows_soft_wrap = !matches!(
+      style.white_space,
+      crate::style::types::WhiteSpace::Nowrap | crate::style::types::WhiteSpace::Pre
+    ) && !matches!(style.text_wrap, crate::style::types::TextWrap::NoWrap);
+    let preserves_newlines = matches!(
+      style.white_space,
+      crate::style::types::WhiteSpace::Pre
+        | crate::style::types::WhiteSpace::PreWrap
+        | crate::style::types::WhiteSpace::PreLine
+        | crate::style::types::WhiteSpace::BreakSpaces
+    );
+
+    let mut remaining = text_item;
+    let mut reshape_cache = crate::layout::contexts::inline::line_builder::ReshapeCache::default();
+    let mut y = rect.y();
+    let mut painted_any = false;
+
+    let mut line_idx = 0usize;
+    while line_idx < max_lines {
+      if remaining.text.is_empty() {
+        break;
+      }
+
+      let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
+
+      // Break at a mandatory break (e.g. newline) regardless of width, and at allowed breaks only
+      // when overflowing.
+      let mut break_opportunity = remaining.find_break_point(line_rect.width());
+      if break_opportunity.is_none() && allows_soft_wrap && remaining.advance > line_rect.width() {
+        break_opportunity = remaining
+          .break_opportunities
+          .iter()
+          .copied()
+          .find(|b| b.byte_offset > 0 && b.byte_offset < remaining.text.len());
+      }
+
+      let should_wrap = break_opportunity.is_some_and(|brk| {
+        if matches!(brk.break_type, crate::text::line_break::BreakType::Mandatory) {
+          preserves_newlines
+        } else {
+          allows_soft_wrap && remaining.advance > line_rect.width()
+        }
+      });
+
+      if should_wrap {
+        let brk = break_opportunity.expect("should_wrap implies break");
+        if let Some((mut before, after)) = remaining.split_at(
+          brk.byte_offset,
+          brk.adds_hyphen,
+          &self.shaper,
+          &self.font_ctx,
+          &mut reshape_cache,
+        ) {
+          // CSS trims collapsible trailing spaces at soft wrap opportunities. Mirror the inline
+          // formatting context so width calculations don't include those spaces.
+          let mut drop_before = false;
+          if matches!(brk.break_type, crate::text::line_break::BreakType::Allowed)
+            && matches!(
+              before.style.white_space,
+              crate::style::types::WhiteSpace::Normal
+                | crate::style::types::WhiteSpace::Nowrap
+                | crate::style::types::WhiteSpace::PreLine
+            )
+          {
+            let trimmed_len = before.text.trim_end_matches(' ').len();
+            if trimmed_len < before.text.len() {
+              if trimmed_len == 0 {
+                drop_before = true;
+              } else if let Some((trimmed, _)) = before.split_at(
+                trimmed_len,
+                false,
+                &self.shaper,
+                &self.font_ctx,
+                &mut reshape_cache,
+              ) {
+                before = trimmed;
+              }
+            }
+          }
+
+          if !drop_before && before.advance > 0.0 {
+            let start_x = Self::aligned_text_start_x(style, line_rect, before.advance);
+            let half_leading =
+              (before.metrics.line_height - (before.metrics.ascent + before.metrics.descent)) / 2.0;
+            let baseline_y = y + half_leading + before.metrics.baseline_offset;
+            self.paint_shaped_runs(
+              &before.runs,
+              start_x,
+              baseline_y,
+              style.color,
+              Some(style),
+              clip_mask,
+            );
+            painted_any = true;
+          }
+
+          // If the wrapped segment contained only collapsible whitespace, keep consuming from the
+          // remainder without advancing the line so we don't output empty lines for leading spaces.
+          if drop_before && matches!(brk.break_type, crate::text::line_break::BreakType::Allowed) {
+            remaining = after;
+            continue;
+          }
+
+          remaining = after;
+          y += line_height;
+          line_idx += 1;
+          continue;
+        }
+      }
+
+      // Either the remaining text fits, wrapping is disabled, or we couldn't split cleanly.
+      let start_x = Self::aligned_text_start_x(style, line_rect, remaining.advance);
+      let half_leading =
+        (remaining.metrics.line_height - (remaining.metrics.ascent + remaining.metrics.descent)) / 2.0;
+      let baseline_y = y + half_leading + remaining.metrics.baseline_offset;
+
+      self.paint_shaped_runs(
+        &remaining.runs,
+        start_x,
+        baseline_y,
+        style.color,
+        Some(style),
+        clip_mask,
+      );
+      painted_any = true;
+      break;
+    }
+
+    painted_any
   }
 
   fn measure_alt_text(&self, alt: &str, style: &ComputedStyle) -> Option<Size> {

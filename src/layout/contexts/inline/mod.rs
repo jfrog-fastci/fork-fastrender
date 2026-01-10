@@ -13321,6 +13321,9 @@ impl InlineFormattingContext {
           (child_fragment.bounds.size.height - actual_vertical).max(0.0),
         );
 
+        let relayout_for_definite_insets =
+          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&positioned_style);
+
         let mut input =
           AbsoluteLayoutInput::new(positioned_style, intrinsic_size, static_position_for_abs);
         input.is_replaced = is_replaced;
@@ -13361,7 +13364,8 @@ impl InlineFormattingContext {
           (border_origin_physical, border_size_physical)
         };
         let needs_relayout = (border_size_physical.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size_physical.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size_physical.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_definite_insets;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,

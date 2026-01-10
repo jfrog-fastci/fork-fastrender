@@ -650,7 +650,16 @@ fn grid_container_allows_stretch_block_size_override(
     return true;
   }
 
-  let containing_block_definite = constraints.height().is_some() || constraints.used_border_box_height.is_some();
+  // Grid containers can have a definite block size even when the parent layout algorithm provides
+  // an indefinite available height (common for normal block flow). In that case, track sizing can
+  // still produce definite `fr` sizes and `align-self:stretch` should establish a definite
+  // containing block for percentage heights inside the item.
+  //
+  // Treat a non-percentage `height` as a definite block-size basis in addition to the parent
+  // forwarding a definite available height / used border box height.
+  let containing_block_definite = constraints.height().is_some()
+    || constraints.used_border_box_height.is_some()
+    || style.height.as_ref().is_some_and(|len| !len.has_percentage());
   let track = if !style.grid_template_rows.is_empty() {
     &style.grid_template_rows[0]
   } else {
@@ -7021,7 +7030,7 @@ impl GridFormattingContext {
       input.preferred_inline_size = preferred_inline;
       input.preferred_min_block_size = preferred_min_block;
       input.preferred_block_size = preferred_block;
-      let (_positioned_style, result) =
+      let (layout_positioned_style, result) =
         crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
           &abs,
           &input,
@@ -7032,6 +7041,8 @@ impl GridFormattingContext {
           None,
           None,
         )?;
+      let relayout_for_inset_resolved_size =
+        crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
       let border_size = Size::new(
         result.size.width + actual_horizontal,
         result.size.height + actual_vertical,
@@ -7041,7 +7052,8 @@ impl GridFormattingContext {
         result.position.y - content_offset.y,
       );
       let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-        || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+        || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+        || relayout_for_inset_resolved_size;
       if needs_relayout {
         let supports_used_border_box = matches!(
           fc_type,
@@ -8731,6 +8743,13 @@ impl GridFormattingContext {
       available_space,
       parent_inline_base,
     );
+    let trace_measure = crate::debug::runtime::runtime_toggles().truthy("FASTR_TRACE_GRID_MEASURE");
+    if trace_measure {
+      eprintln!(
+        "[grid-measure] start node_id={:?} known={:?} avail={:?} justify_self={:?} align_self={:?}",
+        node_id, known_dimensions, available_space, taffy_style.justify_self, taffy_style.align_self
+      );
+    }
     if constraints.used_border_box_width.is_none()
       && known_dimensions.width.is_none()
       && physical_width_is_auto(style)
@@ -9401,7 +9420,67 @@ impl GridFormattingContext {
       })
       .flatten();
 
+      // Even when Taffy is probing intrinsic sizes on the *other* axis (e.g. `height: min-content`),
+      // it still expects the returned width to reflect the item's actual used width. For grid items,
+      // `width: auto` does **not** always stretch to fill the grid area — when the inline-axis
+      // self-alignment isn't `stretch`, auto sizing resolves to a shrink-to-fit size (clamped to the
+      // grid area's definite inline size).
+      //
+      // Taffy doesn't always request an explicit width measurement in these mixed-axis probe calls
+      // (notably with subgrids), so compute the shrink-to-fit width here as well to avoid falling
+      // back to the full available width.
+      let shrink_to_fit_border_box_width = if intrinsic_width.is_none()
+        && physical_width_is_auto(style)
+        && taffy_style.aspect_ratio.is_none()
+        && taffy_style
+          .justify_self
+          .unwrap_or(taffy::style::AlignItems::Stretch)
+          != taffy::style::AlignItems::Stretch
+      {
+        let area_width = match available_space.width {
+          taffy::style::AvailableSpace::Definite(w) => Some(w),
+          _ => known_dimensions.width,
+        }
+        .filter(|w| w.is_finite() && *w > 1.0);
+        match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
+          Ok(intrinsic_width) => {
+            let mut used_width = intrinsic_width.max(0.0);
+            if let Some(area_width) = area_width {
+              if has_calc_percentage_edges && area_width.is_finite() && area_width > 1.0 {
+                let (
+                  padding_left,
+                  padding_right,
+                  _padding_top,
+                  _padding_bottom,
+                  border_left,
+                  border_right,
+                  _border_top,
+                  _border_bottom,
+                ) = self.resolved_padding_border_for_measure(style, area_width);
+                let base0_insets_w = {
+                  let (p_l, p_r, _p_t, _p_b, b_l, b_r, _b_t, _b_b) =
+                    self.resolved_padding_border_for_measure(style, 0.0);
+                  p_l + p_r + b_l + b_r
+                };
+                let insets_w = padding_left + padding_right + border_left + border_right;
+                let delta = insets_w - base0_insets_w;
+                if delta.is_finite() {
+                  used_width = (used_width + delta).max(0.0);
+                }
+              }
+              used_width = used_width.min(area_width.max(0.0));
+            }
+            Some(used_width)
+          }
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        }
+      } else {
+        None
+      };
+
       let width = intrinsic_width
+        .or(shrink_to_fit_border_box_width)
         .map(|border_width| (border_width - width_inset).max(0.0))
         .or(shrink_width)
         .unwrap_or_else(|| fallback_size(known_dimensions.width, available_space.width).max(0.0));
@@ -9445,22 +9524,27 @@ impl GridFormattingContext {
       return output;
     }
 
-    if known_dimensions.width.is_none()
-      && matches!(
-        available_space.width,
-        taffy::style::AvailableSpace::Definite(_)
-      )
-      && physical_width_is_auto(style)
-    {
-      if let taffy::style::AvailableSpace::Definite(area_width) = available_space.width {
-        let justify = taffy_style
-          .justify_self
-          .unwrap_or(taffy::style::AlignItems::Stretch);
-        if justify != taffy::style::AlignItems::Stretch {
-          match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
-            Ok(intrinsic_width) => {
-              let mut used_width = intrinsic_width.max(0.0);
-              if should_adjust_for_calc_percentage_edges && area_width.is_finite() && area_width > 1.0 {
+    // CSS Grid §11.5: Auto-sized, non-stretch aligned grid items use a shrink-to-fit size
+    // (clamped to the grid area's definite size).
+    //
+    // Taffy sometimes reports the grid area's size as `known_dimensions` instead of (or in addition
+    // to) `available_space` (notably when subgrids participate in track sizing). Treat either as
+    // the clamp base for shrink-to-fit sizing.
+    if physical_width_is_auto(style) && taffy_style.aspect_ratio.is_none() {
+      let justify = taffy_style
+        .justify_self
+        .unwrap_or(taffy::style::AlignItems::Stretch);
+      if justify != taffy::style::AlignItems::Stretch {
+        let area_width = match available_space.width {
+          taffy::style::AvailableSpace::Definite(w) => Some(w),
+          _ => known_dimensions.width,
+        }
+        .filter(|w| w.is_finite() && *w > 1.0);
+        match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
+          Ok(intrinsic_width) => {
+            let mut used_width = intrinsic_width.max(0.0);
+            if let Some(area_width) = area_width {
+              if has_calc_percentage_edges && area_width.is_finite() && area_width > 1.0 {
                 let (
                   padding_left,
                   padding_right,
@@ -9483,11 +9567,17 @@ impl GridFormattingContext {
                 }
               }
               used_width = used_width.min(area_width.max(0.0));
-              constraints.used_border_box_width = Some(used_width);
             }
-            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-            Err(_) => {}
+            if trace_measure {
+              eprintln!(
+                "[grid-measure] shrink-to-fit node_id={:?} intrinsic={:.2} area={:?} used={:.2}",
+                node_id, intrinsic_width, area_width, used_width
+              );
+            }
+            constraints.used_border_box_width = Some(used_width);
           }
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => {}
         }
       }
     }
@@ -9498,6 +9588,14 @@ impl GridFormattingContext {
       Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
       Err(_) => return taffy::tree::MeasureOutput::ZERO,
     };
+    if trace_measure {
+      eprintln!(
+        "[grid-measure] laid node_id={:?} border_box={:?} used_border_box_width={:?}",
+        node_id,
+        fragment.bounds,
+        constraints.used_border_box_width
+      );
+    }
     let percentage_base = match available_space.width {
       taffy::style::AvailableSpace::Definite(w) => w,
       _ => constraints
@@ -11190,6 +11288,34 @@ impl FormattingContext for GridFormattingContext {
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
 
     let mut available_space = taffy_available_space_for_grid_container(style, constraints);
+    // When the grid container has a definite physical width/height from its own `width`/`height`
+    // properties, but the parent provides indefinite available space (common for the block axis in
+    // normal flow), forward that definite size into Taffy as available space so `fr` tracks resolve
+    // and stretched items can establish a definite containing block for percentage sizing.
+    if matches!(constraints.available_width, CrateAvailableSpace::Indefinite)
+      && constraints.used_border_box_width.is_none()
+      && matches!(available_space.width, taffy::style::AvailableSpace::MaxContent)
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        if let Some(width) = existing.size.width.into_option() {
+          if width.is_finite() && width >= 0.0 {
+            available_space.width = taffy::style::AvailableSpace::Definite(width);
+          }
+        }
+      }
+    }
+    if matches!(constraints.available_height, CrateAvailableSpace::Indefinite)
+      && constraints.used_border_box_height.is_none()
+      && matches!(available_space.height, taffy::style::AvailableSpace::MaxContent)
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        if let Some(height) = existing.size.height.into_option() {
+          if height.is_finite() && height >= 0.0 {
+            available_space.height = taffy::style::AvailableSpace::Definite(height);
+          }
+        }
+      }
+    }
     if trace_grid_layout {
       eprintln!(
         "[grid-layout] available_space id={} width={:?} height={:?}",
@@ -12066,7 +12192,7 @@ impl FormattingContext for GridFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let (_positioned_style, result) =
+        let (layout_positioned_style, result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,
@@ -12077,6 +12203,8 @@ impl FormattingContext for GridFormattingContext {
             anchors_for_cb,
             Some(root_box_id),
           )?;
+        let relayout_for_inset_resolved_size =
+          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
         let border_size = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,
@@ -12086,7 +12214,8 @@ impl FormattingContext for GridFormattingContext {
           result.position.y - content_offset.y,
         );
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_inset_resolved_size;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,

@@ -97,6 +97,96 @@ fn layout_child_y_column_reverse(justify_content: JustifyContent) -> f32 {
   child_fragment.bounds.y()
 }
 
+fn layout_child_x_row(justify_content: JustifyContent) -> f32 {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.justify_content = justify_content;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(20.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.flex_shrink = 0.0;
+  let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let root = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(&root, &LayoutConstraints::definite(100.0, 20.0))
+    .expect("layout succeeds");
+
+  let child_fragment = fragment
+    .children
+    .iter()
+    .find(|fragment| {
+      matches!(
+        fragment.content,
+        FragmentContent::Block { box_id: Some(box_id) }
+          | FragmentContent::Inline { box_id: Some(box_id), .. }
+          | FragmentContent::Text { box_id: Some(box_id), .. }
+          | FragmentContent::Replaced { box_id: Some(box_id), .. }
+          if box_id == 1
+      )
+    })
+    .unwrap_or_else(|| panic!("missing child fragment: {fragment:#?}"));
+
+  child_fragment.bounds.x()
+}
+
+fn layout_child_y_column(justify_content: JustifyContent) -> f32 {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = justify_content;
+  container_style.width = Some(Length::px(20.0));
+  container_style.height = Some(Length::px(100.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.flex_shrink = 0.0;
+  let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let root = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(&root, &LayoutConstraints::definite(20.0, 100.0))
+    .expect("layout succeeds");
+
+  let child_fragment = fragment
+    .children
+    .iter()
+    .find(|fragment| {
+      matches!(
+        fragment.content,
+        FragmentContent::Block { box_id: Some(box_id) }
+          | FragmentContent::Inline { box_id: Some(box_id), .. }
+          | FragmentContent::Text { box_id: Some(box_id), .. }
+          | FragmentContent::Replaced { box_id: Some(box_id), .. }
+          if box_id == 1
+      )
+    })
+    .unwrap_or_else(|| panic!("missing child fragment: {fragment:#?}"));
+
+  child_fragment.bounds.y()
+}
+
 fn layout_child_x_rtl_row(justify_content: JustifyContent) -> f32 {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
@@ -470,6 +560,31 @@ fn justify_content_start_end_in_column_reverse_are_distinct_from_flex_start_end(
   assert!(
     (end_y - 90.0).abs() < 1e-3,
     "justify-content:end in column-reverse should align to the container end edge (bottom), got {end_y}"
+  );
+}
+
+#[test]
+fn justify_content_end_aligns_to_end_edge_in_row_and_column() {
+  let row_start_x = layout_child_x_row(JustifyContent::FlexStart);
+  let row_end_x = layout_child_x_row(JustifyContent::End);
+  assert!(
+    (row_start_x - 0.0).abs() < 1e-3,
+    "justify-content:flex-start in row should align to the left edge, got {row_start_x}"
+  );
+  assert!(
+    (row_end_x - 90.0).abs() < 1e-3,
+    "justify-content:end in row should align to the right edge, got {row_end_x}"
+  );
+
+  let col_start_y = layout_child_y_column(JustifyContent::FlexStart);
+  let col_end_y = layout_child_y_column(JustifyContent::End);
+  assert!(
+    (col_start_y - 0.0).abs() < 1e-3,
+    "justify-content:flex-start in column should align to the top edge, got {col_start_y}"
+  );
+  assert!(
+    (col_end_y - 90.0).abs() < 1e-3,
+    "justify-content:end in column should align to the bottom edge, got {col_end_y}"
   );
 }
 

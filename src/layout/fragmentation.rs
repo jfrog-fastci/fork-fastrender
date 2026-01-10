@@ -3747,7 +3747,16 @@ fn collect_break_opportunities(
     } else {
       child_style.break_before
     };
-    if idx == 0 && !matches!(child_break_before, BreakBetween::Auto) {
+    // Fragment trees can include "background layer" fragments that overlap the same flow
+    // start position (notably table row-group fragments that precede row fragments for paint
+    // ordering). In those cases the first *flow* child with `break-before` may not be the first
+    // child in DOM/paint order, but browsers still treat it as a break at the start edge.
+    //
+    // Detect this for table rows by checking whether the child starts at the parent's flow start.
+    let treat_as_first_break_before = idx == 0
+      || (matches!(child_style.display, Display::TableRow)
+        && (child_abs_start - abs_start).abs() <= BREAK_EPSILON);
+    if treat_as_first_break_before && !matches!(child_break_before, BreakBetween::Auto) {
       let mut strength = combine_breaks(BreakBetween::Auto, child_break_before, context);
       strength = apply_avoid_penalty(strength, inside_avoid > 0);
       if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {

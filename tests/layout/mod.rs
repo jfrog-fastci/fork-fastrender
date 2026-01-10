@@ -203,6 +203,7 @@ mod grid_calc_gap_cache_key;
 mod grid_padding_calc_percent;
 mod grid_width_calc_percent;
 mod grid_percent_height_auto_track;
+mod grid_item_percent_height_definite_fr_track;
 mod grid_percent_rows_indefinite_height;
 mod grid_percent_tracks_definite;
 mod grid_percent_tracks_indefinite_shrinkwrap;
