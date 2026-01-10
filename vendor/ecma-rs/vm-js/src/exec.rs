@@ -2905,8 +2905,20 @@ impl<'a> Evaluator<'a> {
     self.env.set_lexical_env(switch_scope.heap_mut(), switch_env);
 
     let result = (|| -> Result<Completion, VmError> {
+      const BRANCH_TICK_EVERY: usize = 32;
+
       // `switch` shares one lexical scope across all case clauses.
-      for branch in &stmt.branches {
+      let mut default_idx: Option<usize> = None;
+      for (i, branch) in stmt.branches.iter().enumerate() {
+        // Budget branch-list traversal: a `switch` statement can contain a very large number of
+        // case clauses (bounded by source size), and both block-instantiation and case evaluation
+        // may need to walk those lists even when the clause bodies are empty.
+        if i % BRANCH_TICK_EVERY == 0 {
+          self.tick()?;
+        }
+        if default_idx.is_none() && branch.stx.case.is_none() {
+          default_idx = Some(i);
+        }
         self.instantiate_block_decls_in_stmt_list(&mut switch_scope, switch_env, &branch.stx.body)?;
       }
 
@@ -2916,12 +2928,13 @@ impl<'a> Evaluator<'a> {
       switch_scope.push_root(Value::Undefined)?;
       let mut v = Value::Undefined;
 
-      let default_idx = stmt.branches.iter().position(|b| b.stx.case.is_none());
-
       match default_idx {
         None => {
           let mut found = false;
-          for branch in &stmt.branches {
+          for (i, branch) in stmt.branches.iter().enumerate() {
+            if i % BRANCH_TICK_EVERY == 0 {
+              self.tick()?;
+            }
             let Some(case_expr) = &branch.stx.case else {
               continue;
             };
@@ -2950,7 +2963,10 @@ impl<'a> Evaluator<'a> {
           let b = &rest[1..];
 
           let mut found = false;
-          for branch in a {
+          for (i, branch) in a.iter().enumerate() {
+            if i % BRANCH_TICK_EVERY == 0 {
+              self.tick()?;
+            }
             let Some(case_expr) = &branch.stx.case else {
               continue;
             };
@@ -2974,7 +2990,10 @@ impl<'a> Evaluator<'a> {
 
           let mut found_in_b = false;
           if !found {
-            for branch in b {
+            for (i, branch) in b.iter().enumerate() {
+              if i % BRANCH_TICK_EVERY == 0 {
+                self.tick()?;
+              }
               let Some(case_expr) = &branch.stx.case else {
                 continue;
               };
@@ -3011,7 +3030,10 @@ impl<'a> Evaluator<'a> {
           }
 
           // NOTE: The following is another complete iteration of the after-default clauses.
-          for branch in b {
+          for (i, branch) in b.iter().enumerate() {
+            if i % BRANCH_TICK_EVERY == 0 {
+              self.tick()?;
+            }
             let r = self.eval_stmt_list(&mut switch_scope, &branch.stx.body)?;
             if let Some(value) = r.value() {
               v = value;

@@ -237,6 +237,29 @@ fn switch_case_list_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn switch_case_list_evaluation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(350),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Evaluation of a `switch` statement can iterate over large case clause lists even when the
+  // clause bodies are empty (fallthrough after the first match). Ensure that this work is
+  // budgeted, instead of being able to run after fuel is exhausted.
+  let mut src = String::from("\"use strict\"; switch(0){");
+  for i in 0..3000 {
+    write!(src, "case {i}:").unwrap();
+  }
+  src.push('}');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn var_declarator_list_evaluation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
