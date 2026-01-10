@@ -3976,6 +3976,70 @@ pub fn array_prototype_index_of(
   Ok(Value::Number(-1.0))
 }
 
+/// `Array.prototype.includes` (ECMA-262) (minimal).
+pub fn array_prototype_includes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let search = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+  if len == 0 {
+    return Ok(Value::Bool(false));
+  }
+
+  let from_index = args.get(1).copied().unwrap_or(Value::Undefined);
+  let start = slice_index_from_value(vm, &mut scope, host, hooks, from_index, len, 0)?;
+  if start >= len {
+    return Ok(Value::Bool(false));
+  }
+
+  for k in start..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let equal = match (search, value) {
+      (Value::Undefined, Value::Undefined) => true,
+      (Value::Null, Value::Null) => true,
+      (Value::Bool(a), Value::Bool(b)) => a == b,
+      (Value::Number(a), Value::Number(b)) => (a == b) || (a.is_nan() && b.is_nan()),
+      (Value::BigInt(a), Value::BigInt(b)) => a == b,
+      (Value::String(a), Value::String(b)) => {
+        iter_scope.heap().get_string(a)? == iter_scope.heap().get_string(b)?
+      }
+      (Value::Symbol(a), Value::Symbol(b)) => a == b,
+      (Value::Object(a), Value::Object(b)) => a == b,
+      _ => false,
+    };
+
+    if equal {
+      return Ok(Value::Bool(true));
+    }
+  }
+
+  Ok(Value::Bool(false))
+}
+
 /// `Array.prototype.reverse` (ECMA-262) (minimal).
 pub fn array_prototype_reverse(
   vm: &mut Vm,

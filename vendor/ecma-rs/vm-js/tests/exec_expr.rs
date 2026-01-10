@@ -146,6 +146,17 @@ fn array_prototype_index_of_works() {
 }
 
 #[test]
+fn array_prototype_includes_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var b=[Number.NaN]; var c=[]; c.length=1; a.includes(2) && !a.includes(2,2) && a.includes(2,-2) && b.includes(Number.NaN) && c.includes(undefined) && Array.prototype.includes.call("ab","b")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt
