@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use xtask::webidl::resolve::ExposureTarget;
@@ -42,6 +43,8 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
       .into_iter()
       .map(|s| s.to_string())
       .collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
   };
 
   let window =
@@ -100,4 +103,3 @@ fn webidl_bindings_codegen_filters_by_exposure_target() {
     "Worker target should not include window-only members"
   );
 }
-
