@@ -1232,6 +1232,7 @@ pub struct BrowserTab {
   trace_output: Option<PathBuf>,
   host: BrowserTabHost,
   event_loop: EventLoop<BrowserTabHost>,
+  pending_frame: Option<Pixmap>,
 }
 
 impl BrowserTab {
@@ -1532,6 +1533,7 @@ impl BrowserTab {
       trace_output,
       host,
       event_loop,
+      pending_frame: None,
     };
     let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
       .unwrap_or_default();
@@ -1585,6 +1587,7 @@ impl BrowserTab {
       trace_output,
       host,
       event_loop,
+      pending_frame: None,
     };
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
@@ -1616,6 +1619,8 @@ impl BrowserTab {
   }
 
   pub fn navigate_to_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
+    // Navigations replace the current document; any pending frame is no longer relevant.
+    self.pending_frame = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
@@ -1658,6 +1663,8 @@ impl BrowserTab {
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
+    // Navigations replace the current document; any pending frame is no longer relevant.
+    self.pending_frame = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
@@ -1760,7 +1767,9 @@ impl BrowserTab {
     &mut self,
     limits: RunLimits,
     mut on_error: impl FnMut(Error),
+    mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
+    let pending_frame = &mut self.pending_frame;
     self.event_loop.run_until_idle_handling_errors_with_hook(
       &mut self.host,
       limits,
@@ -1771,6 +1780,12 @@ impl BrowserTab {
           // navigation synchronously (clearing all outstanding work for the old document).
           event_loop.clear_all_pending_work();
           return Ok(());
+        }
+        if host.document.is_dirty() {
+          if let Some(frame) = host.document.render_if_needed()? {
+            *pending_frame = Some(frame);
+            on_render();
+          }
         }
         Ok(())
       },
@@ -1788,6 +1803,7 @@ impl BrowserTab {
           span.arg_str("message", &err.to_string());
         }
       },
+      || {},
     )?;
     if matches!(outcome, RunUntilIdleOutcome::Idle) {
       let _ = self.commit_pending_navigation()?;
@@ -1841,11 +1857,13 @@ impl BrowserTab {
       }
       frames_executed += 1;
 
-      // Drive event-loop work (tasks/microtasks/timers) first. Rendering is handled outside the event
-      // loop spin so the run limits' wall-time budget only applies to script execution.
+      // Drive event-loop work (tasks/microtasks/timers) first.
       match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
         limits,
         &mut report_error,
+        || {
+          frames_rendered = frames_rendered.saturating_add(1);
+        },
       )? {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
@@ -1880,6 +1898,9 @@ impl BrowserTab {
         match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
           microtask_limits,
           &mut report_error,
+          || {
+            frames_rendered = frames_rendered.saturating_add(1);
+          },
         )? {
           RunUntilIdleOutcome::Idle => {}
           RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
@@ -1900,7 +1921,8 @@ impl BrowserTab {
         continue;
       }
 
-      if self.host.document.render_if_needed()?.is_some() {
+      if let Some(frame) = self.host.document.render_if_needed()? {
+        self.pending_frame = Some(frame);
         frames_rendered = frames_rendered.saturating_add(1);
       }
 
@@ -1960,10 +1982,26 @@ impl BrowserTab {
   }
 
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
+    // When BrowserTab runs the JS event loop it may have already rendered between tasks to keep the
+    // document stable (see `browser_tab_render_interleaving` tests). Those frames are buffered here
+    // so callers can still pull the updated pixels via `render_if_needed()`.
+    if self.host.document.is_dirty() {
+      // Any buffered frame is stale if the document is currently dirty.
+      self.pending_frame = None;
+      return self.host.document.render_if_needed();
+    }
+
+    if let Some(frame) = self.pending_frame.take() {
+      return Ok(Some(frame));
+    }
+
     self.host.document.render_if_needed()
   }
 
   pub fn render_frame(&mut self) -> Result<Pixmap> {
+    // A forced render implies the caller will consume the freshest pixels, so drop any queued
+    // internal frame.
+    self.pending_frame = None;
     self.host.document.render_frame()
   }
 
@@ -2937,6 +2975,7 @@ html, body { margin: 0; padding: 0; }
       trace_output: None,
       host,
       event_loop: EventLoop::new(),
+      pending_frame: None,
     };
     tab
       .host
@@ -3131,6 +3170,7 @@ html, body { margin: 0; padding: 0; }
       trace_output: None,
       host,
       event_loop: EventLoop::new(),
+      pending_frame: None,
     };
     tab
       .host
