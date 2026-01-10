@@ -1993,6 +1993,10 @@ impl InteractionEngine {
     }
   }
 
+  pub fn focused_node_id(&self) -> Option<usize> {
+    self.focused
+  }
+
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,

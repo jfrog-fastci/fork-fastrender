@@ -6,7 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
-  create_tab_msg_with_cancel, format_messages, navigate_msg, scroll_msg, viewport_changed_msg,
+  create_tab_msg_with_cancel, format_messages, key_action, navigate_msg, scroll_msg, viewport_changed_msg,
   DEFAULT_TIMEOUT,
 };
 
@@ -146,6 +146,74 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   assert!(
     frame_y <= 1.0,
     "expected Home to scroll to top, got {frame_y}"
+  );
+
+  drop(tx);
+  join.join().unwrap();
+}
+
+#[test]
+fn home_end_space_keys_scroll_when_no_element_is_focused() {
+  let _lock = super::stage_listener_test_lock();
+
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
+    spawn_browser_worker().expect("spawn browser worker");
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  // Use a round height so viewport-height * 0.9 is easy to reason about (100 -> 90).
+  let viewport_css = (200, 100);
+  tx.send(viewport_changed_msg(tab_id, viewport_css, 1.0))
+    .unwrap();
+  tx.send(navigate_msg(
+    tab_id,
+    "about:test-scroll".to_string(),
+    NavigationReason::TypedUrl,
+  ))
+  .unwrap();
+
+  let initial_frame = wait_for_initial_frame(&rx, tab_id);
+  let mut y = initial_frame.scroll_state.viewport.y;
+
+  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
+  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  });
+
+  assert!(
+    y.abs() < 1e-3,
+    "expected initial scroll y to start at 0, got {y}"
+  );
+
+  // `End` should scroll near the bottom when nothing is focused.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::End))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
+  assert!(frame_y > 3_000.0, "expected End to scroll near bottom, got {frame_y}");
+
+  // `Home` should scroll back to the top.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Home))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next <= 1.0);
+  assert!(
+    frame_y <= 1.0,
+    "expected Home to scroll back to the top, got {frame_y}"
+  );
+  y = frame_y;
+
+  // `Space` should scroll down by ~0.9 * viewport height.
+  let step_y = (viewport_css.1 as f32) * 0.9;
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Space))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
+  assert!(
+    (frame_y - step_y).abs() < 1.0,
+    "expected Space to scroll by ~{step_y}, got {frame_y}"
   );
 
   drop(tx);

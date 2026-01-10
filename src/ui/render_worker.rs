@@ -2107,11 +2107,13 @@ impl BrowserRuntime {
   fn handle_key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
+    let mut keyboard_scroll: Option<UiToWorker> = None;
 
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
       };
+      let focus_none = tab.interaction.focused_node_id().is_none();
       let base_url = base_url_for_links(tab).to_string();
       let document_url = tab
         .last_committed_url
@@ -2172,6 +2174,7 @@ impl BrowserRuntime {
         });
       }
 
+      let action_is_none = matches!(action, InteractionAction::None);
       match action {
         InteractionAction::Navigate { href } => {
           navigate_to = Some(href);
@@ -2221,6 +2224,31 @@ impl BrowserRuntime {
           }
         }
         _ => {
+          // Basic keyboard scrolling: when nothing is focused, treat Home/End/Space as viewport
+          // scrolling shortcuts (matching common browser behaviour). Focused form controls should
+          // keep receiving these keys for caret/selection/option navigation.
+          if focus_none && !changed && !scroll_changed && action_is_none {
+            keyboard_scroll = match key {
+              crate::interaction::KeyAction::Home => Some(UiToWorker::ScrollTo {
+                tab_id,
+                pos_css: (tab.scroll_state.viewport.x, 0.0),
+              }),
+              crate::interaction::KeyAction::End => Some(UiToWorker::ScrollTo {
+                tab_id,
+                pos_css: (tab.scroll_state.viewport.x, f32::MAX),
+              }),
+              crate::interaction::KeyAction::Space => {
+                let h = tab.viewport_css.1.max(1) as f32;
+                let dy = (h * 0.9).max(1.0);
+                Some(UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (0.0, dy),
+                  pointer_css: None,
+                })
+              }
+              _ => None,
+            };
+          }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
@@ -2233,6 +2261,10 @@ impl BrowserRuntime {
       self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
     } else if let Some(request) = navigate_request {
       self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+    }
+
+    if let Some(scroll_msg) = keyboard_scroll {
+      self.handle_message(scroll_msg);
     }
   }
 
