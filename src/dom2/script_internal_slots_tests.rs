@@ -98,3 +98,18 @@ fn clone_copies_script_already_started_but_not_other_script_slots() {
   assert!(!cloned_node.script_parser_document);
 }
 
+#[test]
+fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let script = doc.create_element("script", HTML_NAMESPACE);
+  doc.set_attribute(script, "async", "").unwrap();
+  assert!(!doc.node(script).script_force_async);
+
+  let cloned = doc.clone_node(script, false).unwrap();
+  assert!(doc.has_attribute(cloned, "async").unwrap());
+
+  let cloned_node = doc.node(cloned);
+  assert!(!cloned_node.script_force_async);
+  assert!(!cloned_node.script_parser_document);
+  assert!(!cloned_node.script_already_started);
+}
