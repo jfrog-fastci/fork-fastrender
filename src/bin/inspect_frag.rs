@@ -18,7 +18,7 @@ use fastrender::resource::CachingFetcher;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
-  CachingFetcherConfig, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  CachingFetcherConfig, ResourceFetcher, ResourcePolicy, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -67,6 +67,35 @@ struct Args {
   /// This overrides any `.html.meta`-derived `url:` base hint.
   #[arg(long, value_name = "URL")]
   base_hint: Option<String>,
+
+  /// Deny HTTP/HTTPS subresource loads (treat the input as offline).
+  ///
+  /// This is useful when inspecting offline fixtures that may still contain leftover remote URLs.
+  /// Relative paths, `file://`, and `data:` URLs are still permitted.
+  #[arg(long)]
+  deny_network: bool,
+
+  /// Patch fixture HTML before rendering to align with the Chrome baseline harness.
+  ///
+  /// This matches `render_fixtures --patch-html-for-chrome-baseline`:
+  /// - forces a light color scheme + white root background (unless `--allow-dark-mode`),
+  /// - injects an offline Content-Security-Policy tag,
+  /// - hides scrollbars,
+  /// - disables CSS animations/transitions (unless `--allow-animations`).
+  #[arg(long)]
+  patch_html_for_chrome_baseline: bool,
+
+  /// Allow CSS animations/transitions while patching fixture HTML for Chrome baselines.
+  ///
+  /// Has no effect unless `--patch-html-for-chrome-baseline` is enabled.
+  #[arg(long)]
+  allow_animations: bool,
+
+  /// Allow dark-mode / prefers-color-scheme defaults (do not force a white background).
+  ///
+  /// Has no effect unless `--patch-html-for-chrome-baseline` is enabled.
+  #[arg(long)]
+  allow_dark_mode: bool,
 
   /// Write deterministic pipeline stage snapshots into this directory.
   ///
@@ -408,6 +437,22 @@ fn load_input_document(args: &Args) -> io::Result<InputDocument> {
       let file_url = file_url_for_path(&path);
       doc = doc.with_base_override(Some(&file_url));
     }
+  }
+
+  if args.patch_html_for_chrome_baseline {
+    let patched = common::fixture_html_patch::patch_html_bytes(
+      doc.html.as_bytes(),
+      Some(&doc.base_hint),
+      true, // disable JS
+      !args.allow_animations,
+      args.allow_dark_mode,
+    );
+    doc.html = String::from_utf8(patched).map_err(|err| {
+      io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("patched HTML is not valid UTF-8: {err}"),
+      )
+    })?;
   }
 
   Ok(InputDocument {
@@ -1292,14 +1337,23 @@ fn run(args: Args) -> Result<(), DynError> {
   let fetcher = build_fetcher(&args)?;
 
   let font_config = inspect_frag_font_config(&args);
-  let mut renderer = FastRender::builder()
+  let mut builder = FastRender::builder()
     .device_pixel_ratio(args.dpr)
     .compat_mode(args.compat.compat_profile())
     .dom_compatibility_mode(args.compat.dom_compat_mode())
     .font_sources(font_config)
     .fetcher(fetcher)
-    .runtime_toggles(runtime_toggles)
-    .build()?;
+    .runtime_toggles(runtime_toggles);
+
+  if args.deny_network {
+    builder = builder.resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    );
+  }
+
+  let mut renderer = builder.build()?;
 
   let output = inspect_pipeline(&mut renderer, &input, &args)?;
 
@@ -1662,6 +1716,95 @@ mod tests {
     .expect("parse args");
     let input = load_input_document(&args).expect("load input");
     assert_eq!(input.path, cached);
+  }
+
+  #[test]
+  fn patch_html_for_chrome_baseline_injects_offline_tags() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(
+      &html_path,
+      "<!doctype html><html><head></head><body>ok</body></html>",
+    )
+    .expect("write html");
+
+    let args = Args::try_parse_from([
+      "inspect_frag",
+      html_path.to_str().unwrap(),
+      "--patch-html-for-chrome-baseline",
+    ])
+    .expect("parse args");
+    let input = load_input_document(&args).expect("load input");
+    assert!(
+      input
+        .html
+        .contains("<meta http-equiv=\"Content-Security-Policy\""),
+      "expected patched HTML to include CSP injection"
+    );
+    assert!(
+      input.html.contains("<meta name=\"color-scheme\""),
+      "expected patched HTML to force light color scheme by default"
+    );
+    assert!(
+      input.html.contains("scrollbar-width: none"),
+      "expected patched HTML to hide scrollbars"
+    );
+    let expected_base = format!("<base href=\"{}\">", file_url_for_path(&html_path));
+    assert!(
+      input.html.contains(&expected_base),
+      "expected patched HTML to include base href injection; expected fragment {expected_base:?}"
+    );
+  }
+
+  #[test]
+  fn deny_network_blocks_http_subresources_before_hitting_the_fetcher() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(
+      &html_path,
+      "<!doctype html><html><body><img src=\"https://example.com/a.png\"></body></html>",
+    )
+    .expect("write html");
+
+    let args = Args::try_parse_from([
+      "inspect_frag",
+      html_path.to_str().unwrap(),
+      "--deny-network",
+      "--viewport",
+      "16x16",
+    ])
+    .expect("parse args");
+    let input = load_input_document(&args).expect("load input");
+    let fetcher = build_fetcher(&args).expect("build fetcher");
+    let runtime_toggles = RuntimeToggles::from_env();
+    let mut builder = FastRender::builder()
+      .device_pixel_ratio(args.dpr)
+      .compat_mode(args.compat.compat_profile())
+      .dom_compatibility_mode(args.compat.dom_compat_mode())
+      .fetcher(fetcher)
+      .runtime_toggles(runtime_toggles);
+    if args.deny_network {
+      builder = builder.resource_policy(
+        ResourcePolicy::default()
+          .allow_http(false)
+          .allow_https(false),
+      );
+    }
+    let mut renderer = builder.build().expect("build renderer");
+    let out = inspect_pipeline(&mut renderer, &input, &args).expect("render");
+
+    let mut blocked = out
+      .diagnostics
+      .fetch_errors
+      .iter()
+      .chain(out.diagnostics.blocked_fetch_errors.iter())
+      .filter(|e| e.url.contains("example.com/a.png"))
+      .collect::<Vec<_>>();
+    blocked.sort_by(|a, b| a.url.cmp(&b.url));
+    assert!(
+      !blocked.is_empty(),
+      "expected blocked fetch diagnostics for the remote image URL"
+    );
   }
 
   #[cfg(not(feature = "disk_cache"))]

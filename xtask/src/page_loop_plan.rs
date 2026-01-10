@@ -118,6 +118,7 @@ pub struct InspectFragCommandArgs {
   pub dump_custom_properties: bool,
   pub custom_property_prefix: Vec<String>,
   pub custom_properties_limit: Option<usize>,
+  pub patch_html_for_chrome_baseline: bool,
   pub viewport: (u32, u32),
   pub dpr: f32,
   pub media: String,
@@ -131,8 +132,25 @@ pub fn build_inspect_frag_command(
 ) -> Command {
   let inspect_frag_exe = inspect_frag_executable(repo_root, debug);
   let mut cmd = cmd::run_limited_command_default(repo_root);
+  if std::env::var_os("FASTR_DETERMINISTIC_PAINT").is_none() {
+    cmd.env("FASTR_DETERMINISTIC_PAINT", "1");
+  }
+  if std::env::var_os("FASTR_WEB_FONT_WAIT_MS").is_none() {
+    cmd.env("FASTR_WEB_FONT_WAIT_MS", "500");
+  }
+  if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_HIDE_SCROLLBARS").is_none() {
+    // Match `render_fixtures --patch-html-for-chrome-baseline` / Chrome baseline harness behavior
+    // (no reserved scrollbar gutters).
+    cmd.env("FASTR_HIDE_SCROLLBARS", "1");
+  }
   cmd.arg(inspect_frag_exe);
   cmd.arg(&args.fixture_html);
+  // `page-loop` renders offline fixtures; forbid HTTP(S) so inspect runs don't hang on stray remote
+  // URLs that should have been bundled into the fixture directory.
+  cmd.arg("--deny-network");
+  if args.patch_html_for_chrome_baseline {
+    cmd.arg("--patch-html-for-chrome-baseline");
+  }
   if let Some(overlay) = args.overlay_png.as_ref() {
     cmd.arg("--render-overlay").arg(overlay);
   }

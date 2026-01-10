@@ -278,6 +278,47 @@ fn dry_run_with_inspect_dump_json_includes_inspect_frag_dump_json_command() {
     "expected inspect_frag to include `{}`; got:\n{stdout}",
     expected_arg
   );
+  assert!(
+    stdout.contains("--deny-network"),
+    "expected inspect_frag to run with --deny-network (fixtures are offline); got:\n{stdout}"
+  );
+}
+
+#[test]
+fn dry_run_with_chrome_and_inspect_dump_json_patches_inspect_frag_html() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--chrome",
+      "--inspect-dump-json",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run xtask page-loop --chrome --inspect-dump-json --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let inspect_line = stdout
+    .lines()
+    .find(|line| line.contains("run_limited.sh") && line.contains("inspect_frag"))
+    .expect("inspect_frag execution command line should be printed");
+  assert!(
+    inspect_line.contains("--deny-network"),
+    "expected inspect_frag to run with --deny-network; got:\n{inspect_line}"
+  );
+  assert!(
+    inspect_line.contains("--patch-html-for-chrome-baseline"),
+    "expected inspect_frag to patch HTML when --chrome is enabled; got:\n{inspect_line}"
+  );
 }
 
 #[test]

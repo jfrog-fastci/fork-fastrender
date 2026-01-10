@@ -299,6 +299,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
         dump_custom_properties: args.inspect_dump_custom_properties,
         custom_property_prefix: args.inspect_custom_property_prefix.clone(),
         custom_properties_limit: args.inspect_custom_properties_limit,
+        patch_html_for_chrome_baseline: run_chrome,
         viewport: args.viewport,
         dpr: args.dpr,
         media: args.media.as_cli_value().to_string(),
