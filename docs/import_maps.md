@@ -10,6 +10,8 @@ In the HTML platform, import maps influence **module specifier → URL** resolut
 This module implements the WHATWG HTML import maps algorithms: parsing/normalization, host-side
 state/merging, and module specifier resolution.
 
+Key host-facing entry points:
+
 * `ImportMapState` (host-side global state: merged import map + resolved module set)
 * `create_import_map_parse_result(...)` (HTML “import map parse result”)
 * `register_import_map(...)` / `merge_existing_and_new_import_maps(...)` (HTML “register/merge import maps”)

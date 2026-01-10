@@ -10,7 +10,7 @@ FastRender’s JavaScript support needs to follow the WHATWG HTML **script proce
 
 This document is a spec-mapped design for that integration. It is written to prevent future
 implementers from having to “rediscover” scattered HTML Standard details when extending support to
-module scripts/import maps later.
+module scripts and end-to-end import map integration later.
 
 ## Status in this repository (reality check)
 FastRender has the **core building blocks** for a spec-shaped, streaming, parse-time classic
