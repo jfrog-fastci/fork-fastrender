@@ -1862,10 +1862,14 @@ fn to_uint32_f64(n: f64) -> u32 {
         global,
       );
     }
-    let needs_ctor_obj =
-      !iface.constructors.is_empty() || !iface.static_operations.is_empty() || !iface.constants.is_empty();
-    if needs_ctor_obj {
-      write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
+    if !global {
+      let needs_ctor_obj = !iface.constructors.is_empty()
+        || !iface.static_operations.is_empty()
+        || !iface.static_attributes.is_empty()
+        || !iface.constants.is_empty();
+      if needs_ctor_obj {
+        write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
+      }
     }
   }
 
@@ -1940,8 +1944,10 @@ fn to_uint32_f64(n: f64) -> u32 {
       ));
     }
 
-    let needs_ctor_obj =
-      !iface.constructors.is_empty() || !iface.static_operations.is_empty() || !iface.constants.is_empty();
+    let needs_ctor_obj = !iface.constructors.is_empty()
+      || !iface.static_operations.is_empty()
+      || !iface.static_attributes.is_empty()
+      || !iface.constants.is_empty();
     if !needs_ctor_obj {
       continue;
     }
@@ -4803,18 +4809,13 @@ fn write_constructor_wrapper_vmjs(
 ) {
   // Call without `new`.
   let call_fn_name = ctor_call_without_new_fn_name(interface);
-  let call_without_new_msg = if overloads.is_empty() {
-    "Illegal constructor".to_string()
-  } else {
-    format!("{interface} constructor must be called with new")
-  };
   out.push_str(&format!(
     "#[allow(dead_code)]\nfn {call_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  _host: &mut dyn VmHost,\n  _hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  _this: Value,\n  _args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str(&format!(
     "  Err(rt.throw_type_error({msg_lit}))\n",
-    msg_lit = rust_string_literal(&call_without_new_msg)
+    msg_lit = rust_string_literal("Illegal constructor")
   ));
   out.push_str("}\n\n");
 
@@ -4837,28 +4838,32 @@ fn write_constructor_wrapper_vmjs(
     msg_lit = rust_string_literal(&format!("{interface} constructor missing prototype slot"))
   ));
   out.push_str("  };\n");
+  out.push_str("  // Derive the wrapper object's prototype from `new.target` (subclassing semantics).\n");
+  out.push_str("  //\n");
+  out.push_str("  // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:\n");
+  out.push_str("  // - default to the interface prototype cached in native slots,\n");
+  out.push_str("  // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.\n");
   out.push_str("  rt.scope.push_root(Value::Object(default_proto))?;\n");
+  // Root `new_target` before doing property lookups/allocations to avoid GC hazards.
   out.push_str("  rt.scope.push_root(new_target)?;\n");
-  out.push_str("  let proto = match new_target {\n");
-  out.push_str("    Value::Object(new_target_obj) => {\n");
-  out.push_str("      let key = rt.property_key(\"prototype\")?;\n");
-  out.push_str("      let proto = rt.scope.ordinary_get_with_host_and_hooks(\n");
-  out.push_str("        &mut *rt.vm,\n");
-  out.push_str("        host,\n");
-  out.push_str("        hooks,\n");
-  out.push_str("        new_target_obj,\n");
-  out.push_str("        key,\n");
-  out.push_str("        Value::Object(new_target_obj),\n");
-  out.push_str("      )?;\n");
-  out.push_str("      match proto {\n");
-  out.push_str("        Value::Object(o) => o,\n");
-  out.push_str("        _ => default_proto,\n");
-  out.push_str("      }\n");
+  out.push_str("  let mut wrapper_proto = default_proto;\n");
+  out.push_str("  if let Value::Object(new_target_obj) = new_target {\n");
+  out.push_str("    rt.scope.push_root(Value::Object(new_target_obj))?;\n");
+  out.push_str("    let proto_key = rt.property_key(\"prototype\")?;\n");
+  out.push_str("    let candidate = rt.scope.ordinary_get_with_host_and_hooks(\n");
+  out.push_str("      &mut *rt.vm,\n");
+  out.push_str("      host,\n");
+  out.push_str("      hooks,\n");
+  out.push_str("      new_target_obj,\n");
+  out.push_str("      proto_key,\n");
+  out.push_str("      Value::Object(new_target_obj),\n");
+  out.push_str("    )?;\n");
+  out.push_str("    if let Value::Object(candidate_obj) = candidate {\n");
+  out.push_str("      rt.scope.push_root(Value::Object(candidate_obj))?;\n");
+  out.push_str("      wrapper_proto = candidate_obj;\n");
   out.push_str("    }\n");
-  out.push_str("    _ => default_proto,\n");
-  out.push_str("  };\n");
-  out.push_str("  rt.scope.push_root(Value::Object(proto))?;\n");
-  out.push_str("  let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;\n");
+  out.push_str("  }\n");
+  out.push_str("  let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;\n");
   out.push_str("  rt.scope.push_root(Value::Object(obj))?;\n\n");
 
   if overloads.len() == 1 {

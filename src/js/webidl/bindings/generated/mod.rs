@@ -339,28 +339,31 @@ pub mod window {
         "EventTarget constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
@@ -562,28 +565,31 @@ pub mod window {
         "URL constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
@@ -1042,28 +1048,31 @@ pub mod window {
         "URLSearchParams constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
@@ -2070,28 +2079,31 @@ pub mod worker {
         "EventTarget constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
@@ -2264,28 +2276,31 @@ pub mod worker {
         "URL constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
@@ -2744,28 +2759,31 @@ pub mod worker {
         "URLSearchParams constructor missing prototype slot",
       ));
     };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
     rt.scope.push_root(Value::Object(default_proto))?;
     rt.scope.push_root(new_target)?;
-    let proto = match new_target {
-      Value::Object(new_target_obj) => {
-        let key = rt.property_key("prototype")?;
-        let proto = rt.scope.ordinary_get_with_host_and_hooks(
-          &mut *rt.vm,
-          host,
-          hooks,
-          new_target_obj,
-          key,
-          Value::Object(new_target_obj),
-        )?;
-        match proto {
-          Value::Object(o) => o,
-          _ => default_proto,
-        }
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
       }
-      _ => default_proto,
-    };
-    rt.scope.push_root(Value::Object(proto))?;
-    let obj = rt.scope.alloc_object_with_prototype(Some(proto))?;
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
     rt.scope.push_root(Value::Object(obj))?;
 
     {
