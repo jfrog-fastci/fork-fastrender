@@ -19,7 +19,8 @@ scripts, and keep observable document state like `Document.currentScript` correc
 still evolving, so treat this section as a “where is the real code?” map.
 
 There is now an end-to-end “tab” integration point (`api::BrowserTab`) that ties together the live
-`dom2` document, classic script scheduling, an HTML-shaped event loop, and rendering invalidation.
+`dom2` document, classic script scheduling, an HTML-shaped event loop, script-blocking stylesheet
+tracking, and rendering invalidation.
 When loading HTML strings (`BrowserTab::from_html` / `BrowserTab::navigate_to_html`), it uses the
 script-aware streaming parser (`StreamingHtmlParser`) so parser-inserted scripts execute at `</script>`
 boundaries against a partially-built DOM. URL navigations (`BrowserTab::navigate_to_url`) now use the
@@ -62,6 +63,8 @@ What exists today (in-tree):
     (`ClassicScriptScheduler`).
   - `src/js/event_loop.rs`: task + microtask queues, explicit microtask checkpoints, timers, run
     limits (`RunLimits`), and queue caps (`QueueLimits`).
+  - `src/js/script_blocking_stylesheets.rs`: `ScriptBlockingStyleSheetSet` used by `BrowserTab` to
+    delay parser-blocking scripts until render-blocking stylesheets finish loading.
 - **Host-side execution bookkeeping:**
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
     script block” (classic scripts).
@@ -121,7 +124,22 @@ For **external classic scripts**:
 For **inline classic scripts**, `async`/`defer` are effectively ignored because the content is
 already available; they execute when encountered.
 
-### 3) Microtask checkpoints (Promises/jobs)
+### 3) Stylesheet-blocking scripts (render-blocking stylesheets)
+HTML requires that certain scripts delay execution until all render-blocking stylesheets have
+loaded, so scripts observe the correct computed styles.
+
+FastRender implements an MVP subset for streaming parsing via `api::BrowserTab`:
+
+- Parser-blocking scripts (inline classic scripts, and external classic scripts without `async` or
+  `defer`) wait for the current `ScriptBlockingStyleSheetSet` to become empty before executing.
+- `async` scripts are **not** delayed by script-blocking stylesheets.
+- Stylesheets in inert `<template>` contents do not register as script-blocking.
+
+See:
+- `src/js/script_blocking_stylesheets.rs`
+- `src/api/browser_tab.rs` unit tests: `script_blocking_*`
+
+### 4) Microtask checkpoints (Promises/jobs)
 After running a script, run a **microtask checkpoint** (drain the microtask queue) **only if the
 JavaScript execution context stack is empty** (HTML “clean up after running script”).
 
@@ -136,7 +154,7 @@ In code, this maps to `src/js/event_loop.rs`:
 - Parser-driven synchronous execution must explicitly call
   `EventLoop::perform_microtask_checkpoint()` after running a script.
 
-### 4) Base URL timing (script preparation time)
+### 5) Base URL timing (script preparation time)
 Relative script URLs must be resolved using the document base URL **as of the moment the script is
 prepared**, not “whatever the final `<base href>` was after parsing”.
 
@@ -165,10 +183,6 @@ we can land a correct classic-script core first:
     parser-blocking script execution.
   - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
     subset; no implicit `document.open()` / destructive post-load writes).
-- **Stylesheet-blocking scripts** (scripts that wait for render-blocking stylesheets)
-  - A prototype exists for the harness (`src/js/html_scripting.rs` +
-    `src/js/script_blocking_stylesheets.rs`), but it is not yet fully integrated with the real
-    streaming parser + scheduler pipeline.
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
 - End-to-end author-script execution with a production JS runtime + complete DOM/WebIDL bindings
   - Host-side `currentScript` bookkeeping exists (`src/js/orchestrator.rs`) and is exposed in the
