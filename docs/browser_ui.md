@@ -116,6 +116,7 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl/Cmd+L | Focus address bar (select all) |
 | Ctrl/Cmd+T | New tab |
 | Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
+| Ctrl/Cmd+F4 | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+Tab | Next tab |
 | Ctrl/Cmd+Shift+Tab | Previous tab |
 | Ctrl/Cmd+PageUp | Previous tab |

@@ -71,6 +71,7 @@ pub enum Key {
   Right,
   Plus,
   Equals,
+  F4,
   F5,
   Num1,
   Num2,
@@ -152,6 +153,7 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::T, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ReopenClosedTab),
     (Key::T, _) if cmd => Some(ShortcutAction::NewTab),
     (Key::W, _) if cmd => Some(ShortcutAction::CloseTab),
+    (Key::F4, _) if cmd => Some(ShortcutAction::CloseTab),
     (Key::Tab, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::PrevTab),
     (Key::Tab, _) if cmd => Some(ShortcutAction::NextTab),
     // Many browsers (notably Firefox/Chromium on Windows/Linux) also support Ctrl+PageUp/PageDown
@@ -349,6 +351,34 @@ mod tests {
       map_shortcut_with_platform(
         KeyEvent::new(Key::W, Modifiers::new(true, false, false, false)),
         Platform::Other
+      ),
+      Some(ShortcutAction::CloseTab)
+    );
+  }
+
+  #[test]
+  fn ctrl_f4_close_tab() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F4, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::CloseTab)
+    );
+    // Alt+F4 is typically reserved for window management; it should not be treated as a browser
+    // shortcut.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F4, Modifiers::new(false, false, true, false)),
+        Platform::Other
+      ),
+      None
+    );
+    // On macOS, treat Cmd+F4 the same way as Cmd+W.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F4, Modifiers::new(false, false, false, true)),
+        Platform::Mac
       ),
       Some(ShortcutAction::CloseTab)
     );

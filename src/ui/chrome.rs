@@ -71,6 +71,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::Num7 => Key::Num7,
     egui::Key::Num8 => Key::Num8,
     egui::Key::Num9 => Key::Num9,
+    egui::Key::F4 => Key::F4,
     egui::Key::F5 => Key::F5,
     egui::Key::PlusEquals => Key::Equals,
     egui::Key::Minus => Key::Minus,
@@ -721,6 +722,34 @@ mod tests {
 
     let ctx = new_context_with_key(
       egui::Key::W,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+      "expected ChromeAction::CloseTab({tab_a:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_f4_emits_close_tab_for_active_tab_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::F4,
       egui::Modifiers {
         command: true,
         ..Default::default()
