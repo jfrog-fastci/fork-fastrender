@@ -801,16 +801,17 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
-          let destination = if element.crossorigin.is_some() {
-            FetchDestination::ScriptCors
+          let (destination, credentials_mode) = if let Some(cors_mode) = element.crossorigin {
+            (FetchDestination::ScriptCors, cors_mode.credentials_mode())
           } else {
-            FetchDestination::Script
+            (FetchDestination::Script, FetchCredentialsMode::Include)
           };
           actions.push(ScriptSchedulerAction::StartFetch {
             script_id: id,
             node_id: node_id.clone(),
             url,
             destination,
+            credentials_mode,
           });
         } else if mode == ExternalMode::Async {
           actions.push(ScriptSchedulerAction::QueueTask {
