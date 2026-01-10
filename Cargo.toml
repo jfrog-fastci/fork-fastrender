@@ -125,6 +125,7 @@ webidl-js-runtime = { path = "crates/webidl-js-runtime" }
 webidl-vm-js = { path = "crates/webidl-vm-js" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }
+diagnostics = { path = "vendor/ecma-rs/diagnostics" }
 webidl = { path = "vendor/ecma-rs/webidl" }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.

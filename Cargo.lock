@@ -1214,6 +1214,7 @@ dependencies = [
  "criterion",
  "csscolorparser",
  "cssparser",
+ "diagnostics",
  "directories",
  "egui",
  "egui-wgpu",

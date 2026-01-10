@@ -76,6 +76,7 @@ mod navigation_streaming;
 mod location_navigation;
 mod js_time;
 mod tab_vm_js_time;
+mod js_diagnostics;
 mod support;
 mod tab;
 mod ui_clipboard;

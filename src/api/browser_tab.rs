@@ -1631,6 +1631,7 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
 pub struct BrowserTab {
   trace: TraceHandle,
   trace_output: Option<PathBuf>,
+  diagnostics: Option<super::SharedRenderDiagnostics>,
   host: BrowserTabHost,
   event_loop: EventLoop<BrowserTabHost>,
   pending_frame: Option<Pixmap>,
@@ -1915,10 +1916,17 @@ impl BrowserTab {
 
     // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
       .build()?;
-    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -1932,6 +1940,7 @@ impl BrowserTab {
     let mut tab = Self {
       trace: trace_handle,
       trace_output,
+      diagnostics,
       host,
       event_loop,
       pending_frame: None,
@@ -1966,12 +1975,20 @@ impl BrowserTab {
     let trace_handle = trace_session.handle.clone();
     let trace_output = trace_session.output.clone();
 
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
+
     // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
       .build()?;
-    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -1984,6 +2001,7 @@ impl BrowserTab {
     let mut tab = Self {
       trace: trace_handle,
       trace_output,
+      diagnostics,
       host,
       event_loop,
       pending_frame: None,
@@ -2017,12 +2035,22 @@ impl BrowserTab {
     self.trace.write_chrome_trace(path).map_err(Error::Io)
   }
 
+  pub fn diagnostics_snapshot(&self) -> Option<super::RenderDiagnostics> {
+    self.diagnostics.as_ref().map(|diag| diag.clone().into_inner())
+  }
+
   pub fn navigate_to_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
     // Navigations replace the current document; any pending frame is no longer relevant.
     self.pending_frame = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
+
+    if let Some(diag) = self.diagnostics.as_ref() {
+      if let Ok(mut guard) = diag.inner.lock() {
+        *guard = super::RenderDiagnostics::default();
+      }
+    }
 
     let options_for_parse = options.clone();
     self
@@ -2067,6 +2095,13 @@ impl BrowserTab {
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
+
+    if let Some(diag) = self.diagnostics.as_ref() {
+      if let Ok(mut guard) = diag.inner.lock() {
+        *guard = super::RenderDiagnostics::default();
+      }
+    }
+
     let mut target_url = url.to_string();
     loop {
       // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
@@ -2210,13 +2245,18 @@ impl BrowserTab {
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let trace = self.trace.clone();
+    let diagnostics = self.diagnostics.clone();
     let outcome = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
       limits,
       move |err| {
         // Match browser behavior: report uncaught task errors but keep the event loop running.
+        let message = err.to_string();
+        if let Some(diag) = &diagnostics {
+          diag.record_js_exception(message.clone(), None);
+        }
         if trace.is_enabled() {
           let mut span = trace.span("js.uncaught_exception", "js");
-          span.arg_str("message", &err.to_string());
+          span.arg_str("message", &message);
         }
       },
       || {},
@@ -2255,12 +2295,17 @@ impl BrowserTab {
     }
     let mut frames_executed = 0usize;
     let trace = self.trace.clone();
+    let diagnostics = self.diagnostics.clone();
     let mut report_error = move |err: Error| {
-      // Uncaught JS exceptions should not abort event-loop execution (browser behavior). For now,
-      // record them into the trace when tracing is enabled.
+      // Uncaught JS exceptions should not abort event-loop execution (browser behavior). Record
+      // them into diagnostics, and into the trace when tracing is enabled.
+      let message = err.to_string();
+      if let Some(diag) = &diagnostics {
+        diag.record_js_exception(message.clone(), None);
+      }
       if trace.is_enabled() {
         let mut span = trace.span("js.uncaught_exception", "js");
-        span.arg_str("message", &err.to_string());
+        span.arg_str("message", &message);
       }
     };
 
@@ -3613,6 +3658,7 @@ html, body { margin: 0; padding: 0; }
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
+      diagnostics: None,
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
@@ -3812,6 +3858,7 @@ html, body { margin: 0; padding: 0; }
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
+      diagnostics: None,
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
@@ -3917,6 +3964,7 @@ html, body { margin: 0; padding: 0; }
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
+      diagnostics: None,
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,

@@ -10,6 +10,7 @@ const MAX_THROWN_OBJECT_PROTOTYPE_CHAIN: usize = 16;
 const MAX_SYNTAX_DIAGNOSTICS: usize = 8;
 const MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 1024;
 const MAX_SYNTAX_ERROR_BYTES: usize = 8 * 1024;
+const MAX_CONSOLE_MESSAGE_BYTES: usize = 8 * 1024;
 
 fn format_number_fallback(n: f64) -> String {
   if n.is_nan() {
@@ -93,6 +94,62 @@ pub(crate) fn format_stack_trace_limited(frames: &[StackFrame]) -> String {
   if truncated {
     const TRUNCATED: &str = "\n...";
     if out.len() + TRUNCATED.len() <= MAX_STACK_TRACE_BYTES {
+      out.push_str(TRUNCATED);
+    }
+  }
+
+  out
+}
+
+pub(crate) fn vm_error_is_js_exception(err: &VmError) -> bool {
+  matches!(
+    err,
+    VmError::Throw(_)
+      | VmError::ThrowWithStack { .. }
+      | VmError::TypeError(_)
+      | VmError::NotCallable
+      | VmError::NotConstructable
+      | VmError::Syntax(_)
+  )
+}
+
+fn format_syntax_error_limited(diags: &[diagnostics::Diagnostic]) -> String {
+  let mut out = String::from("syntax error");
+  let mut truncated = false;
+  let mut wrote_any = false;
+
+  for diag in diags.iter().take(MAX_SYNTAX_DIAGNOSTICS) {
+    let message = diag.message.trim();
+    if message.is_empty() {
+      continue;
+    }
+
+    let message = truncate_utf8(message, MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES);
+    let (sep, extra) = if wrote_any {
+      ('\n', 1)
+    } else {
+      (':', 2) // ": "
+    };
+
+    if out.len() + extra + message.len() > MAX_SYNTAX_ERROR_BYTES {
+      truncated = true;
+      break;
+    }
+    out.push(sep);
+    if !wrote_any {
+      out.push(' ');
+      wrote_any = true;
+    }
+    out.push_str(&message);
+  }
+
+  if diags.len() > MAX_SYNTAX_DIAGNOSTICS {
+    truncated = true;
+  }
+
+  if truncated {
+    const TRUNCATED: &str = "\n...";
+    if out.len() + TRUNCATED.len() <= MAX_SYNTAX_ERROR_BYTES {
       out.push_str(TRUNCATED);
     }
   }
@@ -254,51 +311,77 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
   }
 
   match err {
-    VmError::Syntax(diags) => {
-      let mut out = String::from("syntax error");
-      let mut truncated = false;
-      let mut wrote_any = false;
-
-      for diag in diags.iter().take(MAX_SYNTAX_DIAGNOSTICS) {
-        let message = diag.message.trim();
-        if message.is_empty() {
-          continue;
-        }
-
-        let message = truncate_utf8(message, MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES);
-        let (sep, extra) = if wrote_any {
-          ('\n', 1)
-        } else {
-          (':', 2) // ": "
-        };
-
-        if out.len() + extra + message.len() > MAX_SYNTAX_ERROR_BYTES {
-          truncated = true;
-          break;
-        }
-        out.push(sep);
-        if !wrote_any {
-          out.push(' ');
-          wrote_any = true;
-        }
-        out.push_str(&message);
-      }
-
-      if diags.len() > MAX_SYNTAX_DIAGNOSTICS {
-        truncated = true;
-      }
-
-      if truncated {
-        const TRUNCATED: &str = "\n...";
-        if out.len() + TRUNCATED.len() <= MAX_SYNTAX_ERROR_BYTES {
-          out.push_str(TRUNCATED);
-        }
-      }
-
-      out
-    }
+    VmError::Syntax(diags) => format_syntax_error_limited(&diags),
     other => other.to_string(),
   }
+}
+
+/// Split a `vm-js` error into a primary message and an optional stack trace for diagnostics.
+///
+/// Unlike [`vm_error_to_string`], this preserves the stack as a separate field so callers can record
+/// it in structured diagnostics.
+pub(crate) fn vm_error_to_message_and_stack(heap: &mut Heap, err: VmError) -> (String, Option<String>) {
+  if let VmError::Termination(term) = &err {
+    let msg = err.to_string();
+    let stack = format_stack_trace_limited(&term.stack);
+    return (msg, (!stack.is_empty()).then_some(stack));
+  }
+
+  if let Some(value) = err.thrown_value() {
+    let msg = format_thrown_value(heap, value).unwrap_or_else(|| "uncaught exception".to_string());
+    let stack = err
+      .thrown_stack()
+      .map(format_stack_trace_limited)
+      .unwrap_or_default();
+    return (msg, (!stack.is_empty()).then_some(stack));
+  }
+
+  match err {
+    VmError::Syntax(diags) => (format_syntax_error_limited(&diags), None),
+    other => (other.to_string(), None),
+  }
+}
+
+fn push_truncated(out: &mut String, s: &str, max_total_bytes: usize) {
+  if out.len() >= max_total_bytes {
+    return;
+  }
+  let remaining = max_total_bytes - out.len();
+  if s.len() <= remaining {
+    out.push_str(s);
+    return;
+  }
+  // Preserve space for "...".
+  if remaining <= 3 {
+    return;
+  }
+  let limit = remaining - 3;
+  let mut end = limit;
+  while end > 0 && !s.is_char_boundary(end) {
+    end -= 1;
+  }
+  out.push_str(&s[..end]);
+  out.push_str("...");
+}
+
+/// Deterministically format console arguments without invoking user-defined `toString` hooks.
+///
+/// This is intended for renderer diagnostics, so it is intentionally bounded and lossy for complex
+/// objects.
+pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) -> String {
+  let mut out = String::new();
+  for (idx, value) in args.iter().copied().enumerate() {
+    if idx > 0 {
+      push_truncated(&mut out, " ", MAX_CONSOLE_MESSAGE_BYTES);
+    }
+    let formatted =
+      format_thrown_value(heap, value).unwrap_or_else(|| "[exception]".to_string());
+    push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
+    if out.len() >= MAX_CONSOLE_MESSAGE_BYTES {
+      break;
+    }
+  }
+  out
 }
 
 #[cfg(test)]

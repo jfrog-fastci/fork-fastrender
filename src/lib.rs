@@ -235,6 +235,7 @@ pub use api::BrowserDocument2;
 pub use api::BrowserTab;
 pub use api::BrowserTabHost;
 pub use api::BrowserTabJsExecutor;
+pub use api::VmJsBrowserTabExecutor;
 pub use api::FastRender;
 pub use api::FastRenderBuilder;
 pub use api::FastRenderConfig;

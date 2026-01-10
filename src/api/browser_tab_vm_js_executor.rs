@@ -1,12 +1,15 @@
 use crate::error::{Error, Result};
-use crate::js::window_realm::{register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig};
+use crate::js::window_realm::{
+  register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
+};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use super::BrowserDocumentDom2;
-use super::{BrowserTabHost, BrowserTabJsExecutor};
+use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
 ///
@@ -16,6 +19,7 @@ pub struct VmJsBrowserTabExecutor {
   dom_source_id: Option<u64>,
   realm: Option<WindowRealm>,
   pending_navigation: Option<LocationNavigationRequest>,
+  diagnostics: Option<SharedRenderDiagnostics>,
 }
 
 impl VmJsBrowserTabExecutor {
@@ -24,6 +28,7 @@ impl VmJsBrowserTabExecutor {
       dom_source_id: None,
       realm: None,
       pending_navigation: None,
+      diagnostics: None,
     }
   }
 
@@ -72,6 +77,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     js_execution_options: JsExecutionOptions,
   ) -> Result<()> {
     self.pending_navigation = None;
+    self.diagnostics = document.shared_diagnostics();
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.
     self.realm = None;
@@ -79,12 +85,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let dom_source_id = self.ensure_dom_source_id(document);
 
     let url = document_url.unwrap_or("about:blank");
-    let config = WindowRealmConfig::new(url)
+    let mut config = WindowRealmConfig::new(url)
       .with_dom_source_id(dom_source_id)
       .with_current_script_state(current_script.clone());
-    let mut realm =
-      WindowRealm::new_with_js_execution_options(config, js_execution_options)
-        .map_err(|err| Error::Other(err.to_string()))?;
+    if let Some(diag) = self.diagnostics.clone() {
+      let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
+        let message = crate::js::vm_error_format::format_console_arguments_limited(heap, args);
+        diag.record_console_message(level, message);
+      });
+      config.console_sink = Some(sink);
+    }
+
+    let mut realm = WindowRealm::new_with_js_execution_options(config, js_execution_options)
+      .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_cookie_fetcher(document.fetcher());
     self.realm = Some(realm);
     Ok(())
@@ -121,7 +134,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           self.pending_navigation = Some(req);
           return Ok(());
         }
-        Err(Error::Other(err.to_string()))
+        if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+          if let Some(diag) = &self.diagnostics {
+            let (message, stack) =
+              crate::js::vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+            diag.record_js_exception(message, stack);
+          }
+          Ok(())
+        } else {
+          Err(crate::js::vm_error_format::vm_error_to_error(
+            realm.heap_mut(),
+            err,
+          ))
+        }
       }
     }
   }
@@ -161,7 +186,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           self.pending_navigation = Some(req);
           return Ok(());
         }
-        Err(Error::Other(err.to_string()))
+        if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+          if let Some(diag) = &self.diagnostics {
+            let (message, stack) =
+              crate::js::vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
+            diag.record_js_exception(message, stack);
+          }
+          Ok(())
+        } else {
+          Err(crate::js::vm_error_format::vm_error_to_error(
+            realm.heap_mut(),
+            err,
+          ))
+        }
       }
     }
   }

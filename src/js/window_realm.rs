@@ -1,3 +1,4 @@
+use crate::api::ConsoleMessageLevel;
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
@@ -30,7 +31,8 @@ use vm_js::{
   VmOptions,
 };
 
-pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
+pub type ConsoleSink =
+  Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
 // Compile-time guard: `vm-js` must keep exposing the borrow-splitting accessor used by FastRender
 // embeddings (see `WindowRealm::new`).
@@ -965,6 +967,11 @@ impl Drop for ConsoleSinkGuard {
   }
 }
 
+const CONSOLE_LEVEL_SLOT: usize = 0;
+const CONSOLE_THIS_SLOT: usize = 1;
+const CONSOLE_SINK_KEY_SLOT: usize = 2;
+const CONSOLE_SINK_ID_KEY: &str = "__fastrender_console_sink_id";
+
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
@@ -1161,24 +1168,49 @@ impl Drop for CurrentScriptSourceGuard {
   }
 }
 
-fn console_log_native(
+const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
+const MAX_BASE64_OUTPUT_LEN: usize = 32 * 1024 * 1024;
+
+fn console_call_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(console_obj) = this else {
-    return Ok(Value::Undefined);
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let level = match slots.get(CONSOLE_LEVEL_SLOT).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) => match n as u8 {
+      1 => ConsoleMessageLevel::Info,
+      2 => ConsoleMessageLevel::Warn,
+      3 => ConsoleMessageLevel::Error,
+      4 => ConsoleMessageLevel::Debug,
+      _ => ConsoleMessageLevel::Log,
+    },
+    _ => ConsoleMessageLevel::Log,
+  };
+  let console_obj = match this {
+    Value::Object(obj) => obj,
+    _ => match slots.get(CONSOLE_THIS_SLOT).copied().unwrap_or(Value::Undefined) {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    },
+  };
+  let sink_key_s = match slots
+    .get(CONSOLE_SINK_KEY_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => return Ok(Value::Undefined),
   };
 
-  let key_s = scope.alloc_string("__fastrender_console_sink_id")?;
-  let key = PropertyKey::from_string(key_s);
+  let sink_id_key = PropertyKey::from_string(sink_key_s);
   let id = match scope
     .heap()
-    .object_get_own_data_property_value(console_obj, &key)?
+    .object_get_own_data_property_value(console_obj, &sink_id_key)?
   {
     Some(Value::Number(n)) => n as u64,
     _ => return Ok(Value::Undefined),
@@ -1186,71 +1218,41 @@ fn console_log_native(
 
   let sink = console_sinks().lock().get(&id).cloned();
   if let Some(sink) = sink {
-    sink(scope.heap(), args);
+    sink(level, scope.heap_mut(), args);
   }
 
   Ok(Value::Undefined)
 }
 
-const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
-const MAX_BASE64_OUTPUT_LEN: usize = 32 * 1024 * 1024;
+const REPORT_ERROR_SINK_ID_SLOT: usize = 0;
 
 fn window_report_error_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  // `reportError` must not throw, so avoid `?` and ignore any formatting failures.
+  let sink = (|| {
+    let slots = scope.heap().get_function_native_slots(callee).ok()?;
+    let id = match slots
+      .get(REPORT_ERROR_SINK_ID_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Number(n) => n as u64,
+      _ => return None,
+    };
+    console_sinks().lock().get(&id).cloned()
+  })();
 
-  // `reportError` must not throw. Avoid calling JS `ToString` since `Symbol` throws.
-  let formatted = (|| -> Result<String, VmError> {
-    Ok(match value {
-      Value::Undefined => "undefined".to_string(),
-      Value::Null => "null".to_string(),
-      Value::Bool(b) => b.to_string(),
-      Value::Number(n) => n.to_string(),
-      Value::BigInt(b) => b.to_decimal_string(),
-      Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
-      Value::Symbol(_) => "[symbol]".to_string(),
-      Value::Object(obj) => {
-        // Best-effort: try to format `{name,message}` error-like shapes without invoking user code.
-        let name_key = alloc_key(scope, "name")?;
-        let message_key = alloc_key(scope, "message")?;
+  if let Some(sink) = sink {
+    sink(ConsoleMessageLevel::Error, scope.heap_mut(), args);
+  }
 
-        let name = match scope
-          .heap()
-          .object_get_own_data_property_value(obj, &name_key)?
-        {
-          Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
-          _ => String::new(),
-        };
-        let message = match scope
-          .heap()
-          .object_get_own_data_property_value(obj, &message_key)?
-        {
-          Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
-          _ => String::new(),
-        };
-
-        if !name.is_empty() && !message.is_empty() {
-          format!("{name}: {message}")
-        } else if !name.is_empty() {
-          name
-        } else if !message.is_empty() {
-          message
-        } else {
-          "[object]".to_string()
-        }
-      }
-    })
-  })()
-  .unwrap_or_else(|_| "[reportError]".to_string());
-
-  eprintln!("[js][reportError] {formatted}");
   Ok(Value::Undefined)
 }
 
@@ -10236,24 +10238,57 @@ fn init_window_globals(
 
   let console_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(console_obj))?;
-  let log_call_id = vm.register_native_call(console_log_native)?;
-  let log_name = scope.alloc_string("log")?;
-  scope.push_root(Value::String(log_name))?;
-  let log_func = scope.alloc_native_function(log_call_id, None, log_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(log_func, Some(realm.intrinsics().function_prototype()))?;
-  scope.push_root(Value::Object(log_func))?;
+  let console_call_id = vm.register_native_call(console_call_native)?;
+  let sink_id_key_s = scope.alloc_string(CONSOLE_SINK_ID_KEY)?;
+  scope.push_root(Value::String(sink_id_key_s))?;
+
+  let define_console_method =
+    |scope: &mut Scope<'_>, name: &str, level: ConsoleMessageLevel| -> Result<Value, VmError> {
+    let level_slot = Value::Number(match level {
+      ConsoleMessageLevel::Log => 0.0,
+      ConsoleMessageLevel::Info => 1.0,
+      ConsoleMessageLevel::Warn => 2.0,
+      ConsoleMessageLevel::Error => 3.0,
+      ConsoleMessageLevel::Debug => 4.0,
+    });
+
+    let slots = [
+      level_slot,
+      Value::Object(console_obj),
+      Value::String(sink_id_key_s),
+    ];
+
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function_with_slots(console_call_id, None, name_s, 0, &slots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+    Ok(Value::Object(func))
+  };
 
   let log_key = alloc_key(&mut scope, "log")?;
-  scope.define_property(console_obj, log_key, data_desc(Value::Object(log_func)))?;
-
+  let info_key = alloc_key(&mut scope, "info")?;
+  let warn_key = alloc_key(&mut scope, "warn")?;
   let error_key = alloc_key(&mut scope, "error")?;
-  scope.define_property(console_obj, error_key, data_desc(Value::Object(log_func)))?;
+  let debug_key = alloc_key(&mut scope, "debug")?;
+
+  let log_func = define_console_method(&mut scope, "log", ConsoleMessageLevel::Log)?;
+  let info_func = define_console_method(&mut scope, "info", ConsoleMessageLevel::Info)?;
+  let warn_func = define_console_method(&mut scope, "warn", ConsoleMessageLevel::Warn)?;
+  let error_func = define_console_method(&mut scope, "error", ConsoleMessageLevel::Error)?;
+  let debug_func = define_console_method(&mut scope, "debug", ConsoleMessageLevel::Debug)?;
+
+  scope.define_property(console_obj, log_key, data_desc(log_func))?;
+  scope.define_property(console_obj, info_key, data_desc(info_func))?;
+  scope.define_property(console_obj, warn_key, data_desc(warn_func))?;
+  scope.define_property(console_obj, error_key, data_desc(error_func))?;
+  scope.define_property(console_obj, debug_key, data_desc(debug_func))?;
 
   let console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
   if let Some(guard) = console_sink_guard.as_ref() {
-    let sink_key = alloc_key(&mut scope, "__fastrender_console_sink_id")?;
+    let sink_key = PropertyKey::from_string(sink_id_key_s);
     scope.define_property(
       console_obj,
       sink_key,
@@ -10415,8 +10450,17 @@ fn init_window_globals(
   let report_error_call_id = vm.register_native_call(window_report_error_native)?;
   let report_error_name = scope.alloc_string("reportError")?;
   scope.push_root(Value::String(report_error_name))?;
-  let report_error_func =
-    scope.alloc_native_function(report_error_call_id, None, report_error_name, 1)?;
+  let report_error_slots = [console_sink_guard
+    .as_ref()
+    .map(|guard| Value::Number(guard.id() as f64))
+    .unwrap_or(Value::Undefined)];
+  let report_error_func = scope.alloc_native_function_with_slots(
+    report_error_call_id,
+    None,
+    report_error_name,
+    1,
+    &report_error_slots,
+  )?;
   scope.heap_mut().object_set_prototype(
     report_error_func,
     Some(realm.intrinsics().function_prototype()),
@@ -10481,6 +10525,12 @@ mod tests {
     String(String),
     Object,
     Symbol,
+  }
+
+  #[derive(Debug, Clone, PartialEq)]
+  struct CapturedConsoleCall {
+    level: ConsoleMessageLevel,
+    args: Vec<CapturedConsoleArg>,
   }
 
   #[derive(Default)]
@@ -11792,7 +11842,7 @@ mod tests {
       .lock()
       .expect("console sink test mutex should not be poisoned");
     let initial_len = console_sinks().lock().len();
-    let sink: ConsoleSink = Arc::new(|_heap, _args| {});
+    let sink: ConsoleSink = Arc::new(|_level, _heap, _args| {});
 
     let probe = |max_bytes: usize| -> (bool, bool) {
       let before_next = NEXT_CONSOLE_SINK_ID.load(Ordering::Relaxed);
@@ -11874,11 +11924,11 @@ mod tests {
       .lock()
       .expect("console sink test mutex should not be poisoned");
     let url = "https://example.com/path";
-    let captured: Arc<Mutex<Vec<Vec<CapturedConsoleArg>>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured: Arc<Mutex<Vec<CapturedConsoleCall>>> = Arc::new(Mutex::new(Vec::new()));
     let captured_for_sink = captured.clone();
 
-    let sink: ConsoleSink = Arc::new(move |heap, args| {
-      let entry: Vec<CapturedConsoleArg> = args
+    let sink: ConsoleSink = Arc::new(move |level, heap, args| {
+      let args: Vec<CapturedConsoleArg> = args
         .iter()
         .map(|value| match *value {
           Value::Undefined => CapturedConsoleArg::Undefined,
@@ -11896,7 +11946,7 @@ mod tests {
           Value::Symbol(_) => CapturedConsoleArg::Symbol,
         })
         .collect();
-      captured_for_sink.lock().push(entry);
+      captured_for_sink.lock().push(CapturedConsoleCall { level, args });
     });
 
     let mut config = WindowRealmConfig::new(url);
@@ -11911,24 +11961,50 @@ mod tests {
     let Value::Object(console_obj) = console else {
       panic!("expected object");
     };
-    let log = get_prop(vm, &mut scope, console_obj, "log")?;
-
     let mut host_hooks = NoopHostHooks::default();
-    let call_result = vm.call_with_host(
-      &mut scope,
-      &mut host_hooks,
-      log,
-      Value::Object(console_obj),
-      &[Value::Number(1.0), Value::Null],
-    )?;
-    assert_eq!(call_result, Value::Undefined);
+    let calls = [
+      ("log", ConsoleMessageLevel::Log, Value::Number(1.0)),
+      ("info", ConsoleMessageLevel::Info, Value::Number(2.0)),
+      ("warn", ConsoleMessageLevel::Warn, Value::Number(3.0)),
+      ("error", ConsoleMessageLevel::Error, Value::Number(4.0)),
+      ("debug", ConsoleMessageLevel::Debug, Value::Number(5.0)),
+    ];
+    for (name, _level, arg) in calls {
+      let func = get_prop(vm, &mut scope, console_obj, name)?;
+      let call_result = vm.call_with_host(
+        &mut scope,
+        &mut host_hooks,
+        func,
+        Value::Object(console_obj),
+        &[arg],
+      )?;
+      assert_eq!(call_result, Value::Undefined);
+    }
 
     assert_eq!(
       &*captured.lock(),
-      &[vec![
-        CapturedConsoleArg::Number(1.0),
-        CapturedConsoleArg::Null
-      ]]
+      &[
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Log,
+          args: vec![CapturedConsoleArg::Number(1.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Info,
+          args: vec![CapturedConsoleArg::Number(2.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Warn,
+          args: vec![CapturedConsoleArg::Number(3.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Error,
+          args: vec![CapturedConsoleArg::Number(4.0)]
+        },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Debug,
+          args: vec![CapturedConsoleArg::Number(5.0)]
+        },
+      ]
     );
     Ok(())
   }

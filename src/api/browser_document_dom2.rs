@@ -172,6 +172,16 @@ impl BrowserDocumentDom2 {
     self.renderer.document_csp.clone()
   }
 
+  pub(crate) fn shared_diagnostics(&self) -> Option<super::SharedRenderDiagnostics> {
+    self
+      .renderer
+      .diagnostics
+      .as_ref()
+      .map(|diag| super::SharedRenderDiagnostics {
+        inner: Arc::clone(diag),
+      })
+  }
+
   pub(crate) fn fetcher(&self) -> std::sync::Arc<dyn crate::resource::ResourceFetcher> {
     self.renderer.resource_fetcher()
   }
