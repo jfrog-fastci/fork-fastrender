@@ -269,6 +269,7 @@ fn write_cached_html_with_hooks<F, G>(
   source_url: Option<&str>,
   status: Option<u16>,
   response_referrer_policy: Option<ReferrerPolicy>,
+  content_security_policy: &[String],
   pre_meta_rename_hook: F,
   pre_html_rename_hook: G,
 ) -> io::Result<()>
@@ -278,23 +279,34 @@ where
 {
   let meta_path = cache_path.with_extension("html.meta");
   let mut meta = String::new();
+  let mut push_line = |line: &str| {
+    if meta.len() + line.len() + 1 > MAX_CACHED_HTML_META_BYTES {
+      return;
+    }
+    let _ = writeln!(meta, "{line}");
+  };
   if let Some(ct) = content_type {
     if !ct.is_empty() {
-      let _ = writeln!(meta, "content-type: {}", ct);
+      push_line(&format!("content-type: {}", ct));
     }
   }
   if let Some(policy) = response_referrer_policy {
     let value = policy.as_str();
     if !value.is_empty() {
-      let _ = writeln!(meta, "referrer-policy: {}", value);
+      push_line(&format!("referrer-policy: {}", value));
     }
   }
   if let Some(status) = status {
-    let _ = writeln!(meta, "status: {}", status);
+    push_line(&format!("status: {}", status));
   }
   if let Some(url) = source_url {
     if !url.trim().is_empty() {
-      let _ = writeln!(meta, "url: {}", url.trim());
+      push_line(&format!("url: {}", url.trim()));
+    }
+  }
+  for value in content_security_policy {
+    if !value.trim().is_empty() {
+      push_line(&format!("content-security-policy: {}", value.trim()));
     }
   }
 
@@ -363,6 +375,7 @@ fn write_cached_html(
   source_url: Option<&str>,
   status: Option<u16>,
   response_referrer_policy: Option<ReferrerPolicy>,
+  content_security_policy: &[String],
 ) -> io::Result<()> {
   write_cached_html_with_hooks(
     cache_path,
@@ -371,6 +384,7 @@ fn write_cached_html(
     source_url,
     status,
     response_referrer_policy,
+    content_security_policy,
     |_| Ok(()),
     |_| Ok(()),
   )
@@ -600,6 +614,11 @@ fn main() {
         match fetch_page(fetcher.as_ref(), &entry.url, allow_http_error_status) {
           Ok(res) => {
             let canonical_url = res.final_url.as_deref().unwrap_or(&entry.url);
+            let content_security_policy = res
+              .header_values("Content-Security-Policy")
+              .into_iter()
+              .map(|value| value.to_string())
+              .collect::<Vec<_>>();
             let has_existing_cache = cache_path.exists();
             if should_preserve_existing_cache_on_error_status(
               allow_http_error_status,
@@ -635,6 +654,7 @@ fn main() {
               Some(canonical_url),
               res.status,
               res.response_referrer_policy,
+              &content_security_policy,
             )
             .is_ok()
             {
@@ -909,6 +929,7 @@ mod tests {
       Some("https://example.com/page"),
       Some(200),
       Some(ReferrerPolicy::NoReferrer),
+      &vec!["default-src 'none'".to_string()],
     )
     .expect("write ok");
 
@@ -921,6 +942,7 @@ mod tests {
     assert!(meta.contains("referrer-policy: no-referrer"));
     assert!(meta.contains("url: https://example.com/page"));
     assert!(meta.contains("status: 200"));
+    assert!(meta.contains("content-security-policy: default-src 'none'"));
   }
 
   #[test]
@@ -934,7 +956,7 @@ mod tests {
     std::fs::write(&cache_path, "stale").unwrap();
     std::fs::write(&meta_path, "old").unwrap();
 
-    write_cached_html(&cache_path, b"hello", None, None, None, None).expect("write ok");
+    write_cached_html(&cache_path, b"hello", None, None, None, None, &[]).expect("write ok");
 
     let html = std::fs::read_to_string(&cache_path).expect("html read");
     assert_eq!(html, "hello");
@@ -962,6 +984,7 @@ mod tests {
       Some("https://new.test/"),
       Some(200),
       None,
+      &[],
       |_| Ok(()),
       |temp_path| {
         assert!(temp_path.exists());
@@ -1056,6 +1079,7 @@ mod tests {
       res.final_url.as_deref(),
       res.status,
       res.response_referrer_policy,
+      &[],
     )
     .expect("write cached");
 

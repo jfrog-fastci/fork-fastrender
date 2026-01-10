@@ -398,6 +398,15 @@ pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
   );
   resource.status = parsed_meta.status;
   resource.response_referrer_policy = parsed_meta.response_referrer_policy;
+  if !parsed_meta.content_security_policy.is_empty() {
+    resource.response_headers = Some(
+      parsed_meta
+        .content_security_policy
+        .iter()
+        .map(|value| ("Content-Security-Policy".to_string(), value.clone()))
+        .collect(),
+    );
+  }
   let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
   let document = PreparedDocument::new_with_response_referrer_policy(
@@ -700,6 +709,7 @@ pub fn follow_client_redirects_resource(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::html::content_security_policy::CspPolicy;
   use crate::render_control;
   use crate::resource::FetchDestination;
   use std::sync::atomic::{AtomicBool, Ordering};
@@ -900,6 +910,24 @@ mod tests {
 
     let cached = read_cached_document(&path).expect("read cached document");
     assert_eq!(cached.document.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn read_cached_document_restores_csp_response_headers() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("page.html");
+    std::fs::write(&path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+    std::fs::write(
+      path.with_extension("html.meta"),
+      "content-type: text/html\ncontent-security-policy: default-src 'none'\nurl: https://example.com/page\n",
+    )
+    .expect("write meta");
+
+    let cached = read_cached_document(&path).expect("read cached document");
+    assert!(
+      CspPolicy::from_response_headers(&cached.resource).is_some(),
+      "cached document should restore CSP response headers from meta sidecar"
+    );
   }
 }
 

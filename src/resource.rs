@@ -2627,6 +2627,10 @@ pub struct CachedHtmlMetadata {
   pub status: Option<u16>,
   /// Parsed referrer policy from the `Referrer-Policy` response header, when available.
   pub response_referrer_policy: Option<ReferrerPolicy>,
+  /// Raw `Content-Security-Policy` response header values, in order.
+  ///
+  /// Stored as a list so duplicate headers can be preserved.
+  pub content_security_policy: Vec<String>,
 }
 
 impl FetchedResource {
@@ -3106,6 +3110,7 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
 /// Supports the legacy format where the meta file contains only the content-type
 /// string, and a key/value format where lines are prefixed with:
 /// - `content-type:`
+/// - `content-security-policy:` (from the `Content-Security-Policy` response header)
 /// - `referrer-policy:` (from the `Referrer-Policy` response header)
 /// - `status:`
 /// - `url:`
@@ -3125,6 +3130,9 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
     let value = parts.next().map(trim_ascii_whitespace);
     match (key.as_deref(), value) {
       (Some("content-type"), Some(v)) if !v.is_empty() => parsed.content_type = Some(v.to_string()),
+      (Some("content-security-policy"), Some(v)) if !v.is_empty() => {
+        parsed.content_security_policy.push(v.to_string());
+      }
       (Some("referrer-policy"), Some(v)) if !v.is_empty() => {
         parsed.response_referrer_policy = ReferrerPolicy::parse_value_list(v)
       }
@@ -3139,6 +3147,7 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
   }
 
   if parsed.content_type.is_none()
+    && parsed.content_security_policy.is_empty()
     && parsed.response_referrer_policy.is_none()
     && parsed.url.is_none()
     && parsed.status.is_none()
