@@ -341,7 +341,14 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
     let Some(name) = parts.next() else {
       continue;
     };
-    let directive = match_lower_directive(name)?;
+    // Unknown directives are ignored per CSP: a policy may contain many directives we do not model
+    // (e.g. `base-uri`, `object-src`, `upgrade-insecure-requests`).
+    //
+    // Returning `None` here would discard the entire directive set and effectively disable CSP,
+    // which is both non-spec and surprising.
+    let Some(directive) = match_lower_directive(name) else {
+      continue;
+    };
     let mut sources = Vec::new();
     for token in parts {
       if token.eq_ignore_ascii_case("'self'") {
@@ -1127,6 +1134,20 @@ mod tests {
       CspDirective::ImgSrc,
       "https://example.com/",
       "https://example.com/images/other.png"
+    ));
+  }
+
+  #[test]
+  fn unknown_directives_do_not_discard_entire_policy() {
+    // Real-world CSP policies often include many directives we do not model; we should still parse
+    // and enforce the subset we understand.
+    let policy = CspPolicy::from_values(["default-src 'none'; object-src 'none'; img-src https:"])
+      .expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/a.png"
     ));
   }
 }
