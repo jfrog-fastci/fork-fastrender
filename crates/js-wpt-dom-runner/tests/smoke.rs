@@ -65,6 +65,22 @@ fn run_test_id_backend(
 }
 
 fn assert_wpt_pass(id: &str) {
+  // Some curated tests still report directly via `__fastrender_wpt_report({file_status: ...})`
+  // without going through `testharness.js`, so they legitimately have no subtests yet.
+  const ALLOW_EMPTY_SUBTESTS: &[&str] = &[
+    "dom/document_fragment_append.window.js",
+    "dom/document_get_element_by_id.window.js",
+    "dom/element_matches_closest.window.js",
+    "dom/element_query_selector.window.js",
+    "dom/error_constructor.window.js",
+    "dom/node_sibling_props.window.js",
+    "events/document_eventtarget_path.window.js",
+    "events/eventtarget.window.js",
+    "events/eventtarget_dispatch_order.window.js",
+    "events/eventtarget_order.window.js",
+    "events/passive_listener.window.js",
+  ];
+
   for (backend, result) in run_test_id_all_backends(id, RunnerConfig::default()) {
     assert_eq!(
       result.outcome,
@@ -75,12 +91,52 @@ fn assert_wpt_pass(id: &str) {
       .wpt_report
       .unwrap_or_else(|| panic!("{id} should include report payload under backend {backend}"));
     assert_eq!(report.file_status, "pass");
-    if id.starts_with("smoke/") {
+    assert_eq!(
+      report.harness_status, "ok",
+      "{id} should have harness_status=ok under backend {backend}: {report:#?}"
+    );
+
+    let allow_empty_subtests = ALLOW_EMPTY_SUBTESTS.iter().any(|&t| t == id);
+    if !allow_empty_subtests {
       assert!(
         !report.subtests.is_empty(),
         "{id} should include at least one subtest under backend {backend}: {report:#?}"
       );
     }
+
+    for st in &report.subtests {
+      assert!(
+        !st.name.is_empty(),
+        "{id} subtest name should be non-empty under backend {backend}: {st:#?}"
+      );
+      assert!(
+        matches!(st.status.as_str(), "pass" | "fail" | "timeout" | "error"),
+        "{id} subtest status should be one of pass|fail|timeout|error under backend {backend}: {st:#?}"
+      );
+    }
+  }
+}
+
+#[test]
+fn reports_subtest_failures() {
+  for (backend, result) in run_test_id_all_backends("smoke/sync-fail.html", RunnerConfig::default())
+  {
+    match &result.outcome {
+      RunOutcome::Fail(_msg) => {}
+      other => panic!("sync-fail.html should fail under backend {backend}, got {other:?}"),
+    }
+
+    let report = result.wpt_report.unwrap_or_else(|| {
+      panic!("sync-fail.html should include report payload under backend {backend}")
+    });
+    assert_eq!(
+      report.file_status, "fail",
+      "sync-fail.html should report file_status=fail under backend {backend}: {report:#?}"
+    );
+    assert!(
+      report.subtests.iter().any(|st| st.status == "fail"),
+      "sync-fail.html should include at least one failing subtest under backend {backend}: {report:#?}"
+    );
   }
 }
 
@@ -317,6 +373,15 @@ fn runs_urlsearchparams_live_test_vmjs() {
     .wpt_report
     .expect("urlsearchparams-live should include report payload under vmjs");
   assert_eq!(report.file_status, "pass");
+  assert_eq!(report.harness_status, "ok");
+  assert!(
+    !report.subtests.is_empty(),
+    "urlsearchparams-live should include subtests under vmjs: {report:#?}"
+  );
+  for st in &report.subtests {
+    assert!(!st.name.is_empty());
+    assert!(matches!(st.status.as_str(), "pass" | "fail" | "timeout" | "error"));
+  }
 }
 
 #[test]
