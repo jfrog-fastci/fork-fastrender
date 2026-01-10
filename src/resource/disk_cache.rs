@@ -1829,6 +1829,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
+    resource.response_headers = meta.response_headers.clone();
 
     let stored_time = secs_to_system_time(meta.stored_at).unwrap_or(SystemTime::now());
     let http_cache = meta.cache.as_ref().and_then(|c| c.to_http()).or_else(|| {
@@ -1963,6 +1964,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
+    resource.response_headers = meta.response_headers.clone();
     resource.cache_policy = meta.cache.as_ref().map(|c| c.to_policy()).or_else(|| {
       self.disk_config.max_age.map(|max_age| HttpCachePolicy {
         max_age: Some(max_age.as_secs()),
@@ -2281,6 +2283,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_type: resource.content_type.clone(),
       nosniff: resource.nosniff,
       content_encoding: resource.content_encoding.clone(),
+      response_headers: resource.response_headers.clone(),
       etag: etag
         .map(|s| s.to_string())
         .or_else(|| resource.etag.clone()),
@@ -2464,6 +2467,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_type: error.content_type.clone(),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: error.etag.clone(),
       last_modified: error.last_modified.clone(),
       response_referrer_policy: None,
@@ -2994,6 +2998,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_type: resource.content_type.clone(),
       nosniff: resource.nosniff,
       content_encoding: resource.content_encoding.clone(),
+      response_headers: resource.response_headers.clone(),
       etag: resource.etag.clone(),
       last_modified: resource.last_modified.clone(),
       response_referrer_policy: resource
@@ -4271,6 +4276,8 @@ pub(super) struct StoredMetadata {
   nosniff: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   content_encoding: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  response_headers: Option<Vec<(String, String)>>,
   etag: Option<String>,
   last_modified: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4574,6 +4581,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -4628,6 +4636,49 @@ mod tests {
       disk.meta_path_for_data(&disk.data_path_for_key(&canonical_key)).exists(),
       "expected canonical variant meta to exist"
     );
+  }
+
+  #[test]
+  fn disk_cache_round_trips_response_headers() {
+    #[derive(Clone)]
+    struct HeaderFetcher;
+
+    impl ResourceFetcher for HeaderFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        let mut res = FetchedResource::new(b"<html></html>".to_vec(), Some("text/html".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        res.response_headers = Some(vec![
+          (
+            "Content-Security-Policy".to_string(),
+            "default-src 'none'".to_string(),
+          ),
+          ("Set-Cookie".to_string(), "a=b".to_string()),
+          ("Set-Cookie".to_string(), "c=d".to_string()),
+        ]);
+        Ok(res)
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/headers";
+
+    let disk = DiskCachingFetcher::new(HeaderFetcher, tmp.path());
+    let _ = disk.fetch(url).expect("first fetch");
+
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let res = disk.fetch(url).expect("cached fetch");
+
+    assert!(res.response_headers.is_some());
+    assert_eq!(
+      res.header_values("Content-Security-Policy"),
+      vec!["default-src 'none'"]
+    );
+    assert_eq!(res.header_values("Set-Cookie"), vec!["a=b", "c=d"]);
+
+    let csp = crate::html::content_security_policy::CspPolicy::from_response_headers(&res)
+      .expect("CSP should be extracted from cached response headers");
+    assert!(!csp.is_empty(), "expected parsed CSP policy to be non-empty");
   }
 
   #[derive(Clone)]
@@ -5271,6 +5322,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -7280,6 +7332,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -7356,6 +7409,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -7411,6 +7465,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -9062,6 +9117,7 @@ mod tests {
       content_type: Some("text/plain".to_string()),
       nosniff: false,
       content_encoding: None,
+      response_headers: None,
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
@@ -9529,6 +9585,7 @@ mod tests {
           content_type: Some("text/plain".to_string()),
           nosniff: false,
           content_encoding: None,
+          response_headers: None,
           etag: None,
           last_modified: None,
           response_referrer_policy: None,

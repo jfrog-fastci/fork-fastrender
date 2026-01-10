@@ -13826,7 +13826,7 @@ mod tests {
     let paint_viewport =
       paint_viewport_for(outer.style.writing_mode, outer.style.direction, viewport);
     let mut float_ctx = FloatContext::new(viewport.width);
-      let (fragments, _height, _positioned) = fc
+    let (fragments, _height, _positioned) = fc
       .layout_children_with_external_floats(
         &outer,
         &constraints,
