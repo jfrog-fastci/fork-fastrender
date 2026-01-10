@@ -1871,11 +1871,8 @@ fn serialize_svg_mask_subtree_with_namespaces(
       };
 
       let mut attrs = attributes.clone();
-      if current_ns == SVG_NAMESPACE
-        && !attrs
-          .iter()
-          .any(|(name, _)| name.eq_ignore_ascii_case("transform"))
-      {
+      if current_ns == SVG_NAMESPACE {
+        attrs.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
         if let Some(transform) = svg_transform_attribute(&styled.styles) {
           attrs.push(("transform".to_string(), transform));
         }
@@ -2831,14 +2828,16 @@ fn serialize_svg_subtree(
               let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
               merge_style_attribute(attrs_mut, &extra);
             }
+            let transform = svg_transform_attribute(&styled.styles);
             let has_transform_attr = owned_attrs
               .as_deref()
               .unwrap_or(attributes)
               .iter()
               .any(|(name, _)| name.eq_ignore_ascii_case("transform"));
-            if !has_transform_attr {
-              if let Some(transform) = svg_transform_attribute(&styled.styles) {
-                let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            if has_transform_attr || transform.is_some() {
+              let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+              attrs_mut.retain(|(name, _)| !name.eq_ignore_ascii_case("transform"));
+              if let Some(transform) = transform {
                 attrs_mut.push(("transform".to_string(), transform));
               }
             }

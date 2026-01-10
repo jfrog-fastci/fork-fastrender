@@ -17978,6 +17978,7 @@ mod tests {
   use crate::css::parser::reset_inline_style_declaration_parse_count;
   use crate::css::types::CssImportLoader;
   use crate::css::types::StyleSheet;
+  use crate::css::types::Transform as CssTransform;
   use crate::dom::DomNode;
   use crate::dom::DomNodeType;
   use crate::dom::HTML_NAMESPACE;
@@ -29655,6 +29656,40 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn svg_transform_presentation_attribute_sets_computed_transform() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "g".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("transform".to_string(), "translate(10 20)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert_eq!(
+      styled.styles.transform,
+      vec![CssTransform::Translate(Length::px(10.0), Length::px(20.0))]
+    );
+  }
+
+  #[test]
+  fn svg_transform_presentation_attribute_overridden_by_css_transform_none() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "g".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("transform".to_string(), "translate(10 20)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let stylesheet = parse_stylesheet("g { transform: none; }").unwrap();
+    let styled = apply_styles(&dom, &stylesheet);
+    assert!(styled.styles.transform.is_empty());
+  }
+
+  #[test]
   fn author_css_overrides_svg_presentation_attribute() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -36690,6 +36725,74 @@ fn svg_presentation_attribute_hints(
 
   let mut declarations: Vec<Declaration> = Vec::new();
 
+  fn parse_svg_transform_attribute(value: &str) -> Option<Vec<crate::css::types::Transform>> {
+    use crate::css::types::Transform as CssTransform;
+
+    // SVG presentation attributes are treated as author-origin declarations. We currently do not
+    // support resolving `var()` inside SVG transform attribute syntax; skip it so we don't crash
+    // while parsing.
+    if crate::style::var_resolution::contains_var(value) {
+      return None;
+    }
+
+    let mut transforms = Vec::new();
+    for item in svgtypes::TransformListParser::from(value) {
+      let item = item.ok()?;
+      match item {
+        svgtypes::TransformListToken::Matrix { a, b, c, d, e, f } => {
+          let (a, b, c, d, e, f) = (a as f32, b as f32, c as f32, d as f32, e as f32, f as f32);
+          if !a.is_finite()
+            || !b.is_finite()
+            || !c.is_finite()
+            || !d.is_finite()
+            || !e.is_finite()
+            || !f.is_finite()
+          {
+            return None;
+          }
+          transforms.push(CssTransform::Matrix(a, b, c, d, e, f));
+        }
+        svgtypes::TransformListToken::Translate { tx, ty } => {
+          let (tx, ty) = (tx as f32, ty as f32);
+          if !tx.is_finite() || !ty.is_finite() {
+            return None;
+          }
+          transforms.push(CssTransform::Translate(Length::px(tx), Length::px(ty)));
+        }
+        svgtypes::TransformListToken::Scale { sx, sy } => {
+          let (sx, sy) = (sx as f32, sy as f32);
+          if !sx.is_finite() || !sy.is_finite() {
+            return None;
+          }
+          transforms.push(CssTransform::Scale(sx, sy));
+        }
+        svgtypes::TransformListToken::Rotate { angle, .. } => {
+          let angle = angle as f32;
+          if !angle.is_finite() {
+            return None;
+          }
+          transforms.push(CssTransform::Rotate(angle));
+        }
+        svgtypes::TransformListToken::SkewX { angle } => {
+          let angle = angle as f32;
+          if !angle.is_finite() {
+            return None;
+          }
+          transforms.push(CssTransform::SkewX(angle));
+        }
+        svgtypes::TransformListToken::SkewY { angle } => {
+          let angle = angle as f32;
+          if !angle.is_finite() {
+            return None;
+          }
+          transforms.push(CssTransform::SkewY(angle));
+        }
+      }
+    }
+
+    Some(transforms)
+  }
+
   // SVG painting properties
   if let Some(value) = node.get_attribute_ref("fill") {
     push_parsed(&mut declarations, "fill", value);
@@ -36804,6 +36907,21 @@ fn svg_presentation_attribute_hints(
   }
   if let Some(value) = node.get_attribute_ref("overflow") {
     push_parsed(&mut declarations, "overflow", value);
+  }
+
+  // The SVG `transform` attribute is a presentation attribute for the CSS `transform` property and
+  // participates in the cascade as an author-origin, specificity-zero declaration (SVG2 + CSS
+  // Transforms).
+  if let Some(value) = node.get_attribute_ref("transform") {
+    if let Some(transforms) = parse_svg_transform_attribute(value) {
+      declarations.push(Declaration {
+        property: "transform".into(),
+        value: PropertyValue::Transform(transforms),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      });
+    }
   }
 
   if declarations.is_empty() {
