@@ -47,6 +47,7 @@ mod letter_spacing_ligatures_test;
 mod line_break_test;
 mod native_small_caps_feature_probe_test;
 mod pipeline_test;
+mod bundled_helvetica_neue_alias_prefers_roboto_flex;
 mod script_test;
 mod shaper_test;
 mod svg_color_font_test;

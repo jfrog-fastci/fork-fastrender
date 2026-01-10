@@ -681,6 +681,6 @@ mod tests {
       &mut picker,
     )
     .expect("expected Helvetica alias family to resolve");
-    assert_eq!(resolved.font.family, "Noto Sans");
+    assert_eq!(resolved.font.family, "Roboto Flex");
   }
 }
