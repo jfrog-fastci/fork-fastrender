@@ -176,6 +176,21 @@ impl SourceTextModuleRecord {
     Ok(record)
   }
 
+  /// Parses a source text module using VM budget/interrupt state, preserving the provided source
+  /// metadata (URL/name/etc).
+  pub fn parse_source_with_vm(vm: &mut Vm, source: Arc<SourceText>) -> Result<Self, VmError> {
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    };
+    let top = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let mut cancel = || vm.tick();
+    let mut record = module_record_from_top_level(&top, &mut cancel)?;
+    record.source = Some(source);
+    record.ast = Some(Arc::new(top));
+    Ok(record)
+  }
+
   /// Implements ECMA-262 `GetExportedNames([exportStarSet])`.
   pub fn get_exported_names(&self, graph: &ModuleGraph, module: ModuleId) -> Vec<String> {
     self.get_exported_names_with_star_set(graph, module, &mut Vec::new())
@@ -459,9 +474,9 @@ fn module_record_from_top_level(
           let mut req_for_entries = Some(req);
           let mut remaining = import_entry_count;
 
-          let mut next_req = |ctx: &mut ModuleRecordParseCtx<'_>,
-                              remaining: &mut usize,
-                              req_for_entries: &mut Option<ModuleRequest>|
+          let next_req = |ctx: &mut ModuleRecordParseCtx<'_>,
+                               remaining: &mut usize,
+                               req_for_entries: &mut Option<ModuleRequest>|
            -> Result<ModuleRequest, VmError> {
             debug_assert!(*remaining > 0);
             let is_last = *remaining == 1;
@@ -1365,4 +1380,29 @@ fn clone_module_request(
 fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
   let span = loc.to_diagnostics_span(FileId(0));
   VmError::Syntax(vec![Diagnostic::error("VMJS0001", message, span)])
+}
+
+#[cfg(test)]
+mod tests {
+  use super::SourceTextModuleRecord;
+  use crate::{SourceText, TerminationReason, Vm, VmError, VmOptions};
+  use std::sync::Arc;
+
+  #[test]
+  fn parse_source_with_vm_respects_fuel_budget() {
+    let mut opts = VmOptions::default();
+    opts.default_fuel = Some(0);
+    let mut vm = Vm::new(opts);
+    let source = Arc::new(SourceText::new(
+      "https://example.invalid/module.js",
+      "export const x = 1;",
+    ));
+
+    let err = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)
+      .expect_err("expected fuel budget to terminate parsing");
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+      other => panic!("expected OutOfFuel termination, got {other:?}"),
+    }
+  }
 }

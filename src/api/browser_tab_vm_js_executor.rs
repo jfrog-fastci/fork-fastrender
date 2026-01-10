@@ -283,46 +283,17 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       ));
     };
 
-    update_time_bindings_clock(realm.heap(), event_loop.clock())
-      .map_err(|err| Error::Other(err.to_string()))?;
-    realm.set_base_url(spec.base_url.clone());
-    realm.reset_interrupt();
+    let diagnostics = self.diagnostics.clone();
+    let clock = event_loop.clock();
+    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let module_map = &mut self.module_map;
+    let import_map_state = &mut self.import_map_state;
 
-    let entry_module = if let Some(id) = self.module_map.get(&entry_specifier).copied() {
-      id
-    } else {
-      let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
-      let record = match SourceTextModuleRecord::parse_source(source) {
-        Ok(record) => record,
-        Err(err) => {
-          if vm_error_format::vm_error_is_js_exception(&err) {
-            if let Some(diag) = &self.diagnostics {
-              let (message, stack) =
-                vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
-              diag.record_js_exception(message, stack);
-            }
-            return Ok(());
-          }
-          return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err));
-        }
-      };
-      let id = module_graph.add_module(record);
-      self.module_map.insert(entry_specifier.clone(), id);
-      id
-    };
-
-    // Route Promise jobs (including module-loading promise reactions) through FastRender's
-    // microtask queue.
-    let mut hooks = ModuleLoaderHooks {
-      inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
-      fetcher: document.fetcher(),
-      max_script_bytes: self.js_execution_options.max_script_bytes,
-      module_map: &mut self.module_map,
-      import_map_state: &mut self.import_map_state,
-    };
-
-    let result: std::result::Result<(), VmError> = with_event_loop(event_loop, || {
-      // Apply a fresh per-run VM budget (fuel + deadline) for module loading/evaluation.
+    let exec_result: Result<()> = with_event_loop(event_loop, || {
+      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+      realm.set_base_url(spec.base_url.clone());
+      realm.reset_interrupt();
+      // Apply a fresh per-run VM budget (fuel + deadline) for module parsing/loading/evaluation.
       //
       // Module scripts are executed from event loop tasks (like classic scripts) and must be
       // interruptible. In particular, the VM's construction-time default deadline is relative to
@@ -331,62 +302,101 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut vm = vm.push_budget(budget);
       // Ensure immediate termination when no budget remains (deadline exceeded, interrupted, etc).
-      vm.tick()?;
+      vm.tick()
+        .map_err(|err| vm_error_format::vm_error_to_error(heap, err))?;
+
+      let entry_module = if let Some(id) = module_map.get(&entry_specifier).copied() {
+        id
+      } else {
+        let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
+        let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
+          Ok(record) => record,
+          Err(err) => {
+            if vm_error_format::vm_error_is_js_exception(&err) {
+              if let Some(diag) = diagnostics.as_ref() {
+                let (message, stack) =
+                  vm_error_format::vm_error_to_message_and_stack(heap, err);
+                diag.record_js_exception(message, stack);
+              }
+              return Ok(());
+            }
+            return Err(vm_error_format::vm_error_to_error(heap, err));
+          }
+        };
+        let id = module_graph.add_module(record);
+        module_map.insert(entry_specifier.clone(), id);
+        id
+      };
+
+      // Route Promise jobs (including module-loading promise reactions) through FastRender's
+      // microtask queue.
+      let mut hooks = ModuleLoaderHooks {
+        inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+        fetcher: document.fetcher(),
+        max_script_bytes,
+        module_map,
+        import_map_state,
+      };
+
       let mut scope = heap.scope();
 
-      // Load all modules in the static import graph.
-      let load_promise = vm_js::load_requested_modules(
-        &mut vm,
-        &mut scope,
-        module_graph,
-        &mut hooks,
-        entry_module,
-        HostDefined::default(),
-      )?;
-      scope.push_root(load_promise)?;
-      ensure_promise_fulfilled(scope.heap(), load_promise)?;
+      let module_result: std::result::Result<(), VmError> = (|| {
+        // Load all modules in the static import graph.
+        let load_promise = vm_js::load_requested_modules(
+          &mut vm,
+          &mut scope,
+          module_graph,
+          &mut hooks,
+          entry_module,
+          HostDefined::default(),
+        )?;
+        scope.push_root(load_promise)?;
+        ensure_promise_fulfilled(scope.heap(), load_promise)?;
 
-      // Link + evaluate the entry module.
-      let eval_promise = module_graph.evaluate(
-        &mut vm,
-        scope.heap_mut(),
-        realm_ref.global_object(),
-        realm_ref.id(),
-        entry_module,
-        document,
-        &mut hooks,
-      )?;
-      scope.push_root(eval_promise)?;
-      ensure_promise_fulfilled(scope.heap(), eval_promise)?;
+        // Link + evaluate the entry module.
+        let eval_promise = module_graph.evaluate(
+          &mut vm,
+          scope.heap_mut(),
+          realm_ref.global_object(),
+          realm_ref.id(),
+          entry_module,
+          document,
+          &mut hooks,
+        )?;
+        scope.push_root(eval_promise)?;
+        ensure_promise_fulfilled(scope.heap(), eval_promise)?;
 
-      Ok(())
-    });
+        Ok(())
+      })();
 
-    if let Some(err) = hooks.finish(realm.heap_mut()) {
-      return Err(err);
-    }
+      if let Some(err) = hooks.finish(scope.heap_mut()) {
+        return Err(err);
+      }
 
-    match result {
-      Ok(()) => Ok(()),
-      Err(err) => {
-        if let Some(req) = realm.take_pending_navigation_request() {
-          realm.reset_interrupt();
-          self.pending_navigation = Some(req);
-          return Ok(());
-        }
-
-        if vm_error_format::vm_error_is_js_exception(&err) {
-          if let Some(diag) = &self.diagnostics {
-            let (message, stack) =
-              vm_error_format::vm_error_to_message_and_stack(realm.heap_mut(), err);
-            diag.record_js_exception(message, stack);
+      match module_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            if let Some(diag) = diagnostics.as_ref() {
+              let (message, stack) =
+                vm_error_format::vm_error_to_message_and_stack(scope.heap_mut(), err);
+              diag.record_js_exception(message, stack);
+            }
+            Ok(())
+          } else {
+            Err(vm_error_format::vm_error_to_error(scope.heap_mut(), err))
           }
-          Ok(())
-        } else {
-          Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
+    });
+
+    if let Some(req) = realm.take_pending_navigation_request() {
+      realm.reset_interrupt();
+      self.pending_navigation = Some(req);
+      return Ok(());
     }
+
+    exec_result
   }
 
   fn execute_import_map_script(
@@ -610,7 +620,7 @@ impl ModuleLoaderHooks<'_> {
 
   fn load_module_by_url(
     &mut self,
-    vm: &Vm,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     modules: &mut ModuleGraph,
     url: &str,
@@ -657,7 +667,7 @@ impl ModuleLoaderHooks<'_> {
 
     let source_text = decode_classic_script_bytes(&fetched.bytes, fetched.content_type.as_deref(), UTF_8);
     let source = Arc::new(SourceText::new(url, source_text));
-    let record = match SourceTextModuleRecord::parse_source(source) {
+    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {
         let message = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
