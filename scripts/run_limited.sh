@@ -6,8 +6,8 @@ set -euo pipefail
 # Prefer `prlimit` when available (hard limits). Fall back to `ulimit` otherwise.
 #
 # Examples:
-#   scripts/run_limited.sh --as 64G -- cargo bench --bench selector_bloom_bench
-#   LIMIT_AS=64G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
+#   scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh bench --bench selector_bloom_bench
+#   LIMIT_AS=64G scripts/run_limited.sh -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 
 usage() {
   cat <<'EOF'

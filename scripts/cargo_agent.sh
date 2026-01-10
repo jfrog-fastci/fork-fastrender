@@ -25,7 +25,7 @@ fi
 #   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
 #   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
-#   FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo xtask` (`cargo run -p xtask`) (default: 96G)
+#   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
 #   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   FASTR_RUST_TEST_THREADS  Default `RUST_TEST_THREADS` for `cargo test` (default: min(nproc, 32))
 #
@@ -49,7 +49,7 @@ Environment:
   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
-  FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo xtask` (`cargo run -p xtask`) (default: 96G)
+  FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
   FASTR_RUST_TEST_THREADS  Default RUST_TEST_THREADS for `cargo test` (default: min(nproc, 32))
 
@@ -194,7 +194,7 @@ else
   limit_as="${FASTR_CARGO_LIMIT_AS:-${LIMIT_AS:-64G}}"
 fi
 
-# `cargo run -p xtask` is a special case: several xtask commands (page-loop, fixture-chrome-diff,
+# Running the workspace `xtask` package is a special case: several xtask commands (page-loop, fixture-chrome-diff,
 # chrome-baseline-fixtures) spawn headless Chrome. Recent Chrome builds reserve a very large virtual
 # address space up front (~75GiB on Chrome 143), which causes "Oilpan: Out of memory" failures when
 # RLIMIT_AS is set to the default 64G.
@@ -208,8 +208,9 @@ if [[ "${limit_as_defaulted}" -eq 1 ]]; then
     subcmd_pos=1
   fi
   subcmd="${argv[${subcmd_pos}]:-}"
-  # `cargo xtask` is a Cargo alias for `cargo run -p xtask -- ...` (see `.cargo/config.toml`), so
-  # treat both spellings as "xtask runs" for address-space purposes.
+  # The `xtask` subcommand is a Cargo alias that runs the workspace `xtask` package (see
+  # `.cargo/config.toml`). Treat both spellings (`xtask` and `run -p xtask`) as "xtask runs" for
+  # address-space purposes.
   if [[ "${subcmd}" == "xtask" ]]; then
     limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
   elif [[ "${subcmd}" == "run" ]]; then

@@ -1,4 +1,4 @@
-# WebIDL bindings allowlist for `cargo xtask webidl-bindings`.
+# WebIDL bindings allowlist for `bash scripts/cargo_agent.sh xtask webidl-bindings`.
 #
 # This is intentionally tiny: we only generate a curated DOM core subset that the JS host can
 # install into a `VmJsRuntime` for early integration work.

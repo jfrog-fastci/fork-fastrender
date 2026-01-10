@@ -5,7 +5,7 @@ set -euo pipefail
 # and write PNG screenshots.
 #
 # This is the deterministic/offline counterpart to `scripts/chrome_baseline.sh`:
-# - This script is a thin wrapper around `cargo xtask chrome-baseline-fixtures`.
+# - This script is a thin wrapper around `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures`.
 # - Targets self-contained fixtures (HTML + local assets) under `tests/pages/fixtures/`
 # - Loads fixtures via `file://` and injects:
 #   - `<base href="file://.../fixture/">` so patched HTML can live in a temp dir

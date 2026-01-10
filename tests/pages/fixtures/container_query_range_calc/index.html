@@ -3,9 +3,9 @@ README
 
 Offline evidence loop:
 - Validate fixture invariants:
-    cargo xtask validate-page-fixtures --only container_query_range_calc
+    bash scripts/cargo_agent.sh xtask validate-page-fixtures --only container_query_range_calc
 - Compare Chrome vs FastRender output:
-    cargo xtask fixture-chrome-diff --fixtures container_query_range_calc
+    bash scripts/cargo_agent.sh xtask fixture-chrome-diff --fixtures container_query_range_calc
 
 The default fixture viewport is 1040x1240 @ 1.0 DPR.
 
@@ -61,4 +61,3 @@ The query container is sized to the viewport; the expression resolves to 65rem =
     </div>
   </body>
 </html>
-

@@ -80,12 +80,12 @@ Import tests from a local upstream WPT checkout with the dedicated importer:
 
 ```bash
 # Import a single test (paths are relative to the WPT repo root)
-cargo run --bin import_wpt_dom -- \
+bash scripts/cargo_agent.sh run --bin import_wpt_dom -- \
   --wpt-root ~/src/wpt \
   --test dom/nodes/Node-appendChild.window.js
 
 # Or import a suite via globs (repeatable)
-cargo run --bin import_wpt_dom -- \
+bash scripts/cargo_agent.sh run --bin import_wpt_dom -- \
   --wpt-root ~/src/wpt \
   --suite 'dom/nodes/*.window.js' \
   --suite 'dom/events/**'
@@ -105,7 +105,7 @@ The importer:
 After importing, run the offline corpus validator (fast, CI-safe):
 
 ```bash
-cargo test -p js-wpt-dom-runner --test corpus_validation
+bash scripts/cargo_agent.sh test -p js-wpt-dom-runner --test corpus_validation
 ```
 
 Finally, update `expectations.toml`:
@@ -159,5 +159,5 @@ copies and pin the upstream commit hash in `UPSTREAM_COMMIT.txt`.
 The importer supports syncing the harness snapshot later:
 
 ```bash
-cargo run --bin import_wpt_dom -- --wpt-root ~/src/wpt --sync-harness --overwrite
+bash scripts/cargo_agent.sh run --bin import_wpt_dom -- --wpt-root ~/src/wpt --sync-harness --overwrite
 ```

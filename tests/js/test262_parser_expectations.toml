@@ -1,6 +1,6 @@
 # Expectations manifest for the test262 *parser* harness.
 #
-# This file is consumed by `cargo xtask js test262-parser` (a wrapper over the
+# This file is consumed by `bash scripts/cargo_agent.sh xtask js test262-parser` (a wrapper over the
 # ecma-rs `test262` parser runner).
 #
 # Format (TOML):
@@ -13,4 +13,3 @@
 #
 # Matchers:
 # - `id` (exact), `glob`, or `regex` (exact > glob > regex; first match wins).
-

@@ -1,4 +1,4 @@
-# Default curated suite used by `cargo xtask js test262`.
+# Default curated suite used by `bash scripts/cargo_agent.sh xtask js test262`.
 #
 # This is intentionally *not* the full tc39/test262 corpus. The goal is a deterministic,
 # CI-friendly subset that still provides meaningful language semantics coverage.
@@ -47,4 +47,3 @@ include = [
 exclude = [
   "**/*.module.js",
 ]
-

@@ -11,14 +11,17 @@ set -euo pipefail
 #   viewport=1200x800, dpr=1.0
 #
 # Example:
-#   cargo run --release --bin fetch_pages
+#   bash scripts/run_limited.sh --as 64G -- \
+#     bash scripts/cargo_agent.sh run --release --bin fetch_pages
 #   scripts/chrome_baseline.sh
-#   cargo run --release --bin render_pages
-#   cargo run --release --bin diff_renders -- \
-#     --before fetches/chrome_renders \
-#     --after fetches/renders \
-#     --json target/chrome_vs_fastrender/report.json \
-#     --html target/chrome_vs_fastrender/report.html
+#   bash scripts/run_limited.sh --as 64G -- \
+#     bash scripts/cargo_agent.sh run --release --bin render_pages
+#   bash scripts/run_limited.sh --as 64G -- \
+#     bash scripts/cargo_agent.sh run --release --bin diff_renders -- \
+#       --before fetches/chrome_renders \
+#       --after fetches/renders \
+#       --json target/chrome_vs_fastrender/report.json \
+#       --html target/chrome_vs_fastrender/report.html
 #
 # Notes:
 # - This script does NOT make the run fully deterministic (live subresources can change).
