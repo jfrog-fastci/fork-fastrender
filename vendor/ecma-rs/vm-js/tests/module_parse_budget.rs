@@ -36,3 +36,21 @@ fn module_record_parse_is_interruptible_during_record_extraction() {
   let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
+
+#[test]
+fn module_record_parse_is_interruptible_during_parsing() {
+  // `Vm::parse_top_level_with_budget` charges one tick at parse entry and then periodically during
+  // parsing itself. Ensure an out-of-fuel condition observed during parsing is surfaced as VM
+  // termination (not as a parser `Cancelled` syntax error).
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Large enough to trigger at least one parse tick (PARSE_TICK_EVERY=1024).
+  let src = ";".repeat(5000);
+  let err = SourceTextModuleRecord::parse_with_vm(&mut vm, &src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
