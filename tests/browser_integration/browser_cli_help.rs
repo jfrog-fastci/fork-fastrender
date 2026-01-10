@@ -22,19 +22,35 @@ fn browser_help_exits_successfully_without_startup_logs() {
     String::from_utf8_lossy(&output.stdout)
   );
 
-  let stdout = String::from_utf8_lossy(&output.stdout);
+  // clap writes help to stdout; keep stderr for compatibility with older parsers
+  let help = if output.stderr.is_empty() {
+    String::from_utf8_lossy(&output.stdout)
+  } else {
+    String::from_utf8_lossy(&output.stderr)
+  };
   assert!(
-    stdout.contains("Usage:"),
-    "expected help usage in stdout, got:\n{stdout}"
+    help.contains("Usage:"),
+    "expected help usage in output, got:\n{help}"
   );
   assert!(
-    stdout.contains("Supported schemes:"),
-    "expected help to mention supported schemes, got:\n{stdout}"
+    help.contains("Supported schemes:"),
+    "expected help to mention supported schemes, got:\n{help}"
   );
+  for flag in [
+    "--restore",
+    "--no-restore",
+    "--mem-limit-mb",
+    "--headless-smoke",
+    "--exit-immediately",
+  ] {
+    assert!(
+      help.contains(flag),
+      "expected help to mention {flag}, got:\n{help}"
+    );
+  }
 
-  let stderr = String::from_utf8_lossy(&output.stderr);
   assert!(
-    !stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB"),
-    "expected --help to exit before startup/mem-limit logging, got stderr:\n{stderr}"
+    !help.contains("FASTR_BROWSER_MEM_LIMIT_MB:"),
+    "expected --help to exit before startup/mem-limit logging, got:\n{help}"
   );
 }

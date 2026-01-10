@@ -9,8 +9,8 @@ fn run_browser_with_url(url: &str) -> (std::process::ExitStatus, String, String)
     .arg(run_limited)
     .args(["--as", "64G", "--"])
     .arg(env!("CARGO_BIN_EXE_browser"))
+    .arg("--exit-immediately")
     .arg(url)
-    .env("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY", "1")
     .output()
     .expect("spawn browser");
 
@@ -68,4 +68,3 @@ fn browser_rejects_unknown_scheme_start_url_and_falls_back_to_newtab() {
     "expected fallback to about:newtab, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }
-

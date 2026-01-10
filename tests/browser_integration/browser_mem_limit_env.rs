@@ -2,7 +2,10 @@
 
 use std::process::{Command, ExitStatus};
 
-fn run_browser_with_mem_env(value: Option<&str>) -> (ExitStatus, String, String) {
+fn run_browser_with_mem_env(
+  value: Option<&str>,
+  mem_limit_flag: Option<&str>,
+) -> (ExitStatus, String, String) {
   let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("scripts/run_limited.sh");
   let mut cmd = Command::new("bash");
@@ -10,6 +13,9 @@ fn run_browser_with_mem_env(value: Option<&str>) -> (ExitStatus, String, String)
     .arg(run_limited)
     .args(["--as", "64G", "--"])
     .arg(env!("CARGO_BIN_EXE_browser"));
+  if let Some(value) = mem_limit_flag {
+    cmd.args(["--mem-limit-mb", value]);
+  }
   match value {
     Some(value) => {
       cmd.env("FASTR_BROWSER_MEM_LIMIT_MB", value);
@@ -19,7 +25,7 @@ fn run_browser_with_mem_env(value: Option<&str>) -> (ExitStatus, String, String)
     }
   }
   // Keep this test headless: exit after parsing/applying the limit, before winit/wgpu init.
-  cmd.env("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY", "1");
+  cmd.arg("--exit-immediately");
   let output = cmd.output().expect("spawn browser");
 
   let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -40,7 +46,7 @@ fn assert_browser_succeeded(status: ExitStatus, stderr: &str, stdout: &str) {
 #[test]
 fn browser_reports_mem_limit_disabled_when_env_unset_and_exits() {
   let _lock = super::stage_listener_test_lock();
-  let (status, stderr, stdout) = run_browser_with_mem_env(None);
+  let (status, stderr, stdout) = run_browser_with_mem_env(None, None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -52,7 +58,7 @@ fn browser_reports_mem_limit_disabled_when_env_unset_and_exits() {
 #[test]
 fn browser_applies_mem_limit_from_env_and_exits() {
   let _lock = super::stage_listener_test_lock();
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some("1024"));
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some("1024"), None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -64,7 +70,7 @@ fn browser_applies_mem_limit_from_env_and_exits() {
 #[test]
 fn browser_applies_mem_limit_with_underscore_separators() {
   let _lock = super::stage_listener_test_lock();
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some("1_024"));
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some("1_024"), None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -76,7 +82,7 @@ fn browser_applies_mem_limit_with_underscore_separators() {
 #[test]
 fn browser_applies_mem_limit_with_ascii_whitespace() {
   let _lock = super::stage_listener_test_lock();
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some(" 1024 "));
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some(" 1024 "), None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -89,7 +95,7 @@ fn browser_applies_mem_limit_with_ascii_whitespace() {
 fn browser_disables_mem_limit_for_empty_or_whitespace_only_value() {
   let _lock = super::stage_listener_test_lock();
   for value in ["", "   "] {
-    let (status, stderr, stdout) = run_browser_with_mem_env(Some(value));
+    let (status, stderr, stdout) = run_browser_with_mem_env(Some(value), None);
     assert_browser_succeeded(status, &stderr, &stdout);
 
     assert!(
@@ -102,7 +108,7 @@ fn browser_disables_mem_limit_for_empty_or_whitespace_only_value() {
 #[test]
 fn browser_disables_mem_limit_for_zero() {
   let _lock = super::stage_listener_test_lock();
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some("0"));
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some("0"), None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -115,7 +121,7 @@ fn browser_disables_mem_limit_for_zero() {
 fn browser_disables_mem_limit_for_invalid_non_numeric_value() {
   let _lock = super::stage_listener_test_lock();
   let value = "not-a-number";
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some(value));
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some(value), None);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -125,5 +131,21 @@ fn browser_disables_mem_limit_for_invalid_non_numeric_value() {
   assert!(
     stderr.contains(value),
     "expected stderr to mention invalid value {value:?}, got stderr:\n{stderr}\nstdout:\n{stdout}"
+  );
+}
+
+#[test]
+fn browser_mem_limit_flag_overrides_env() {
+  let _lock = super::stage_listener_test_lock();
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some("1024"), Some("2048"));
+  assert_browser_succeeded(status, &stderr, &stdout);
+
+  assert!(
+    stderr.contains("--mem-limit-mb: Applied (2048 MiB)"),
+    "expected CLI flag to apply mem-limit, got stderr:\n{stderr}\nstdout:\n{stdout}"
+  );
+  assert!(
+    !stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB:"),
+    "expected CLI flag to override env, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }

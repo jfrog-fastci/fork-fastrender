@@ -18,51 +18,72 @@ fn main() {
 }
 
 #[cfg(feature = "browser_ui")]
+use clap::Parser;
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
   WorkerWake,
 }
 
 #[cfg(feature = "browser_ui")]
-enum CliAction {
-  Run { initial_url: String },
-  ExitSuccess,
+#[derive(clap::Parser, Debug)]
+#[command(
+  name = "browser",
+  about = "FastRender browser UI (experimental)",
+  disable_version_flag = true,
+  disable_help_subcommand = true,
+  color = clap::ColorChoice::Never,
+  term_width = 90,
+  after_help = "If URL is omitted, the browser opens `about:newtab`.\nThe URL value is normalized like the address bar (e.g. `example.com` → https).\nSupported schemes: http, https, file, about."
+)]
+struct BrowserCliArgs {
+  /// Start URL (default: about:newtab)
+  #[arg(value_name = "URL")]
+  url: Option<String>,
+
+  /// Restore the previous session (if supported)
+  #[arg(long, action = clap::ArgAction::SetTrue, overrides_with = "no_restore")]
+  restore: bool,
+
+  /// Do not restore the previous session
+  #[arg(long = "no-restore", action = clap::ArgAction::SetTrue, overrides_with = "restore")]
+  no_restore: bool,
+
+  /// Override the address-space memory limit in MiB (0 disables)
+  ///
+  /// When unset, defaults to the `FASTR_BROWSER_MEM_LIMIT_MB` environment variable.
+  #[arg(long = "mem-limit-mb", value_name = "MB", value_parser = parse_u64_mb)]
+  mem_limit_mb: Option<u64>,
+
+  /// Run a minimal headless startup smoke test (no window / wgpu init)
+  #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
+  headless_smoke: bool,
+
+  /// Exit after parsing CLI + applying mem limits, without creating a window
+  #[arg(long = "exit-immediately", action = clap::ArgAction::SetTrue)]
+  exit_immediately: bool,
 }
 
 #[cfg(feature = "browser_ui")]
-fn print_help() {
-  println!(
-    "FastRender browser UI (experimental)\n\n\
-Usage:\n\
-  browser [<url>]\n\n\
-If <url> is omitted, the browser opens `about:newtab`.\n\
-The <url> value is normalized like the address bar (e.g. `example.com` → https).\n\
-Supported schemes: http, https, file, about."
-  );
-}
-
-#[cfg(feature = "browser_ui")]
-fn parse_cli_args() -> CliAction {
-  let mut args = std::env::args().skip(1);
-  let mut raw_url: Option<String> = None;
-
-  while let Some(arg) = args.next() {
-    match arg.as_str() {
-      "-h" | "--help" => {
-        print_help();
-        return CliAction::ExitSuccess;
-      }
-      _ if raw_url.is_none() => raw_url = Some(arg),
-      other => {
-        eprintln!("unexpected argument: {other:?}\n");
-        eprintln!("Run `browser --help` for usage.");
-        std::process::exit(2);
-      }
-    }
+fn parse_u64_mb(raw: &str) -> Result<u64, String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Err("expected an integer".to_string());
   }
+  trimmed
+    .replace('_', "")
+    .parse::<u64>()
+    .map_err(|_| format!("invalid integer: {raw:?}"))
+}
+
+#[cfg(feature = "browser_ui")]
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+  let cli = BrowserCliArgs::parse();
+  let _ = (cli.restore, cli.no_restore);
 
   let default_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
-  let raw_url = raw_url.unwrap_or(default_url);
+  let raw_url = cli.url.unwrap_or(default_url);
   let initial_url = match fastrender::ui::normalize_user_url(&raw_url).and_then(|url| {
     fastrender::ui::validate_user_navigation_url_scheme(&url)?;
     Ok(url)
@@ -77,20 +98,11 @@ fn parse_cli_args() -> CliAction {
     }
   };
 
-  CliAction::Run { initial_url }
-}
-
-#[cfg(feature = "browser_ui")]
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-  let CliAction::Run { initial_url } = parse_cli_args() else {
-    return Ok(());
-  };
-
-  apply_address_space_limit_from_env();
+  apply_address_space_limit_from_cli_or_env(cli.mem_limit_mb);
 
   // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
   // parsing) without opening a window or initialising wgpu.
-  if std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
+  if cli.exit_immediately || std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
     return Ok(());
   }
 
@@ -101,8 +113,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // `src/bin/browser.rs` entrypoint and UI↔worker messaging.
   //
   // Usage:
-  //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 cargo run --features browser_ui --bin browser
-  if std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
+  //   cargo run --features browser_ui --bin browser -- --headless-smoke
+  if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     return run_headless_smoke_mode(initial_url);
   }
 
@@ -381,6 +393,40 @@ fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>
 }
 
 #[cfg(feature = "browser_ui")]
+fn apply_address_space_limit_from_cli_or_env(mem_limit_mb: Option<u64>) {
+  if let Some(limit_mb) = mem_limit_mb {
+    apply_address_space_limit_mb("--mem-limit-mb", limit_mb);
+  } else {
+    apply_address_space_limit_from_env();
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn apply_address_space_limit_mb(label: &str, limit_mb: u64) {
+  if limit_mb == 0 {
+    eprintln!("{label}: Disabled");
+    return;
+  }
+
+  match fastrender::process_limits::apply_address_space_limit_mb(limit_mb) {
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {
+      eprintln!("{label}: Applied ({limit_mb} MiB)");
+    }
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {
+      eprintln!("{label}: Disabled");
+    }
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+      eprintln!("{label}: Unsupported (requested {limit_mb} MiB)");
+    }
+    // This is a best-effort safety valve. If we fail to apply the limit (e.g. under sandboxing),
+    // keep running rather than preventing the UI from starting.
+    Err(err) => {
+      eprintln!("{label}: Disabled (failed to apply {limit_mb} MiB: {err})");
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 fn apply_address_space_limit_from_env() {
   const KEY: &str = "FASTR_BROWSER_MEM_LIMIT_MB";
   let raw = std::env::var(KEY).ok();
@@ -404,27 +450,7 @@ fn apply_address_space_limit_from_env() {
     }
   };
 
-  if limit_mb == 0 {
-    eprintln!("{KEY}: Disabled");
-    return;
-  }
-
-  match fastrender::process_limits::apply_address_space_limit_mb(limit_mb) {
-    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {
-      eprintln!("{KEY}: Applied ({limit_mb} MiB)");
-    }
-    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {
-      eprintln!("{KEY}: Disabled");
-    }
-    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
-      eprintln!("{KEY}: Unsupported (requested {limit_mb} MiB)");
-    }
-    // This is a best-effort safety valve. If we fail to apply the limit (e.g. under sandboxing),
-    // keep running rather than preventing the UI from starting.
-    Err(err) => {
-      eprintln!("{KEY}: Disabled (failed to apply {limit_mb} MiB: {err})");
-    }
-  }
+  apply_address_space_limit_mb(KEY, limit_mb);
 }
 
 #[cfg(feature = "browser_ui")]
