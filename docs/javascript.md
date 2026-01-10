@@ -53,12 +53,12 @@ The most important early behaviors to preserve:
 - **Parser-inserted classic scripts**: pause parsing, fetch/prepare the script, run it, then resume parsing.
 - **`defer` classic scripts**: run after parsing completes (before “document ready” milestones).
 - **`async` classic scripts**: run when ready, independent of parser progress (scheduled as tasks).
-- **Module scripts**: later (requires module graph + host module hooks).
-- **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`. The
-  standalone module bundler (`ModuleGraphLoader` in `src/js/module_scripts.rs`) can resolve specifiers
-  through `ImportMapState` via `build_bundle_for_*_with_import_maps`, but import map scripts are not
-  yet executed/registered as part of `BrowserTab`’s streaming `<script>` pipeline; see
-  [`docs/import_maps.md`](import_maps.md).
+- **Module scripts**: supported (`type="module"`) with static import graphs when
+  `JsExecutionOptions.supports_module_scripts` is enabled. Dynamic `import()` is not implemented yet.
+- **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`.
+  `fetch_and_render --js` supports inline import maps and applies them during module loading via
+  `VmJsModuleLoader`, but `BrowserTab` does not yet register `<script type="importmap">` or apply
+  import maps during module resolution; see [`docs/import_maps.md`](import_maps.md).
 
 Correctness requirements that fall out of this:
 

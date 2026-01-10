@@ -57,8 +57,8 @@ FastRender currently exposes **two** “tab-like” host containers:
 
 - `fastrender::BrowserTab` (implementation: `src/api/browser_tab.rs`)
   - owns a live `dom2` document via `BrowserDocumentDom2`,
-  - owns an HTML-shaped `EventLoop` plus a classic `<script>` scheduler (`ScriptScheduler`),
-  - executes classic scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic).
+  - owns an HTML-shaped `EventLoop` plus a `<script>` scheduler (`ScriptScheduler`),
+  - executes classic + module scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic).
 
 - `fastrender::api::BrowserDocumentJs` (implementation: `src/api/browser_document_js.rs`)
   - couples `BrowserDocumentDom2` with the `vm-js`-backed `VmJsRuntime` used for WebIDL scaffolding,
@@ -81,11 +81,11 @@ What `BrowserTab` does today:
 What it does **not** do yet (important gaps):
 
 - fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- module scripts / import maps in the streaming `<script>` pipeline (`BrowserTab` currently executes
-  classic scripts only). Import map merge/register/resolve algorithms live in `src/js/import_maps/`,
-  and the standalone module bundler (`ModuleGraphLoader` in `src/js/module_scripts.rs`) can resolve
-  specifiers through `ImportMapState` via `build_bundle_for_*_with_import_maps`; see
-  [`docs/import_maps.md`](import_maps.md).
+- import maps in the streaming `<script>` pipeline. Import map merge/register/resolve algorithms live
+  in `src/js/import_maps/`, but `BrowserTab` does not yet register `<script type="importmap">` or
+  apply import maps during module resolution. The `fetch_and_render --js` tooling path supports
+  **inline** import maps and applies them when executing module scripts via `VmJsModuleLoader`
+  (`src/js/vmjs/module_loader.rs`); see [`docs/import_maps.md`](import_maps.md).
 - a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
@@ -383,10 +383,13 @@ iterating.
 
 Current behavior (intentionally limited / not spec-correct):
 
-- Executes **inline classic scripts** discovered by scanning the fully-parsed DOM in document order.
-  - This is not the HTML script processing model (no parser pausing, async/defer ordering, base URL
-    timing, etc.).
-- Does **not** fetch external scripts (`<script src=...>` is skipped).
+- Uses the script-aware streaming parser (`StreamingHtmlParser`) so **parser-inserted** scripts run
+  at `</script>` boundaries against a partially-built DOM (like `BrowserTab`, but with a smaller API
+  surface).
+- Fetches and executes external classic scripts (`<script src=...>`) and external module scripts.
+- Executes module scripts (including static imports) via real `vm-js` modules (`VmJsModuleLoader`).
+- Supports **inline** `<script type="importmap">` and applies the active import map for module
+  specifier resolution.
 - Exposes a minimal `window` realm (`window`/`self`/`document`/`location`) and a small DOM shim
   surface used by real pages (for example: `document.documentElement.className`).
 - Runs scripts under the renderer's JS execution budgets (`JsExecutionArgs` + render deadlines).
@@ -409,12 +412,10 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- no spec-correct module scripts (`type="module"`) or import maps (`type="importmap"`) in the
-  streaming execution pipeline yet. Import map algorithms exist in `src/js/import_maps/`, and the
-  `ModuleGraphLoader` helper (`src/js/module_scripts.rs`) can resolve module graphs using
-  `ImportMapState`, but that loader is not yet wired into `BrowserTab`’s streaming parser pipeline;
-  see [`docs/import_maps.md`](import_maps.md),
-  no dynamic `import()`
+- module scripts (`type="module"`) are supported (static import graphs), but import maps are not yet
+  applied in `BrowserTab` and dynamic `import()` is not implemented. Import map algorithms exist in
+  `src/js/import_maps/`, and the `fetch_and_render --js` tooling path applies them for module script
+  execution via `VmJsModuleLoader`; see [`docs/import_maps.md`](import_maps.md).
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
     executed during `BrowserTab`'s streaming HTML parse,

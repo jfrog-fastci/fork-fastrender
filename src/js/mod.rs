@@ -38,7 +38,7 @@ pub mod cookie_jar;
 pub mod dom2_bindings;
 // Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
 //
-// This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
+// This is not part of the canonical `vm-js` WindowRealm pipeline, but remains useful while bindings
 // and streaming execution are still being integrated.
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
@@ -52,7 +52,6 @@ pub mod html_script_processing;
 pub mod html_script_pipeline;
 pub mod html_script_scheduler;
 pub mod import_maps;
-pub mod module_scripts;
 pub mod script_encoding;
 pub mod options;
 pub mod document_write;
@@ -83,6 +82,8 @@ pub mod runtime;
 pub mod vm_limits;
 #[path = "vmjs/vm_error_format.rs"]
 pub(crate) mod vm_error_format;
+#[path = "vmjs/module_loader.rs"]
+pub mod module_loader;
 #[path = "vmjs/window.rs"]
 pub mod window;
 #[path = "vmjs/window_abort.rs"]
@@ -171,7 +172,7 @@ pub use html_classic_scripts::{
   parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher,
   ResourceFetcherClassicScriptFetcher,
 };
-pub use module_scripts::ModuleGraphLoader;
+pub use module_loader::VmJsModuleLoader;
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,

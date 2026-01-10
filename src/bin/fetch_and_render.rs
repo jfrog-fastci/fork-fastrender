@@ -29,10 +29,10 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::image_output::encode_image;
 use fastrender::js::{
-  CurrentScriptHost, DomHost, EventLoop, MicrotaskCheckpointLimitedOutcome, ModuleGraphLoader,
-  DocumentWriteState, JsExecutionOptions, RunLimits, RunNextTaskLimitedOutcome, RunState,
+  with_document_write_state, CurrentScriptHost, DocumentWriteState, DomHost, EventLoop,
+  MicrotaskCheckpointLimitedOutcome, JsExecutionOptions, RunLimits, RunNextTaskLimitedOutcome, RunState,
   RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptId, ScriptOrchestrator, ScriptScheduler,
-  ScriptSchedulerAction, ScriptType, TaskSource, WindowHostState, with_document_write_state,
+  ScriptSchedulerAction, ScriptType, TaskSource, VmJsModuleLoader, WindowHostState,
 };
 use fastrender::js::import_maps::{
   create_import_map_parse_result, register_import_map, ImportMapState,
@@ -408,7 +408,11 @@ fn render_page(
       std::rc::Rc::new(std::cell::RefCell::new(ImportMapState::default()));
 
     let mut scripts_queued = 0usize;
-    let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
+    let module_loader = Rc::new(RefCell::new(VmJsModuleLoader::new(
+      fetcher.clone(),
+      base_hint.clone(),
+      max_script_bytes,
+    )));
 
     let mut run_state = event_loop.new_run_state(run_limits);
     let mut js_active = true;
@@ -553,8 +557,8 @@ fn render_page(
               let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
               let spec = build_parser_inserted_script_element_spec_dom2(host.dom(), script, &base);
 
-              // Module scripts are not modeled by `ScriptScheduler` yet; execute them via the minimal
-              // `ModuleGraphLoader` bundler so `type="module"` fixtures work in `--js` mode.
+              // Module scripts are not modeled by `ScriptScheduler` yet; execute them via `vm-js`
+              // module linking/evaluation.
               if spec.script_type == ScriptType::Module {
                 if spec.src_attr_present {
                   if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
@@ -568,25 +572,21 @@ fn render_page(
                         host.current_script_state().borrow_mut().current_script = None;
 
                         let result = (|| {
-                          let mut loader = loader.borrow_mut();
-                          let mut map_state = import_map_state.borrow_mut();
-                          let bundle = loader.build_bundle_for_url_with_import_maps(
-                            &mut *map_state,
-                            &entry_url,
-                            max_script_bytes,
-                          )?;
-                          let bundle_text: Arc<str> = Arc::from(bundle);
-
                           {
                             let window = host.window_mut();
                             window.reset_interrupt();
                           }
-                          let result = host.exec_script_with_name_in_event_loop(
-                            event_loop,
-                            script_name.clone(),
-                            bundle_text,
-                          );
-                          result.map(|_| ())
+
+                          let mut map_state = import_map_state.borrow_mut();
+                          loader
+                            .borrow_mut()
+                            .evaluate_module_url_with_import_maps(
+                              host,
+                              event_loop,
+                              &mut *map_state,
+                              &entry_url,
+                            )
+                            .map(|_| ())
                         })();
 
                         host.current_script_state().borrow_mut().current_script = prev;
@@ -624,27 +624,23 @@ fn render_page(
                       host.current_script_state().borrow_mut().current_script = None;
 
                       let result = (|| {
-                        let mut loader = loader.borrow_mut();
-                        let mut map_state = import_map_state.borrow_mut();
-                        let bundle = loader.build_bundle_for_inline_with_import_maps(
-                          &mut *map_state,
-                          &inline_id,
-                          &inline_base_url,
-                          &script_text,
-                          max_script_bytes,
-                        )?;
-                        let bundle_text: Arc<str> = Arc::from(bundle);
-
                         {
                           let window = host.window_mut();
                           window.reset_interrupt();
                         }
-                        let result = host.exec_script_with_name_in_event_loop(
-                          event_loop,
-                          script_name.clone(),
-                          bundle_text,
-                        );
-                        result.map(|_| ())
+
+                        let mut map_state = import_map_state.borrow_mut();
+                        loader
+                          .borrow_mut()
+                          .evaluate_inline_module_with_import_maps(
+                            host,
+                            event_loop,
+                            &mut *map_state,
+                            &inline_id,
+                            &inline_base_url,
+                            &script_text,
+                          )
+                          .map(|_| ())
                       })();
 
                       host.current_script_state().borrow_mut().current_script = prev;
@@ -1356,8 +1352,8 @@ fn render_page(
             let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
             let spec = build_parser_inserted_script_element_spec_dom2(host.dom(), script, &base);
 
-            // Module scripts are not modeled by `ScriptScheduler` yet; execute them via the minimal
-            // `ModuleGraphLoader` bundler so `type="module"` fixtures work in `--js` mode.
+            // Module scripts are not modeled by `ScriptScheduler` yet; execute them via `vm-js`
+            // module linking/evaluation.
             if spec.script_type == ScriptType::Module {
               if spec.src_attr_present {
                 if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
@@ -1370,25 +1366,21 @@ fn render_page(
                     host.current_script_state().borrow_mut().current_script = None;
 
                     let result = (|| {
-                      let mut loader = loader.borrow_mut();
-                      let mut map_state = import_map_state.borrow_mut();
-                      let bundle = loader.build_bundle_for_url_with_import_maps(
-                        &mut *map_state,
-                        &entry_url,
-                        max_script_bytes,
-                      )?;
-                      let bundle_text: Arc<str> = Arc::from(bundle);
-
                       {
                         let window = host.window_mut();
                         window.reset_interrupt();
                       }
-                      let result = host.exec_script_with_name_in_event_loop(
-                        event_loop,
-                        script_name.clone(),
-                        bundle_text,
-                      );
-                      result.map(|_| ())
+
+                      let mut map_state = import_map_state.borrow_mut();
+                      loader
+                        .borrow_mut()
+                        .evaluate_module_url_with_import_maps(
+                          host,
+                          event_loop,
+                          &mut *map_state,
+                          &entry_url,
+                        )
+                        .map(|_| ())
                     })();
 
                     host.current_script_state().borrow_mut().current_script = prev;
@@ -1420,27 +1412,23 @@ fn render_page(
                   host.current_script_state().borrow_mut().current_script = None;
 
                   let result = (|| {
-                    let mut loader = loader.borrow_mut();
-                    let mut map_state = import_map_state.borrow_mut();
-                    let bundle = loader.build_bundle_for_inline_with_import_maps(
-                      &mut *map_state,
-                      &inline_id,
-                      &inline_base_url,
-                      &script_text,
-                      max_script_bytes,
-                    )?;
-                    let bundle_text: Arc<str> = Arc::from(bundle);
-
                     {
                       let window = host.window_mut();
                       window.reset_interrupt();
                     }
-                    let result = host.exec_script_with_name_in_event_loop(
-                      event_loop,
-                      script_name.clone(),
-                      bundle_text,
-                    );
-                    result.map(|_| ())
+
+                    let mut map_state = import_map_state.borrow_mut();
+                    loader
+                      .borrow_mut()
+                      .evaluate_inline_module_with_import_maps(
+                        host,
+                        event_loop,
+                        &mut *map_state,
+                        &inline_id,
+                        &inline_base_url,
+                        &script_text,
+                      )
+                      .map(|_| ())
                   })();
 
                   host.current_script_state().borrow_mut().current_script = prev;

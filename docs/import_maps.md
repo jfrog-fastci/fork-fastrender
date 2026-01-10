@@ -55,10 +55,15 @@ What exists today:
 
 What’s still missing is the end-to-end *integration* into the streaming HTML `<script>` pipeline
 (discovering/executing `<script type="importmap">` and `<script type="module">` at parse time).
-Import maps *are* wired into the standalone module bundler (`ModuleGraphLoader` in
-`src/js/module_scripts.rs`) via `build_bundle_for_*_with_import_maps`, but `BrowserTab` does not yet
-use that for real page execution. This document describes the intended integration surface for the
-HTML/script subsystems (also see [`docs/html_script_processing.md`](html_script_processing.md)).
+
+FastRender’s `fetch_and_render --js` tooling entry point supports **inline** `<script type="importmap">`
+and resolves module specifiers through an active `ImportMapState` when executing module scripts
+via real `vm-js` modules (`VmJsModuleLoader` in `src/js/vmjs/module_loader.rs`).
+
+However, import maps are not yet wired into `BrowserTab`’s streaming `<script>` execution pipeline,
+so real page execution does not apply import maps yet. This document describes the intended
+integration surface for the HTML/script subsystems (also see
+[`docs/html_script_processing.md`](html_script_processing.md)).
 
 ### How to run tests
 
@@ -670,12 +675,15 @@ Module script graph loading is separate from import maps, but must:
 
 In other words: module graph code should not “roll its own” import map parsing/normalization.
 
-If you are using FastRender’s current host-side module bundler (`ModuleGraphLoader` in
-`src/js/module_scripts.rs`), prefer:
+FastRender previously had a host-side module *bundler* (`ModuleGraphLoader`) for tooling, but it was
+removed once `vm-js` gained real ECMAScript module linking/evaluation.
 
-* `ModuleGraphLoader::build_bundle_for_url_with_import_maps(&mut ImportMapState, ...)`
-* `ModuleGraphLoader::build_bundle_for_inline_with_import_maps(&mut ImportMapState, ...)`
+Today, tooling module execution uses `VmJsModuleLoader` (`src/js/vmjs/module_loader.rs`). When an
+active import map is available, callers should use its `*_with_import_maps(...)` APIs so module
+specifier resolution goes through `resolve_module_specifier(&mut state, ...)`. When no import map is
+provided, `VmJsModuleLoader` only supports relative/absolute URL specifiers and rejects bare
+specifiers.
 
-These use `resolve_module_specifier(...)` internally, ensuring bare specifiers are rejected unless
-they are mapped by the active import map, and ensuring the resolved module set is updated as modules
-are discovered.
+When import maps are wired into a module loader, ensure *every* module specifier is resolved via
+`resolve_module_specifier(&mut state, specifier, base_url)` so that the import map rules (including
+resolved-module-set updates) are applied consistently.
