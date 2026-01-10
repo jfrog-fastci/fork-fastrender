@@ -2497,7 +2497,7 @@ pub(crate) fn clip_node(
       {
         let delta = fragment_start - child_abs_start;
         if offset_in_fragment <= BREAK_EPSILON {
-          (((delta / fragmentainer_size).floor() as i32).max(0) as usize)
+          ((delta / fragmentainer_size).floor() as i32).max(0) as usize
         } else {
           let first = (fragmentainer_size - offset_in_fragment).max(0.0);
           if delta + BREAK_EPSILON < first {
