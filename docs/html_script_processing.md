@@ -483,7 +483,7 @@ boundaries as the classic-script pipeline:
 
 - **Streaming parser driver:** `src/html/streaming_parser.rs` (pause/resume at `</script>`)
 - **Base URL timing:** `src/html/base_url_tracker.rs` (`BaseUrlTracker`)
-- **Import maps parsing/normalization:** `src/js/import_maps/` (already exists; see
+- **Import maps algorithms:** `src/js/import_maps/` (parsing + state + merge/register + resolution; see
   [`docs/import_maps.md`](import_maps.md))
 - **Scheduler/orchestration:** likely a new or extended scheduler under `src/js/` that models HTML’s
   scheduling lists/sets for classic + module + import map scripts and produces explicit actions for

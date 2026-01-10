@@ -394,8 +394,9 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- no module scripts (`type="module"`), no import maps (`type="importmap"`; parsing exists but is not yet
-  integrated; see [`docs/import_maps.md`](import_maps.md)), no dynamic `import()`
+- no spec-correct module scripts (`type="module"`), no import maps (`type="importmap"`; import map
+  merge/register/resolve algorithms exist but are not yet integrated; see [`docs/import_maps.md`](import_maps.md)),
+  no dynamic `import()`
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
     executed during `BrowserTab`'s streaming HTML parse,
