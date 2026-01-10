@@ -4277,6 +4277,80 @@ mod tests {
   }
 
   #[test]
+  fn dispatches_error_event_for_invalid_module_src_attribute() -> Result<()> {
+    let js_options = JsExecutionOptions {
+      supports_module_scripts: true,
+      ..JsExecutionOptions::default()
+    };
+    let mut host = BrowserTabHost::new(
+      BrowserDocumentDom2::from_html("<script type=\"module\" src></script>", RenderOptions::default())?,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      js_options,
+    )?;
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+
+    host.dom().events().add_event_listener(
+      EventTargetId::Node(node_id),
+      "error",
+      ListenerId::new(1),
+      AddEventListenerOptions::default(),
+    );
+
+    let mut event_loop = EventLoop::new();
+    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dispatches_error_event_for_invalid_importmap_src_attribute() -> Result<()> {
+    let mut host = BrowserTabHost::new(
+      BrowserDocumentDom2::from_html("<script type=\"importmap\" src></script>", RenderOptions::default())?,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    )?;
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+
+    host.dom().events().add_event_listener(
+      EventTargetId::Node(node_id),
+      "error",
+      ListenerId::new(1),
+      AddEventListenerOptions::default(),
+    );
+
+    let mut event_loop = EventLoop::new();
+    host.register_and_schedule_script(node_id, spec.clone(), spec.base_url.clone(), &mut event_loop)?;
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    Ok(())
+  }
+
+  #[test]
   fn microtasks_run_at_parser_script_boundaries_when_js_stack_empty() -> Result<()> {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let (mut host, mut event_loop) = build_host("<script>A</script>", Rc::clone(&log))?;
