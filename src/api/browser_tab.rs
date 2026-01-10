@@ -3,9 +3,9 @@ use crate::debug::trace::TraceHandle;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
-use crate::html::content_security_policy::{CspDirective, CspPolicy};
-use crate::html::encoding::decode_html_bytes;
+use crate::html::content_security_policy::CspPolicy;
 use crate::html::document_write::with_active_streaming_parser;
+use crate::html::encoding::decode_html_bytes;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::resource::ResourceFetcher;
 use crate::js::{
@@ -153,8 +153,8 @@ pub struct BrowserTabHost {
   base_url: Option<String>,
   document_origin: Option<crate::resource::DocumentOrigin>,
   document_referrer_policy: ReferrerPolicy,
-  pending_navigation: Option<LocationNavigationRequest>,
   csp: Option<CspPolicy>,
+  pending_navigation: Option<LocationNavigationRequest>,
   external_script_sources: HashMap<String, String>,
   script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
   stylesheet_keys_by_node: HashMap<NodeId, usize>,
@@ -188,8 +188,8 @@ impl BrowserTabHost {
       base_url: None,
       document_origin: None,
       document_referrer_policy: ReferrerPolicy::default(),
-      pending_navigation: None,
       csp: None,
+      pending_navigation: None,
       external_script_sources: HashMap::new(),
       script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
       stylesheet_keys_by_node: HashMap::new(),
@@ -706,10 +706,74 @@ impl BrowserTabHost {
   fn register_and_schedule_script(
     &mut self,
     node_id: NodeId,
-    spec: ScriptElementSpec,
+    mut spec: ScriptElementSpec,
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
+    fn trim_ascii_whitespace(value: &str) -> &str {
+      value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    }
+
+    let nonce_attr = self
+      .document
+      .dom()
+      .get_attribute(node_id, "nonce")
+      .ok()
+      .flatten()
+      .map(trim_ascii_whitespace)
+      .filter(|value| !value.is_empty());
+
+    if spec.script_type == ScriptType::Classic {
+      if let Some(csp) = self.csp.as_ref() {
+        let document_origin = self.document_origin.as_ref();
+
+        // Inline classic scripts.
+        //
+        // Note: HTML uses the *presence* of the `src` attribute to suppress inline execution, even
+        // if the value is empty/invalid. Mirror the scheduler's `src_attr_present` semantics here.
+        if !spec.src_attr_present {
+          if !csp.allows_inline_script(nonce_attr, &spec.inline_text) {
+            let mut span = self.trace.span("js.script.csp_block", "js");
+            span.arg_u64("node_id", node_id.index() as u64);
+            span.arg_str("kind", "inline");
+            if let Some(nonce) = nonce_attr {
+              span.arg_str("nonce", nonce);
+            }
+            // Suppress execution by forcing the "external src attribute present but invalid" path.
+            spec.src_attr_present = true;
+            spec.src = None;
+          }
+        } else if let Some(src) = spec.src.as_deref().filter(|s| !s.is_empty()) {
+          match Url::parse(src) {
+            Ok(url) => {
+              if !csp.allows_script_url(document_origin, nonce_attr, &url) {
+                let mut span = self.trace.span("js.script.csp_block", "js");
+                span.arg_u64("node_id", node_id.index() as u64);
+                span.arg_str("kind", "external");
+                span.arg_str("url", src);
+                if let Some(nonce) = nonce_attr {
+                  span.arg_str("nonce", nonce);
+                }
+                spec.src = None;
+              }
+            }
+            Err(_) => {
+              // Conservatively block unparseable URLs when a CSP policy is present.
+              let mut span = self.trace.span("js.script.csp_block", "js");
+              span.arg_u64("node_id", node_id.index() as u64);
+              span.arg_str("kind", "external");
+              span.arg_str("url", src);
+              span.arg_str("reason", "invalid_url");
+              if let Some(nonce) = nonce_attr {
+                span.arg_str("nonce", nonce);
+              }
+              spec.src = None;
+            }
+          }
+        }
+      }
+    }
+
     // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script, but
     // only when the JS execution context stack is empty.
     if spec.parser_inserted && self.js_execution_depth.get() == 0 {
@@ -780,30 +844,46 @@ impl BrowserTabHost {
         }
         ScriptSchedulerAction::ExecuteNow {
           script_id,
+          node_id,
           source_text,
           ..
         } => {
-          if self
-            .csp
-            .as_ref()
-            .is_some_and(|csp| csp.blocks_inline_scripts_mvp())
-            && self
-              .scripts
-              .get(&script_id)
-              .is_some_and(|entry| entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present)
-          {
-            let script_node = self
-              .scripts
-              .get(&script_id)
-              .map(|entry| entry.node_id)
-              .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
-            self.dispatch_script_error_event(script_node)?;
-            self.mutate_dom(|dom| {
-              dom.node_mut(script_node).script_already_started = true;
-              ((), false)
+          if let Some(csp) = self.csp.as_ref() {
+            let is_inline_classic = self.scripts.get(&script_id).is_some_and(|entry| {
+              entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
             });
-            self.finish_script_execution(script_id, event_loop)?;
-            continue;
+            if is_inline_classic {
+              fn trim_ascii_whitespace(value: &str) -> &str {
+                value.trim_matches(|c: char| {
+                  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+                })
+              }
+              let nonce_attr = self
+                .document
+                .dom()
+                .get_attribute(node_id, "nonce")
+                .ok()
+                .flatten()
+                .map(trim_ascii_whitespace)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+              if !csp.allows_inline_script(nonce_attr.as_deref(), &source_text) {
+                let mut span = self.trace.span("js.script.csp_block", "js");
+                span.arg_u64("node_id", node_id.index() as u64);
+                span.arg_str("kind", "inline");
+                if let Some(nonce) = nonce_attr.as_deref() {
+                  span.arg_str("nonce", nonce);
+                }
+
+                self.dispatch_script_error_event(node_id)?;
+                self.mutate_dom(|dom| {
+                  dom.node_mut(node_id).script_already_started = true;
+                  ((), false)
+                });
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              }
+            }
           }
 
           let wait_result = self.wait_for_stylesheets_if_needed(script_id, event_loop);
@@ -827,9 +907,47 @@ impl BrowserTabHost {
         }
         ScriptSchedulerAction::QueueTask {
           script_id,
+          node_id,
           source_text,
           ..
         } => {
+          if let Some(csp) = self.csp.as_ref() {
+            let is_inline_classic = self.scripts.get(&script_id).is_some_and(|entry| {
+              entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
+            });
+            if is_inline_classic {
+              fn trim_ascii_whitespace(value: &str) -> &str {
+                value.trim_matches(|c: char| {
+                  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+                })
+              }
+              let nonce_attr = self
+                .document
+                .dom()
+                .get_attribute(node_id, "nonce")
+                .ok()
+                .flatten()
+                .map(trim_ascii_whitespace)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+              if !csp.allows_inline_script(nonce_attr.as_deref(), &source_text) {
+                let mut span = self.trace.span("js.script.csp_block", "js");
+                span.arg_u64("node_id", node_id.index() as u64);
+                span.arg_str("kind", "inline");
+                if let Some(nonce) = nonce_attr.as_deref() {
+                  span.arg_str("nonce", nonce);
+                }
+
+                self.dispatch_script_error_event(node_id)?;
+                self.mutate_dom(|dom| {
+                  dom.node_mut(node_id).script_already_started = true;
+                  ((), false)
+                });
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              }
+            }
+          }
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let wait_result = host.wait_for_stylesheets_if_needed(script_id, event_loop);
             let result = match wait_result {
@@ -969,9 +1087,27 @@ impl BrowserTabHost {
             .and_then(|entry| entry.spec.base_url.as_deref())
             .and_then(crate::resource::origin_from_url)
         });
-      let allowed = parsed
-        .as_ref()
-        .is_some_and(|parsed| csp.allows_url(CspDirective::ScriptSrc, doc_origin.as_ref(), parsed));
+      fn trim_ascii_whitespace(value: &str) -> &str {
+        value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+      }
+      let nonce_attr = self
+        .scripts
+        .get(&script_id)
+        .map(|entry| entry.node_id)
+        .and_then(|node_id| {
+          self
+            .document
+            .dom()
+            .get_attribute(node_id, "nonce")
+            .ok()
+            .flatten()
+            .map(trim_ascii_whitespace)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+        });
+      let allowed = parsed.as_ref().is_some_and(|parsed| {
+        csp.allows_script_url(doc_origin.as_ref(), nonce_attr.as_deref(), parsed)
+      });
       if !allowed {
         let script_node = self
           .scripts
@@ -1535,11 +1671,9 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
     };
-    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
-      .unwrap_or_default();
-    tab
-      .host
-      .reset_scripting_state(None, document_referrer_policy)?;
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    tab.host.reset_scripting_state(None, document_referrer_policy)?;
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
       tab.navigate_to_url(&req.url, options.clone())?;
@@ -1632,8 +1766,8 @@ impl BrowserTab {
       .reset_with_dom(Document::new(QuirksMode::NoQuirks), options);
     self.reset_event_loop();
     self.host.trace = self.trace.clone();
-    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
-      .unwrap_or_default();
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
 
     // Clear URL hints so relative resources do not resolve against the previous navigation.
     {

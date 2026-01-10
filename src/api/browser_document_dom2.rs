@@ -109,6 +109,7 @@ impl BrowserDocumentDom2 {
   ) -> Result<super::BrowserNavigationReport> {
     let prev_document_url = self.renderer.document_url.clone();
     let prev_base_url = self.renderer.base_url.clone();
+    let prev_document_csp = self.renderer.document_csp.clone();
     let super::PreparedDocumentReport {
       document,
       diagnostics,
@@ -123,6 +124,7 @@ impl BrowserDocumentDom2 {
           Some(url) => self.renderer.set_base_url(url),
           None => self.renderer.clear_base_url(),
         }
+        self.renderer.document_csp = prev_document_csp;
         return Err(err);
       }
     };
@@ -164,6 +166,10 @@ impl BrowserDocumentDom2 {
 
   pub(crate) fn renderer_mut(&mut self) -> &mut super::FastRender {
     &mut self.renderer
+  }
+
+  pub(crate) fn document_csp(&self) -> Option<crate::html::content_security_policy::CspPolicy> {
+    self.renderer.document_csp.clone()
   }
 
   pub(crate) fn fetcher(&self) -> std::sync::Arc<dyn crate::resource::ResourceFetcher> {

@@ -147,11 +147,11 @@ we can land a correct classic-script core first:
 - **Module scripts** (`type="module"`) and the module graph (host hooks, `import`, dynamic import)
 - **Import maps** (`type="importmap"`) registration/merging + interaction with module fetch
   (parsing/normalization exists in `src/js/import_maps/`; see [`docs/import_maps.md`](import_maps.md))
-- **Content Security Policy (CSP)** script enforcement (`script-src`, inline script checks,
-  nonces/hashes, etc.)
-  - A minimal CSP parser/URL matcher exists for some subresource destinations (styles/images/fonts,
-    etc.) in `src/html/content_security_policy.rs`, but it is not yet integrated with the HTML
-    `<script>` loading/execution pipeline.
+- **Content Security Policy (CSP)**: partially implemented for classic scripts in `api::BrowserTab`
+  - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
+  - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
+    `'sha256-...'`).
+  - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
 - The `nomodule` attribute behavior
 - `document.write()` and the “ignore-destructive-writes counter”
 - **Stylesheet-blocking scripts** (scripts that wait for render-blocking stylesheets)

@@ -539,6 +539,17 @@ pub struct FastRender {
   /// `<base href>` override for resolving relative references.
   document_url: Option<String>,
 
+  /// The Content Security Policy (CSP) applied to the current document, if known.
+  ///
+  /// This is populated from:
+  /// - `Content-Security-Policy` HTTP response headers when loading via [`FastRender::prepare_url`]
+  /// - `<meta http-equiv="Content-Security-Policy">` tags discovered during DOM parsing
+  ///
+  /// This is stored separately from [`FastRender::resource_context`] so consumers like
+  /// `api::BrowserTab` can enforce CSP in pipelines that are not driven by the renderer's
+  /// subresource loader.
+  document_csp: Option<CspPolicy>,
+
   /// Compatibility profile for opt-in site-specific behaviors
   compat_profile: CompatProfile,
 
@@ -5535,6 +5546,7 @@ impl FastRender {
       fit_canvas_to_content: config.fit_canvas_to_content,
       base_url: config.base_url.clone(),
       document_url: None,
+      document_csp: None,
       dom_compat_mode: config.dom_compat_mode,
       dom_scripting_enabled: config.dom_scripting_enabled,
       render_parse_scripting_enabled: config.render_parse_scripting_enabled,
@@ -7145,9 +7157,12 @@ impl FastRender {
     initial_referrer_policy: ReferrerPolicy,
     initial_csp: Option<CspPolicy>,
   ) -> Result<PreparedDocument> {
+    let previous_document_csp = self.document_csp.clone();
+    self.document_csp = initial_csp.clone();
+
     let toggles = self.resolve_runtime_toggles(&options);
     let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
-    runtime::with_runtime_toggles(toggles, || {
+    let result = runtime::with_runtime_toggles(toggles, || {
       let trace = TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("prepare", "pipeline");
@@ -7172,7 +7187,13 @@ impl FastRender {
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
-    })
+    });
+
+    if result.is_err() {
+      self.document_csp = previous_document_csp;
+    }
+
+    result
   }
 
   fn prepare_dom_internal(
@@ -7180,9 +7201,12 @@ impl FastRender {
     dom: &DomNode,
     options: RenderOptions,
   ) -> Result<PreparedDocument> {
+    let previous_document_csp = self.document_csp.clone();
+    self.document_csp = None;
+
     let toggles = self.resolve_runtime_toggles(&options);
     let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
-    runtime::with_runtime_toggles(toggles, || {
+    let result = runtime::with_runtime_toggles(toggles, || {
       let trace = TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("prepare", "pipeline");
@@ -7205,7 +7229,13 @@ impl FastRender {
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
-    })
+    });
+
+    if result.is_err() {
+      self.document_csp = previous_document_csp;
+    }
+
+    result
   }
 
   fn prepare_dom_internal_inner_ref(
@@ -7251,6 +7281,18 @@ impl FastRender {
       }
       if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)?
       {
+        // Persist CSP at the document level so other subsystems (e.g. JS `<script>` processing in
+        // `api::BrowserTab`) can consult it even after the renderer pops its temporary
+        // `ResourceContext`.
+        match self.document_csp.as_mut() {
+          Some(existing) => {
+            existing.extend(meta_csp.clone());
+          }
+          None => {
+            self.document_csp = Some(meta_csp.clone());
+          }
+        }
+
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
             Some(existing) => existing.extend(meta_csp),
@@ -18956,6 +18998,7 @@ pub(crate) fn layout_html_with_shared_resources(
     document_url: resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.clone()),
+    document_csp: resource_context.as_ref().and_then(|ctx| ctx.csp.clone()),
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
     dom_scripting_enabled: false,
@@ -19040,6 +19083,7 @@ pub(crate) fn render_html_with_shared_resources(
     document_url: resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.clone()),
+    document_csp: resource_context.as_ref().and_then(|ctx| ctx.csp.clone()),
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
     dom_scripting_enabled: false,

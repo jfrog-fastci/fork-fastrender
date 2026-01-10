@@ -8,14 +8,24 @@
 //!   `script-src`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
+//!   - `'unsafe-inline'` (inline scripts only; ignored when a nonce/hash is present, matching
+//!     modern browser behavior)
+//!   - `'strict-dynamic'` (only affects `script-src`; treated conservatively)
+//!   - `'nonce-…'` (inline + external `<script nonce=...>`)
+//!   - `'sha256-…'` (inline scripts only; base64-encoded SHA-256 of the inline source bytes)
 //!   - `*`
 //!   - scheme sources like `https:`, `http:`, `data:` (and other valid `scheme:` tokens)
 //!   - host sources like `example.com`, `https://example.com`, `*.example.com`
 //!
 //! Notes / intentionally omitted (v1):
-//! - Nonce/hash/`'unsafe-inline'` semantics (they still effectively restrict external loads because
-//!   they don't match any URL, so a directive that only contains those tokens becomes "deny all"
-//!   for our external resource destinations).
+//! - Most of CSP3 (`'unsafe-eval'`, `'strict-dynamic'` trust propagation, `unsafe-hashes`, etc.).
+//!   For `strict-dynamic` we do **not** implement trust propagation; when `strict-dynamic` is
+//!   present alongside a nonce/hash, we conservatively treat URL-based allowlisting as disabled,
+//!   requiring explicit nonces on `<script>` elements.
+//! - Hash sources other than `'sha256-…'` (sha384/sha512, etc.).
+//! - Nonce/hash/`'unsafe-inline'` semantics for non-script inline contexts (styles, event handlers,
+//!   etc.). These tokens are ignored for URL-based matching and therefore do not allow external
+//!   loads by themselves.
 
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderStage, Result};
@@ -33,24 +43,24 @@ const MAX_ATTRIBUTES_PER_TAG: usize = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CspDirective {
   DefaultSrc,
+  ScriptSrc,
   StyleSrc,
   ImgSrc,
   FontSrc,
   ConnectSrc,
   FrameSrc,
-  ScriptSrc,
 }
 
 impl CspDirective {
   pub const fn as_str(self) -> &'static str {
     match self {
       CspDirective::DefaultSrc => "default-src",
+      CspDirective::ScriptSrc => "script-src",
       CspDirective::StyleSrc => "style-src",
       CspDirective::ImgSrc => "img-src",
       CspDirective::FontSrc => "font-src",
       CspDirective::ConnectSrc => "connect-src",
       CspDirective::FrameSrc => "frame-src",
-      CspDirective::ScriptSrc => "script-src",
     }
   }
 }
@@ -59,6 +69,10 @@ impl CspDirective {
 enum CspSource {
   None,
   Self_,
+  UnsafeInline,
+  StrictDynamic,
+  Nonce(String),
+  Sha256(String),
   Any,
   Scheme(String),
   Host(CspHostSource),
@@ -147,20 +161,54 @@ impl CspPolicy {
       .all(|set| set_allows_url(set, directive, document_origin, url))
   }
 
-  /// MVP inline-script gate:
-  /// - If a policy contains an explicit `script-src` directive and it has no URL-matching sources
-  ///   (e.g. it only contains nonces/hashes or `'none'`), then inline scripts should be blocked.
+  /// True if this policy allows an inline classic `<script>` element to execute.
   ///
-  /// FastRender does not yet implement nonce/hash/`'unsafe-inline'` semantics, so this is a
-  /// conservative approximation used by the script pipeline.
-  pub fn blocks_inline_scripts_mvp(&self) -> bool {
-    // Multiple policies combine by intersection: if *any* policy set blocks inline scripts, we
-    // block them.
-    self.policies.iter().any(|set| {
-      set
+  /// This is a narrow subset of CSP inline semantics:
+  /// - If no `script-src`/`default-src` is present: allow.
+  /// - If a matching nonce (`'nonce-…'` + `nonce=...`) is present: allow.
+  /// - If a matching SHA-256 hash (`'sha256-…'`) is present: allow.
+  /// - If `'unsafe-inline'` is present *and* no nonce/hash source is present: allow.
+  ///
+  /// Everything else is treated as blocked.
+  pub fn allows_inline_script(&self, nonce: Option<&str>, source_text: &str) -> bool {
+    // Multiple policies combine by intersection: the resource must be allowed by *every* policy.
+    self
+      .policies
+      .iter()
+      .all(|set| set_allows_inline_script(set, nonce, source_text))
+  }
+
+  /// True if this policy allows a classic external `<script src=...>` element to load/execute.
+  ///
+  /// In addition to URL matching, this checks nonce-based allowlisting when the element has
+  /// `nonce=...` and the policy contains a matching `'nonce-…'` source.
+  pub fn allows_script_url(
+    &self,
+    document_origin: Option<&DocumentOrigin>,
+    nonce: Option<&str>,
+    url: &Url,
+  ) -> bool {
+    self.policies.iter().all(|set| {
+      // A missing directive/default-src means this policy set doesn't restrict scripts.
+      let Some(list) = set
         .directives
         .get(&CspDirective::ScriptSrc)
-        .is_some_and(|list| list.iter().all(|src| matches!(src, CspSource::None)))
+        .or_else(|| set.directives.get(&CspDirective::DefaultSrc))
+      else {
+        return true;
+      };
+
+      if list.is_empty() {
+        return false;
+      }
+
+      if let Some(nonce) = nonce.and_then(non_empty_trimmed_ascii) {
+        if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+          return true;
+        }
+      }
+
+      set_allows_url(set, CspDirective::ScriptSrc, document_origin, url)
     })
   }
 }
@@ -183,6 +231,18 @@ fn set_allows_url(
   if list.is_empty() {
     return false;
   }
+
+  // CSP3: `strict-dynamic` disables host/scheme-source allowlisting when a nonce/hash is present.
+  // We do not model trust propagation here; treat it conservatively as "URL sources do not match".
+  if directive == CspDirective::ScriptSrc
+    && list.iter().any(|s| matches!(s, CspSource::StrictDynamic))
+    && list
+      .iter()
+      .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)))
+  {
+    return false;
+  }
+
   let url_str = url.as_str();
   for source in list {
     match source {
@@ -203,6 +263,9 @@ fn set_allows_url(
         if matches!(url.scheme(), "http" | "https") {
           return true;
         }
+      }
+      CspSource::UnsafeInline | CspSource::StrictDynamic | CspSource::Nonce(_) | CspSource::Sha256(_) => {
+        // Not applicable to URL-based checks.
       }
       CspSource::Scheme(scheme) => {
         if url.scheme().eq_ignore_ascii_case(scheme) {
@@ -289,6 +352,22 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
         sources.push(CspSource::None);
         continue;
       }
+      if token.eq_ignore_ascii_case("'unsafe-inline'") {
+        sources.push(CspSource::UnsafeInline);
+        continue;
+      }
+      if token.eq_ignore_ascii_case("'strict-dynamic'") {
+        sources.push(CspSource::StrictDynamic);
+        continue;
+      }
+      if let Some(nonce) = parse_nonce_source(token) {
+        sources.push(CspSource::Nonce(nonce));
+        continue;
+      }
+      if let Some(hash) = parse_sha256_source(token) {
+        sources.push(CspSource::Sha256(hash));
+        continue;
+      }
       if token == "*" {
         sources.push(CspSource::Any);
         continue;
@@ -301,7 +380,7 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
         sources.push(CspSource::Host(host));
         continue;
       }
-      // Ignore: nonces, hashes, unsafe-inline/eval, etc.
+      // Ignore: other nonces/hashes, unsafe-eval, etc.
     }
     directives.insert(directive, sources);
   }
@@ -312,6 +391,12 @@ fn parse_directive_set(value: &str) -> Option<CspDirectiveSet> {
 fn match_lower_directive(name: &str) -> Option<CspDirective> {
   if name.eq_ignore_ascii_case("default-src") {
     Some(CspDirective::DefaultSrc)
+  } else if name.eq_ignore_ascii_case("script-src")
+    || name.eq_ignore_ascii_case("script-src-elem")
+    || name.eq_ignore_ascii_case("script-src-attr")
+  {
+    // MVP: treat script-src-elem/script-src-attr as equivalent to script-src.
+    Some(CspDirective::ScriptSrc)
   } else if name.eq_ignore_ascii_case("style-src") {
     Some(CspDirective::StyleSrc)
   } else if name.eq_ignore_ascii_case("img-src") {
@@ -322,12 +407,6 @@ fn match_lower_directive(name: &str) -> Option<CspDirective> {
     Some(CspDirective::ConnectSrc)
   } else if name.eq_ignore_ascii_case("frame-src") {
     Some(CspDirective::FrameSrc)
-  } else if name.eq_ignore_ascii_case("script-src")
-    || name.eq_ignore_ascii_case("script-src-elem")
-    || name.eq_ignore_ascii_case("script-src-attr")
-  {
-    // MVP: treat script-src-elem/script-src-attr as equivalent to script-src.
-    Some(CspDirective::ScriptSrc)
   } else {
     None
   }
@@ -351,6 +430,92 @@ fn parse_scheme_source(token: &str) -> Option<String> {
     return None;
   }
   Some(scheme.to_ascii_lowercase())
+}
+
+fn parse_quoted_value(token: &str) -> Option<&str> {
+  let token = trim_ascii_whitespace(token);
+  if !token.starts_with('\'') || !token.ends_with('\'') || token.len() < 2 {
+    return None;
+  }
+  Some(&token[1..token.len() - 1])
+}
+
+fn parse_nonce_source(token: &str) -> Option<String> {
+  let inner = parse_quoted_value(token)?;
+  const PREFIX: &str = "nonce-";
+  if inner.len() <= PREFIX.len() || !inner[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+    return None;
+  }
+  Some(inner[PREFIX.len()..].to_string())
+}
+
+fn parse_sha256_source(token: &str) -> Option<String> {
+  let inner = parse_quoted_value(token)?;
+  const PREFIX: &str = "sha256-";
+  if inner.len() <= PREFIX.len() || !inner[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+    return None;
+  }
+  Some(inner[PREFIX.len()..].to_string())
+}
+
+fn non_empty_trimmed_ascii(value: &str) -> Option<&str> {
+  let trimmed = trim_ascii_whitespace(value);
+  (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn set_allows_inline_script(set: &CspDirectiveSet, nonce: Option<&str>, source_text: &str) -> bool {
+  let list = set
+    .directives
+    .get(&CspDirective::ScriptSrc)
+    .or_else(|| set.directives.get(&CspDirective::DefaultSrc));
+  let Some(list) = list else {
+    // No directive and no default-src => allow.
+    return true;
+  };
+  if list.is_empty() {
+    return false;
+  }
+
+  let nonce = nonce.and_then(non_empty_trimmed_ascii);
+
+  let has_nonce_or_hash = list
+    .iter()
+    .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)));
+
+  if let Some(nonce) = nonce {
+    if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+      return true;
+    }
+  }
+
+  // Compute SHA-256 once, but only if needed.
+  let mut computed_sha256: Option<String> = None;
+  if list.iter().any(|s| matches!(s, CspSource::Sha256(_))) {
+    use base64::{engine::general_purpose, Engine as _};
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(source_text.as_bytes());
+    computed_sha256 = Some(general_purpose::STANDARD.encode(digest));
+  }
+
+  if let Some(computed) = computed_sha256.as_deref() {
+    let computed_trimmed = computed.trim_end_matches('=');
+    for source in list {
+      let CspSource::Sha256(expected) = source else {
+        continue;
+      };
+      // Be tolerant of optional base64 padding.
+      if expected.trim_end_matches('=') == computed_trimmed {
+        return true;
+      }
+    }
+  }
+
+  // `unsafe-inline` is ignored when a nonce/hash is present (modern browsers).
+  if !has_nonce_or_hash && list.iter().any(|s| matches!(s, CspSource::UnsafeInline)) {
+    return true;
+  }
+
+  false
 }
 
 fn parse_host_source(token: &str) -> Option<CspHostSource> {
