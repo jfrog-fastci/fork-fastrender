@@ -2,6 +2,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptState;
+use crate::js::bindings::DomExceptionClassVmJs;
 use crate::resource::ResourceFetcher;
 use crate::web::dom::DomException;
 use std::char::decode_utf16;
@@ -2311,6 +2312,11 @@ pub fn install_dom_bindings_with_limits(
   max_string_bytes: usize,
 ) -> Result<(), VmError> {
   let mut scope = heap.scope();
+
+  // `vm_dom` is a host-driven DOM binding layer; ensure a spec-shaped `DOMException` exists on the
+  // realm global so scripts can construct/catch it (and host code can throw DOMException-like
+  // objects).
+  DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
 
   // Prototype objects.
   let proto_node = scope.alloc_object()?;

@@ -1,5 +1,6 @@
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
+use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
@@ -7778,6 +7779,10 @@ fn init_window_globals(
 ) -> Result<(Option<u64>, Option<u64>, Option<u64>), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
+
+  // Ensure `DOMException` exists early: many real-world libraries use it for quota errors, token
+  // validation, etc.
+  DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
 
   let global_this_key = alloc_key(&mut scope, "globalThis")?;
   let window_key = alloc_key(&mut scope, "window")?;

@@ -7,11 +7,13 @@
 
 pub mod document;
 pub mod dom_exception;
+pub mod dom_exception_vmjs;
 pub mod generated;
 pub mod host;
 
 pub use document::install_document_query_selector_bindings;
 pub use dom_exception::DomExceptionClass;
+pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
 pub use generated::install_window_bindings;
 pub use generated::install_worker_bindings;
 pub use host::{BindingValue, WebHostBindings};
