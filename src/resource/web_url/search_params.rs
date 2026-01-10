@@ -1,5 +1,5 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind};
 use crate::resource::web_url::limits::WebUrlLimits;
@@ -9,11 +9,11 @@ use crate::resource::web_url::url::WebUrlInner;
 enum WebUrlSearchParamsInner {
   /// A standalone `URLSearchParams` list with its own storage.
   Standalone {
-    pairs: Rc<RefCell<Vec<(String, String)>>>,
+    pairs: Arc<Mutex<Vec<(String, String)>>>,
   },
   /// A `URLSearchParams` view over an associated `WebUrl`.
   Associated {
-    url: Rc<RefCell<WebUrlInner>>,
+    url: Arc<Mutex<WebUrlInner>>,
   },
 }
 
@@ -28,7 +28,7 @@ impl WebUrlSearchParams {
   pub fn new(limits: &WebUrlLimits) -> Self {
     Self {
       inner: WebUrlSearchParamsInner::Standalone {
-        pairs: Rc::new(RefCell::new(Vec::new())),
+        pairs: Arc::new(Mutex::new(Vec::new())),
       },
       limits: limits.clone(),
     }
@@ -39,13 +39,13 @@ impl WebUrlSearchParams {
     let pairs = parse_urlencoded_pairs(input, limits)?;
     Ok(Self {
       inner: WebUrlSearchParamsInner::Standalone {
-        pairs: Rc::new(RefCell::new(pairs)),
+        pairs: Arc::new(Mutex::new(pairs)),
       },
       limits: limits.clone(),
     })
   }
 
-  pub(crate) fn associated(url: Rc<RefCell<WebUrlInner>>, limits: WebUrlLimits) -> Self {
+  pub(crate) fn associated(url: Arc<Mutex<WebUrlInner>>, limits: WebUrlLimits) -> Self {
     Self {
       inner: WebUrlSearchParamsInner::Associated { url },
       limits,
@@ -54,9 +54,9 @@ impl WebUrlSearchParams {
 
   pub fn len(&self) -> Result<usize, WebUrlError> {
     match &self.inner {
-      WebUrlSearchParamsInner::Standalone { pairs } => Ok(pairs.borrow().len()),
+      WebUrlSearchParamsInner::Standalone { pairs } => Ok(pairs.lock().len()),
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
         Ok(pairs.len())
       }
@@ -76,7 +76,7 @@ impl WebUrlSearchParams {
   pub fn pairs(&self) -> Result<Vec<(String, String)>, WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        let pairs = pairs.borrow();
+        let pairs = pairs.lock();
         let mut out = Vec::new();
         out.try_reserve(pairs.len())?;
         for (n, v) in pairs.iter() {
@@ -86,7 +86,7 @@ impl WebUrlSearchParams {
         Ok(out)
       }
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)
       }
     }
@@ -94,14 +94,18 @@ impl WebUrlSearchParams {
 
   pub fn get(&self, name: &str) -> Result<Option<String>, WebUrlError> {
     match &self.inner {
-      WebUrlSearchParamsInner::Standalone { pairs } => Ok(pairs
-        .borrow()
-        .iter()
-        .find_map(|(n, v)| if n == name { Some(v.as_str()) } else { None })
-        .map(try_clone_str)
-        .transpose()?),
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs = pairs.lock();
+        Ok(
+          pairs
+            .iter()
+            .find_map(|(n, v)| if n == name { Some(v.as_str()) } else { None })
+            .map(try_clone_str)
+            .transpose()?,
+        )
+      }
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
         for (n, v) in pairs {
           if n == name {
@@ -116,7 +120,7 @@ impl WebUrlSearchParams {
   pub fn get_all(&self, name: &str) -> Result<Vec<String>, WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        let pairs = pairs.borrow();
+        let pairs = pairs.lock();
         let mut out = Vec::new();
         for (n, v) in pairs.iter() {
           if n == name {
@@ -127,7 +131,7 @@ impl WebUrlSearchParams {
         Ok(out)
       }
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
         let mut out = Vec::new();
         for (n, v) in pairs {
@@ -143,12 +147,15 @@ impl WebUrlSearchParams {
 
   pub fn has(&self, name: &str, value: Option<&str>) -> Result<bool, WebUrlError> {
     match &self.inner {
-      WebUrlSearchParamsInner::Standalone { pairs } => Ok(match value {
-        None => pairs.borrow().iter().any(|(n, _)| n == name),
-        Some(value) => pairs.borrow().iter().any(|(n, v)| n == name && v == value),
-      }),
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs = pairs.lock();
+        Ok(match value {
+          None => pairs.iter().any(|(n, _)| n == name),
+          Some(value) => pairs.iter().any(|(n, v)| n == name && v == value),
+        })
+      }
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
         Ok(match value {
           None => pairs.into_iter().any(|(n, _)| n == name),
@@ -161,7 +168,7 @@ impl WebUrlSearchParams {
   pub fn append(&self, name: &str, value: &str) -> Result<(), WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        let mut pairs = pairs.borrow_mut();
+        let mut pairs = pairs.lock();
         enforce_append_limits(&pairs, name, value, &self.limits)?;
 
         let name = try_clone_str(name)?;
@@ -191,10 +198,11 @@ impl WebUrlSearchParams {
   pub fn delete(&self, name: &str, value: Option<&str>) -> Result<(), WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
+        let mut pairs = pairs.lock();
         match value {
-          None => pairs.borrow_mut().retain(|(n, _)| n != name),
-          Some(value) => pairs.borrow_mut().retain(|(n, v)| n != name || v != value),
-        }
+          None => pairs.retain(|(n, _)| n != name),
+          Some(value) => pairs.retain(|(n, v)| n != name || v != value),
+        };
         Ok(())
       }
       WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
@@ -213,22 +221,22 @@ impl WebUrlSearchParams {
   pub fn set(&self, name: &str, value: &str) -> Result<(), WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        let pairs_ref = pairs.borrow();
-        enforce_set_limits(&pairs_ref, name, value, &self.limits)?;
+        let mut pairs = pairs.lock();
+        enforce_set_limits(&pairs, name, value, &self.limits)?;
 
-        let old_len = pairs_ref.len();
+        let old_len = pairs.len();
         let mut out: Vec<(String, String)> = Vec::new();
         out.try_reserve(old_len.saturating_add(1))?;
 
         let mut inserted = false;
         let mut new_value = try_clone_str(value)?;
-        let mut new_key = if pairs_ref.iter().any(|(n, _)| n == name) {
+        let mut new_key = if pairs.iter().any(|(n, _)| n == name) {
           None
         } else {
           Some(try_clone_str(name)?)
         };
 
-        for (n, v) in pairs_ref.iter() {
+        for (n, v) in pairs.iter() {
           if n == name {
             if !inserted {
               inserted = true;
@@ -253,8 +261,7 @@ impl WebUrlSearchParams {
         // mutation.
         serialize_urlencoded_pairs(&out, &self.limits)?;
 
-        drop(pairs_ref);
-        *pairs.borrow_mut() = out;
+        *pairs = out;
         Ok(())
       }
       WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
@@ -303,7 +310,7 @@ impl WebUrlSearchParams {
   pub fn sort(&self) -> Result<(), WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        pairs.borrow_mut().sort_by(|(a, _), (b, _)| cmp_utf16(a, b));
+        pairs.lock().sort_by(|(a, _), (b, _)| cmp_utf16(a, b));
         Ok(())
       }
       WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
@@ -317,22 +324,22 @@ impl WebUrlSearchParams {
   pub fn serialize(&self) -> Result<String, WebUrlError> {
     match &self.inner {
       WebUrlSearchParamsInner::Standalone { pairs } => {
-        let pairs = pairs.borrow();
+        let pairs = pairs.lock();
         serialize_urlencoded_pairs(&pairs, &self.limits)
       }
       WebUrlSearchParamsInner::Associated { url } => {
-        let url = url.borrow();
+        let url = url.lock();
         let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
         serialize_urlencoded_pairs(&pairs, &self.limits)
       }
     }
   }
 
-  fn mutate_associated<F>(&self, url: &Rc<RefCell<WebUrlInner>>, f: F) -> Result<(), WebUrlError>
+  fn mutate_associated<F>(&self, url: &Arc<Mutex<WebUrlInner>>, f: F) -> Result<(), WebUrlError>
   where
     F: FnOnce(&mut Vec<(String, String)>) -> Result<(), WebUrlError>,
   {
-    let mut inner = url.borrow_mut();
+    let mut inner = url.lock();
     let before = inner.url.clone();
 
     let query = inner.url.query().unwrap_or("");

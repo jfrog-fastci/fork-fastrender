@@ -1,16 +1,16 @@
 //! WHATWG `URL` + `URLSearchParams` bindings for the `vm-js` script runtime (`WindowRealm`).
 //!
-//! `vm-js` native handlers currently do not have access to embedder host state during script
-//! evaluation (`Vm::call_with_host` supplies a dummy host). This module therefore stores per-object
-//! Rust state in a thread-local registry keyed by the active vm-js `RealmId` plus the wrapper
-//! object's `WeakGcObject` handle.
+//! `URL`/`URLSearchParams` wrappers need per-object Rust state (the parsed URL + query list) and
+//! `vm-js` native call hooks do not currently provide a convenient per-realm host state slot.
+//! Instead, the bindings store wrapper state in a process-global weak registry keyed by the
+//! `RealmId` plus the wrapper object's `WeakGcObject` handle.
 //!
 //! The registry is swept opportunistically whenever the heap's GC run counter changes.
 
 use crate::js::{Url, UrlError, UrlLimits, UrlSearchParams};
-use std::cell::RefCell;
 use std::char::decode_utf16;
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
   RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
@@ -88,8 +88,10 @@ struct UrlRealmState {
   last_gc_runs: u64,
 }
 
-thread_local! {
-  static REGISTRY: RefCell<UrlRegistry> = RefCell::new(UrlRegistry::default());
+static REGISTRY: OnceLock<Mutex<UrlRegistry>> = OnceLock::new();
+
+fn registry() -> &'static Mutex<UrlRegistry> {
+  REGISTRY.get_or_init(|| Mutex::new(UrlRegistry::default()))
 }
 
 fn realm_id_from_slot(value: Value) -> Option<RealmId> {
@@ -134,26 +136,26 @@ fn with_realm_state_mut<R>(
 ) -> Result<R, VmError> {
   let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
 
-  REGISTRY.with(|registry| {
-    let mut registry = registry.borrow_mut();
-    let state = registry
-      .realms
-      .get_mut(&realm_id)
-      .ok_or(VmError::InvariantViolation(
-        "URL bindings used before install_window_url_bindings",
-      ))?;
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  let state = registry
+    .realms
+    .get_mut(&realm_id)
+    .ok_or(VmError::InvariantViolation(
+      "URL bindings used before install_window_url_bindings",
+    ))?;
 
-    // Opportunistically sweep dead wrappers when GC has run.
-    let gc_runs = scope.heap().gc_runs();
-    if gc_runs != state.last_gc_runs {
-      state.last_gc_runs = gc_runs;
-      let heap = scope.heap();
-      state.urls.retain(|k, _| k.upgrade(heap).is_some());
-      state.params.retain(|k, _| k.upgrade(heap).is_some());
-    }
+  // Opportunistically sweep dead wrappers when GC has run.
+  let gc_runs = scope.heap().gc_runs();
+  if gc_runs != state.last_gc_runs {
+    state.last_gc_runs = gc_runs;
+    let heap = scope.heap();
+    state.urls.retain(|k, _| k.upgrade(heap).is_some());
+    state.params.retain(|k, _| k.upgrade(heap).is_some());
+  }
 
-    f(vm, state, scope)
-  })
+  f(vm, state, scope)
 }
 
 fn require_url(state: &UrlRealmState, this: Value) -> Result<Url, VmError> {
@@ -1020,8 +1022,13 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   let realm_slot = Value::Number(realm_id_num);
 
   // Fast path: idempotent install (avoid leaking per-realm roots if called twice).
-  if REGISTRY.with(|registry| registry.borrow().realms.contains_key(&realm_id)) {
-    return Ok(());
+  {
+    let registry = registry()
+      .lock()
+      .unwrap_or_else(|err| err.into_inner());
+    if registry.realms.contains_key(&realm_id) {
+      return Ok(());
+    }
   }
 
   // --- Prototypes ---
@@ -1284,32 +1291,76 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   )?;
 
   // Register per-realm state.
-  REGISTRY.with(|registry| {
-    let mut registry = registry.borrow_mut();
-    registry.realms.insert(
-      realm_id,
-      UrlRealmState {
-        limits: UrlLimits::default(),
-        url_proto,
-        params_proto,
-        search_params_slot_sym,
-        search_params_slot_root,
-        urls: HashMap::new(),
-        params: HashMap::new(),
-        last_gc_runs: scope.heap().gc_runs(),
-      },
-    );
-  });
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  registry.realms.insert(
+    realm_id,
+    UrlRealmState {
+      limits: UrlLimits::default(),
+      url_proto,
+      params_proto,
+      search_params_slot_sym,
+      search_params_slot_root,
+      urls: HashMap::new(),
+      params: HashMap::new(),
+      last_gc_runs: scope.heap().gc_runs(),
+    },
+  );
 
   Ok(())
 }
 
 pub fn teardown_window_url_bindings_for_realm(realm_id: RealmId, heap: &mut Heap) {
-  REGISTRY.with(|registry| {
-    let mut registry = registry.borrow_mut();
-    let Some(state) = registry.realms.remove(&realm_id) else {
-      return;
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  let Some(state) = registry.realms.remove(&realm_id) else {
+    return;
+  };
+  heap.remove_root(state.search_params_slot_root);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+
+  fn get_string(heap: &Heap, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
     };
-    heap.remove_root(state.search_params_slot_root);
-  });
+    heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn url_bindings_are_isolated_per_realm_and_gc_sweep_is_safe() -> Result<(), VmError> {
+    let mut realm1 = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm2 = WindowRealm::new(WindowRealmConfig::new("https://example.net/"))?;
+
+    let href1 = realm1.exec_script("new URL('/a', 'https://example.com/base').href")?;
+    assert_eq!(get_string(realm1.heap(), href1), "https://example.com/a");
+    let href2 = realm2.exec_script("new URL('/b', 'https://example.net/base').href")?;
+    assert_eq!(get_string(realm2.heap(), href2), "https://example.net/b");
+
+    let v1 = realm1.exec_script("new URLSearchParams('a=1').get('a')")?;
+    assert_eq!(get_string(realm1.heap(), v1), "1");
+    let v2 = realm2.exec_script("new URLSearchParams('a=2').get('a')")?;
+    assert_eq!(get_string(realm2.heap(), v2), "2");
+
+    // Force a GC cycle and then invoke URL bindings again to exercise the opportunistic weak-cache
+    // sweep path.
+    realm1.heap_mut().collect_garbage();
+    realm2.heap_mut().collect_garbage();
+
+    let href1b = realm1.exec_script("new URL('https://example.com/c').toString()")?;
+    assert_eq!(get_string(realm1.heap(), href1b), "https://example.com/c");
+    let q2b = realm2.exec_script("new URLSearchParams('x=y').toString()")?;
+    assert_eq!(get_string(realm2.heap(), q2b), "x=y");
+
+    // Teardown should remove per-realm persistent roots without panicking.
+    realm1.teardown();
+    realm2.teardown();
+    Ok(())
+  }
 }

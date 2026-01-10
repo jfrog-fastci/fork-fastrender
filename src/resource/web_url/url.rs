@@ -1,5 +1,5 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind, WebUrlSetter};
 use crate::resource::web_url::limits::WebUrlLimits;
@@ -13,7 +13,7 @@ pub(crate) struct WebUrlInner {
 /// A bounded, WHATWG-shaped URL wrapper intended for hostile input (e.g. JS bindings).
 #[derive(Debug, Clone)]
 pub struct WebUrl {
-  pub(crate) inner: Rc<RefCell<WebUrlInner>>,
+  pub(crate) inner: Arc<Mutex<WebUrlInner>>,
   limits: WebUrlLimits,
 }
 
@@ -66,7 +66,7 @@ impl WebUrl {
     enforce_href_len(parsed.as_str(), limits)?;
 
     Ok(Self {
-      inner: Rc::new(RefCell::new(WebUrlInner { url: parsed })),
+      inner: Arc::new(Mutex::new(WebUrlInner { url: parsed })),
       limits: limits.clone(),
     })
   }
@@ -100,7 +100,7 @@ impl WebUrl {
     enforce_href_len(parsed.as_str(), limits)?;
 
     Ok(Self {
-      inner: Rc::new(RefCell::new(WebUrlInner { url: parsed })),
+      inner: Arc::new(Mutex::new(WebUrlInner { url: parsed })),
       limits: limits.clone(),
     })
   }
@@ -142,7 +142,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.href` getter.
   pub fn href(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     enforce_href_len(inner.url.as_str(), &self.limits)?;
     try_clone_str(inner.url.as_str())
   }
@@ -163,7 +163,7 @@ impl WebUrl {
     };
 
     enforce_href_len(parsed.as_str(), &self.limits)?;
-    self.inner.borrow_mut().url = parsed;
+    self.inner.lock().url = parsed;
     Ok(())
   }
 
@@ -174,12 +174,12 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.origin` getter.
   pub fn origin(&self) -> String {
-    self.inner.borrow().url.origin().ascii_serialization()
+    self.inner.lock().url.origin().ascii_serialization()
   }
 
   /// Equivalent to the WHATWG `URL.protocol` getter.
   pub fn protocol(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let scheme = inner.url.scheme();
     let mut out = String::new();
     out.try_reserve_exact(scheme.len().saturating_add(1))?;
@@ -207,7 +207,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.username` getter.
   pub fn username(&self) -> Result<String, WebUrlError> {
-    try_clone_str(self.inner.borrow().url.username())
+    try_clone_str(self.inner.lock().url.username())
   }
 
   /// Equivalent to the WHATWG `URL.username` setter.
@@ -228,7 +228,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.password` getter.
   pub fn password(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let pw = inner.url.password().unwrap_or("");
     try_clone_str(pw)
   }
@@ -251,7 +251,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.host` getter.
   pub fn host(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let Some(host) = inner.url.host_str() else {
       return Ok(String::new());
     };
@@ -297,8 +297,8 @@ impl WebUrl {
     // Parse `value` as the authority component by constructing a temporary URL. This delegates
     // host/IPv6/port parsing to `url` without requiring a custom parser here.
     let tmp = {
-      let inner = self.inner.borrow();
-      parse_authority_with_scheme(inner.url.scheme(), value, &self.limits, WebUrlSetter::Host)?
+      let scheme = self.inner.lock().url.scheme().to_string();
+      parse_authority_with_scheme(&scheme, value, &self.limits, WebUrlSetter::Host)?
     };
     let host = tmp.host_str();
     let port = tmp.port();
@@ -324,7 +324,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.hostname` getter.
   pub fn hostname(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let host = inner.url.host_str().unwrap_or("");
     try_clone_str(host)
   }
@@ -348,7 +348,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.port` getter.
   pub fn port(&self) -> Result<String, WebUrlError> {
-    let Some(port) = self.inner.borrow().url.port() else {
+    let Some(port) = self.inner.lock().url.port() else {
       return Ok(String::new());
     };
     let mut out = String::new();
@@ -393,7 +393,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.pathname` getter.
   pub fn pathname(&self) -> Result<String, WebUrlError> {
-    try_clone_str(self.inner.borrow().url.path())
+    try_clone_str(self.inner.lock().url.path())
   }
 
   /// Equivalent to the WHATWG `URL.pathname` setter.
@@ -408,7 +408,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.search` getter.
   pub fn search(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let Some(query) = inner.url.query() else {
       return Ok(String::new());
     };
@@ -449,7 +449,7 @@ impl WebUrl {
 
   /// Equivalent to the WHATWG `URL.hash` getter.
   pub fn hash(&self) -> Result<String, WebUrlError> {
-    let inner = self.inner.borrow();
+    let inner = self.inner.lock();
     let Some(fragment) = inner.url.fragment() else {
       return Ok(String::new());
     };
@@ -487,7 +487,7 @@ impl WebUrl {
   where
     F: FnOnce(&mut ::url::Url) -> Result<(), WebUrlError>,
   {
-    let mut inner = self.inner.borrow_mut();
+    let mut inner = self.inner.lock();
     let before = inner.url.clone();
 
     if let Err(err) = f(&mut inner.url) {
@@ -506,7 +506,7 @@ impl WebUrl {
 
 impl std::fmt::Display for WebUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str(self.inner.borrow().url.as_str())
+    f.write_str(self.inner.lock().url.as_str())
   }
 }
 
