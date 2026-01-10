@@ -133,7 +133,8 @@ pub mod quickjs_dom;
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
-
+#[path = "legacy/dom_bindings_context.rs"]
+pub mod dom_bindings_context;
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
@@ -196,6 +197,7 @@ pub use vm_host::JsVmHost;
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};
 pub use fetch::{fetch, FetchInit, HeadersInit, JsHeaders, JsRequest, JsResponse, RequestInit, WebFetchHost};
+pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1006,12 +1006,10 @@ impl FontContext {
         for slope in slopes {
           for weight_choice in &weights {
             let font_weight = FontWeight::new(*weight_choice);
-            if let Some(id) = self.db.resolve_family_list_full(
-              std::slice::from_ref(family),
-              font_weight,
-              *slope,
-              *stretch_choice,
-            ) {
+            if let Some(id) = self
+              .db
+              .query_full(family, font_weight, *slope, *stretch_choice)
+            {
               if let Some(font) = self.db.load_font(id) {
                 return Some(font);
               }
@@ -1020,7 +1018,23 @@ impl FontContext {
         }
       }
     }
-    None
+    // If nothing matches the requested family list, fall back once to a UA default.
+    for stretch_choice in &stretches {
+      for slope in slopes {
+        for weight_choice in &weights {
+          let font_weight = FontWeight::new(*weight_choice);
+          if let Some(id) = self
+            .db
+            .query_full("sans-serif", font_weight, *slope, *stretch_choice)
+          {
+            if let Some(font) = self.db.load_font(id) {
+              return Some(font);
+            }
+          }
+        }
+      }
+    }
+    self.db.first_font()
   }
 
   /// Gets a font with full CSS properties
@@ -1074,12 +1088,10 @@ impl FontContext {
       for stretch_choice in &stretches {
         for slope in slopes {
           for weight_choice in &weights {
-            if let Some(id) = self.db.resolve_family_list_full(
-              std::slice::from_ref(family),
-              FontWeight::new(*weight_choice),
-              *slope,
-              *stretch_choice,
-            ) {
+            if let Some(id) = self
+              .db
+              .query_full(family, FontWeight::new(*weight_choice), *slope, *stretch_choice)
+            {
               if let Some(font) = self.db.load_font(id) {
                 return Some(font);
               }
@@ -1088,7 +1100,22 @@ impl FontContext {
         }
       }
     }
-    None
+    // If nothing matches the requested family list, fall back once to a UA default.
+    for stretch_choice in &stretches {
+      for slope in slopes {
+        for weight_choice in &weights {
+          if let Some(id) = self
+            .db
+            .query_full("sans-serif", FontWeight::new(*weight_choice), *slope, *stretch_choice)
+          {
+            if let Some(font) = self.db.load_font(id) {
+              return Some(font);
+            }
+          }
+        }
+      }
+    }
+    self.db.first_font()
   }
 
   /// Gets a font by simple family name query
@@ -1805,12 +1832,9 @@ impl FontContext {
     let target_weight = face.weight.0;
 
     let id = resolve_local_face_id(&self.db, local_name).or_else(|| {
-      self.db.resolve_family_list_full(
-        &[local_name.to_string()],
-        FontWeight::new(target_weight),
-        target_style,
-        FontStretch::Normal,
-      )
+      self
+        .db
+        .query_full(local_name, FontWeight::new(target_weight), target_style, FontStretch::Normal)
     });
 
     if let Some(id) = id {
@@ -4691,6 +4715,39 @@ mod tests {
   }
 
   #[test]
+  fn local_src_missing_does_not_prevent_url_fallback_loading() {
+    let font_data: &[u8] = include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let data_url = format!("data:font/ttf;base64,{}", BASE64_STANDARD.encode(font_data));
+    let css = format!(
+      concat!(
+        "@font-face {{ ",
+        "font-family: \"LocalThenUrl\"; ",
+        "src: local(\"DefinitelyMissingLocalFace123\"), url(\"{data_url}\"); ",
+        "font-style: normal; ",
+        "font-weight: 400; ",
+        "font-display: block; ",
+        "}}"
+      ),
+      data_url = data_url
+    );
+    let sheet = crate::css::parser::parse_stylesheet(&css).expect("stylesheet should parse");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let faces = sheet.collect_font_face_rules(&media_ctx);
+    assert_eq!(faces.len(), 1);
+
+    // Use a non-empty system font database so the `local()` lookup previously "succeeded" by
+    // implicitly falling back to the default `sans-serif` family.
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.load_web_fonts(&faces, None, None).expect("load web fonts");
+
+    let families = vec!["LocalThenUrl".to_string()];
+    let loaded = ctx
+      .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+      .expect("expected font to load");
+    assert_eq!(loaded.data.as_slice(), font_data);
+  }
+
+  #[test]
   fn font_feature_values_font_display_defaults_apply_to_font_face() {
     let Some((font_data, _family)) = system_font_for_char('A') else {
       return;
@@ -5760,6 +5817,46 @@ mod tests {
     if let Some(font) = font {
       assert!(!font.data.is_empty());
     }
+  }
+
+  #[test]
+  fn get_font_respects_family_fallback_order() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let expected_serif = ctx.get_serif().expect("expected bundled serif font");
+    let expected_sans = ctx.get_sans_serif().expect("expected bundled sans-serif font");
+    assert_ne!(
+      expected_serif.family, expected_sans.family,
+      "expected bundled serif and sans-serif fallbacks to be distinct"
+    );
+
+    let families = vec!["DefinitelyMissingFontFamily123".to_string(), "serif".to_string()];
+    let font = ctx
+      .get_font(&families, 400, false, false)
+      .expect("expected font fallback to resolve");
+    assert_eq!(
+      font.family, expected_serif.family,
+      "missing first family should fall back to later families before the UA default"
+    );
+  }
+
+  #[test]
+  fn get_font_full_respects_family_fallback_order() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let expected_serif = ctx.get_serif().expect("expected bundled serif font");
+    let expected_sans = ctx.get_sans_serif().expect("expected bundled sans-serif font");
+    assert_ne!(
+      expected_serif.family, expected_sans.family,
+      "expected bundled serif and sans-serif fallbacks to be distinct"
+    );
+
+    let families = vec!["DefinitelyMissingFontFamily123".to_string(), "serif".to_string()];
+    let font = ctx
+      .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+      .expect("expected font fallback to resolve");
+    assert_eq!(
+      font.family, expected_serif.family,
+      "missing first family should fall back to later families before the UA default"
+    );
   }
 
   #[test]
