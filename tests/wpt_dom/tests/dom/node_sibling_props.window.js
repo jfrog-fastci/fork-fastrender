@@ -5,43 +5,23 @@
 // These are data properties in the current harness (no accessor support), so the host must update
 // them whenever the tree structure changes.
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
-
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
-
-var failed = false;
-
-function fail(message) {
-  if (failed) return;
-  failed = true;
-  report_fail(message);
-}
-
-function assert_equals(actual, expected, message) {
-  if (failed) return;
-  if (actual !== expected) fail(message);
-}
-
 function clear_children(node) {
   while (node.childNodes.length !== 0) {
     node.removeChild(node.childNodes[0]);
   }
 }
 
-function run() {
-  var body = document.body;
+
+test(() => {
+  const body = document.body;
   clear_children(body);
 
-  var parent = document.createElement("div");
+  const parent = document.createElement("div");
   body.appendChild(parent);
 
-  var a = document.createElement("span");
+  const a = document.createElement("span");
   a.id = "a";
-  var b = document.createElement("span");
+  const b = document.createElement("span");
   b.id = "b";
 
   parent.appendChild(a);
@@ -54,8 +34,22 @@ function run() {
   assert_equals(a.nextSibling, b, "a.nextSibling should be b");
   assert_equals(b.previousSibling, a, "b.previousSibling should be a");
   assert_equals(b.nextSibling, null, "last child's nextSibling should be null");
+}, "Sibling pointers after appendChild");
 
-  if (failed) return;
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const parent = document.createElement("div");
+  body.appendChild(parent);
+
+  const a = document.createElement("span");
+  a.id = "a";
+  const b = document.createElement("span");
+  b.id = "b";
+
+  parent.appendChild(a);
+  parent.appendChild(b);
 
   parent.removeChild(a);
 
@@ -67,9 +61,24 @@ function run() {
   assert_equals(parent.lastChild, b, "lastChild should update after removal");
   assert_equals(b.previousSibling, null, "only child's previousSibling should be null");
   assert_equals(b.nextSibling, null, "only child's nextSibling should be null");
+}, "Sibling pointers update after removeChild");
 
-  if (failed) return;
+test(() => {
+  const body = document.body;
+  clear_children(body);
 
+  const parent = document.createElement("div");
+  body.appendChild(parent);
+
+  const a = document.createElement("span");
+  a.id = "a";
+  const b = document.createElement("span");
+  b.id = "b";
+
+  parent.appendChild(a);
+  parent.appendChild(b);
+
+  parent.removeChild(a);
   parent.appendChild(a);
 
   assert_equals(parent.firstChild, b, "firstChild should remain b after re-append");
@@ -79,14 +88,27 @@ function run() {
   assert_equals(b.nextSibling, a, "b.nextSibling should become a");
   assert_equals(a.previousSibling, b, "a.previousSibling should become b");
   assert_equals(a.nextSibling, null, "a.nextSibling should be null at end");
+}, "Sibling pointers update after re-append");
 
-  if (failed) return;
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const parent = document.createElement("div");
+  body.appendChild(parent);
+
+  const b = document.createElement("span");
+  b.id = "b";
+  const a = document.createElement("span");
+  a.id = "a";
+  parent.appendChild(b);
+  parent.appendChild(a);
 
   // DocumentFragment insertion should also update sibling pointers for moved children.
-  var fragment = document.createDocumentFragment();
-  var c = document.createElement("span");
+  const fragment = document.createDocumentFragment();
+  const c = document.createElement("span");
   c.id = "c";
-  var d = document.createElement("span");
+  const d = document.createElement("span");
   d.id = "d";
   fragment.appendChild(c);
   fragment.appendChild(d);
@@ -97,11 +119,4 @@ function run() {
   assert_equals(c.nextSibling, d, "c.nextSibling should be d after fragment insertion");
   assert_equals(d.previousSibling, c, "d.previousSibling should be c after fragment insertion");
   assert_equals(d.nextSibling, null, "d.nextSibling should be null at end");
-}
-
-run();
-
-if (!failed) {
-  report_pass();
-}
-
+}, "Sibling pointers update after DocumentFragment insertion");

@@ -1,38 +1,7 @@
 // META: script=/resources/testharness.js
 
 // Curated selector semantics checks for the vm-js WPT runner. These tests rely on the host DOM
-// shim and report directly via `__fastrender_wpt_report`.
-
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
-
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
-
-var failed = false;
-
-function fail(message) {
-  if (failed) return;
-  failed = true;
-  report_fail(message);
-}
-
-function assert_true(cond, message) {
-  if (failed) return;
-  if (!cond) fail(message);
-}
-
-function assert_false(cond, message) {
-  if (failed) return;
-  if (cond) fail(message);
-}
-
-function assert_equals(actual, expected, message) {
-  if (failed) return;
-  if (actual !== expected) fail(message);
-}
+// shim.
 
 function clear_children(node) {
   while (node.childNodes.length !== 0) {
@@ -40,18 +9,16 @@ function clear_children(node) {
   }
 }
 
-function run() {
-  var body = document.body;
-
-  // --- Element.matches: simple selectors ---
+test(() => {
+  const body = document.body;
   clear_children(body);
 
-  var container = document.createElement("div");
+  const container = document.createElement("div");
   container.id = "container";
   container.className = "wrap";
   body.appendChild(container);
 
-  var target = document.createElement("span");
+  const target = document.createElement("span");
   target.id = "target";
   target.className = "inner";
   container.appendChild(target);
@@ -60,17 +27,17 @@ function run() {
   assert_true(target.matches("span"), "expected tag selector to match");
   assert_true(target.matches("#target"), "expected id selector to match");
   assert_false(target.matches("#nope"), "expected non-matching id selector to return false");
+}, "Element.matches supports simple selectors");
 
-  if (failed) return;
-
-  // --- Element.matches: descendant combinator ---
+test(() => {
+  const body = document.body;
   clear_children(body);
 
-  container = document.createElement("div");
+  const container = document.createElement("div");
   container.id = "container";
   body.appendChild(container);
 
-  target = document.createElement("span");
+  const target = document.createElement("span");
   target.id = "target";
   container.appendChild(target);
 
@@ -82,17 +49,17 @@ function run() {
     target.matches("section span"),
     "expected selector requiring a missing ancestor to not match"
   );
+}, "Element.matches supports descendant combinators");
 
-  if (failed) return;
-
-  // --- Element.closest ---
+test(() => {
+  const body = document.body;
   clear_children(body);
 
-  container = document.createElement("div");
+  const container = document.createElement("div");
   container.id = "container";
   body.appendChild(container);
 
-  target = document.createElement("span");
+  const target = document.createElement("span");
   target.id = "target";
   target.className = "inner";
   container.appendChild(target);
@@ -104,18 +71,22 @@ function run() {
   );
   assert_equals(target.closest(".inner"), target, "closest should be inclusive of the element itself");
   assert_equals(target.closest("body"), body, "expected closest to find <body> ancestor");
-  assert_equals(target.closest("section"), null, "expected closest to return null when no ancestor matches");
+  assert_equals(
+    target.closest("section"),
+    null,
+    "expected closest to return null when no ancestor matches"
+  );
+}, "Element.closest returns the nearest matching ancestor (inclusive)");
 
-  if (failed) return;
-
-  // --- invalid selectors throw SyntaxError ---
+test(() => {
+  const body = document.body;
   clear_children(body);
 
-  var el = document.createElement("div");
+  const el = document.createElement("div");
   body.appendChild(el);
 
-  var threw = false;
-  var name = "";
+  let threw = false;
+  let name = "";
   try {
     el.matches("div[");
   } catch (e) {
@@ -124,9 +95,17 @@ function run() {
   }
   assert_true(threw, "expected matches() to throw for invalid selectors");
   assert_equals(name, "SyntaxError", "expected a SyntaxError from matches()");
+}, "Element.matches throws SyntaxError on invalid selectors");
 
-  threw = false;
-  name = "";
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const el = document.createElement("div");
+  body.appendChild(el);
+
+  let threw = false;
+  let name = "";
   try {
     el.closest("div[");
   } catch (e) {
@@ -135,10 +114,4 @@ function run() {
   }
   assert_true(threw, "expected closest() to throw for invalid selectors");
   assert_equals(name, "SyntaxError", "expected a SyntaxError from closest()");
-}
-
-run();
-
-if (!failed) {
-  report_pass();
-}
+}, "Element.closest throws SyntaxError on invalid selectors");

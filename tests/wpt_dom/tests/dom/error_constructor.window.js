@@ -2,55 +2,27 @@
 //
 // Basic sanity: `Error` should exist and be constructible so tests can throw failures using
 // `new Error(...)`.
-//
-// This is intentionally tiny and reports directly via `__fastrender_wpt_report` so it can run on
-// the minimal vm-js WPT backend without relying on the full `testharness.js` assertion surface.
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
-
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
-
-var failed = false;
-
-function fail(message) {
-  if (failed) return;
-  failed = true;
-  report_fail(message);
-}
-
-var err = null;
-try {
-  err = new Error("boom");
-} catch (e) {
-  fail("new Error(...) should not throw");
-}
-
-if (!failed) {
-  if (err === null) {
-    fail("new Error(...) should return an object");
-  } else if (err.name !== "Error") {
-    fail("Error instance name should be 'Error'");
-  } else if (err.message !== "boom") {
-    fail("Error instance message should match constructor argument");
+test(() => {
+  let err = null;
+  try {
+    err = new Error("boom");
+  } catch (_e) {
+    assert_true(false, "new Error(...) should not throw");
   }
-}
 
-if (!failed) {
-  var caught = null;
+  assert_true(err !== null, "new Error(...) should return an object");
+  assert_equals(err.name, "Error", "Error instance name should be 'Error'");
+  assert_equals(err.message, "boom", "Error instance message should match constructor argument");
+}, "Error is constructible and sets name/message");
+
+test(() => {
+  const err = new Error("boom");
+  let caught = null;
   try {
     throw err;
   } catch (e) {
     caught = e;
   }
-  if (caught !== err) {
-    fail("throw/catch should preserve the thrown Error object");
-  }
-}
-
-if (!failed) {
-  report_pass();
-}
+  assert_equals(caught, err, "throw/catch should preserve the thrown Error object");
+}, "throw/catch preserves Error object identity");
