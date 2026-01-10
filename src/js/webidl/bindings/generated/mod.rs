@@ -5,7 +5,9 @@
 
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
-  use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
+  use webidl_vm_js::bindings_runtime::{
+    AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes,
+  };
   use webidl_vm_js::host_from_hooks;
 
   #[allow(dead_code)]
@@ -534,6 +536,85 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_href(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(&mut *rt.vm, &mut rt.scope, receiver, "URL", "href", 0, &[])
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_set_attribute_href(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "URL",
+        "href",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URL",
+      "origin",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1014,6 +1095,31 @@ pub mod window {
         &converted_args,
       )
     }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_search_params_get_attribute_size(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      "size",
+      0,
+      &[],
+    )
   }
 
   #[allow(dead_code)]
@@ -1581,6 +1687,25 @@ pub mod window {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    let get = rt.alloc_native_function(u_r_l_get_attribute_href, None, "get href", 0)?;
+    let set =
+      Value::Object(rt.alloc_native_function(u_r_l_set_attribute_href, None, "set href", 1)?);
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "href",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(u_r_l_get_attribute_origin, None, "get origin", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "origin",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
     let slots = [Value::Object(proto_u_r_l)];
     let ctor_u_r_l = rt.alloc_native_function_with_slots(
       u_r_l_call_without_new,
@@ -1686,6 +1811,16 @@ pub mod window {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    let get =
+      rt.alloc_native_function(u_r_l_search_params_get_attribute_size, None, "get size", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l_search_params,
+      "size",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
     let slots = [Value::Object(proto_u_r_l_search_params)];
     let ctor_u_r_l_search_params = rt.alloc_native_function_with_slots(
       u_r_l_search_params_call_without_new,
@@ -1745,7 +1880,9 @@ pub mod window {
 
 pub mod worker {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
-  use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
+  use webidl_vm_js::bindings_runtime::{
+    AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes,
+  };
   use webidl_vm_js::host_from_hooks;
 
   #[allow(dead_code)]
@@ -2245,6 +2382,85 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_href(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(&mut *rt.vm, &mut rt.scope, receiver, "URL", "href", 0, &[])
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_set_attribute_href(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "URL",
+        "href",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URL",
+      "origin",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -2728,6 +2944,31 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_search_params_get_attribute_size(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      "size",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_search_params_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -2890,6 +3131,25 @@ pub mod worker {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    let get = rt.alloc_native_function(u_r_l_get_attribute_href, None, "get href", 0)?;
+    let set =
+      Value::Object(rt.alloc_native_function(u_r_l_set_attribute_href, None, "set href", 1)?);
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "href",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
+    let get = rt.alloc_native_function(u_r_l_get_attribute_origin, None, "get origin", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l,
+      "origin",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
+    )?;
     let slots = [Value::Object(proto_u_r_l)];
     let ctor_u_r_l = rt.alloc_native_function_with_slots(
       u_r_l_call_without_new,
@@ -2994,6 +3254,16 @@ pub mod worker {
       "values",
       Value::Object(func),
       DataPropertyAttributes::METHOD,
+    )?;
+    let get =
+      rt.alloc_native_function(u_r_l_search_params_get_attribute_size, None, "get size", 0)?;
+    let set = Value::Undefined;
+    rt.define_accessor_property_str(
+      proto_u_r_l_search_params,
+      "size",
+      Value::Object(get),
+      set,
+      AccessorPropertyAttributes::ATTRIBUTE,
     )?;
     let slots = [Value::Object(proto_u_r_l_search_params)];
     let ctor_u_r_l_search_params = rt.alloc_native_function_with_slots(

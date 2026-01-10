@@ -1790,8 +1790,18 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
   let mut out = String::new();
 
+  let needs_accessor_property_attributes = selected
+    .values()
+    .any(|iface| !iface.attributes.is_empty() || !iface.static_attributes.is_empty());
+
   out.push_str("use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};\n");
-  out.push_str("use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};\n");
+  if needs_accessor_property_attributes {
+    out.push_str(
+      "use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes};\n",
+    );
+  } else {
+    out.push_str("use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};\n");
+  }
   out.push_str("use webidl_vm_js::host_from_hooks;\n\n");
 
   out.push_str(
@@ -1861,6 +1871,18 @@ fn to_uint32_f64(n: f64) -> u32 {
         true,
         global,
       );
+    }
+    for attr in iface.attributes.values() {
+      write_attribute_getter_wrapper_vmjs(&mut out, &iface.name, attr, false, global);
+      if !attr.readonly {
+        write_attribute_setter_wrapper_vmjs(&mut out, resolved, &iface.name, attr, false, global);
+      }
+    }
+    for attr in iface.static_attributes.values() {
+      write_attribute_getter_wrapper_vmjs(&mut out, &iface.name, attr, true, global);
+      if !attr.readonly {
+        write_attribute_setter_wrapper_vmjs(&mut out, resolved, &iface.name, attr, true, global);
+      }
     }
     if !global {
       write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
@@ -1937,6 +1959,28 @@ fn to_uint32_f64(n: f64) -> u32 {
         length = length,
       ));
     }
+    // Prototype attributes.
+    for attr in iface.attributes.values() {
+      out.push_str(&format!(
+        "  let get = rt.alloc_native_function({getter}, None, {name_lit}, 0)?;\n",
+        getter = attr_getter_fn_name(&iface.name, &attr.name, false),
+        name_lit = rust_string_literal(&format!("get {}", attr.name)),
+      ));
+      if attr.readonly {
+        out.push_str("  let set = Value::Undefined;\n");
+      } else {
+        out.push_str(&format!(
+          "  let set = Value::Object(rt.alloc_native_function({setter}, None, {name_lit}, 1)?);\n",
+          setter = attr_setter_fn_name(&iface.name, &attr.name, false),
+          name_lit = rust_string_literal(&format!("set {}", attr.name)),
+        ));
+      }
+      out.push_str(&format!(
+        "  rt.define_accessor_property_str({proto_var}, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n",
+        proto_var = proto_var,
+        attr_lit = rust_string_literal(&attr.name),
+      ));
+    }
 
     // Constructor function (even for static-only interfaces like URL).
     let ctor_call_fn = ctor_call_without_new_fn_name(&iface.name);
@@ -1971,15 +2015,36 @@ fn to_uint32_f64(n: f64) -> u32 {
       ));
     }
 
+    // Static attributes.
+    for attr in iface.static_attributes.values() {
+      out.push_str(&format!(
+        "  let get = rt.alloc_native_function({getter}, None, {name_lit}, 0)?;\n",
+        getter = attr_getter_fn_name(&iface.name, &attr.name, true),
+        name_lit = rust_string_literal(&format!("get {}", attr.name)),
+      ));
+      if attr.readonly {
+        out.push_str("  let set = Value::Undefined;\n");
+      } else {
+        out.push_str(&format!(
+          "  let set = Value::Object(rt.alloc_native_function({setter}, None, {name_lit}, 1)?);\n",
+          setter = attr_setter_fn_name(&iface.name, &attr.name, true),
+          name_lit = rust_string_literal(&format!("set {}", attr.name)),
+        ));
+      }
+      out.push_str(&format!(
+        "  rt.define_accessor_property_str(ctor_{snake}, {attr_lit}, Value::Object(get), set, AccessorPropertyAttributes::ATTRIBUTE)?;\n",
+        snake = to_snake_ident(&iface.name),
+        attr_lit = rust_string_literal(&attr.name),
+      ));
+    }
+
     // Constants.
     for constant in iface.constants.values() {
-      let expr = emit_constant_value_expr_vmjs(&constant.value);
-      out.push_str(&format!(
-        "  rt.define_data_property_str(ctor_{snake}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
-        snake = to_snake_ident(&iface.name),
-        name_lit = rust_string_literal(&constant.name),
-        expr = expr,
-      ));
+      write_constant_define_vmjs(
+        &mut out,
+        &format!("ctor_{}", to_snake_ident(&iface.name)),
+        constant,
+      );
     }
   }
 
@@ -1987,6 +2052,32 @@ fn to_uint32_f64(n: f64) -> u32 {
   out.push_str("}\n");
 
   Ok(out)
+}
+
+fn write_constant_define_vmjs(out: &mut String, ctor_var: &str, constant: &ConstantSig) {
+  match &constant.value {
+    IdlLiteral::String(s) => {
+      out.push_str(&format!(
+        "  let value = Value::String(rt.alloc_string({value_lit})?);\n",
+        value_lit = rust_string_literal(s)
+      ));
+      out.push_str("  let value = rt.scope.push_root(value)?;\n");
+      out.push_str(&format!(
+        "  rt.define_data_property_str({ctor_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n",
+        ctor_var = ctor_var,
+        name_lit = rust_string_literal(&constant.name)
+      ));
+    }
+    _ => {
+      let expr = emit_constant_value_expr_vmjs(&constant.value);
+      out.push_str(&format!(
+        "  rt.define_data_property_str({ctor_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
+        ctor_var = ctor_var,
+        name_lit = rust_string_literal(&constant.name),
+        expr = expr,
+      ));
+    }
+  }
 }
 
 fn select_interfaces(
@@ -5294,6 +5385,80 @@ fn write_operation_wrapper_vmjs(
     interface, op_name
   ));
   out.push_str("  }\n");
+  out.push_str("}\n\n");
+}
+
+fn write_attribute_getter_wrapper_vmjs(
+  out: &mut String,
+  interface: &str,
+  attr: &AttributeSig,
+  is_static: bool,
+  is_global: bool,
+) {
+  let fn_name = attr_getter_fn_name(interface, &attr.name, is_static);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  _host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  _args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
+  ));
+  out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+
+  let receiver_expr = if is_global || is_static {
+    "None"
+  } else {
+    "Some(this)"
+  };
+  if !(is_global || is_static) {
+    out.push_str("  rt.scope.push_root(this)?;\n");
+  }
+  out.push_str(&format!("  let receiver = {receiver_expr};\n"));
+
+  out.push_str("  let bindings_host = host_from_hooks(hooks)?;\n");
+  out.push_str(&format!(
+    "  bindings_host.call_operation(&mut *rt.vm, &mut rt.scope, receiver, {iface_lit}, {attr_lit}, 0, &[])\n",
+    iface_lit = rust_string_literal(interface),
+    attr_lit = rust_string_literal(&attr.name),
+  ));
+  out.push_str("}\n\n");
+}
+
+fn write_attribute_setter_wrapper_vmjs(
+  out: &mut String,
+  resolved: &ResolvedWebIdlWorld,
+  interface: &str,
+  attr: &AttributeSig,
+  is_static: bool,
+  is_global: bool,
+) {
+  let fn_name = attr_setter_fn_name(interface, &attr.name, is_static);
+  out.push_str(&format!(
+    "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
+  ));
+  out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+
+  let receiver_expr = if is_global || is_static {
+    "None"
+  } else {
+    "Some(this)"
+  };
+  if !(is_global || is_static) {
+    out.push_str("  rt.scope.push_root(this)?;\n");
+  }
+  out.push_str(&format!("  let receiver = {receiver_expr};\n"));
+
+  out.push_str("  {\n    let mut converted_args: Vec<Value> = Vec::new();\n");
+  out.push_str("    let v0 = if args.len() > 0 { args[0] } else { Value::Undefined };\n");
+  out.push_str(&format!(
+    "    let converted = {};\n",
+    emit_conversion_expr_vmjs(resolved, &attr.type_, "v0"),
+  ));
+  out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
+  out.push_str("    converted_args.push(converted);\n");
+  out.push_str("    let bindings_host = host_from_hooks(hooks)?;\n");
+  out.push_str(&format!(
+    "    let _ = bindings_host.call_operation(&mut *rt.vm, &mut rt.scope, receiver, {iface_lit}, {attr_lit}, 0, &converted_args)?;\n",
+    iface_lit = rust_string_literal(interface),
+    attr_lit = rust_string_literal(&attr.name),
+  ));
+  out.push_str("    Ok(Value::Undefined)\n  }\n");
   out.push_str("}\n\n");
 }
 
