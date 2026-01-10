@@ -71,6 +71,23 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<PropertyKey, VmError> {
+  let s = scope.alloc_string(description)?;
+  scope.push_root(Value::String(s))?;
+  let sym = scope.heap_mut().symbol_for(s)?;
+  Ok(PropertyKey::from_symbol(sym))
+}
+
+const URLSP_ITER_KIND_ENTRIES: u8 = 0;
+const URLSP_ITER_KIND_KEYS: u8 = 1;
+const URLSP_ITER_KIND_VALUES: u8 = 2;
+
+struct UrlSearchParamsIteratorState {
+  pairs: Vec<(String, String)>,
+  index: usize,
+  kind: u8,
+}
+
 #[derive(Default)]
 struct UrlRegistry {
   realms: HashMap<RealmId, UrlRealmState>,
@@ -84,6 +101,7 @@ struct UrlRealmState {
   search_params_slot_root: RootId,
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
+  params_iterators: HashMap<WeakGcObject, UrlSearchParamsIteratorState>,
   last_gc_runs: u64,
 }
 
@@ -152,6 +170,7 @@ fn with_realm_state_mut<R>(
     let heap = scope.heap();
     state.urls.retain(|k, _| k.upgrade(heap).is_some());
     state.params.retain(|k, _| k.upgrade(heap).is_some());
+    state.params_iterators.retain(|k, _| k.upgrade(heap).is_some());
   }
 
   f(vm, state, scope)
@@ -987,6 +1006,256 @@ fn urlsp_has_native(
   Ok(Value::Bool(has))
 }
 
+fn urlsp_for_each_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  if !scope.heap().is_callable(callback).unwrap_or(false) {
+    let intrinsics = vm
+      .intrinsics()
+      .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      "URLSearchParams.forEach callback is not callable",
+    ));
+  }
+
+  let pairs = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let params = require_params(state, this)?;
+    params.pairs().map_err(map_url_error)
+  })?;
+
+  let Value::Object(params_obj) = this else {
+    return Err(VmError::TypeError("URLSearchParams: illegal invocation"));
+  };
+
+  for (name, value) in pairs {
+    let value_s = scope.alloc_string(&value)?;
+    scope.push_root(Value::String(value_s))?;
+    let name_s = scope.alloc_string(&name)?;
+    scope.push_root(Value::String(name_s))?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      hooks,
+      callback,
+      this_arg,
+      &[Value::String(value_s), Value::String(name_s), Value::Object(params_obj)],
+    )?;
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn urlsp_iter_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "URLSearchParams binding missing iterator prototype native slot",
+    )),
+  }
+}
+
+fn urlsp_entries_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(state, this)?;
+    let pairs = params.pairs().map_err(map_url_error)?;
+
+    let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.push_root(Value::Object(obj))?;
+    state.params_iterators.insert(
+      WeakGcObject::from(obj),
+      UrlSearchParamsIteratorState {
+        pairs,
+        index: 0,
+        kind: URLSP_ITER_KIND_ENTRIES,
+      },
+    );
+    Ok(Value::Object(obj))
+  })
+}
+
+fn urlsp_keys_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(state, this)?;
+    let pairs = params.pairs().map_err(map_url_error)?;
+
+    let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.push_root(Value::Object(obj))?;
+    state.params_iterators.insert(
+      WeakGcObject::from(obj),
+      UrlSearchParamsIteratorState {
+        pairs,
+        index: 0,
+        kind: URLSP_ITER_KIND_KEYS,
+      },
+    );
+    Ok(Value::Object(obj))
+  })
+}
+
+fn urlsp_values_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let iter_proto = urlsp_iter_proto_from_callee(scope, callee)?;
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let params = require_params(state, this)?;
+    let pairs = params.pairs().map_err(map_url_error)?;
+
+    let obj = scope.alloc_object_with_prototype(Some(iter_proto))?;
+    scope.push_root(Value::Object(obj))?;
+    state.params_iterators.insert(
+      WeakGcObject::from(obj),
+      UrlSearchParamsIteratorState {
+        pairs,
+        index: 0,
+        kind: URLSP_ITER_KIND_VALUES,
+      },
+    );
+    Ok(Value::Object(obj))
+  })
+}
+
+fn urlsp_iterator_next_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("URLSearchParams iterator: illegal invocation"));
+  };
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let result_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(result_obj))?;
+
+  let next: Option<(String, String, u8)> =
+    with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+      let iter = state
+        .params_iterators
+        .get_mut(&WeakGcObject::from(iter_obj))
+        .ok_or(VmError::TypeError("URLSearchParams iterator: illegal invocation"))?;
+      if iter.index >= iter.pairs.len() {
+        return Ok(None);
+      }
+      let (name, value) = iter
+        .pairs
+        .get(iter.index)
+        .cloned()
+        .ok_or(VmError::InvariantViolation(
+          "URLSearchParams iterator index out of bounds",
+        ))?;
+      iter.index = iter.index.saturating_add(1);
+      Ok(Some((name, value, iter.kind)))
+    })?;
+
+  let value_key = alloc_key(scope, "value")?;
+  let done_key = alloc_key(scope, "done")?;
+  let data_desc = |value| PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  };
+
+  match next {
+    None => {
+      scope.define_property(result_obj, value_key, data_desc(Value::Undefined))?;
+      scope.define_property(result_obj, done_key, data_desc(Value::Bool(true)))?;
+      Ok(Value::Object(result_obj))
+    }
+    Some((name, value, kind)) => {
+      let out_value = match kind {
+        URLSP_ITER_KIND_ENTRIES => {
+          let arr = scope.alloc_array(2)?;
+          scope
+            .heap_mut()
+            .object_set_prototype(arr, Some(intr.array_prototype()))?;
+          scope.push_root(Value::Object(arr))?;
+
+          let name_s = scope.alloc_string(&name)?;
+          scope.push_root(Value::String(name_s))?;
+          let value_s = scope.alloc_string(&value)?;
+          scope.push_root(Value::String(value_s))?;
+          let k0 = alloc_key(scope, "0")?;
+          let k1 = alloc_key(scope, "1")?;
+          scope.define_property(arr, k0, data_desc(Value::String(name_s)))?;
+          scope.define_property(arr, k1, data_desc(Value::String(value_s)))?;
+          Value::Object(arr)
+        }
+        URLSP_ITER_KIND_KEYS => {
+          let name_s = scope.alloc_string(&name)?;
+          Value::String(name_s)
+        }
+        URLSP_ITER_KIND_VALUES => {
+          let value_s = scope.alloc_string(&value)?;
+          Value::String(value_s)
+        }
+        _ => return Err(VmError::TypeError("URLSearchParams iterator: illegal invocation")),
+      };
+
+      scope.define_property(result_obj, value_key, data_desc(out_value))?;
+      scope.define_property(result_obj, done_key, data_desc(Value::Bool(false)))?;
+      Ok(Value::Object(result_obj))
+    }
+  }
+}
+
+fn urlsp_iterator_iterator_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
+}
+
 fn urlsp_sort_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1351,6 +1620,104 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     &mut scope,
     realm,
     params_proto,
+    "forEach",
+    urlsp_for_each_native,
+    1,
+    realm_slot,
+  )?;
+
+  // Deterministic iteration for URLSearchParams (`entries`/`keys`/`values` + @@iterator).
+  let urlsp_iter_proto = {
+    let object_proto = realm.intrinsics().object_prototype();
+    let func_proto = realm.intrinsics().function_prototype();
+    let iter_proto = scope.alloc_object_with_prototype(Some(object_proto))?;
+    scope.push_root(Value::Object(iter_proto))?;
+
+    let next_id = vm.register_native_call(urlsp_iterator_next_native)?;
+    let next_name = scope.alloc_string("next")?;
+    scope.push_root(Value::String(next_name))?;
+    let next_fn = scope.alloc_native_function_with_slots(next_id, None, next_name, 0, &[realm_slot])?;
+    scope
+      .heap_mut()
+      .object_set_prototype(next_fn, Some(func_proto))?;
+    scope.push_root(Value::Object(next_fn))?;
+    let next_key = alloc_key(&mut scope, "next")?;
+    scope.define_property(iter_proto, next_key, proto_data_desc(Value::Object(next_fn)))?;
+
+    let iter_id = vm.register_native_call(urlsp_iterator_iterator_native)?;
+    let iter_name = scope.alloc_string("Symbol.iterator")?;
+    scope.push_root(Value::String(iter_name))?;
+    let iter_fn = scope.alloc_native_function_with_slots(iter_id, None, iter_name, 0, &[realm_slot])?;
+    scope.push_root(Value::Object(iter_fn))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(iter_fn, Some(func_proto))?;
+    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    scope.define_property(iter_proto, sym_key, proto_data_desc(Value::Object(iter_fn)))?;
+
+    iter_proto
+  };
+
+  let entries_id = vm.register_native_call(urlsp_entries_native)?;
+  let entries_name = scope.alloc_string("entries")?;
+  scope.push_root(Value::String(entries_name))?;
+  let entries_fn = scope.alloc_native_function_with_slots(
+    entries_id,
+    None,
+    entries_name,
+    0,
+    &[realm_slot, Value::Object(urlsp_iter_proto)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(entries_fn, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(entries_fn))?;
+  let entries_key = alloc_key(&mut scope, "entries")?;
+  scope.define_property(params_proto, entries_key, proto_data_desc(Value::Object(entries_fn)))?;
+
+  let keys_id = vm.register_native_call(urlsp_keys_native)?;
+  let keys_name = scope.alloc_string("keys")?;
+  scope.push_root(Value::String(keys_name))?;
+  let keys_fn = scope.alloc_native_function_with_slots(
+    keys_id,
+    None,
+    keys_name,
+    0,
+    &[realm_slot, Value::Object(urlsp_iter_proto)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(keys_fn, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(keys_fn))?;
+  let keys_key = alloc_key(&mut scope, "keys")?;
+  scope.define_property(params_proto, keys_key, proto_data_desc(Value::Object(keys_fn)))?;
+
+  let values_id = vm.register_native_call(urlsp_values_native)?;
+  let values_name = scope.alloc_string("values")?;
+  scope.push_root(Value::String(values_name))?;
+  let values_fn = scope.alloc_native_function_with_slots(
+    values_id,
+    None,
+    values_name,
+    0,
+    &[realm_slot, Value::Object(urlsp_iter_proto)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(values_fn, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(values_fn))?;
+  let values_key = alloc_key(&mut scope, "values")?;
+  scope.define_property(params_proto, values_key, proto_data_desc(Value::Object(values_fn)))?;
+
+  // [Symbol.iterator] is an alias for entries().
+  let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+  scope.define_property(params_proto, sym_key, proto_data_desc(Value::Object(entries_fn)))?;
+
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    params_proto,
     "sort",
     urlsp_sort_native,
     0,
@@ -1391,6 +1758,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
       search_params_slot_root,
       urls: HashMap::new(),
       params: HashMap::new(),
+      params_iterators: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),
     },
   );
@@ -1470,6 +1838,94 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), sorted), "a=2&a=1&b=1");
 
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_search_params_iteration_and_for_each_are_exposed() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let for_each = realm.exec_script(
+      "(function(){\
+         const p = new URLSearchParams('b=1&a=2&a=1');\
+         const out = [];\
+         p.forEach((v, k) => { out.push(k + '=' + v); });\
+         return out.join('&');\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), for_each), "b=1&a=2&a=1");
+
+    let entries_next = realm.exec_script(
+      "(function(){\
+         const p = new URLSearchParams('b=1&a=2');\
+         const it = p.entries();\
+         const out = [];\
+         let r;\
+         for (;;) {\
+           r = it.next();\
+           if (r.done) break;\
+           out.push(r.value[0] + '=' + r.value[1]);\
+         }\
+         return out.join('&');\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), entries_next), "b=1&a=2");
+
+    let keys_next = realm.exec_script(
+      "(function(){\
+         const p = new URLSearchParams('b=1&a=2');\
+         const it = p.keys();\
+         const out = [];\
+         let r;\
+         for (;;) {\
+           r = it.next();\
+           if (r.done) break;\
+           out.push(r.value);\
+         }\
+         return out.join(',');\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), keys_next), "b,a");
+
+    let values_next = realm.exec_script(
+      "(function(){\
+         const p = new URLSearchParams('b=1&a=2');\
+         const it = p.values();\
+         const out = [];\
+         let r;\
+         for (;;) {\
+           r = it.next();\
+           if (r.done) break;\
+           out.push(r.value);\
+         }\
+         return out.join(',');\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), values_next), "1,2");
+
+    // @@iterator should alias entries().
+    let params_val = realm.exec_script("new URLSearchParams('a=1')")?;
+    let Value::Object(params_obj) = params_val else {
+      return Err(VmError::InvariantViolation(
+        "URLSearchParams constructor must return an object",
+      ));
+    };
+
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(realm_ref.global_object()))?;
+    scope.push_root(Value::Object(params_obj))?;
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    let entries_fn = vm.get(&mut scope, params_obj, entries_key)?;
+    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    let sym_fn = vm.get(&mut scope, params_obj, sym_key)?;
+    assert_eq!(
+      entries_fn, sym_fn,
+      "expected URLSearchParams @@iterator to alias entries()"
+    );
+
+    drop(scope);
     realm.teardown();
     Ok(())
   }
