@@ -366,6 +366,11 @@ fn fixture_runtime_toggles(patch_html_for_chrome_baseline: bool) -> RuntimeToggl
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| "500".to_string());
+  // Chrome renders TrueType glyphs with hinting enabled, so enabling hinting improves
+  // fixture-fidelity for text-heavy pages.
+  raw
+    .entry("FASTR_TEXT_HINTING".to_string())
+    .or_insert_with(|| "1".to_string());
   // `xtask chrome-baseline-fixtures` renders fixtures via headless Chrome with `--hide-scrollbars`.
   // In this mode Chrome does *not* reserve classic scrollbar gutters, so pages paint to the right
   // edge (and `scrollbar-gutter: stable` has no effect).

@@ -50,6 +50,7 @@
 //! - ttf-parser: <https://docs.rs/ttf-parser/>
 //! - tiny-skia: <https://docs.rs/tiny-skia/>
 
+use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage, Result};
 #[cfg(test)]
 use crate::paint::pixmap::new_pixmap;
@@ -152,7 +153,11 @@ pub fn render_glyph_with_variations(
 ///
 /// `FontInstance::glyph_outline` returns paths in font design units (unscaled and
 /// without synthetic oblique). The cache key therefore excludes draw-time
-/// transforms like font size and skew.
+/// transforms like font size and skew unless hinting is enabled.
+///
+/// When hinting is enabled, glyph outlines depend on the font size (ppem) because
+/// the hinting engine grid-fits to device pixels. In that case the cache key must
+/// include the font size so we don't reuse outlines across incompatible sizes.
 ///
 /// Using the font data pointer avoids comparing large font binaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -165,15 +170,33 @@ struct GlyphCacheKey {
   glyph_id: u32,
   /// Hash of variation coordinates applied to the face.
   variation_hash: u64,
+  font_size_hundredths: u32,
+  hinting: bool,
 }
 
 impl GlyphCacheKey {
-  fn new(font: &LoadedFont, glyph_id: u32, variation_hash: u64) -> Self {
+  fn new(
+    font: &LoadedFont,
+    glyph_id: u32,
+    variation_hash: u64,
+    font_size: f32,
+    hinting: bool,
+  ) -> Self {
+    let font_size_hundredths = if hinting && font_size.is_finite() && font_size > 0.0 {
+      (font_size * 100.0)
+        .round()
+        .clamp(0.0, u32::MAX as f32)
+        .trunc() as u32
+    } else {
+      0
+    };
     Self {
       font_ptr: Arc::as_ptr(&font.data) as usize,
       font_index: font.index,
       glyph_id,
       variation_hash,
+      font_size_hundredths,
+      hinting,
     }
   }
 }
@@ -328,8 +351,10 @@ impl GlyphCache {
     font: &LoadedFont,
     instance: &FontInstance,
     glyph_id: u32,
+    font_size: f32,
+    hinting: bool,
   ) -> Option<&CachedGlyph> {
-    let key = GlyphCacheKey::new(font, glyph_id, instance.variation_hash());
+    let key = GlyphCacheKey::new(font, glyph_id, instance.variation_hash(), font_size, hinting);
     let generation = self.bump_generation();
 
     if let Some(entry) = self.glyphs.get_mut(&key) {
@@ -337,7 +362,7 @@ impl GlyphCache {
       entry.last_used = generation;
     } else {
       self.misses += 1;
-      let mut cached = self.build_glyph_path(instance, glyph_id)?;
+      let mut cached = self.build_glyph_path(font, instance, glyph_id, font_size, hinting)?;
       cached.last_used = generation;
       self.current_bytes = self.current_bytes.saturating_add(cached.estimated_size);
       self.peak_bytes = self.peak_bytes.max(self.current_bytes);
@@ -350,8 +375,19 @@ impl GlyphCache {
   }
 
   /// Builds a glyph path without caching.
-  fn build_glyph_path(&self, instance: &FontInstance, glyph_id: u32) -> Option<CachedGlyph> {
-    let outline = instance.glyph_outline(glyph_id)?;
+  fn build_glyph_path(
+    &self,
+    font: &LoadedFont,
+    instance: &FontInstance,
+    glyph_id: u32,
+    font_size: f32,
+    hinting: bool,
+  ) -> Option<CachedGlyph> {
+    let outline = if hinting {
+      instance.glyph_outline_hinted(font, glyph_id, font_size)?
+    } else {
+      instance.glyph_outline(glyph_id)?
+    };
     let has_outline = outline.path.is_some();
     let estimated_size = if has_outline {
       estimate_glyph_size(&outline.metrics)
@@ -771,7 +807,7 @@ impl<'a> Default for TextRenderState<'a> {
 ///
 /// TextRasterizer is not thread-safe (uses internal mutable cache).
 /// Create one instance per thread, or use external synchronization.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TextRasterizer {
   /// Glyph path cache
   cache: Arc<Mutex<GlyphCache>>,
@@ -779,6 +815,13 @@ pub struct TextRasterizer {
   color_cache: Arc<Mutex<ColorGlyphCache>>,
   /// Renderer for color glyph formats
   color_renderer: ColorFontRenderer,
+  hinting_enabled: bool,
+}
+
+impl Default for TextRasterizer {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl TextRasterizer {
@@ -829,10 +872,12 @@ impl TextRasterizer {
     color_renderer: ColorFontRenderer,
     color_cache: Arc<Mutex<ColorGlyphCache>>,
   ) -> Self {
+    let hinting_enabled = runtime::runtime_toggles().truthy("FASTR_TEXT_HINTING");
     Self {
       cache,
       color_cache,
       color_renderer,
+      hinting_enabled,
     }
   }
 
@@ -1203,7 +1248,7 @@ impl TextRasterizer {
           if diag_enabled {
             let before = cache.stats();
             let path = cache
-              .get_or_build(font, &instance, glyph.glyph_id)
+              .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
               .and_then(|glyph| glyph.path.clone());
             let after = cache.stats();
             let delta = after.delta_from(&before);
@@ -1214,7 +1259,7 @@ impl TextRasterizer {
             path
           } else {
             cache
-              .get_or_build(font, &instance, glyph.glyph_id)
+              .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
               .and_then(|glyph| glyph.path.clone())
           }
         };
@@ -1543,7 +1588,7 @@ impl TextRasterizer {
         .cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_or_build(font, &instance, glyph.glyph_id)
+        .get_or_build(font, &instance, glyph.glyph_id, font_size, self.hinting_enabled)
         .and_then(|glyph| glyph.path.clone());
       if let Some(path) = cached_path {
         let mut transform = glyph_transform(scale, synthetic_oblique, glyph_x, glyph_y);
@@ -2331,10 +2376,12 @@ mod tests {
     let variations: &[Variation] = &[];
     let var_hash = variation_hash(variations);
 
-    let key1 = GlyphCacheKey::new(&font, 65, var_hash);
-    let key2 = GlyphCacheKey::new(&font, 65, var_hash);
-    let key3 = GlyphCacheKey::new(&font, 66, var_hash);
-    let key4 = GlyphCacheKey::new(&font, 65, var_hash.wrapping_add(1));
+    let key1 = GlyphCacheKey::new(&font, 65, var_hash, 16.0, false);
+    let key2 = GlyphCacheKey::new(&font, 65, var_hash, 32.0, false);
+    let key3 = GlyphCacheKey::new(&font, 66, var_hash, 16.0, false);
+    let key4 = GlyphCacheKey::new(&font, 65, var_hash.wrapping_add(1), 16.0, false);
+    let key5 = GlyphCacheKey::new(&font, 65, var_hash, 16.0, true);
+    let key6 = GlyphCacheKey::new(&font, 65, var_hash, 32.0, true);
 
     // Same font, glyph, and variation hash should be equal
     assert_eq!(key1, key2);
@@ -2344,6 +2391,10 @@ mod tests {
 
     // Different variation hash should be different
     assert_ne!(key1, key4);
+
+    // When hinting is enabled, font size becomes part of the key.
+    assert_ne!(key1, key5);
+    assert_ne!(key5, key6);
   }
 
   #[test]
@@ -2362,17 +2413,23 @@ mod tests {
     let variations: &[Variation] = &[];
     let instance = FontInstance::new(&font, variations).unwrap();
 
-    assert!(cache.get_or_build(&font, &instance, glyph_a).is_some());
+    assert!(cache
+      .get_or_build(&font, &instance, glyph_a, 16.0, false)
+      .is_some());
     let stats = cache.stats();
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 0);
 
-    assert!(cache.get_or_build(&font, &instance, glyph_a).is_some());
+    assert!(cache
+      .get_or_build(&font, &instance, glyph_a, 16.0, false)
+      .is_some());
     let stats = cache.stats();
     assert_eq!(stats.hits, 1);
 
     // Insert another glyph to trigger eviction
-    assert!(cache.get_or_build(&font, &instance, glyph_b).is_some());
+    assert!(cache
+      .get_or_build(&font, &instance, glyph_b, 16.0, false)
+      .is_some());
     let stats = cache.stats();
     assert!(stats.evictions >= 1);
     assert!(cache.len() <= 1);

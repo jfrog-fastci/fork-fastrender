@@ -208,6 +208,45 @@ impl<'a> FontInstance<'a> {
     }
   }
 
+  pub(crate) fn glyph_outline_hinted(
+    &self,
+    font: &LoadedFont,
+    glyph_id: u32,
+    font_size: f32,
+  ) -> Option<GlyphOutline> {
+    if !font_size.is_finite() || font_size <= 0.0 {
+      return self.glyph_outline(glyph_id);
+    }
+    if !self.units_per_em.is_finite() || self.units_per_em <= 0.0 {
+      return self.glyph_outline(glyph_id);
+    }
+    let scale = font_size / self.units_per_em;
+    if !scale.is_finite() || scale <= 0.0 {
+      return self.glyph_outline(glyph_id);
+    }
+
+    match &self.backend {
+      FontBackend::Skrifa { font, location } => build_skrifa_outline_hinted(
+        font,
+        LocationRef::from(location),
+        glyph_id,
+        font_size,
+        scale,
+      ),
+      FontBackend::Ttf(_) => {
+        let font_ref = FontRef::from_index(&font.data, font.index).ok()?;
+        let location = Location::default();
+        build_skrifa_outline_hinted(
+          &font_ref,
+          LocationRef::from(&location),
+          glyph_id,
+          font_size,
+          scale,
+        )
+      }
+    }
+  }
+
   pub fn glyph_bounds(&self, glyph_id: u32) -> Option<FontBBox> {
     match &self.backend {
       // Fast path: for static fonts, `ttf-parser` provides glyph bounding boxes directly so avoid
@@ -308,12 +347,71 @@ fn build_skrifa_outline(
   })
 }
 
+fn build_skrifa_outline_hinted(
+  font: &FontRef<'_>,
+  location: LocationRef<'_>,
+  glyph_id: u32,
+  font_size: f32,
+  scale: f32,
+) -> Option<GlyphOutline> {
+  if glyph_id > u16::MAX as u32 {
+    return None;
+  }
+  if !font_size.is_finite() || font_size <= 0.0 {
+    return None;
+  }
+  if !scale.is_finite() || scale <= 0.0 {
+    return None;
+  }
+
+  let glyph_id = GlyphId::new(glyph_id);
+  let glyphs = OutlineGlyphCollection::new(font);
+  let outline = glyphs.get(glyph_id)?;
+  let mut builder = PathOutlineBuilder::new();
+  let size = Size::new(font_size);
+  let _ = draw_outline_with_optional_hinting(&glyphs, &outline, size, location, &mut builder);
+  let (path, outline_metrics) = builder.finish();
+  let path = path.and_then(|p| p.transform(Transform::from_scale(1.0 / scale, 1.0 / scale)));
+  let bbox = path
+    .as_ref()
+    .and_then(|p| FontBBox::from_path_bounds(p.bounds()));
+  let advance = font
+    .glyph_metrics(Size::unscaled(), location)
+    .advance_width(glyph_id)
+    .unwrap_or(0.0);
+
+  Some(GlyphOutline {
+    path,
+    advance,
+    bbox,
+    metrics: outline_metrics,
+  })
+}
+
 fn draw_outline_unscaled(
   outline: &OutlineGlyph<'_>,
   location: LocationRef<'_>,
   pen: &mut impl OutlinePen,
 ) -> Result<skrifa::outline::AdjustedMetrics, skrifa::outline::DrawError> {
   outline.draw(DrawSettings::unhinted(Size::unscaled(), location), pen)
+}
+
+fn draw_outline_with_optional_hinting(
+  glyphs: &OutlineGlyphCollection<'_>,
+  outline: &OutlineGlyph<'_>,
+  size: Size,
+  location: LocationRef<'_>,
+  pen: &mut impl OutlinePen,
+) -> Result<skrifa::outline::AdjustedMetrics, skrifa::outline::DrawError> {
+  use skrifa::outline::{HintingInstance, HintingMode};
+
+  if let Ok(hinting) = HintingInstance::new(glyphs, size, location, HintingMode::default()) {
+    if let Ok(metrics) = outline.draw(DrawSettings::hinted(&hinting, false), pen) {
+      return Ok(metrics);
+    }
+  }
+
+  outline.draw(DrawSettings::unhinted(size, location), pen)
 }
 
 fn variations_to_settings<'a>(
