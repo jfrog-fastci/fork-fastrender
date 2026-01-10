@@ -263,7 +263,17 @@ pub struct FixtureChromeDiffArgs {
   #[arg(long)]
   pub diff_only: bool,
 
-  /// Skip building renderer binaries and reuse existing release binaries under CARGO_TARGET_DIR.
+  /// Use Cargo's debug profile for the FastRender/diff steps (skip `--release`).
+  ///
+  /// This is substantially faster to compile for tight iteration loops, at the cost of slower
+  /// runtime and less representative performance numbers.
+  #[arg(long)]
+  pub debug: bool,
+
+  /// Skip building renderer binaries and reuse existing binaries under the selected Cargo profile.
+  ///
+  /// By default, this command uses release binaries (`target/release`). Pass `--debug` to instead
+  /// use debug binaries (`target/debug`).
   ///
   /// This disables `cargo build` steps for `render_fixtures`, `diff_renders`, and (when `--overlay`
   /// is enabled) `inspect_frag`.
@@ -295,7 +305,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   let out_root = resolve_repo_path(&repo_root, &args.out_dir);
   let layout = Layout::new(&out_root);
 
-  let render_fixtures_exe = render_fixtures_executable(&repo_root);
+  let render_fixtures_exe = render_fixtures_executable(&repo_root, args.debug);
   if !args.no_fastrender && args.no_build && !render_fixtures_exe.is_file() {
     bail!(
       "--no-build was set, but render_fixtures executable does not exist at {}",
@@ -324,7 +334,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
       &layout,
     )?)
   };
-  let diff_renders_exe = crate::diff_renders_executable(&repo_root);
+  let diff_renders_exe = diff_renders_executable(&repo_root, args.debug);
   if args.no_build && !diff_renders_exe.is_file() {
     bail!(
       "--no-build was set, but diff_renders executable does not exist at {}",
@@ -333,7 +343,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   }
   let diff_renders = build_diff_renders_command(&diff_renders_exe, &layout, &args)?;
 
-  let inspect_frag_exe = crate::inspect_frag_executable(&repo_root);
+  let inspect_frag_exe = inspect_frag_executable(&repo_root, args.debug);
   if args.overlay && args.no_build && !inspect_frag_exe.is_file() {
     bail!(
       "--no-build was set, but inspect_frag executable does not exist at {}",
@@ -433,8 +443,11 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     } else {
       let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
       build_cmd
-        .arg("build")
-        .arg("--release")
+        .arg("build");
+      if !args.debug {
+        build_cmd.arg("--release");
+      }
+      build_cmd
         .args(["--bin", "render_fixtures"])
         .current_dir(&repo_root);
       println!("Building render_fixtures...");
@@ -450,8 +463,11 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     } else {
       let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
       build_cmd
-        .arg("build")
-        .arg("--release")
+        .arg("build");
+      if !args.debug {
+        build_cmd.arg("--release");
+      }
+      build_cmd
         .args(["--bin", "inspect_frag"])
         .current_dir(&repo_root);
       println!("Building inspect_frag...");
@@ -489,8 +505,11 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     // `error: process didn't exit successfully` line.
     let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
     build_cmd
-      .arg("build")
-      .arg("--release")
+      .arg("build");
+    if !args.debug {
+      build_cmd.arg("--release");
+    }
+    build_cmd
       .args(["--bin", "diff_renders"])
       .current_dir(&repo_root);
     println!("Building diff_renders...");
@@ -1652,10 +1671,24 @@ fn build_render_fixtures_command(
   Ok(cmd)
 }
 
-fn render_fixtures_executable(repo_root: &Path) -> PathBuf {
-  crate::cargo_target_dir(repo_root)
-    .join("release")
-    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX))
+fn cargo_bin_executable(repo_root: &Path, bin: &str, debug: bool) -> PathBuf {
+  let profile_dir = if debug { "debug" } else { "release" };
+  crate::cargo_target_dir(repo_root).join(profile_dir).join(format!(
+    "{bin}{}",
+    std::env::consts::EXE_SUFFIX
+  ))
+}
+
+fn render_fixtures_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "render_fixtures", debug)
+}
+
+fn inspect_frag_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "inspect_frag", debug)
+}
+
+fn diff_renders_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "diff_renders", debug)
 }
 
 fn build_chrome_baseline_command(
@@ -1881,7 +1914,7 @@ mod tests {
       panic!("expected fixture-chrome-diff args");
     };
 
-    let render_fixtures_exe = render_fixtures_executable(&repo_root);
+    let render_fixtures_exe = render_fixtures_executable(&repo_root, args.debug);
     let cmd = build_render_fixtures_command(
       &render_fixtures_exe,
       &repo_root,

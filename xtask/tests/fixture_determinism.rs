@@ -51,11 +51,7 @@ fn write_stub_cargo(bin_dir: &Path) -> PathBuf {
   stub_cargo
 }
 
-fn write_stub_render_fixtures(target_dir: &Path) -> PathBuf {
-  let render_fixtures = target_dir.join("release").join("render_fixtures");
-  fs::write(
-    &render_fixtures,
-    r#"#!/usr/bin/env sh
+const STUB_RENDER_FIXTURES: &str = r#"#!/usr/bin/env sh
 set -eu
 
 out=""
@@ -88,17 +84,9 @@ if [ "$write_snapshot" -eq 1 ]; then
   echo "{}" > "$out/$stem/diagnostics.json"
 fi
 exit 0
-"#,
-  )
-  .expect("write stub render_fixtures");
-  make_executable(&render_fixtures);
-  render_fixtures
-}
+"#;
 
-fn write_stub_diff_renders(target_dir: &Path, differences: bool) -> PathBuf {
-  let diff_renders = target_dir.join("release").join("diff_renders");
-  let script = if differences {
-    r#"#!/usr/bin/env sh
+const STUB_DIFF_RENDERS_DIFF: &str = r#"#!/usr/bin/env sh
 set -eu
 
 html=""
@@ -146,9 +134,9 @@ cat > "$json" <<'JSON'
 JSON
 echo "PNG" > "$(dirname "$html")/diff.png"
 exit 1
-"#
-  } else {
-    r#"#!/usr/bin/env sh
+"#;
+
+const STUB_DIFF_RENDERS_MATCH: &str = r#"#!/usr/bin/env sh
 set -eu
 
 html=""
@@ -195,19 +183,9 @@ cat > "$json" <<'JSON'
 }
 JSON
 exit 0
-"#
-  };
+"#;
 
-  fs::write(&diff_renders, script).expect("write stub diff_renders");
-  make_executable(&diff_renders);
-  diff_renders
-}
-
-fn write_stub_diff_snapshots(target_dir: &Path) -> PathBuf {
-  let diff_snapshots = target_dir.join("release").join("diff_snapshots");
-  fs::write(
-    &diff_snapshots,
-    r#"#!/usr/bin/env sh
+const STUB_DIFF_SNAPSHOTS: &str = r#"#!/usr/bin/env sh
 set -eu
 
 html=""
@@ -225,11 +203,49 @@ mkdir -p "$(dirname "$json")"
 echo "<!doctype html><title>stub diff_snapshots</title>" > "$html"
 echo "{}" > "$json"
 exit 0
-"#,
-  )
-  .expect("write stub diff_snapshots");
-  make_executable(&diff_snapshots);
-  diff_snapshots
+"#;
+
+fn write_stub_executable(target_dir: &Path, profile: &str, name: &str, script: &str) -> PathBuf {
+  let bin = target_dir.join(profile).join(name);
+  fs::create_dir_all(bin.parent().expect("stub executable parent"))
+    .expect("create stub target dir");
+  fs::write(&bin, script).expect("write stub executable");
+  make_executable(&bin);
+  bin
+}
+
+fn write_stub_render_fixtures(target_dir: &Path) -> PathBuf {
+  write_stub_executable(target_dir, "release", "render_fixtures", STUB_RENDER_FIXTURES)
+}
+
+fn write_stub_render_fixtures_debug(target_dir: &Path) -> PathBuf {
+  write_stub_executable(target_dir, "debug", "render_fixtures", STUB_RENDER_FIXTURES)
+}
+
+fn write_stub_diff_renders(target_dir: &Path, differences: bool) -> PathBuf {
+  let script = if differences {
+    STUB_DIFF_RENDERS_DIFF
+  } else {
+    STUB_DIFF_RENDERS_MATCH
+  };
+  write_stub_executable(target_dir, "release", "diff_renders", script)
+}
+
+fn write_stub_diff_renders_debug(target_dir: &Path, differences: bool) -> PathBuf {
+  let script = if differences {
+    STUB_DIFF_RENDERS_DIFF
+  } else {
+    STUB_DIFF_RENDERS_MATCH
+  };
+  write_stub_executable(target_dir, "debug", "diff_renders", script)
+}
+
+fn write_stub_diff_snapshots(target_dir: &Path) -> PathBuf {
+  write_stub_executable(target_dir, "release", "diff_snapshots", STUB_DIFF_SNAPSHOTS)
+}
+
+fn write_stub_diff_snapshots_debug(target_dir: &Path) -> PathBuf {
+  write_stub_executable(target_dir, "debug", "diff_snapshots", STUB_DIFF_SNAPSHOTS)
 }
 
 fn run_fixture_determinism(
@@ -238,6 +254,7 @@ fn run_fixture_determinism(
   fixtures_dir: &Path,
   out_dir: &Path,
   allow_differences: bool,
+  debug: bool,
 ) -> std::process::Output {
   let mut cmd = Command::new(env!("CARGO_BIN_EXE_xtask"));
   cmd.current_dir(repo_root());
@@ -245,6 +262,9 @@ fn run_fixture_determinism(
   cmd.env("CARGO_TARGET_DIR", target_dir);
   cmd.arg("fixture-determinism");
   cmd.arg("--no-build");
+  if debug {
+    cmd.arg("--debug");
+  }
   if allow_differences {
     cmd.arg("--allow-differences");
   }
@@ -275,7 +295,7 @@ fn fixture_determinism_no_build_writes_report() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false);
+  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, false);
   assert!(
     output.status.success(),
     "expected fixture-determinism to succeed.\nstdout:\n{}\nstderr:\n{}",
@@ -320,7 +340,7 @@ fn fixture_determinism_fails_when_differences_found() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false);
+  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, false);
   assert!(
     !output.status.success(),
     "expected fixture-determinism to fail when differences are found.\nstdout:\n{}\nstderr:\n{}",
@@ -384,7 +404,7 @@ fn fixture_determinism_allow_differences_exits_zero() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, true);
+  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, true, false);
   assert!(
     output.status.success(),
     "expected fixture-determinism to exit 0 when --allow-differences is set.\nstdout:\n{}\nstderr:\n{}",
@@ -404,5 +424,41 @@ fn fixture_determinism_allow_differences_exits_zero() {
   assert!(
     html.contains("Diff (1)"),
     "expected diff count in report HTML:\n{html}"
+  );
+}
+
+#[test]
+#[cfg(unix)]
+fn fixture_determinism_no_build_debug_profile_writes_report() {
+  let temp = tempdir().expect("tempdir");
+  let bin_dir = temp.path().join("bin");
+  let target_dir = temp.path().join("target");
+  fs::create_dir_all(&bin_dir).expect("create stub bin dir");
+
+  // Place a stub `cargo` in PATH that fails if invoked. When `--no-build` is working correctly,
+  // xtask should never spawn `cargo build`.
+  write_stub_cargo(&bin_dir);
+  write_stub_render_fixtures_debug(&target_dir);
+  write_stub_diff_renders_debug(&target_dir, false);
+  write_stub_diff_snapshots_debug(&target_dir);
+
+  let fixtures_dir = temp.path().join("fixtures");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+  let out_dir = temp.path().join("out");
+
+  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, true);
+  assert!(
+    output.status.success(),
+    "expected fixture-determinism --debug to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    out_dir.join("report.html").is_file(),
+    "missing report.html in out dir"
+  );
+  assert!(
+    out_dir.join("report.json").is_file(),
+    "missing report.json in out dir"
   );
 }

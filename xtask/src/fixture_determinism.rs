@@ -94,7 +94,18 @@ pub struct FixtureDeterminismArgs {
   #[arg(long)]
   pub allow_differences: bool,
 
-  /// Skip building `render_fixtures`/`diff_renders` and reuse existing release binaries.
+  /// Use Cargo's debug profile for the FastRender/diff steps (skip `--release`).
+  ///
+  /// This is substantially faster to compile for tight iteration loops, at the cost of slower
+  /// runtime and less representative performance numbers.
+  #[arg(long)]
+  pub debug: bool,
+
+  /// Skip building `render_fixtures`/`diff_renders` and reuse existing binaries under the selected
+  /// Cargo profile.
+  ///
+  /// By default, this command uses release binaries (`target/release`). Pass `--debug` to instead
+  /// use debug binaries (`target/debug`).
   #[arg(long)]
   pub no_build: bool,
 }
@@ -301,9 +312,9 @@ pub fn run_fixture_determinism(args: FixtureDeterminismArgs) -> Result<()> {
   let layout = Layout::new(out_root);
   prepare_out_root(&layout.root).context("prepare output directory")?;
 
-  let render_fixtures_exe = render_fixtures_executable(&repo_root);
-  let diff_renders_exe = crate::diff_renders_executable(&repo_root);
-  let diff_snapshots_exe = diff_snapshots_executable(&repo_root);
+  let render_fixtures_exe = render_fixtures_executable(&repo_root, args.debug);
+  let diff_renders_exe = diff_renders_executable(&repo_root, args.debug);
+  let diff_snapshots_exe = diff_snapshots_executable(&repo_root, args.debug);
   let mut diff_snapshots_exe_opt = None;
   if args.no_build {
     for exe in [&render_fixtures_exe, &diff_renders_exe] {
@@ -319,9 +330,11 @@ pub fn run_fixture_determinism(args: FixtureDeterminismArgs) -> Result<()> {
     }
   } else {
     let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
+    build_cmd.arg("build");
+    if !args.debug {
+      build_cmd.arg("--release");
+    }
     build_cmd
-      .arg("build")
-      .arg("--release")
       .args(["--bin", "render_fixtures"])
       .args(["--bin", "diff_renders"])
       .args(["--bin", "diff_snapshots"])
@@ -776,16 +789,24 @@ fn clear_dir(path: &Path) -> Result<()> {
   Ok(())
 }
 
-fn render_fixtures_executable(repo_root: &Path) -> PathBuf {
-  crate::cargo_target_dir(repo_root)
-    .join("release")
-    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX))
+fn cargo_bin_executable(repo_root: &Path, bin: &str, debug: bool) -> PathBuf {
+  let profile_dir = if debug { "debug" } else { "release" };
+  crate::cargo_target_dir(repo_root).join(profile_dir).join(format!(
+    "{bin}{}",
+    std::env::consts::EXE_SUFFIX
+  ))
 }
 
-fn diff_snapshots_executable(repo_root: &Path) -> PathBuf {
-  crate::cargo_target_dir(repo_root)
-    .join("release")
-    .join(format!("diff_snapshots{}", std::env::consts::EXE_SUFFIX))
+fn render_fixtures_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "render_fixtures", debug)
+}
+
+fn diff_renders_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "diff_renders", debug)
+}
+
+fn diff_snapshots_executable(repo_root: &Path, debug: bool) -> PathBuf {
+  cargo_bin_executable(repo_root, "diff_snapshots", debug)
 }
 
 fn build_render_fixtures_command(

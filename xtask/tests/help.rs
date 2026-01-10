@@ -250,6 +250,7 @@ fn fixture_chrome_diff_help_mentions_flags() {
       && stdout.contains("--sort-by")
       && stdout.contains("--ignore-alpha")
       && stdout.contains("--fail-on-differences")
+      && stdout.contains("--debug")
       && stdout.contains("--no-build")
       && stdout.contains("--no-fastrender")
       && stdout.contains("--diff-only")
@@ -286,6 +287,7 @@ fn fixture_determinism_help_mentions_flags() {
       && stdout.contains("--timeout")
       && stdout.contains("--ignore-alpha")
       && stdout.contains("--allow-differences")
+      && stdout.contains("--debug")
       && stdout.contains("--no-build"),
     "help output should mention key flags; got:\n{stdout}"
   );

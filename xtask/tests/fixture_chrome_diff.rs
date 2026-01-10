@@ -1120,6 +1120,57 @@ fn dry_run_prints_deterministic_plan_and_forwards_args() {
 }
 
 #[test]
+fn dry_run_with_debug_uses_debug_profile_binaries() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+
+  let out_dir = temp.path().join("out");
+  let target_dir = temp.path().join("target");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--dry-run",
+      "--debug",
+      "--no-chrome",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff --dry-run --debug");
+
+  assert!(
+    output.status.success(),
+    "expected dry-run to succeed; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let render_fixtures_bin = target_dir
+    .join("debug")
+    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
+  assert!(
+    stdout.contains(&render_fixtures_bin.display().to_string()),
+    "plan should include target/debug/render_fixtures; got:\n{stdout}"
+  );
+
+  let diff_renders_bin = target_dir
+    .join("debug")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  assert!(
+    stdout.contains(&diff_renders_bin.display().to_string()),
+    "plan should include target/debug/diff_renders; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn dry_run_respects_no_chrome() {
   let temp = tempdir().expect("tempdir");
   let fixtures_root = temp.path().join("fixtures");

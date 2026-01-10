@@ -149,8 +149,9 @@ bash scripts/run_limited.sh --as 64G -- \
 bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures --out-dir target/fixture_chrome_diff/chrome
 
 # 3) Generate a combined Chrome-vs-FastRender HTML report under target/.
-# (Re-runs steps 1-2 by default; pass `--no-chrome` to reuse `target/fixture_chrome_diff/chrome`;
-# pass `--no-build` to reuse an existing `target/release/diff_renders` binary.)
+# Re-runs steps 1-2 by default. Pass `--no-chrome` to reuse `target/fixture_chrome_diff/chrome`.
+# Pass `--no-build` to reuse an existing `diff_renders` binary under the selected Cargo profile
+# (`target/release` by default; pass `--debug` to use `target/debug` for faster rebuilds).
 bash scripts/cargo_agent.sh xtask fixture-chrome-diff
 
 # 4) Sync deterministic pixel/perceptual diff telemetry into `progress/pages/*.json`:
@@ -212,6 +213,9 @@ When diagnosing paint nondeterminism (often scheduling-dependent under high para
 
 - Multi-process run-to-run diffs with an HTML report: `bash scripts/cargo_agent.sh xtask fixture-determinism`
 - In-process repeat/shuffle harness (captures raw `Pixmap::data()` bytes; can save per-variant PNGs):
+
+Tip: pass `--debug` to `fixture-determinism` (or `fixture-chrome-diff`) to skip `--release` for the
+FastRender/diff steps when you want faster rebuilds while iterating locally (slower runtime).
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \

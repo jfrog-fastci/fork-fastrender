@@ -2286,12 +2286,6 @@ fn diff_renders_executable(repo_root: &Path) -> PathBuf {
     .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn inspect_frag_executable(repo_root: &Path) -> PathBuf {
-  cargo_target_dir(repo_root)
-    .join("release")
-    .join(format!("inspect_frag{}", std::env::consts::EXE_SUFFIX))
-}
-
 fn run_render_page(args: RenderPageArgs) -> Result<()> {
   // Historically `bash scripts/cargo_agent.sh xtask render-page` interpreted relative file/output
   // paths relative to the caller's current directory. Keep that behaviour even though we run the

@@ -33,12 +33,13 @@ Options:
   --tolerance <0-255>       Pixel diff tolerance (passed to diff_renders)
   --max-diff-percent <f64>  Allowed diff percent (passed to diff_renders)
   --max-perceptual-distance <f64>
-                            Allowed perceptual distance (passed to diff_renders)
+                             Allowed perceptual distance (passed to diff_renders)
   --ignore-alpha            Ignore alpha differences (passed to diff_renders)
   --sort-by <mode>          Sort report entries (pixel|percent|perceptual) (passed to diff_renders)
   --no-chrome               Skip generating Chrome baseline renders (reuse existing --chrome-out-dir)
   --no-fastrender           Skip generating FastRender renders (reuse existing --fastr-out-dir)
   --diff-only               Alias for --no-chrome --no-fastrender
+  --debug                   Use debug profile for FastRender/diff binaries (skip `--release`)
   --fail-on-differences     Exit non-zero when diff_renders reports differences (default: keep report and exit 0)
   --no-build                Skip building diff_renders (reuse an existing binary)
   --no-clean                (deprecated; ignored) Output dirs are managed by the xtask implementation.
@@ -108,6 +109,7 @@ FAIL_ON_DIFFERENCES=0
 NO_CHROME=0
 NO_FASTRENDER=0
 DIFF_ONLY=0
+DEBUG=0
 NO_BUILD=0
 NO_CLEAN=0
 
@@ -209,6 +211,8 @@ while [[ $# -gt 0 ]]; do
         NO_FASTRENDER=1; shift; continue ;;
       --diff-only)
         DIFF_ONLY=1; shift; continue ;;
+      --debug)
+        DEBUG=1; shift; continue ;;
       --fail-on-differences)
         FAIL_ON_DIFFERENCES=1; shift; continue ;;
       --no-build)
@@ -430,6 +434,9 @@ if [[ -n "${SORT_BY}" ]]; then
 fi
 if [[ "${FAIL_ON_DIFFERENCES}" -eq 1 ]]; then
   xtask_args+=(--fail-on-differences)
+fi
+if [[ "${DEBUG}" -eq 1 ]]; then
+  xtask_args+=(--debug)
 fi
 if [[ "${DIFF_ONLY}" -eq 1 ]]; then
   xtask_args+=(--diff-only)
