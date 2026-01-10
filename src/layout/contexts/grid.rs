@@ -529,6 +529,70 @@ fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
   height_depends || min_depends || max_depends
 }
 
+fn taffy_available_space_for_grid_container(
+  style: &ComputedStyle,
+  constraints: &LayoutConstraints,
+) -> taffy::geometry::Size<taffy::style::AvailableSpace> {
+  let mut available_space = taffy::geometry::Size {
+    width: match constraints.available_width {
+      CrateAvailableSpace::Definite(w) => taffy::style::AvailableSpace::Definite(w),
+      CrateAvailableSpace::Indefinite => taffy::style::AvailableSpace::MaxContent,
+      CrateAvailableSpace::MinContent => taffy::style::AvailableSpace::MinContent,
+      CrateAvailableSpace::MaxContent => taffy::style::AvailableSpace::MaxContent,
+    },
+    height: match constraints.available_height {
+      CrateAvailableSpace::Definite(h) => taffy::style::AvailableSpace::Definite(h),
+      CrateAvailableSpace::Indefinite => taffy::style::AvailableSpace::MaxContent,
+      CrateAvailableSpace::MinContent => taffy::style::AvailableSpace::MinContent,
+      CrateAvailableSpace::MaxContent => taffy::style::AvailableSpace::MaxContent,
+    },
+  };
+
+  // In scrollable layout (no pagination/fragmentation), block-axis available space from the
+  // containing block should not constrain auto-sized grid containers.
+  //
+  // FastRender's block formatting context threads a definite available block size from the
+  // viewport down the tree so percentage sizes can resolve, but CSS layout does not constrain
+  // in-flow children to that size — they can overflow and extend the scrollable content area.
+  // Taffy, however, treats a definite available size in the block axis as an input to grid track
+  // sizing and will stretch `auto` block sizes to fill it (notably when `align-content: stretch`,
+  // which is common and the initial value for grid containers).
+  //
+  // When we're not in a fragmentation context and the grid container's block size is `auto`,
+  // treat the available block size as indefinite so the grid's used block size is content-based.
+  //
+  // Note: in vertical writing modes, the CSS block axis maps to the physical X axis, so we must
+  // drop the available *width* rather than the available *height*.
+  if fragmentainer_block_size_hint().is_none() {
+    let physical_block_axis = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+      PhysicalAxis::Y
+    } else {
+      PhysicalAxis::X
+    };
+
+    match physical_block_axis {
+      PhysicalAxis::Y => {
+        if constraints.used_border_box_height.is_none()
+          && physical_height_is_auto(style)
+          && matches!(available_space.height, taffy::style::AvailableSpace::Definite(_))
+        {
+          available_space.height = taffy::style::AvailableSpace::MaxContent;
+        }
+      }
+      PhysicalAxis::X => {
+        if constraints.used_border_box_width.is_none()
+          && physical_width_is_auto(style)
+          && matches!(available_space.width, taffy::style::AvailableSpace::Definite(_))
+        {
+          available_space.width = taffy::style::AvailableSpace::MaxContent;
+        }
+      }
+    }
+  }
+
+  available_space
+}
+
 #[inline]
 fn physical_width_is_auto(style: &ComputedStyle) -> bool {
   style.width.is_none() && style.width_keyword.is_none()
@@ -9605,43 +9669,7 @@ impl FormattingContext for GridFormattingContext {
 
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
 
-    // Convert constraints to Taffy available space
-    let mut available_space = taffy::geometry::Size {
-      width: match constraints.available_width {
-        CrateAvailableSpace::Definite(w) => taffy::style::AvailableSpace::Definite(w),
-        CrateAvailableSpace::Indefinite => taffy::style::AvailableSpace::MaxContent,
-        CrateAvailableSpace::MinContent => taffy::style::AvailableSpace::MinContent,
-        CrateAvailableSpace::MaxContent => taffy::style::AvailableSpace::MaxContent,
-      },
-      height: match constraints.available_height {
-        CrateAvailableSpace::Definite(h) => taffy::style::AvailableSpace::Definite(h),
-        CrateAvailableSpace::Indefinite => taffy::style::AvailableSpace::MaxContent,
-        CrateAvailableSpace::MinContent => taffy::style::AvailableSpace::MinContent,
-        CrateAvailableSpace::MaxContent => taffy::style::AvailableSpace::MaxContent,
-      },
-    };
-
-    // In scrollable layout (no pagination/fragmentation), block-axis available space from the
-    // containing block should not constrain auto-sized grid containers.
-    //
-    // FastRender's block formatting context threads a definite available block size from the
-    // viewport down the tree so percentage heights can resolve, but CSS block layout does not
-    // constrain in-flow children to that size — they can overflow and extend the scrollable
-    // content area. Taffy, however, treats a definite available height as an input to grid track
-    // sizing and will stretch `auto` block sizes to fill it (notably when `align-content: stretch`,
-    // which is common and the initial value for grid containers). This can create huge grid rows
-    // that push subsequent content far below the viewport (e.g. The Guardian highlights carousel).
-    //
-    // When we're not in a fragmentation context and the grid container's block size is `auto`,
-    // treat the available block size as indefinite so the grid's used height is content-based.
-    if fragmentainer_block_size_hint().is_none()
-      && constraints.used_border_box_height.is_none()
-      && crate::style::inline_axis_is_horizontal(style.writing_mode)
-      && physical_height_is_auto(style)
-      && matches!(available_space.height, taffy::style::AvailableSpace::Definite(_))
-    {
-      available_space.height = taffy::style::AvailableSpace::MaxContent;
-    }
+    let mut available_space = taffy_available_space_for_grid_container(style, constraints);
     // If the grid container itself is sized with intrinsic keywords, map the available space we
     // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
     // definite available size (fill-available), so only map min-/max-content here.
@@ -11350,6 +11378,56 @@ mod tests {
         "0".to_string(),
       )],
     ))))
+  }
+
+  #[test]
+  fn grid_scrollable_available_space_safeguard_horizontal_tb_drops_height() {
+    let _hint_guard = crate::layout::formatting_context::set_fragmentainer_block_size_hint(None);
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.writing_mode = WritingMode::HorizontalTb;
+    style.width = None;
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+
+    let constraints = LayoutConstraints::definite(100.0, 200.0);
+    let available = taffy_available_space_for_grid_container(&style, &constraints);
+
+    assert!(matches!(
+      available.width,
+      taffy::style::AvailableSpace::Definite(w) if w == 100.0
+    ));
+    assert!(matches!(
+      available.height,
+      taffy::style::AvailableSpace::MaxContent
+    ));
+  }
+
+  #[test]
+  fn grid_scrollable_available_space_safeguard_vertical_writing_mode_drops_width() {
+    let _hint_guard = crate::layout::formatting_context::set_fragmentainer_block_size_hint(None);
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.writing_mode = WritingMode::VerticalRl;
+    style.width = None;
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+
+    let constraints = LayoutConstraints::definite(100.0, 200.0);
+    let available = taffy_available_space_for_grid_container(&style, &constraints);
+
+    assert!(matches!(
+      available.width,
+      taffy::style::AvailableSpace::MaxContent
+    ));
+    assert!(matches!(
+      available.height,
+      taffy::style::AvailableSpace::Definite(h) if h == 200.0
+    ));
   }
 
   #[test]
