@@ -53,6 +53,7 @@ pub mod url_resolve;
 pub mod url_bindings;
 pub mod window_animation_frame;
 pub mod window_abort;
+pub mod dom_platform;
 pub mod vm_dom;
 pub mod window_fetch;
 pub mod window_timers;

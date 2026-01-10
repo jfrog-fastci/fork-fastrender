@@ -1,7 +1,8 @@
 use crate::dom2::{self, NodeId, NodeKind};
-use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
+use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
+use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
@@ -136,6 +137,7 @@ pub(crate) struct WindowRealmUserData {
   pending_navigation: Option<LocationNavigationRequest>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
+  dom_platform: Option<DomPlatform>,
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -145,6 +147,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("base_url", &self.base_url)
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
+      .field("has_dom_platform", &self.dom_platform.is_some())
       .finish()
   }
 }
@@ -157,6 +160,7 @@ impl WindowRealmUserData {
       document_url,
       cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
+      dom_platform: None,
     }
   }
 }
@@ -336,6 +340,11 @@ impl WindowRealm {
     }
     if let Some(id) = self.match_media_env_id.take() {
       unregister_match_media_env(id);
+    }
+    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      if let Some(platform) = data.dom_platform.as_mut() {
+        platform.teardown(&mut self.runtime.heap);
+      }
     }
     let realm_id = self.runtime.realm().id();
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
@@ -939,7 +948,6 @@ const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
-const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
@@ -1828,37 +1836,40 @@ fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
   unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
 }
 
+fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
+  vm
+    .user_data_mut::<WindowRealmUserData>()
+    .and_then(|data| data.dom_platform.as_mut())
+}
 fn get_or_create_node_wrapper(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   document_obj: GcObject,
   node_id: NodeId,
 ) -> Result<Value, VmError> {
-  let cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
-  let cache = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &cache_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      let cache = scope.alloc_object()?;
-      scope.push_root(Value::Object(cache))?;
-      scope.define_property(document_obj, cache_key, data_desc(Value::Object(cache)))?;
-      cache
-    }
-  };
-
-  let mut buf = [0u8; 20];
-  let key_str = decimal_str_for_usize(node_id.index(), &mut buf);
-  let wrapper_key = alloc_key(scope, key_str)?;
-
-  if let Some(existing) = scope
-    .heap()
-    .object_get_own_data_property_value(cache, &wrapper_key)?
-  {
-    if let Value::Object(obj) = existing {
-      return Ok(Value::Object(obj));
-    }
+  if node_id.index() == 0 {
+    // `dom2`'s document node is always index 0; the canonical wrapper is `window.document`.
+    return Ok(Value::Object(document_obj));
   }
+
+  let wrapper = if let Some(platform) = dom_platform_mut(vm) {
+    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), node_id) {
+      return Ok(Value::Object(existing));
+    }
+
+    let mut primary = DomInterface::Node;
+    if let Some(dom_ptr) = dom_for_source(platform.dom_source_id()) {
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+      // the lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_ref() };
+      primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+    }
+
+    platform.get_or_create_wrapper(scope, node_id, primary)?
+  } else {
+    scope.alloc_object()?
+  };
+  scope.push_root(Value::Object(wrapper))?;
 
   let dom_source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   let dom_source_id_value = scope
@@ -2243,9 +2254,6 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, STYLE_WIDTH_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
-
-  let wrapper = scope.alloc_object()?;
-  scope.push_root(Value::Object(wrapper))?;
 
   let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
   scope.define_property(
@@ -2881,13 +2889,11 @@ fn get_or_create_node_wrapper(
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
-  scope.define_property(cache, wrapper_key, data_desc(Value::Object(wrapper)))?;
-
   Ok(Value::Object(wrapper))
 }
 
 fn document_document_element_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -2918,11 +2924,11 @@ fn document_document_element_get_native(
     return Ok(Value::Null);
   };
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_head_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -2953,11 +2959,11 @@ fn document_head_get_native(
     return Ok(Value::Null);
   };
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_body_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -2988,7 +2994,7 @@ fn document_body_get_native(
     return Ok(Value::Null);
   };
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_write_native(
@@ -3054,7 +3060,7 @@ fn document_writeln_native(
 }
 
 fn document_get_element_by_id_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3093,11 +3099,11 @@ fn document_get_element_by_id_native(
   let Some(node_id) = dom.get_element_by_id(&query) else {
     return Ok(Value::Null);
   };
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_query_selector_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3134,7 +3140,7 @@ fn document_query_selector_native(
     .unwrap_or_default();
 
   match dom.query_selector(&selector, None) {
-    Ok(Some(node_id)) => get_or_create_node_wrapper(scope, document_obj, node_id),
+    Ok(Some(node_id)) => get_or_create_node_wrapper(vm, scope, document_obj, node_id),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {
@@ -3220,7 +3226,7 @@ fn document_query_selector_all_native(
 
   for (idx, node_id) in matches.iter().copied().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(scope, document_obj, node_id)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, node_id)?;
     scope.define_property(array, key, data_desc(wrapper))?;
   }
 
@@ -3242,7 +3248,7 @@ fn document_query_selector_all_native(
 }
 
 fn element_query_selector_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3319,7 +3325,7 @@ fn element_query_selector_native(
     .unwrap_or_default();
 
   match dom.query_selector(&selector, Some(node_id)) {
-    Ok(Some(found)) => get_or_create_node_wrapper(scope, document_obj, found),
+    Ok(Some(found)) => get_or_create_node_wrapper(vm, scope, document_obj, found),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {
@@ -3442,7 +3448,7 @@ fn element_query_selector_all_native(
 
   for (idx, node_id) in matches.iter().copied().enumerate() {
     let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(scope, document_obj, node_id)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, node_id)?;
     scope.define_property(array, key, data_desc(wrapper))?;
   }
 
@@ -3545,7 +3551,7 @@ fn element_matches_native(
 }
 
 fn element_closest_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3619,7 +3625,7 @@ fn element_closest_native(
     .unwrap_or_default();
 
   match dom.closest(node_id, &selector) {
-    Ok(Some(found)) => get_or_create_node_wrapper(scope, document_obj, found),
+    Ok(Some(found)) => get_or_create_node_wrapper(vm, scope, document_obj, found),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {
@@ -3640,7 +3646,7 @@ fn element_closest_native(
 }
 
 fn document_create_element_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3685,11 +3691,11 @@ fn document_create_element_native(
   let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_element(&tag_name, "");
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_create_text_node_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3734,11 +3740,11 @@ fn document_create_text_node_native(
   let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_text(&data);
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_create_comment_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3783,11 +3789,11 @@ fn document_create_comment_native(
   let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_comment(&data);
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_create_document_fragment_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -3824,7 +3830,7 @@ fn document_create_document_fragment_native(
   let dom = unsafe { dom_ptr.as_mut() };
   let node_id = dom.create_document_fragment();
 
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn event_constructor_native(
@@ -4411,13 +4417,14 @@ fn resolve_dom_event_target(
     ));
   }
 
-  // Document event target: identified by the presence of the internal node wrapper cache.
-  let wrapper_cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
-  if scope
-    .heap()
-    .object_get_own_data_property_value(target_obj, &wrapper_cache_key)?
-    .is_some()
-  {
+  // Document event target: identified by the presence of the internal window backreference.
+  let window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+  if matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &window_key)?,
+    Some(Value::Object(_))
+  ) {
     let document_obj = target_obj;
     let window_obj = window_object_from_document(scope, document_obj)?;
     let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
@@ -4443,12 +4450,13 @@ fn resolve_dom_event_target(
     .heap()
     .object_get_own_data_property_value(target_obj, &document_key)?
   {
-    let wrapper_cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
-    if scope
+    let window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+    if matches!(
+      scope
       .heap()
-      .object_get_own_data_property_value(document_obj, &wrapper_cache_key)?
-      .is_some()
-    {
+      .object_get_own_data_property_value(document_obj, &window_key)?,
+      Some(Value::Object(_))
+    ) {
       let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
       let Some(dom_ptr) = dom_for_source(dom_source_id) else {
         return Err(VmError::TypeError(
@@ -4624,7 +4632,8 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
       Some(web_events::EventTargetId::Window) => Ok(Value::Object(self.window_obj)),
       Some(web_events::EventTargetId::Document) => Ok(Value::Object(self.document_obj)),
       Some(web_events::EventTargetId::Node(node_id)) => {
-        get_or_create_node_wrapper(scope, self.document_obj, node_id)
+        let vm = unsafe { &mut *self.vm };
+        get_or_create_node_wrapper(vm, scope, self.document_obj, node_id)
       }
     }
   }
@@ -5029,7 +5038,9 @@ fn event_target_dispatch_event_native(
     let target_v = match resolved.target_id {
       web_events::EventTargetId::Window => Value::Object(resolved.window_obj),
       web_events::EventTargetId::Document => Value::Object(resolved.document_obj),
-      web_events::EventTargetId::Node(node_id) => get_or_create_node_wrapper(scope, resolved.document_obj, node_id)?,
+      web_events::EventTargetId::Node(node_id) => {
+        get_or_create_node_wrapper(vm, scope, resolved.document_obj, node_id)?
+      }
     };
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
@@ -5661,7 +5672,7 @@ fn node_replace_child_native(
 }
 
 fn node_clone_node_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5735,10 +5746,11 @@ fn node_clone_node_native(
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
 
-  get_or_create_node_wrapper(scope, document_obj, cloned)
+  get_or_create_node_wrapper(vm, scope, document_obj, cloned)
 }
 
 fn node_traversal_getter(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   this: Value,
   f: impl FnOnce(&dom2::Document, NodeId) -> Option<NodeId>,
@@ -5787,13 +5799,13 @@ fn node_traversal_getter(
   };
 
   match f(dom, node_id) {
-    Some(found) => get_or_create_node_wrapper(scope, document_obj, found),
+    Some(found) => get_or_create_node_wrapper(vm, scope, document_obj, found),
     None => Ok(Value::Null),
   }
 }
 
 fn node_parent_node_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5801,11 +5813,11 @@ fn node_parent_node_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(scope, this, |dom, node| dom.parent_node(node))
+  node_traversal_getter(vm, scope, this, |dom, node| dom.parent_node(node))
 }
 
 fn node_first_child_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5813,11 +5825,11 @@ fn node_first_child_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(scope, this, |dom, node| dom.first_child(node))
+  node_traversal_getter(vm, scope, this, |dom, node| dom.first_child(node))
 }
 
 fn node_previous_sibling_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5825,11 +5837,11 @@ fn node_previous_sibling_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(scope, this, |dom, node| dom.previous_sibling(node))
+  node_traversal_getter(vm, scope, this, |dom, node| dom.previous_sibling(node))
 }
 
 fn node_next_sibling_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5837,7 +5849,7 @@ fn node_next_sibling_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(scope, this, |dom, node| dom.next_sibling(node))
+  node_traversal_getter(vm, scope, this, |dom, node| dom.next_sibling(node))
 }
 
 fn node_remove_native(
@@ -7831,7 +7843,7 @@ fn element_insert_adjacent_text_native(
 }
 
 fn document_current_script_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -7855,7 +7867,7 @@ fn document_current_script_get_native(
   let Some(node_id) = current_script_for_source(source_id) else {
     return Ok(Value::Null);
   };
-  get_or_create_node_wrapper(scope, document_obj, node_id)
+  get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
 fn document_ready_state_get_native(
@@ -8284,8 +8296,26 @@ fn init_window_globals(
   )?;
   scope.push_root(Value::Object(window_location_set_func))?;
 
+  let mut dom_platform: Option<DomPlatform> = config
+    .dom_source_id
+    .map(|id| DomPlatform::new(&mut scope, realm, id))
+    .transpose()?;
+
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
+  if let Some(platform) = dom_platform.as_mut() {
+    scope.heap_mut().object_set_prototype(
+      document_obj,
+      Some(platform.prototype_for(DomInterface::Document)),
+    )?;
+    // `dom2`'s document node is always index 0.
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+  }
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
 
   // Document.baseURI (read-only): the document base URL used for resolving relative URLs.
@@ -8432,16 +8462,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(current_script_func))?;
-
-  // Shared wrapper cache for returning stable element wrappers.
-  let wrapper_cache = scope.alloc_object()?;
-  scope.push_root(Value::Object(wrapper_cache))?;
-  let wrapper_cache_key = alloc_key(&mut scope, NODE_WRAPPER_CACHE_KEY)?;
-  scope.define_property(
-    document_obj,
-    wrapper_cache_key,
-    data_desc(Value::Object(wrapper_cache)),
-  )?;
 
   if let Some(dom_source_id) = config.dom_source_id {
     let dom_source_key = alloc_key(&mut scope, DOM_SOURCE_ID_KEY)?;
@@ -10240,6 +10260,12 @@ fn init_window_globals(
     window_env,
     match_media_guard.id(),
   )?;
+
+  if let Some(platform) = dom_platform.take() {
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      data.dom_platform = Some(platform);
+    }
+  }
 
   // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
