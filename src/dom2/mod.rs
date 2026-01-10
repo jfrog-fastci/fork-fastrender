@@ -119,6 +119,7 @@ pub struct Node {
   /// - Scripts created via DOM APIs default it to true.
   pub script_force_async: bool,
   pub script_parser_document: bool,
+  pub script_force_async: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
 

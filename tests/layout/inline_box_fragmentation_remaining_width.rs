@@ -84,3 +84,42 @@ fn inline_boxes_do_not_use_emergency_breaks_mid_line() {
   // just to use leftover space at the end of a line; it should move to the next line instead.
   assert_eq!(trimmed, ["Hello", "transform"]);
 }
+
+#[test]
+fn inline_boxes_do_not_spuriously_break_before_leading_collapsible_space() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  let dom = renderer
+    .parse_html(
+      r#"<!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 300px; font: 16px/1 sans-serif; }
+          code { font-family: monospace; }
+        </style>
+        <div id="box">
+          The <strong><code>text-combine-upright</code></strong> CSS property sets the combination of
+          characters into the space of a single character.
+        </div>
+      "#,
+    )
+    .expect("parse HTML");
+
+  let fragments = renderer
+    .layout_document(&dom, 400, 200)
+    .expect("layout document");
+
+  let mut lines = Vec::new();
+  collect_line_texts(&fragments.root, &mut lines);
+  let trimmed: Vec<String> = lines.into_iter().map(|line| line.trim().to_string()).collect();
+
+  assert!(
+    trimmed
+      .first()
+      .is_some_and(|line| line.contains("text-combine-upright CSS")),
+    "expected first line to contain `text-combine-upright CSS`; got {trimmed:?}"
+  );
+}

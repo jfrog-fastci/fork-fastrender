@@ -3706,6 +3706,18 @@ impl<'a> LineBuilder<'a> {
                 self.place_item_with_width(InlineItem::Text(before), width);
               }
 
+              // If splitting at an allowed break produces only collapsible whitespace for the
+              // current line, drop that whitespace and keep trying to place the remainder on the
+              // same line. Otherwise we can spuriously break immediately after an inline box when
+              // the next text run begins with a collapsible space (e.g. `</code> CSS ...`).
+              if drop_before
+                && matches!(break_opportunity.break_type, BreakType::Allowed)
+                && break_opportunity.byte_offset > 0
+              {
+                item = InlineItem::Text(after);
+                continue;
+              }
+
               // Start new line for the rest
               if matches!(break_opportunity.break_type, BreakType::Mandatory) {
                 self.current_line.ends_with_hard_break = true;
@@ -4036,6 +4048,16 @@ impl<'a> LineBuilder<'a> {
                         before = trimmed;
                       }
                     }
+                  }
+
+                  if drop_before
+                    && matches!(break_opportunity.break_type, BreakType::Allowed)
+                    && break_opportunity.byte_offset > 0
+                  {
+                    remaining.push_front(InlineItem::Text(after));
+                    // Leading collapsible whitespace should not force a line break; keep trying to
+                    // fit the remainder of the text item on this line.
+                    continue;
                   }
 
                   if !drop_before && before.advance_for_layout > 0.0 {
