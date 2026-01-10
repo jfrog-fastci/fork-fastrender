@@ -2279,12 +2279,11 @@ fn calculate_flex_item(
 
   if direction.is_row() {
     let baseline_offset_cross =
-      total_offset_cross + item.offset_cross + item.margin.cross_start(direction);
+      total_offset_cross + line_offset_cross + item.margin.cross_start(direction);
     let inner_baseline = layout_output.first_baselines.y.unwrap_or(size.height);
     item.baseline = baseline_offset_cross + inner_baseline;
   } else {
-    let baseline_offset_main =
-      *total_offset_main + item.offset_main + item.margin.main_start(direction);
+    let baseline_offset_main = *total_offset_main + item.margin.main_start(direction);
     let inner_baseline = layout_output.first_baselines.y.unwrap_or(size.height);
     item.baseline = baseline_offset_main + inner_baseline;
   }

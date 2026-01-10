@@ -55,6 +55,7 @@ mod flex_basis_calc;
 mod flex_calc_gap;
 mod flex_basis_content;
 mod flex_baseline_alignment;
+mod flex_nested_container_baseline_alignment;
 mod flex_box_sizing_percent;
 mod flex_sizing_calc;
 mod flex_calc_gap_cache_key;
