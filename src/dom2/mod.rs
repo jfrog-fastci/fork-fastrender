@@ -110,9 +110,14 @@ pub struct Node {
   /// inert template contents by keeping template descendants in `children` while skipping them for
   /// selector matching and other traversals.
   pub inert_subtree: bool,
-  pub script_force_async: bool,
   pub script_already_started: bool,
   pub script_parser_document: bool,
+  /// Whether the script's `async` IDL attribute should default to true regardless of the presence
+  /// of an explicit `async` content attribute.
+  ///
+  /// This mirrors the HTML spec's per-script-element "force async" flag:
+  /// - Parser-inserted scripts set this to false.
+  /// - Scripts created via DOM APIs default it to true.
   pub script_force_async: bool,
   pub mathml_annotation_xml_integration_point: bool,
 }
