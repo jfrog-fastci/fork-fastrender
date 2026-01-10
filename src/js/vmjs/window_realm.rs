@@ -11997,6 +11997,24 @@ fn init_window_globals(
     },
   )?;
 
+  // `Document.defaultView`.
+  //
+  // Real-world scripts often use this as a stable reference to the `window` object associated with
+  // the document (e.g. `document.defaultView.requestAnimationFrame(...)`).
+  let default_view_key = alloc_key(&mut scope, "defaultView")?;
+  scope.define_property(
+    document_obj,
+    default_view_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(global),
+        writable: false,
+      },
+    },
+  )?;
+
   // Document.title.
   //
   // Many real-world scripts read and write this value (e.g. analytics metadata, SPA routing).

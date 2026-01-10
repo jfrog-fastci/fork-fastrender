@@ -255,6 +255,19 @@ fn document_base_uri_falls_back_to_document_url() -> Result<()> {
 }
 
 #[test]
+fn document_default_view_points_at_window() -> Result<()> {
+  let url = "https://example.com/";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script("document.defaultView === window && document.defaultView === self")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn document_charset_properties_are_exposed() -> Result<()> {
   let url = "https://example.com/";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
