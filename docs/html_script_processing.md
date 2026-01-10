@@ -46,8 +46,15 @@ What exists today (in-tree):
   - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
     moment a `<script>` finishes parsing.
 - **Import maps parsing/normalization (not yet integrated into script execution):**
-  - `src/js/import_maps/`: `parse_import_map_string(...)` + normalized `ImportMap`/warnings.
+  - `src/js/import_maps/`: spec-mapped import map parsing + normalization:
+    - `parse_import_map_string(...)` (`parse.rs`)
+    - normalized `ImportMap` + warning types (`types.rs`)
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
+- **Module scripts + import maps pipeline (milestone; not yet landed):**
+  - `src/js/html_script_scheduler.rs`: unified scheduler/state machine that models HTML’s
+    parser-blocking / "as soon as possible" / defer queues across classic + module + import map.
+  - `src/js/html_script_pipeline.rs`: end-to-end glue (streaming parser ↔ scheduler ↔ event loop)
+    that runs import map registration and script execution at the spec-defined boundaries.
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
     including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
@@ -62,8 +69,8 @@ What exists today (in-tree):
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
     `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string loads
-    it drives `StreamingHtmlParser` so parser-inserted scripts execute during parsing; URL navigations
-    still use best-effort post-parse discovery.
+    and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute during
+    parsing.
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
 - **Mutable DOM for bindings (`dom2`):**
@@ -181,6 +188,11 @@ script processing. All references below are to the local submodule file:
 - **Execute the script block** (“execute the script element”):
   - `id="execute-the-script-block"`
   - Grep: `rg -n 'id="execute-the-script-block"' specs/whatwg-html/source`
+- **Import maps** (parse + register):
+  - Grep: `rg -n 'create an import map parse result' specs/whatwg-html/source`
+  - Grep: `rg -ni 'register an import map' specs/whatwg-html/source`
+- **Module graph fetch (external)**:
+  - Grep: `rg -n 'fetch an external module script graph' specs/whatwg-html/source`
 
 ### `async` / `defer` conditions overview
 - The narrative summary for classic scripts lives near the `async`/`defer` attribute definitions,
@@ -382,24 +394,89 @@ When the streaming parser reaches end-of-input:
 
 ---
 
-## Notes for future module/import map support (why this design scales)
-The classic-script architecture above deliberately isolates:
+## Module scripts + import maps (milestone)
+This milestone extends the classic-script pipeline with spec-correct behavior for:
 
-- **parsing** (how we incrementally build DOM),
-- **preparation** (how we classify scripts + resolve URLs),
-- **fetching** (network integration),
-- **execution** (JS engine + realm),
-- **scheduling** (async/defer + event loop).
+- module scripts (`<script type="module">`)
+- import maps (`<script type="importmap">`)
+- `nomodule` gating for classic scripts
 
-Modules/import maps extend the same pipeline by adding new “prepare” + “execute” branches:
+The source of truth is still the HTML Standard’s `prepare-a-script` + `execute-the-script-block`
+algorithms (see the spec anchors above).
 
-- `ScriptType::Module` and `ScriptType::ImportMap` already exist in `src/js/mod.rs`.
-- Import maps should be implemented as a standalone spec-mapped module (parse/register/merge/resolve)
-  and then used by module script loading: [`docs/import_maps.md`](import_maps.md).
-- The `ScriptScheduler` should become a dispatcher that:
-  - runs import map registration at the correct point (before module graph resolution),
-  - builds/fetches module graphs using host hooks,
-  - preserves async/defer-like ordering for modules (different rules than classic scripts).
+### 1) `type="module"` scheduling rules (async vs default-defer; dynamic insertion ordering)
+The key differences vs classic scripts are:
 
-Keeping base URL tracking, DOM mutability, and event loop semantics consistent is what keeps these
-extensions from becoming a rewrite.
+- **Parser-inserted module scripts are never parser-blocking by default.**
+  - If the `async` attribute is **present**, the module script is in the document’s
+    **"set of scripts that will execute as soon as possible"**: fetch the entire module graph in
+    parallel with parsing; execute once ready (potentially before parsing completes).
+  - Otherwise (`async` **absent**), the module script behaves like **defer-by-default**: it is
+    appended to the document’s **"list of scripts that will execute when the document has finished
+    parsing"** (the same list used by classic `defer` scripts), and executes after parsing completes
+    in document order. (The `defer` attribute has **no effect** on modules.)
+- **Dynamically-inserted (not parser-inserted) module scripts** that are not `async` participate in a
+  separate ordering list: the document’s **"list of scripts that will execute in order as soon as
+  possible"**. This ensures deterministic **insertion order** execution for dynamically inserted
+  modules when `async` is not set.
+- **Inline module scripts never execute synchronously at the `</script>` boundary.**
+  Even if they have no dependencies, the spec queues a task before executing (see the HTML note
+  under the inline-module branch of `prepare-a-script`).
+
+### 2) `nomodule`
+In `prepare-a-script`, if a `<script>` has a `nomodule` content attribute and its type is
+`classic`, then it is skipped entirely. This is how browsers implement the modern "modules + legacy"
+pattern:
+
+```html
+<script type="module" src="modern.js"></script>
+<script nomodule src="legacy.js"></script>
+```
+
+Spec note: specifying `nomodule` on a module script has no effect; the algorithm continues.
+
+### 3) `<script type="importmap">` parsing + registration timing
+Import maps are *data blocks* that execute (register) synchronously, but they are not classic scripts:
+
+- **No `src`:** if an import map `<script>` has a `src` attribute, the spec queues an `error` event
+  task and returns (external import maps are intentionally unsupported).
+- **Parsing:** `prepare-a-script` creates an **import map parse result** from the inline text and the
+  script’s base URL.
+- **Registration timing:** because the result is immediately available, `prepare-a-script` then
+  **immediately executes the script element**, which (for `type=importmap`) runs `register an import
+  map` synchronously.
+  - This means import maps take effect at the `</script>` boundary, before later scripts are
+    prepared.
+
+### 4) `Document.currentScript` (modules + import maps)
+Only classic scripts participate in `Document.currentScript`:
+
+- During module script execution, HTML asserts `document.currentScript` is **null**.
+- Import map scripts never set `Document.currentScript` (and should run with it null).
+
+So, once module scripts/import maps are integrated, the host-side bookkeeping must treat
+`currentScript` as **classic-only**.
+
+### 5) Module graph fetch + caching responsibilities (module map + resolved module set)
+Adding module scripts makes the engine responsible for spec-shaped module caching and specifier
+resolution:
+
+- **Module map (per `Document`):** cache module graph fetch results in the document’s **module map**
+  (keyed by `(URL, module type)`), including in-flight deduplication ("fetching" sentinel entries).
+  This is the cache consulted by `fetch an external module script graph`.
+- **Resolved module set (per global object):** cache specifier resolution results in the global
+  object’s **resolved module set** so repeated resolution for the same `(referrer, specifier)` pair
+  is stable.
+  - When registering an import map, the spec merges it into the global import map *while ensuring it
+    does not retroactively affect already-resolved modules* (rules that would impact them are
+    ignored).
+
+### 6) Code map for the milestone (where this should live)
+When this milestone lands, the intent is that classic/module/importmap share a single pipeline:
+
+- `src/js/html_script_scheduler.rs`: models the HTML scheduling lists/sets for classic + module +
+  import map scripts, mapped to `prepare-a-script`.
+- `src/js/html_script_pipeline.rs`: ties together the streaming parser, the scheduler, fetch
+  integration, and `execute-the-script-block` (including import map registration).
+- `src/js/import_maps/`: import map parsing + normalization primitives used by both
+  `type=importmap` execution and module specifier resolution.
