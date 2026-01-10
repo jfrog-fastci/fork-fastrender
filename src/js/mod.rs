@@ -103,8 +103,8 @@ pub use html_classic_scripts::{
 pub use module_scripts::ModuleGraphLoader;
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
-  ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,
-  ScriptScheduler, ScriptSchedulerAction,
+  ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,
+  ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler, ScriptSchedulerAction,
 };
 pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{

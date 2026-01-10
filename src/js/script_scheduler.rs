@@ -66,6 +66,14 @@ pub trait ScriptExecutor: Sized {
   ) -> Result<()>;
 }
 
+/// Host hook for firing `<script>` element `load`/`error` events.
+///
+/// HTML queues these as element tasks on the DOM manipulation task source.
+pub trait ScriptEventDispatcher: Sized {
+  fn dispatch_script_event(&mut self, event: ScriptElementEvent, spec: &ScriptElementSpec)
+    -> Result<()>;
+}
+
 struct DeferredScript {
   spec: Option<ScriptElementSpec>,
   source: Option<String>,
@@ -85,7 +93,7 @@ struct DeferredScript {
 /// microtask checkpoint after execution, per HTML.
 pub struct ClassicScriptScheduler<Host>
 where
-  Host: ScriptLoader + ScriptExecutor,
+  Host: ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
   options: JsExecutionOptions,
   js_execution_depth: Rc<Cell<usize>>,
@@ -100,7 +108,7 @@ where
 
 impl<Host> Default for ClassicScriptScheduler<Host>
 where
-  Host: ScriptLoader + ScriptExecutor,
+  Host: ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
   fn default() -> Self {
     Self {
@@ -117,7 +125,7 @@ where
 
 impl<Host> ClassicScriptScheduler<Host>
 where
-  Host: ScriptLoader + ScriptExecutor,
+  Host: ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
   pub fn new() -> Self {
     Self::default()
@@ -178,6 +186,9 @@ where
     let Some(src_url) = spec.src.as_deref() else {
       // `src` attribute present but empty/invalid/unresolvable: per HTML this fires an error event
       // and does not fall back to inline execution.
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+        host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+      })?;
       return Ok(());
     };
 
@@ -356,6 +367,24 @@ pub struct DiscoveredScript<NodeId> {
   pub actions: Vec<ScriptSchedulerAction<NodeId>>,
 }
 
+/// A DOM event to fire at a `<script>` element as part of the HTML script processing model.
+///
+/// HTML queues these as "element tasks" on the DOM manipulation task source (e.g. `load`/`error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptElementEvent {
+  Load,
+  Error,
+}
+
+impl ScriptElementEvent {
+  pub fn as_type_str(self) -> &'static str {
+    match self {
+      ScriptElementEvent::Load => "load",
+      ScriptElementEvent::Error => "error",
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptSchedulerAction<NodeId> {
   /// Begin fetching an external script.
@@ -384,6 +413,15 @@ pub enum ScriptSchedulerAction<NodeId> {
     script_id: ScriptId,
     node_id: NodeId,
     source_text: String,
+  },
+  /// Queue an element task to fire a `load`/`error` event at the `<script>` element.
+  ///
+  /// This is used by the HTML `prepare a script` algorithm when a script finishes loading or when
+  /// its `src` attribute is present but empty/invalid/unresolvable.
+  QueueScriptEventTask {
+    script_id: ScriptId,
+    node_id: NodeId,
+    event: ScriptElementEvent,
   },
 }
 
@@ -482,70 +520,107 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   ) -> Result<DiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
 
-    if element.script_type != ScriptType::Classic {
-      // Non-classic scripts are out-of-scope for this scheduler.
-      return Ok(DiscoveredScript {
-        id,
-        actions: Vec::new(),
-      });
-    }
-
     let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
 
-    if element.src_attr_present {
-      let Some(url) = element.src.filter(|s| !s.is_empty()) else {
-        // `src` attribute present but empty/invalid/unresolvable: HTML fires an error event and does
-        // not fall back to inline script execution.
+    match element.script_type {
+      ScriptType::Classic => {
+        if element.src_attr_present {
+          let Some(url) = element.src.filter(|s| !s.is_empty()) else {
+            // HTML: if the `src` attribute is present but the value is the empty string or cannot be
+            // resolved to a URL, queue an element task to fire `error`, then return. Crucially, the
+            // presence of `src` suppresses inline script execution even in this failure case.
+            actions.push(ScriptSchedulerAction::QueueScriptEventTask {
+              script_id: id,
+              node_id,
+              event: ScriptElementEvent::Error,
+            });
+            return Ok(DiscoveredScript { id, actions });
+          };
+          let mode = if !element.parser_inserted {
+            // HTML: dynamically inserted classic external scripts are async by default.
+            ExternalMode::Async
+          } else if element.async_attr {
+            ExternalMode::Async
+          } else if element.defer_attr {
+            ExternalMode::Defer
+          } else {
+            ExternalMode::Blocking
+          };
+
+          if mode == ExternalMode::Defer {
+            self.defer_queue.push(id);
+          }
+
+          self.scripts.insert(
+            id,
+            ExternalScriptEntry {
+              node_id: node_id.clone(),
+              base_url_at_discovery,
+              url: url.clone(),
+              async_attr: element.async_attr,
+              defer_attr: element.defer_attr,
+              parser_inserted: element.parser_inserted,
+              mode,
+              fetch_completed: false,
+              source_text: None,
+              queued_for_execution: false,
+            },
+          );
+
+          actions.push(ScriptSchedulerAction::StartFetch {
+            script_id: id,
+            node_id: node_id.clone(),
+            url,
+          });
+
+          // Only parser-inserted blocking scripts are allowed to block parsing.
+          if mode == ExternalMode::Blocking {
+            actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
+          }
+        } else {
+          // Inline classic scripts execute immediately and block parsing.
+          actions.push(ScriptSchedulerAction::ExecuteNow {
+            script_id: id,
+            node_id,
+            source_text: element.inline_text,
+          });
+        }
+      }
+      ScriptType::Module => {
+        if element.src_attr_present {
+          // HTML: module scripts with `src` present but empty/invalid also queue `error` and do not
+          // fall back to inline execution.
+          let Some(_url) = element.src.filter(|s| !s.is_empty()) else {
+            actions.push(ScriptSchedulerAction::QueueScriptEventTask {
+              script_id: id,
+              node_id,
+              event: ScriptElementEvent::Error,
+            });
+            return Ok(DiscoveredScript { id, actions });
+          };
+
+          // TODO: Module graph fetching/execution is not yet modeled by this scheduler.
+          return Ok(DiscoveredScript { id, actions });
+        }
+
+        // Inline module scripts are currently out-of-scope.
         return Ok(DiscoveredScript { id, actions });
-      };
-      let mode = if !element.parser_inserted {
-        // HTML: dynamically inserted classic external scripts are async by default.
-        ExternalMode::Async
-      } else if element.async_attr {
-        ExternalMode::Async
-      } else if element.defer_attr {
-        ExternalMode::Defer
-      } else {
-        ExternalMode::Blocking
-      };
-
-      if mode == ExternalMode::Defer {
-        self.defer_queue.push(id);
       }
-
-      self.scripts.insert(
-        id,
-        ExternalScriptEntry {
-          node_id: node_id.clone(),
-          base_url_at_discovery,
-          url: url.clone(),
-          async_attr: element.async_attr,
-          defer_attr: element.defer_attr,
-          parser_inserted: element.parser_inserted,
-          mode,
-          fetch_completed: false,
-          source_text: None,
-          queued_for_execution: false,
-        },
-      );
-
-      actions.push(ScriptSchedulerAction::StartFetch {
-        script_id: id,
-        node_id: node_id.clone(),
-        url,
-      });
-
-      // Only parser-inserted blocking scripts are allowed to block parsing.
-      if mode == ExternalMode::Blocking {
-        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
+      ScriptType::ImportMap => {
+        // HTML: import maps must be inline; `src` is invalid and must queue `error`.
+        if element.src_attr_present {
+          actions.push(ScriptSchedulerAction::QueueScriptEventTask {
+            script_id: id,
+            node_id,
+            event: ScriptElementEvent::Error,
+          });
+        }
+        return Ok(DiscoveredScript { id, actions });
       }
-    } else {
-      // Inline classic scripts execute immediately and block parsing.
-      actions.push(ScriptSchedulerAction::ExecuteNow {
-        script_id: id,
-        node_id,
-        source_text: element.inline_text,
-      });
+      ScriptType::Unknown => {
+        // Unknown script types do not execute.
+        return Ok(DiscoveredScript { id, actions });
+      }
     }
 
     Ok(DiscoveredScript { id, actions })
@@ -724,6 +799,7 @@ mod tests {
   struct TestHost {
     loader: ManualLoader,
     log: Vec<String>,
+    events: Vec<String>,
     queue_microtask_after_execute: bool,
   }
 
@@ -732,6 +808,7 @@ mod tests {
       Self {
         loader: ManualLoader::default(),
         log: Vec::new(),
+        events: Vec::new(),
         queue_microtask_after_execute,
       }
     }
@@ -776,6 +853,17 @@ mod tests {
           Ok(())
         })?;
       }
+      Ok(())
+    }
+  }
+
+  impl ScriptEventDispatcher for TestHost {
+    fn dispatch_script_event(
+      &mut self,
+      event: ScriptElementEvent,
+      _spec: &ScriptElementSpec,
+    ) -> Result<()> {
+      self.events.push(event.as_type_str().to_string());
       Ok(())
     }
   }
@@ -930,6 +1018,16 @@ mod tests {
       host.log,
       Vec::<String>::new(),
       "expected no inline execution when src attribute is present"
+    );
+    assert!(
+      host.loader.handles_by_url.is_empty(),
+      "expected no fetch to be started for invalid src"
+    );
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(
+      host.events,
+      vec!["error".to_string()],
+      "expected an error event task for invalid src"
     );
     Ok(())
   }
@@ -1246,6 +1344,19 @@ mod state_machine_tests {
               .event_loop
               .queue_task(TaskSource::Script, move |host, event_loop| {
                 execute_fake_script(host, event_loop, &source_text)
+              })?;
+          }
+          ScriptSchedulerAction::QueueScriptEventTask {
+            script_id: _,
+            node_id: _,
+            event,
+          } => {
+            let type_str = event.as_type_str();
+            self
+              .event_loop
+              .queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+                host.log.push(format!("event:{type_str}"));
+                Ok(())
               })?;
           }
         }

@@ -736,6 +736,15 @@ impl BrowserTabHost {
             result
           })?;
         }
+        ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
+          let type_str = event.as_type_str();
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            let mut ev = Event::new(type_str, EventInit::default());
+            ev.is_trusted = true;
+            host.dispatch_lifecycle_event(EventTargetId::Node(node_id), ev)?;
+            Ok(())
+          })?;
+        }
       }
     }
     Ok(())

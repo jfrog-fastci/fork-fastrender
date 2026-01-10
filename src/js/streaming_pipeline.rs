@@ -19,7 +19,7 @@ use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 
 use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
-use super::script_scheduler::{ScriptId, ScriptScheduler, ScriptSchedulerAction};
+use super::script_scheduler::{ScriptElementEvent, ScriptId, ScriptScheduler, ScriptSchedulerAction};
 use super::{determine_script_type_dom2, ScriptElementSpec, ScriptType};
 use super::{EventLoop, TaskSource};
 
@@ -93,6 +93,21 @@ pub trait ClassicScriptPipelineHost: CurrentScriptHost + DomHost + Sized + 'stat
     script_type: ScriptType,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()>;
+
+  /// Dispatch a DOM event for a `<script>` element.
+  ///
+  /// This is used for `load`/`error` events, which HTML queues as element tasks on the DOM
+  /// manipulation task source.
+  ///
+  /// The default implementation is a no-op; embeddings can override to integrate with the real DOM
+  /// event system.
+  fn dispatch_script_event(
+    &mut self,
+    _script_node_id: NodeId,
+    _event: ScriptElementEvent,
+  ) -> Result<()> {
+    Ok(())
+  }
 }
 
 /// Progress result for [`ClassicScriptPipeline::pump_parser`].
@@ -417,6 +432,11 @@ impl ClassicScriptPipelineState {
           ..
         } => {
           self.queue_script_task(event_loop, script_id, source_text)?;
+        }
+        ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(node_id, event)
+          })?;
         }
       }
     }

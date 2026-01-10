@@ -304,6 +304,9 @@ where
       } => {
         queued_task_scripts.push((node_id, source_text));
       }
+      ScriptSchedulerAction::QueueScriptEventTask { .. } => {
+        // This legacy harness does not currently model script load/error events.
+      }
     }
   }
 

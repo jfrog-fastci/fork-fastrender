@@ -68,6 +68,7 @@ where
   deferred_scripts: HashSet<crate::js::ScriptId>,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
+  script_events: Vec<String>,
 }
 
 impl<F, E> HtmlLoadOrchestrator<F, E>
@@ -107,6 +108,7 @@ where
       deferred_scripts: HashSet::new(),
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
+      script_events: Vec::new(),
     }
   }
 
@@ -312,6 +314,14 @@ where
             if is_deferred {
               host.lifecycle.deferred_script_executed(event_loop)?;
             }
+            Ok(())
+          })?;
+        }
+        ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
+          let type_str = event.as_type_str();
+          let node_idx = node_id.index();
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.script_events.push(format!("{type_str}@{node_idx}"));
             Ok(())
           })?;
         }
@@ -737,6 +747,115 @@ mod tests {
       host.executor.log,
       vec!["script:good".to_string(), "microtask:good".to_string(),]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn classic_script_src_empty_queues_error_event_and_does_not_execute_inline() -> Result<()> {
+    let html = "<!doctype html><script src=\"\">INLINE</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.fetcher.started,
+      Vec::<(crate::js::ScriptId, String)>::new(),
+      "invalid src must not start a fetch"
+    );
+    assert_eq!(
+      host.executor.log,
+      Vec::<String>::new(),
+      "presence of src must suppress inline execution even when src is empty"
+    );
+    assert_eq!(host.script_events.len(), 1);
+    assert!(
+      host.script_events[0].starts_with("error@"),
+      "expected an error event task for invalid src"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn classic_script_src_rejected_scheme_queues_error_event_and_does_not_execute_inline() -> Result<()> {
+    let html = "<!doctype html><script src=\"javascript:alert(1)\">INLINE</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.fetcher.started.is_empty(), "invalid src must not start a fetch");
+    assert!(
+      host.executor.log.is_empty(),
+      "presence of src must suppress inline execution even when src is rejected"
+    );
+    assert_eq!(host.script_events.len(), 1);
+    assert!(host.script_events[0].starts_with("error@"));
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_src_empty_queues_error_event_and_does_not_start_fetch() -> Result<()> {
+    let html = "<!doctype html><script type=\"module\" src=\"\">INLINE</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.fetcher.started.is_empty(), "invalid module src must not start a fetch");
+    assert!(
+      host.executor.log.is_empty(),
+      "module scripts are out-of-scope for execution; invalid src must not run inline"
+    );
+    assert_eq!(host.script_events.len(), 1);
+    assert!(host.script_events[0].starts_with("error@"));
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_src_rejected_scheme_queues_error_event_and_does_not_start_fetch() -> Result<()> {
+    let html =
+      "<!doctype html><script type=\"module\" src=\"javascript:alert(1)\">INLINE</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      Some("https://example.com/dir/page.html"),
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.fetcher.started.is_empty(),
+      "invalid module src must not start a fetch"
+    );
+    assert!(host.executor.log.is_empty());
+    assert_eq!(host.script_events.len(), 1);
+    assert!(host.script_events[0].starts_with("error@"));
     Ok(())
   }
 }

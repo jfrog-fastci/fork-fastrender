@@ -1,10 +1,11 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::Result;
+use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 
 use super::{
   determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementSpec,
-  ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
+  ScriptElementEvent, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
@@ -30,7 +31,7 @@ pub fn prepare_dynamic_script_on_insertion<Host>(
   inserted_node: NodeId,
 ) -> Result<()>
 where
-  Host: DomHost + ScriptLoader + ScriptExecutor,
+  Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
   let spec = host.mutate_dom(|dom| {
     if !is_html_script_element(dom, inserted_node) {
@@ -57,25 +58,41 @@ where
     return Ok(());
   };
 
-  // Only classic scripts are supported by the MVP scheduler.
-  if spec.script_type != ScriptType::Classic {
-    return Ok(());
-  }
+  match spec.script_type {
+    ScriptType::Classic => {
+      // External scripts are handled directly by the scheduler so they start loading immediately.
+      // Inline scripts are queued as tasks to keep DOM mutation calls non-reentrant.
+      if spec.src_attr_present {
+        scheduler.handle_script(host, event_loop, spec)?;
+        return Ok(());
+      }
 
-  // External scripts are handled directly by the scheduler so they start loading immediately.
-  // Inline scripts are queued as tasks to keep DOM mutation calls non-reentrant.
-  if spec.src_attr_present {
-    scheduler.handle_script(host, event_loop, spec)?;
-    return Ok(());
+      scheduler
+        .options()
+        .check_script_source(&spec.inline_text, "source=inline")?;
+      event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+        host.execute_classic_script(&spec.inline_text, &spec, event_loop)
+      })?;
+      Ok(())
+    }
+    ScriptType::Module | ScriptType::ImportMap => {
+      // Modules/import maps are not executed by this MVP dynamic insertion helper, but HTML still
+      // requires that `src=""` / invalid `src` queues an error event task and suppresses inline
+      // execution.
+      if spec.src_attr_present && spec.src.as_deref().filter(|s| !s.is_empty()).is_none() {
+        event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+        })?;
+      } else if matches!(spec.script_type, ScriptType::ImportMap) && spec.src_attr_present {
+        // Import maps forbid `src` entirely; treat any `src` presence as an error.
+        event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+        })?;
+      }
+      Ok(())
+    }
+    ScriptType::Unknown => Ok(()),
   }
-
-  scheduler
-    .options()
-    .check_script_source(&spec.inline_text, "source=inline")?;
-  event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-    host.execute_classic_script(&spec.inline_text, &spec, event_loop)
-  })?;
-  Ok(())
 }
 
 /// Prepare any dynamic `<script>` elements within a newly-inserted subtree.
@@ -97,7 +114,7 @@ pub fn prepare_dynamic_scripts_on_subtree_insertion<Host>(
   inserted_root: NodeId,
 ) -> Result<()>
 where
-  Host: DomHost + ScriptLoader + ScriptExecutor,
+  Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
   let script_nodes = host.with_dom(|dom| {
     let mut out = Vec::new();
@@ -146,14 +163,13 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     .flatten()
     .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
-  let src_attr_present = dom.has_attribute(script, "src").unwrap_or(false);
-  let src = dom
+  let raw_src = dom
     .get_attribute(script, "src")
     .ok()
     .flatten()
-    .map(trim_ascii_whitespace)
-    .filter(|v| !v.is_empty())
     .map(|v| v.to_string());
+  let src_attr_present = raw_src.is_some();
+  let src = raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(None, raw));
 
   let mut inline_text = String::new();
   for &child in &dom.node(script).children {
@@ -196,10 +212,4 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
   // `dom2` normalizes the HTML namespace to the empty string, but accept the full namespace URI
   // too.
   namespace.is_empty() || namespace == HTML_NAMESPACE
-}
-
-// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
-// Notably, this does *not* include U+000B VT (vertical tab).
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
