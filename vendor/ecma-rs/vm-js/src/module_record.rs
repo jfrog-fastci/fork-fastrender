@@ -921,10 +921,10 @@ fn module_record_from_top_level(
           None => try_string_from_str("*default*")?,
         };
         record.local_export_entries.push(LocalExportEntry {
-          export_name: if func.stx.export {
-            try_string_from_str(&local_name)?
-          } else {
+          export_name: if func.stx.export_default {
             try_string_from_str("default")?
+          } else {
+            try_string_from_str(&local_name)?
           },
           local_name,
         });
@@ -940,10 +940,10 @@ fn module_record_from_top_level(
           None => try_string_from_str("*default*")?,
         };
         record.local_export_entries.push(LocalExportEntry {
-          export_name: if class.stx.export {
-            try_string_from_str(&local_name)?
-          } else {
+          export_name: if class.stx.export_default {
             try_string_from_str("default")?
+          } else {
+            try_string_from_str(&local_name)?
           },
           local_name,
         });

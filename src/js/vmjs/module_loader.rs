@@ -773,6 +773,47 @@ mod tests {
   }
 
   #[test]
+  fn module_default_export_anonymous_class_with_semicolon_executes() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import Cls from './dep.js';\n\
+         globalThis.ok = typeof Cls === 'function';\n"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        // Note the trailing semicolon. This is valid ESM syntax and should evaluate successfully.
+        "export default class {};".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, "https://example.com/index.html", fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader =
+      VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    assert_eq!(get_global_prop(&mut host, "ok"), Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn module_loader_caches_modules_by_url() -> Result<()> {
     let entry_a = "https://example.com/a.js";
     let entry_b = "https://example.com/b.js";

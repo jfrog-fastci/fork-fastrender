@@ -279,6 +279,43 @@ pub fn function_prototype_call(
   Ok(Value::Undefined)
 }
 
+pub fn class_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "Class constructor cannot be invoked without 'new'",
+  ))
+}
+
+pub fn class_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.object_prototype(),
+    &[],
+    |scope| scope.alloc_object(),
+  )?;
+  Ok(Value::Object(obj))
+}
+
 fn object_constructor_impl(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

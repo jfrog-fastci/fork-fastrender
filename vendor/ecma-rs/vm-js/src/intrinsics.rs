@@ -80,6 +80,9 @@ pub struct Intrinsics {
   promise_all_resolve_element_call: NativeFunctionId,
   promise_all_settled_element_call: NativeFunctionId,
   promise_any_reject_element_call: NativeFunctionId,
+
+  class_constructor_call: NativeFunctionId,
+  class_constructor_construct: NativeConstructId,
 }
 
 #[derive(Clone, Copy)]
@@ -2156,6 +2159,10 @@ impl Intrinsics {
     let promise_any_reject_element_call =
       vm.register_native_call(builtins::promise_any_reject_element_call)?;
 
+    let class_constructor_call = vm.register_native_call(builtins::class_constructor_call)?;
+    let class_constructor_construct =
+      vm.register_native_construct(builtins::class_constructor_construct)?;
+
     let promise_call = vm.register_native_call(builtins::promise_constructor_call)?;
     let promise_construct = vm.register_native_construct(builtins::promise_constructor_construct)?;
     let promise_name = scope.alloc_string("Promise")?;
@@ -2493,6 +2500,9 @@ impl Intrinsics {
       promise_all_resolve_element_call,
       promise_all_settled_element_call,
       promise_any_reject_element_call,
+
+      class_constructor_call,
+      class_constructor_construct,
     })
   }
 
@@ -2689,6 +2699,14 @@ impl Intrinsics {
 
   pub(crate) fn promise_any_reject_element_call(&self) -> NativeFunctionId {
     self.promise_any_reject_element_call
+  }
+
+  pub(crate) fn class_constructor_call(&self) -> NativeFunctionId {
+    self.class_constructor_call
+  }
+
+  pub(crate) fn class_constructor_construct(&self) -> NativeConstructId {
+    self.class_constructor_construct
   }
 }
 

@@ -21,7 +21,7 @@ use parse_js::ast::expr::{
 };
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{literal_string_code_units, Node, ParenthesizedExpr};
-use parse_js::ast::stmt::decl::{FuncDecl, PatDecl, VarDecl, VarDeclMode};
+use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl, VarDeclMode};
 use parse_js::ast::stmt::{
   BlockStmt, CatchBlock, DoWhileStmt, ExprStmt, ForBody, ForInOfLhs, ForInStmt, ForOfStmt,
   ForTripleStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchStmt, ThrowStmt, TryStmt, WhileStmt,
@@ -1210,20 +1210,34 @@ impl<'a> Evaluator<'a> {
     let mut lexical_bindings: Vec<(String, parse_js::loc::Loc)> = Vec::new();
     for stmt in stmts {
       self.tick()?;
-      let Stmt::VarDecl(var) = &*stmt.stx else {
-        continue;
-      };
-      if var.stx.mode != VarDeclMode::Let && var.stx.mode != VarDeclMode::Const {
-        continue;
-      }
-      for declarator in &var.stx.declarators {
-        self.tick()?;
-        self.collect_lexical_decl_names_from_pat(
-          &declarator.pattern.stx.pat.stx,
-          stmt.loc,
-          &mut lexical_seen,
-          &mut lexical_bindings,
-        )?;
+      match &*stmt.stx {
+        Stmt::VarDecl(var) => {
+          if var.stx.mode != VarDeclMode::Let && var.stx.mode != VarDeclMode::Const {
+            continue;
+          }
+          for declarator in &var.stx.declarators {
+            self.tick()?;
+            self.collect_lexical_decl_names_from_pat(
+              &declarator.pattern.stx.pat.stx,
+              stmt.loc,
+              &mut lexical_seen,
+              &mut lexical_bindings,
+            )?;
+          }
+        }
+        Stmt::ClassDecl(class) => {
+          let Some(name) = class.stx.name.as_ref() else {
+            continue;
+          };
+          if !lexical_seen.insert(name.stx.name.clone()) {
+            return Err(syntax_error(
+              stmt.loc,
+              format!("Identifier '{}' has already been declared", name.stx.name),
+            ));
+          }
+          lexical_bindings.push((name.stx.name.clone(), stmt.loc));
+        }
+        _ => {}
       }
     }
 
@@ -1539,6 +1553,36 @@ impl<'a> Evaluator<'a> {
     Ok(func_obj)
   }
 
+  fn create_class_constructor_object(
+    &mut self,
+    scope: &mut Scope<'_>,
+    name: &str,
+  ) -> Result<GcObject, VmError> {
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let name_s = scope.alloc_string(name)?;
+    let func_obj = scope.alloc_native_function(
+      intr.class_constructor_call(),
+      Some(intr.class_constructor_construct()),
+      name_s,
+      0,
+    )?;
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(func_obj))?;
+    init_scope
+      .heap_mut()
+      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+    init_scope
+      .heap_mut()
+      .set_function_realm(func_obj, self.env.global_object())?;
+    if let Some(realm) = self.vm.current_realm() {
+      init_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    Ok(func_obj)
+  }
+
   fn instantiate_block_decls_in_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1566,6 +1610,17 @@ impl<'a> Evaluator<'a> {
               &mut seen,
               &mut tmp,
             )?;
+          }
+        }
+        Stmt::ClassDecl(decl) => {
+          let Some(name) = decl.stx.name.as_ref() else {
+            continue;
+          };
+          if !seen.insert(name.stx.name.clone()) {
+            return Err(syntax_error(
+              stmt.loc,
+              format!("Identifier '{}' has already been declared", name.stx.name),
+            ));
           }
         }
         Stmt::FunctionDecl(decl) if self.strict => {
@@ -1647,34 +1702,46 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     for stmt in stmts {
       self.tick()?;
-      let Stmt::VarDecl(var) = &*stmt.stx else {
-        continue;
-      };
+      match &*stmt.stx {
+        Stmt::VarDecl(var) => match var.stx.mode {
+          VarDeclMode::Let => {
+            for declarator in &var.stx.declarators {
+              self.tick()?;
+              self.instantiate_lexical_names_from_pat(
+                scope,
+                env,
+                &declarator.pattern.stx.pat.stx,
+                stmt.loc,
+                true,
+              )?;
+            }
+          }
+          VarDeclMode::Const => {
+            for declarator in &var.stx.declarators {
+              self.tick()?;
+              self.instantiate_lexical_names_from_pat(
+                scope,
+                env,
+                &declarator.pattern.stx.pat.stx,
+                stmt.loc,
+                false,
+              )?;
+            }
+          }
+          _ => {}
+        },
+        Stmt::ClassDecl(class) => {
+          let Some(name) = class.stx.name.as_ref() else {
+            continue;
+          };
 
-      match var.stx.mode {
-        VarDeclMode::Let => {
-          for declarator in &var.stx.declarators {
-            self.tick()?;
-            self.instantiate_lexical_names_from_pat(
-              scope,
-              env,
-              &declarator.pattern.stx.pat.stx,
+          if scope.heap().env_has_binding(env, &name.stx.name)? {
+            return Err(syntax_error(
               stmt.loc,
-              true,
-            )?;
+              format!("Identifier '{}' has already been declared", name.stx.name),
+            ));
           }
-        }
-        VarDeclMode::Const => {
-          for declarator in &var.stx.declarators {
-            self.tick()?;
-            self.instantiate_lexical_names_from_pat(
-              scope,
-              env,
-              &declarator.pattern.stx.pat.stx,
-              stmt.loc,
-              false,
-            )?;
-          }
+          scope.env_create_mutable_binding(env, &name.stx.name)?;
         }
         _ => {}
       }
@@ -1951,6 +2018,7 @@ impl<'a> Evaluator<'a> {
       Stmt::Empty(_) => Ok(Completion::empty()),
       Stmt::Expr(expr_stmt) => self.eval_expr_stmt(scope, &expr_stmt.stx),
       Stmt::VarDecl(var_decl) => self.eval_var_decl(scope, &var_decl.stx),
+      Stmt::ClassDecl(class_decl) => self.eval_class_decl(scope, class_decl),
       Stmt::Block(block) => self.eval_block_stmt(scope, &block.stx),
       Stmt::If(stmt) => self.eval_if(scope, &stmt.stx),
       // Import/export declarations are processed during module linking; their runtime evaluation is
@@ -2243,6 +2311,55 @@ impl<'a> Evaluator<'a> {
 
       _ => Err(VmError::Unimplemented("var declaration kind")),
     }
+  }
+
+  fn eval_class_decl(
+    &mut self,
+    scope: &mut Scope<'_>,
+    decl: &Node<ClassDecl>,
+  ) -> Result<Completion, VmError> {
+    if decl.stx.extends.is_some() {
+      return Err(VmError::Unimplemented("class inheritance"));
+    }
+    if !decl.stx.members.is_empty() {
+      return Err(VmError::Unimplemented("class members"));
+    }
+    if !decl.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class decorators"));
+    }
+    if decl.stx.type_parameters.is_some() {
+      return Err(VmError::Unimplemented("class type parameters"));
+    }
+    if !decl.stx.implements.is_empty() {
+      return Err(VmError::Unimplemented("class implements"));
+    }
+    if decl.stx.declare || decl.stx.abstract_ {
+      return Err(VmError::Unimplemented("class modifiers"));
+    }
+
+    let binding_name = match decl.stx.name.as_ref() {
+      Some(name) => name.stx.name.as_str(),
+      None => "*default*",
+    };
+
+    let func_name = match decl.stx.name.as_ref() {
+      Some(name) => name.stx.name.as_str(),
+      None => "default",
+    };
+
+    let func_obj = self.create_class_constructor_object(scope, func_name)?;
+
+    if !scope.heap().env_has_binding(self.env.lexical_env, binding_name)? {
+      // Non-block statement contexts may not have performed lexical hoisting yet.
+      scope.env_create_mutable_binding(self.env.lexical_env, binding_name)?;
+    }
+
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(func_obj))?;
+    init_scope
+      .heap_mut()
+      .env_initialize_binding(self.env.lexical_env, binding_name, Value::Object(func_obj))?;
+    Ok(Completion::empty())
   }
 
   fn eval_if(&mut self, scope: &mut Scope<'_>, stmt: &IfStmt) -> Result<Completion, VmError> {
