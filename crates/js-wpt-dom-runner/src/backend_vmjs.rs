@@ -8282,6 +8282,43 @@ mod tests {
   }
 
   #[test]
+  fn wpt_report_hook_is_exposed_on_global_object() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let global_object = rt.global_object;
+    let report_fn = get_data_prop(&mut rt, global_object, "__fastrender_wpt_report");
+    assert!(
+      matches!(report_fn, Value::Object(_)),
+      "expected __fastrender_wpt_report to be a callable property on the global object"
+    );
+
+    let payload = rt.alloc_object().expect("alloc report payload");
+    let pass = rt.alloc_string_value("pass").expect("alloc pass");
+    let ok = rt.alloc_string_value("ok").expect("alloc ok");
+    rt
+      .define_data_prop(
+        payload,
+        PropertyKey::from_string(rt.keys.file_status),
+        pass,
+      )
+      .expect("define payload.file_status");
+    rt
+      .define_data_prop(
+        payload,
+        PropertyKey::from_string(rt.keys.harness_status),
+        ok,
+      )
+      .expect("define payload.harness_status");
+
+    rt
+      .call(report_fn, Value::Undefined, &[Value::Object(payload)])
+      .expect("call report hook");
+    let report = rt.report.as_ref().expect("expected report to be set");
+    assert_eq!(report.file_status, "pass");
+    assert_eq!(report.harness_status, "ok");
+  }
+
+  #[test]
   fn document_cookie_round_trips_and_ignores_attributes() {
     let mut rt = JsWptRuntime::new("https://example.com/");
 
