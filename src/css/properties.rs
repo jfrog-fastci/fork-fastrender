@@ -5090,6 +5090,31 @@ mod tests {
   }
 
   #[test]
+  fn parses_linear_gradient_with_length_color_stop_positions() {
+    let value = "linear-gradient(to bottom, transparent 0px, transparent 24px, #EFF8FA 24px)";
+    let PropertyValue::LinearGradient { angle, stops } =
+      parse_property_value("background-image", value).expect("gradient")
+    else {
+      panic!("expected linear gradient");
+    };
+
+    assert!((angle - 180.0).abs() < 0.01);
+    assert_eq!(stops.len(), 3);
+    assert_eq!(
+      stops[0].position,
+      Some(ColorStopPosition::Length(Length::px(0.0)))
+    );
+    assert_eq!(
+      stops[1].position,
+      Some(ColorStopPosition::Length(Length::px(24.0)))
+    );
+    assert_eq!(
+      stops[2].position,
+      Some(ColorStopPosition::Length(Length::px(24.0)))
+    );
+  }
+
+  #[test]
   fn parses_radial_gradient() {
     let value = "radial-gradient(red, blue 75%)";
     let PropertyValue::RadialGradient {

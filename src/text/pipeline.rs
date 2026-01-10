@@ -101,11 +101,13 @@ use rustybuzz::Language as HbLanguage;
 use rustybuzz::UnicodeBuffer;
 use rustybuzz::Variation;
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+#[cfg(any(test, debug_assertions))]
+use std::cell::Cell;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -414,9 +416,7 @@ impl TextDiagnosticsState {
 
 static TEXT_DIAGNOSTICS: OnceLock<Mutex<TextDiagnosticsState>> = OnceLock::new();
 
-thread_local! {
-  static TEXT_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
-}
+static TEXT_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 static TEXT_DIAGNOSTICS_SESSION: AtomicU64 = AtomicU64::new(0);
 static LAST_RESORT_LOGGED: AtomicUsize = AtomicUsize::new(0);
 static SHAPING_FALLBACK_LOGGED: AtomicUsize = AtomicUsize::new(0);
@@ -438,9 +438,9 @@ pub(crate) fn enable_text_diagnostics() {
     .wrapping_add(1);
   if let Ok(mut state) = diagnostics_cell().lock() {
     *state = TextDiagnosticsState::new(session);
-    TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
+    TEXT_DIAGNOSTICS_ENABLED.store(true, Ordering::Release);
   } else {
-    TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(false));
+    TEXT_DIAGNOSTICS_ENABLED.store(false, Ordering::Release);
   }
   SHAPING_CACHE_DIAG_HITS.store(0, Ordering::Relaxed);
   SHAPING_CACHE_DIAG_MISSES.store(0, Ordering::Relaxed);
@@ -449,11 +449,7 @@ pub(crate) fn enable_text_diagnostics() {
 }
 
 pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
-  let was_enabled = TEXT_DIAGNOSTICS_ENABLED.with(|enabled| {
-    let prev = enabled.get();
-    enabled.set(false);
-    prev
-  });
+  let was_enabled = TEXT_DIAGNOSTICS_ENABLED.swap(false, Ordering::AcqRel);
   if !was_enabled {
     return None;
   }
@@ -480,7 +476,7 @@ pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
 }
 
 pub(crate) fn text_diagnostics_enabled() -> bool {
-  TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.get())
+  TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
 }
 
 pub(crate) fn text_diagnostics_timer(stage: TextDiagnosticsStage) -> Option<TextDiagnosticsTimer> {

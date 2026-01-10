@@ -7071,15 +7071,12 @@ impl FlexFormattingContext {
     container_style: &ComputedStyle,
     constraints: &LayoutConstraints,
   ) -> taffy::geometry::Size<Option<f32>> {
-    let border_box_width = constraints
-      .used_border_box_width
-      .or_else(|| constraints.width())
-      .filter(|w| w.is_finite());
-
     // Padding/border percentages resolve against the containing block's physical width.
     let inline_base = constraints
       .inline_percentage_base
-      .or(border_box_width)
+      .filter(|w| w.is_finite())
+      .or_else(|| constraints.used_border_box_width.filter(|w| w.is_finite()))
+      .or_else(|| constraints.width().filter(|w| w.is_finite()))
       .unwrap_or(self.viewport_size.width)
       .max(0.0);
 
@@ -7114,6 +7111,37 @@ impl FlexFormattingContext {
 
     let horizontal_edges = border_left + border_right + padding_left + padding_right;
     let vertical_edges = border_top + border_bottom + padding_top + padding_bottom;
+
+    let border_box_width = constraints
+      .used_border_box_width
+      .filter(|w| w.is_finite())
+      .or_else(|| {
+        let specified = container_style.width.as_ref()?;
+        let percentage_base = specified
+          .has_percentage()
+          .then(|| constraints.inline_percentage_base.or_else(|| constraints.width()))
+          .flatten()
+          .filter(|b| b.is_finite());
+        let resolved = resolve_length_with_percentage_metrics(
+          *specified,
+          percentage_base,
+          self.viewport_size,
+          container_style.font_size,
+          container_style.root_font_size,
+          Some(container_style),
+          Some(&self.font_context),
+        )?;
+        if !resolved.is_finite() {
+          return None;
+        }
+        let resolved = resolved.max(0.0);
+        Some(match container_style.box_sizing {
+          BoxSizing::ContentBox => (resolved + horizontal_edges).max(0.0),
+          BoxSizing::BorderBox => resolved,
+        })
+      })
+      .or_else(|| constraints.width())
+      .filter(|w| w.is_finite());
 
     let border_box_height = constraints
       .used_border_box_height

@@ -78,6 +78,7 @@ mod flex_out_of_flow_positioned_descendants;
 mod flex_positioned_relayout;
 mod flex_replaced_percentage;
 mod flex_replaced_percentage_height_indefinite;
+mod flex_replaced_percent_sizing;
 mod flex_root_used_border_box_width;
 mod flex_auto_height_respects_max_height;
 mod flex_wrap_auto_height;
