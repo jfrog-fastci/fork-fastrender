@@ -135,9 +135,14 @@ fn top_worst_accuracy_selects_and_sorts_fixtures() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
+  let render_fixtures_bin = repo_root()
+    .join("target")
+    .join("release")
+    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
+  let render_fixtures_bin_display = render_fixtures_bin.display().to_string();
   let render_line = stdout
     .lines()
-    .find(|line| line.contains("--bin render_fixtures"))
+    .find(|line| line.contains(&render_fixtures_bin_display))
     .expect("render_fixtures command line should be printed");
   assert!(
     render_line.contains("--fixtures a.test,c.test"),

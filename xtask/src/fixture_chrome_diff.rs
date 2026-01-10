@@ -263,7 +263,10 @@ pub struct FixtureChromeDiffArgs {
   #[arg(long)]
   pub diff_only: bool,
 
-  /// Skip building `diff_renders` and reuse an existing release binary under CARGO_TARGET_DIR.
+  /// Skip building renderer binaries and reuse existing release binaries under CARGO_TARGET_DIR.
+  ///
+  /// This disables `cargo build` steps for `render_fixtures`, `diff_renders`, and (when `--overlay`
+  /// is enabled) `inspect_frag`.
   #[arg(long)]
   pub no_build: bool,
 }
@@ -292,10 +295,19 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   let out_root = resolve_repo_path(&repo_root, &args.out_dir);
   let layout = Layout::new(&out_root);
 
+  let render_fixtures_exe = render_fixtures_executable(&repo_root);
+  if !args.no_fastrender && args.no_build && !render_fixtures_exe.is_file() {
+    bail!(
+      "--no-build was set, but render_fixtures executable does not exist at {}",
+      render_fixtures_exe.display()
+    );
+  }
+
   let render_fixtures = if args.no_fastrender {
     None
   } else {
     Some(build_render_fixtures_command(
+      &render_fixtures_exe,
       &repo_root,
       &fixtures_root,
       &args,
@@ -416,6 +428,18 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   remove_file_if_exists(&layout.report_json).context("clear existing report.json")?;
 
   if let Some(cmd) = render_fixtures {
+    if args.no_build {
+      println!("Skipping render_fixtures build (--no-build set)...");
+    } else {
+      let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
+      build_cmd
+        .arg("build")
+        .arg("--release")
+        .args(["--bin", "render_fixtures"])
+        .current_dir(&repo_root);
+      println!("Building render_fixtures...");
+      crate::run_command(build_cmd).context("build render_fixtures failed")?;
+    }
     println!("Rendering fixtures with FastRender...");
     crate::run_command(cmd).context("render_fixtures failed")?;
   }
@@ -1576,17 +1600,16 @@ fn validate_fastrender_output_metadata(
 }
 
 fn build_render_fixtures_command(
+  render_fixtures_exe: &Path,
   repo_root: &Path,
   fixtures_root: &Path,
   args: &FixtureChromeDiffArgs,
   layout: &Layout,
 ) -> Result<Command> {
-  let mut cmd = xtask::cmd::cargo_agent_command(repo_root);
+  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  cmd.arg(render_fixtures_exe);
+  // Keep renders deterministic across machines.
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .args(["--bin", "render_fixtures", "--"]);
   cmd.arg("--fixtures-dir").arg(fixtures_root);
   cmd.arg("--out-dir").arg(&layout.fastrender);
   cmd
@@ -1615,6 +1638,12 @@ fn build_render_fixtures_command(
   }
   cmd.current_dir(repo_root);
   Ok(cmd)
+}
+
+fn render_fixtures_executable(repo_root: &Path) -> PathBuf {
+  crate::cargo_target_dir(repo_root)
+    .join("release")
+    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn build_chrome_baseline_command(
@@ -1819,6 +1848,53 @@ mod tests {
     assert_eq!(
       extract_pages_regression_fixture_stems(source),
       vec!["alpha".to_string(), "zeta".to_string()]
+    );
+  }
+
+  #[test]
+  fn build_render_fixtures_command_runs_release_binary_under_run_limited() {
+    let repo_root = crate::repo_root();
+    let fixtures_root = repo_root.join("tests/pages/fixtures");
+    let out_root = repo_root.join("target/test_fixture_chrome_diff");
+    let layout = Layout::new(&out_root);
+
+    let cli = crate::Cli::try_parse_from([
+      "xtask",
+      "fixture-chrome-diff",
+      "--fixtures",
+      "example.com",
+      "--no-chrome",
+    ])
+    .expect("parse args");
+    let crate::Commands::FixtureChromeDiff(args) = cli.command else {
+      panic!("expected fixture-chrome-diff args");
+    };
+
+    let render_fixtures_exe = render_fixtures_executable(&repo_root);
+    let cmd = build_render_fixtures_command(
+      &render_fixtures_exe,
+      &repo_root,
+      &fixtures_root,
+      &args,
+      &layout,
+    )
+    .expect("command");
+    let argv: Vec<String> = std::iter::once(cmd.get_program())
+      .chain(cmd.get_args())
+      .map(|arg| arg.to_string_lossy().to_string())
+      .collect();
+    assert_eq!(argv.first().map(String::as_str), Some("bash"));
+    assert!(
+      argv.iter().any(|arg| arg.ends_with("scripts/run_limited.sh")),
+      "expected command to use scripts/run_limited.sh; argv={argv:?}"
+    );
+    assert!(
+      !argv.iter().any(|arg| arg.ends_with("scripts/cargo_agent.sh")),
+      "render_fixtures command must not go through cargo_agent.sh; argv={argv:?}"
+    );
+    assert!(
+      argv.iter().any(|arg| arg.ends_with("render_fixtures") || arg.ends_with("render_fixtures.exe")),
+      "expected command to execute render_fixtures binary; argv={argv:?}"
     );
   }
 }
