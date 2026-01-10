@@ -1,5 +1,6 @@
 use fastrender::geometry::Point;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use fastrender::Rgba;
 use fastrender::{FastRender, FontConfig};
 
 const EPS: f32 = 0.01;
@@ -25,6 +26,18 @@ fn collect_text_fragments(node: &FragmentNode, offset: Point, out: &mut Vec<(Str
   }
   for child in node.children.iter() {
     collect_text_fragments(child, abs, out);
+  }
+}
+
+fn collect_background_fragments(node: &FragmentNode, offset: Point, color: Rgba, out: &mut Vec<(f32, f32, f32, f32)>) {
+  let abs = Point::new(offset.x + node.bounds.x(), offset.y + node.bounds.y());
+  if let Some(style) = node.style.as_ref() {
+    if style.background_color == color {
+      out.push((abs.x, abs.y, node.bounds.width(), node.bounds.height()));
+    }
+  }
+  for child in node.children.iter() {
+    collect_background_fragments(child, abs, color, out);
   }
 }
 
@@ -198,3 +211,70 @@ fn display_contents_preserves_before_after_order() {
   );
 }
 
+#[test]
+fn display_contents_before_pseudo_can_participate_in_grid_layout() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  // Kotlinlang.org uses `display: contents` anchors whose `::before` pseudo-elements act as grid
+  // spanning card backgrounds. The pseudo-element is empty aside from its background, so it must
+  // still stretch to the grid track width.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #grid {
+        display: grid;
+        width: 300px;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: 50px 50px;
+        column-gap: 10px;
+      }
+      #w { display: contents; --col: 2; --row: 1; }
+      #w::before {
+        content: "";
+        display: block;
+        background: rgb(255, 0, 0);
+        grid-column: var(--col);
+        grid-row: var(--row) / calc(var(--row) + 2);
+      }
+      /* Ensure the contents also participate in the grid so the box tree is non-trivial. */
+      #inner { grid-column: 2; grid-row: 1; }
+    </style>
+    <div id="grid">
+      <a id="w"><div id="inner">X</div></a>
+    </div>
+  "#;
+
+  let tree = layout_html(&mut renderer, html);
+  let mut red_fragments = Vec::new();
+  collect_background_fragments(&tree.root, Point::ZERO, Rgba::RED, &mut red_fragments);
+
+  assert_eq!(
+    red_fragments.len(),
+    1,
+    "expected exactly one red background fragment, got {red_fragments:?}"
+  );
+
+  let (x, _y, width, height) = red_fragments[0];
+  assert!(
+    height > 0.5,
+    "expected ::before fragment to have non-zero height, got {height}"
+  );
+  assert!(
+    width > 0.5,
+    "expected ::before fragment to have non-zero width, got {width}"
+  );
+
+  let expected_width = (300.0 - 10.0 * 2.0) / 3.0;
+  assert!(
+    (width - expected_width).abs() < 1.0,
+    "expected ::before width to match track width (expected={expected_width:.2}, got={width:.2})"
+  );
+  let expected_x = expected_width + 10.0;
+  assert!(
+    (x - expected_x).abs() < 2.0,
+    "expected ::before x to align with column 2 (expected={expected_x:.2}, got={x:.2})"
+  );
+}

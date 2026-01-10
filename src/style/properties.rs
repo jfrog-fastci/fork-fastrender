@@ -12049,13 +12049,15 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "grid-column" => {
       match resolved_value {
-        // Store raw value for later resolution (after grid-template-columns is set).
-        //
-        // Note: `grid-column: 1` is parsed as a numeric value by `parse_simple_value`, so we must
-        // accept numbers here as well. Otherwise later `grid-column` declarations that only use a
-        // line number fail to override earlier shorthands (e.g. `1 / span 2`), leading to
-        // overlapping grid items.
-        PropertyValue::Keyword(kw) => styles.grid_column_raw = Some(kw.clone()),
+        PropertyValue::Keyword(kw) => {
+          // Store raw value for later resolution (after grid-template-columns is set).
+          //
+          // Note: `grid-column: 1` is parsed as a numeric value by `parse_simple_value`, and
+          // values produced by `var()`/`calc()` can also resolve to a bare number (e.g. `2`).
+          // Preserve those too so grid items can be placed on numeric grid lines and later
+          // declarations can override earlier shorthands (avoiding overlapping grid items).
+          styles.grid_column_raw = Some(kw.clone());
+        }
         PropertyValue::Number(n) => {
           if n.is_finite() && *n == n.round() && *n != 0.0 {
             styles.grid_column_raw = Some((*n as i32).to_string());

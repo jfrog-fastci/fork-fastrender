@@ -12862,6 +12862,102 @@ mod tests {
   }
 
   #[test]
+  fn grid_spanning_item_with_auto_column_end_stretches_to_track_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns =
+      vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0), GridTrack::Fr(1.0)];
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(50.0)),
+      GridTrack::Length(Length::px(50.0)),
+    ];
+    grid_style.grid_column_gap = Length::px(8.0);
+    grid_style.grid_column_gap_is_normal = false;
+    // Mirrors the CSS initial value for grid containers.
+    grid_style.justify_items = AlignItems::Stretch;
+    grid_style.align_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    // An empty grid item spanning multiple rows should still stretch to the width of its grid
+    // area (it is common for `::before` pseudo-elements used as full-card backgrounds).
+    let mut item_style = ComputedStyle::default();
+    item_style.width = None;
+    item_style.width_keyword = None;
+    item_style.grid_column_start = 1;
+    item_style.grid_column_end = 0; // auto
+    item_style.grid_row_start = 1;
+    item_style.grid_row_end = 3; // spans 2 rows
+    let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+    let constraints = LayoutConstraints::definite(952.0, 200.0);
+    let fragment = fc
+      .layout(&grid, &constraints)
+      .expect("grid layout should succeed");
+
+    assert_eq!(fragment.children.len(), 1);
+    let item = &fragment.children[0];
+    let expected_width = (952.0 - 8.0 * 2.0) / 3.0;
+    assert!(
+      (item.bounds.width() - expected_width).abs() < 0.5,
+      "expected spanning grid item to stretch to track width (expected={expected_width:.2}, got={:.2})",
+      item.bounds.width()
+    );
+    assert!(
+      (item.bounds.height() - 100.0).abs() < 0.5,
+      "expected spanning grid item height to equal summed track height (expected=100, got={:.2})",
+      item.bounds.height()
+    );
+  }
+
+  #[test]
+  fn grid_spanning_item_with_grid_column_raw_stretches_to_track_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns =
+      vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0), GridTrack::Fr(1.0)];
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(50.0)),
+      GridTrack::Length(Length::px(50.0)),
+    ];
+    grid_style.grid_column_gap = Length::px(8.0);
+    grid_style.grid_column_gap_is_normal = false;
+    // Mirrors the CSS initial value for grid containers.
+    grid_style.justify_items = AlignItems::Stretch;
+    grid_style.align_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    // When placement comes through `grid-column` shorthands we store the raw placement string for
+    // Taffy to parse. Empty spanning items (e.g. `::before` backgrounds) should still stretch to
+    // their track width.
+    let mut item_style = ComputedStyle::default();
+    item_style.width = None;
+    item_style.width_keyword = None;
+    item_style.grid_column_raw = Some("2".to_string()); // start=2, end=auto
+    item_style.grid_row_raw = Some("1 / 3".to_string()); // spans 2 rows
+    let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+    let constraints = LayoutConstraints::definite(952.0, 200.0);
+    let fragment = fc
+      .layout(&grid, &constraints)
+      .expect("grid layout should succeed");
+
+    assert_eq!(fragment.children.len(), 1);
+    let item = &fragment.children[0];
+    let expected_width = (952.0 - 8.0 * 2.0) / 3.0;
+    assert!(
+      (item.bounds.width() - expected_width).abs() < 0.5,
+      "expected spanning grid item to stretch to track width (expected={expected_width:.2}, got={:.2})",
+      item.bounds.width()
+    );
+  }
+
+  #[test]
   fn grid_item_width_keyword_fit_content_prevents_stretch() {
     let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 
