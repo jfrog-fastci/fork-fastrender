@@ -7592,9 +7592,13 @@ impl InlineFormattingContext {
 
     let base_direction = resolve_base_direction_for_box(box_node);
     let mut positioned = Vec::new();
+    let intrinsic_available_width = match mode {
+      IntrinsicSizingMode::MinContent => 0.0,
+      IntrinsicSizingMode::MaxContent => f32::INFINITY,
+    };
     let items = match self.collect_inline_items_with_base(
       box_node,
-      f32::INFINITY,
+      intrinsic_available_width,
       None,
       base_direction,
       &mut positioned,
@@ -7655,8 +7659,29 @@ impl InlineFormattingContext {
     }
 
     let base_direction = resolve_base_direction_for_box(box_node);
+    let _indent_value = resolve_length_with_percentage_inline(
+      style.text_indent.length,
+      None,
+      style,
+      &self.font_context,
+      self.viewport_size,
+    )
+    .unwrap_or(0.0);
+
     let mut positioned = Vec::new();
-    let items = match self.collect_inline_items_with_base(
+    let min_items = match self.collect_inline_items_with_base(
+      box_node,
+      0.0,
+      None,
+      base_direction,
+      &mut positioned,
+    ) {
+      Ok(items) => items,
+      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+      Err(_) => return Ok((0.0, 0.0)),
+    };
+    positioned.clear();
+    let max_items = match self.collect_inline_items_with_base(
       box_node,
       f32::INFINITY,
       None,
@@ -7667,17 +7692,9 @@ impl InlineFormattingContext {
       Err(err @ LayoutError::Timeout { .. }) => return Err(err),
       Err(_) => return Ok((0.0, 0.0)),
     };
-    let _indent_value = resolve_length_with_percentage_inline(
-      style.text_indent.length,
-      None,
-      style,
-      &self.font_context,
-      self.viewport_size,
-    )
-    .unwrap_or(0.0);
 
-    let min_width = self.min_content_width(&items);
-    let max_width = self.max_content_width(&items);
+    let min_width = self.min_content_width(&min_items);
+    let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
   }
 
@@ -7736,10 +7753,14 @@ impl InlineFormattingContext {
 
     let base_direction = resolve_base_direction_for_style_and_children(style, children);
     let mut positioned = Vec::new();
+    let intrinsic_available_width = match mode {
+      IntrinsicSizingMode::MinContent => 0.0,
+      IntrinsicSizingMode::MaxContent => f32::INFINITY,
+    };
     let items = match self.collect_inline_items_for_children_with_base(
       container_style,
       children,
-      f32::INFINITY,
+      intrinsic_available_width,
       None,
       base_direction,
       &mut positioned,
@@ -7799,8 +7820,30 @@ impl InlineFormattingContext {
     }
 
     let base_direction = resolve_base_direction_for_style_and_children(style, children);
+    let _indent_value = resolve_length_with_percentage_inline(
+      style.text_indent.length,
+      None,
+      style,
+      &self.font_context,
+      self.viewport_size,
+    )
+    .unwrap_or(0.0);
+
     let mut positioned = Vec::new();
-    let items = match self.collect_inline_items_for_children_with_base(
+    let min_items = match self.collect_inline_items_for_children_with_base(
+      container_style,
+      children,
+      0.0,
+      None,
+      base_direction,
+      &mut positioned,
+    ) {
+      Ok(items) => items,
+      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+      Err(_) => return Ok((0.0, 0.0)),
+    };
+    positioned.clear();
+    let max_items = match self.collect_inline_items_for_children_with_base(
       container_style,
       children,
       f32::INFINITY,
@@ -7812,17 +7855,9 @@ impl InlineFormattingContext {
       Err(err @ LayoutError::Timeout { .. }) => return Err(err),
       Err(_) => return Ok((0.0, 0.0)),
     };
-    let _indent_value = resolve_length_with_percentage_inline(
-      style.text_indent.length,
-      None,
-      style,
-      &self.font_context,
-      self.viewport_size,
-    )
-    .unwrap_or(0.0);
 
-    let min_width = self.min_content_width(&items);
-    let max_width = self.max_content_width(&items);
+    let min_width = self.min_content_width(&min_items);
+    let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
   }
 
@@ -10119,8 +10154,7 @@ impl FormattingContext for InlineFormattingContext {
 
   fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
     count_inline_intrinsic_call();
-    // Match `compute_intrinsic_inline_size`: recompute each time (no shared intrinsic cache),
-    // but share the expensive inline-item collection between min/max measurements.
+    // Match `compute_intrinsic_inline_size`: recompute each time (no shared intrinsic cache).
     self.calculate_intrinsic_widths(box_node)
   }
 }
@@ -12007,8 +12041,8 @@ impl InlineFormattingContext {
         } else {
           subsequent_line_width
         };
-         let (line_abs_y, line_left_edge) = if let Some(ctx) = ctx_ref {
-           let integration = InlineFloatIntegration::new(ctx);
+        let (line_abs_y, line_left_edge) = if let Some(ctx) = ctx_ref {
+          let integration = InlineFloatIntegration::new(ctx);
           let space = integration.find_line_space_in_containing_block(
             float_base_y + *line_offset,
             float_base_x,
@@ -12088,7 +12122,7 @@ impl InlineFormattingContext {
       }
       let start_idx = lines_out.len();
       let line_builder::LineBuildResult {
-        lines: seg_lines,
+        lines: mut seg_lines,
         truncated,
       } = self.layout_segment_lines(
         std::mem::take(pending),
@@ -12110,6 +12144,62 @@ impl InlineFormattingContext {
       )?;
       if truncated {
         *line_clamp_truncated = true;
+      }
+      // Inline whitespace that precedes only bookkeeping static-position anchors (e.g. trailing
+      // whitespace before an absolutely positioned descendant) can cause `LineBuilder` to wrap the
+      // pending collapsible space onto a new line. After trimming the whitespace, the line may
+      // contain only static-position anchors and would incorrectly contribute a full strut height
+      // to the block's content height.
+      //
+      // Record anchor positions for any trailing anchor-only lines, then drop them so they don't
+      // create empty line boxes or inflate the containing block height used for abspos % insets.
+      loop {
+        let Some(last) = seg_lines.last() else {
+          break;
+        };
+        if last.ends_with_hard_break {
+          break;
+        }
+
+        let mut anchor_ids: Vec<usize> = Vec::new();
+        let mut has_flow_content = false;
+        let mut has_non_bookkeeping_anchor = false;
+        for positioned in &last.items {
+          scan_item(
+            &positioned.item,
+            &mut anchor_ids,
+            &mut has_flow_content,
+            &mut has_non_bookkeeping_anchor,
+          );
+        }
+        if anchor_ids.is_empty() || has_flow_content || has_non_bookkeeping_anchor {
+          break;
+        }
+
+        let removed = seg_lines.pop().expect("last line exists");
+        let block_offset = *line_offset + removed.y_offset;
+        let anchor_block_position = block_offset + removed.baseline - strut_metrics.baseline_offset;
+        let indent_offset = if matches!(
+          removed.resolved_direction,
+          crate::style::types::Direction::Rtl
+        ) {
+          -removed.indent
+        } else {
+          removed.indent
+        };
+        let inline_x = removed.left_offset + indent_offset;
+        let anchor_point = if inline_vertical {
+          Point::new(anchor_block_position, inline_x)
+        } else {
+          Point::new(inline_x, anchor_block_position)
+        };
+        for id in anchor_ids {
+          anchor_positions.insert(id, anchor_point);
+        }
+      }
+      if seg_lines.is_empty() {
+        // No visible line boxes were produced; preserve first-line state (indentation, etc.).
+        return Ok(None);
       }
       let seg_height = seg_lines
         .iter()
@@ -12716,16 +12806,55 @@ impl InlineFormattingContext {
         root_is_element_box && style.establishes_abs_containing_block();
       let root_establishes_fixed_cb =
         root_is_element_box && style.establishes_fixed_containing_block();
-      let abs_cb = if root_establishes_abs_cb {
+      let mut abs_cb = if root_establishes_abs_cb {
         cb
       } else {
         self.nearest_positioned_cb
       };
-      let default_fixed_cb = if root_establishes_fixed_cb {
+      let mut default_fixed_cb = if root_establishes_fixed_cb {
         cb
       } else {
         self.nearest_fixed_cb
       };
+      if !root_establishes_abs_cb && abs_cb.block_percentage_base().is_none() {
+        // When a positioned block has `height:auto`, block layout initially propagates a
+        // containing block with an indefinite block percentage base (CSS 2.1 §10.5). Inline layout
+        // then determines the used height from its in-flow line boxes. Update the inherited
+        // containing block so absolutely positioned descendants can resolve percentage `top/bottom`
+        // against the used padding box height.
+        let content_height = if bounds.height().is_finite() {
+          bounds.height().max(0.0)
+        } else {
+          0.0
+        };
+        let resolved_height = (abs_cb.rect.size.height + content_height).max(0.0);
+        abs_cb = ContainingBlock::with_viewport_and_bases(
+          Rect::new(
+            abs_cb.rect.origin,
+            Size::new(abs_cb.rect.size.width, resolved_height),
+          ),
+          self.viewport_size,
+          abs_cb.inline_percentage_base(),
+          Some(resolved_height),
+        );
+      }
+      if !root_establishes_fixed_cb && default_fixed_cb.block_percentage_base().is_none() {
+        let content_height = if bounds.height().is_finite() {
+          bounds.height().max(0.0)
+        } else {
+          0.0
+        };
+        let resolved_height = (default_fixed_cb.rect.size.height + content_height).max(0.0);
+        default_fixed_cb = ContainingBlock::with_viewport_and_bases(
+          Rect::new(
+            default_fixed_cb.rect.origin,
+            Size::new(default_fixed_cb.rect.size.width, resolved_height),
+          ),
+          self.viewport_size,
+          default_fixed_cb.inline_percentage_base(),
+          Some(resolved_height),
+        );
+      }
       let default_static_position = static_position;
 
       let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
