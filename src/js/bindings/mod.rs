@@ -17,6 +17,7 @@ mod scaffold_selectors;
 pub use document::install_document_query_selector_bindings;
 pub use dom_exception::DomExceptionClass;
 pub use dom_generated::install_dom_bindings as install_dom_bindings_generated;
+pub use generated::install_worker_bindings;
 pub use generated::install_window_bindings;
 pub use host::{BindingValue, WebHostBindings};
 

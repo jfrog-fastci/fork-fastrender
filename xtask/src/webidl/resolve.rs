@@ -16,9 +16,10 @@ use super::{
 };
 use super::{ast::IdlType, parse_idl_type};
 use anyhow::{bail, Context, Result};
+use clap::ValueEnum;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, ValueEnum)]
 pub enum ExposureTarget {
   /// No filtering (equivalent to `*`).
   All,

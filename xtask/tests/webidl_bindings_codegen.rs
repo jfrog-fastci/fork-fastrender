@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use xtask::webidl::generate::{rustfmt, FORBIDDEN_TOKENS};
+use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
   generate_bindings_module_from_idl_with_config, WebIdlBindingsCodegenConfig,
   WebIdlBindingsGenerationMode,
@@ -34,8 +35,9 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
   };
 
   let out1 =
-    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, config.clone()).unwrap();
-  let out2 = generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, config).unwrap();
+    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Window, config.clone()).unwrap();
+  let out2 =
+    generate_bindings_module_from_idl_with_config(idl, &rustfmt_config, ExposureTarget::Window, config).unwrap();
   assert_eq!(out1, out2, "expected deterministic output across runs");
 
   assert_eq!(
