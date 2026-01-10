@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use fastrender::css::types::{Declaration, PropertyName, PropertyValue};
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
+use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::types::{PositionAnchor, PositionArea, WritingMode};
@@ -151,6 +153,82 @@ fn position_area_flip_block_try_fallback_switches_to_block_end() {
 }
 
 #[test]
+fn position_area_position_try_rule_changes_area_across_candidates() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(80.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(10.0));
+  anchor_style.height = Some(Length::px(10.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.margin_left = Some(Length::px(40.0));
+  anchor_style.margin_top = Some(Length::px(5.0));
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut registry = PositionTryRegistry::default();
+  registry.register(
+    "--below".to_string(),
+    vec![Declaration {
+      property: PropertyName::from("position-area"),
+      value: PropertyValue::Keyword("block-end".to_string()),
+      raw_value: String::new(),
+      important: false,
+      contains_var: false,
+    }],
+  );
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.position_area = PositionArea::parse("block-start").expect("parse position-area");
+  overlay_style.position_try_fallbacks = vec!["--below".to_string()];
+  overlay_style.position_try_registry = Arc::new(registry);
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(20.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  container.id = 203;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 80.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
+    "@position-try should be able to override position-area and select the first candidate that fits (overlay y={}, anchor max_y={})",
+    overlay_fragment.bounds.y(),
+    anchor_fragment.bounds.max_y()
+  );
+  assert!(
+    overlay_fragment.bounds.y() >= -0.1,
+    "overlay should not overflow the container after applying the try rule (overlay y={})",
+    overlay_fragment.bounds.y()
+  );
+}
+
+#[test]
 fn position_area_vertical_rl_block_start_places_on_block_start_side() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
@@ -218,4 +296,3 @@ fn position_area_vertical_rl_block_start_places_on_block_start_side() {
     anchor_center_y
   );
 }
-
