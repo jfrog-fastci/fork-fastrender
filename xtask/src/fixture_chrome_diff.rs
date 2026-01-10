@@ -460,8 +460,9 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   if args.no_build {
     println!("Skipping diff_renders build (--no-build set)...");
   } else {
-    // Avoid `cargo run` here since `diff_renders` intentionally exits 1 when differences are found,
-    // and `cargo run` would wrap that with a scary `error: process didn't exit successfully` line.
+    // Avoid running `diff_renders` through Cargo's `run` subcommand here since it intentionally
+    // exits 1 when differences are found, and Cargo would wrap that with a scary
+    // `error: process didn't exit successfully` line.
     let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
     build_cmd
       .arg("build")

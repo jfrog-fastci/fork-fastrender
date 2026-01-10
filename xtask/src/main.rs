@@ -865,7 +865,7 @@ impl PerfSmokeSuite {
 
 fn run_tests(args: TestArgs) -> Result<()> {
   // Always run from the repository root so any relative fixture paths used by tests behave
-  // consistently even when `cargo xtask` is invoked from a subdirectory.
+  // consistently even when `bash scripts/cargo_agent.sh xtask ...` is invoked from a subdirectory.
   let repo_root = repo_root();
 
   let suites = match args.suite {
@@ -2293,9 +2293,9 @@ fn inspect_frag_executable(repo_root: &Path) -> PathBuf {
 }
 
 fn run_render_page(args: RenderPageArgs) -> Result<()> {
-  // Historically `cargo xtask render-page` interpreted relative file/output paths relative to the
-  // caller's current directory. Keep that behaviour even though we run the underlying `cargo run`
-  // from the repo root so default cache paths (`fetches/assets`, etc) stay stable.
+  // Historically `bash scripts/cargo_agent.sh xtask render-page` interpreted relative file/output
+  // paths relative to the caller's current directory. Keep that behaviour even though we run the
+  // underlying binary from the repo root so default cache paths (`fetches/assets`, etc) stay stable.
   let cwd = std::env::current_dir().context("resolve current directory")?;
 
   let url = match (args.url, args.file) {
@@ -2381,9 +2381,9 @@ fn run_diff_renders(args: DiffRendersArgs) -> Result<()> {
     }
   }
 
-  // Historically `cargo xtask diff-renders` interpreted relative paths relative to the caller's
-  // current directory (because it used `std::fs` directly). Keep that behaviour even though we run
-  // `cargo` from the repo root.
+  // Historically `bash scripts/cargo_agent.sh xtask diff-renders` interpreted relative paths
+  // relative to the caller's current directory (because it used `std::fs` directly). Keep that
+  // behaviour even though we run from the repo root.
   let cwd = std::env::current_dir().context("resolve current directory")?;
   let before = if args.before.is_absolute() {
     args.before
@@ -2406,8 +2406,9 @@ fn run_diff_renders(args: DiffRendersArgs) -> Result<()> {
   let html_path = output_dir.join("diff_report.html");
   let json_path = output_dir.join("diff_report.json");
 
-  // Note: we build + execute the binary directly instead of using `cargo run`. The `diff_renders`
-  // binary returns exit code 1 when diffs are found, and `cargo run` would print a scary
+  // Note: we build + execute the binary directly instead of running it through Cargo's `run`
+  // subcommand. The `diff_renders` binary returns exit code 1 when diffs are found, and Cargo would
+  // print a scary
   // "process didn't exit successfully" error even though we still want to keep the report.
   let repo_root = repo_root();
   let exe = diff_renders_executable(&repo_root);

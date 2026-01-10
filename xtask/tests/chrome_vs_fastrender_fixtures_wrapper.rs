@@ -137,7 +137,7 @@ exit 0
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
     stdout.contains("fixture-chrome-diff") && stdout.contains("--diff-only"),
-    "expected wrapper to invoke `cargo xtask fixture-chrome-diff --diff-only`; got:\n{stdout}"
+    "expected wrapper to invoke `bash scripts/cargo_agent.sh run -p xtask -- fixture-chrome-diff --diff-only`; got:\n{stdout}"
   );
 }
 

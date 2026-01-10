@@ -95,7 +95,7 @@ fn pageset_triage_markdown_is_deterministic() {
       out_path.to_str().unwrap(),
     ])
     .output()
-    .expect("run cargo xtask pageset-triage");
+    .expect("run xtask pageset-triage");
 
   assert!(
     output.status.success(),
@@ -271,7 +271,7 @@ fn pageset_triage_includes_first_mismatch_when_present() {
       out_path.to_str().unwrap(),
     ])
     .output()
-    .expect("run cargo xtask pageset-triage");
+    .expect("run xtask pageset-triage");
 
   assert!(
     output.status.success(),

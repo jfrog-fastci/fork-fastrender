@@ -4,7 +4,7 @@
 //! therefore must be:
 //! - deterministic (stable diffs),
 //! - rustfmt-stable under the repository's `.rustfmt.toml`, and
-//! - free of panic/unwrap tokens that would trip `cargo xtask lint-no-panics`.
+//! - free of panic/unwrap tokens that would trip `bash scripts/cargo_agent.sh xtask lint-no-panics`.
 
 use super::resolve::{
   ResolvedCallback, ResolvedDictionary, ResolvedEnum, ResolvedInterface, ResolvedInterfaceMember,
@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 
 /// Tokens that must not appear in generated Rust sources.
 ///
-/// Note: This is stricter than `cargo xtask lint-no-panics` (which ignores comments/strings), but
+/// Note: This is stricter than `bash scripts/cargo_agent.sh xtask lint-no-panics` (which ignores comments/strings), but
 /// keeping the generator output free of these tokens anywhere makes it resilient to future linting
 /// changes.
 pub const FORBIDDEN_TOKENS: [&str; 10] = [

@@ -5,7 +5,7 @@
 //! `includes` so downstream codegen/bindings can build on top.
 //!
 //! The data under [`generated`] is committed to the repository and updated via:
-//! `cargo xtask webidl` (alias for `cargo xtask web-idl-codegen`).
+//! `bash scripts/cargo_agent.sh xtask webidl` (alias for `bash scripts/cargo_agent.sh xtask web-idl-codegen`).
 
 pub mod generated;
 

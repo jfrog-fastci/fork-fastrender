@@ -22,7 +22,7 @@ fn dry_run_prints_expected_plan() {
     .current_dir(repo_root())
     .args(["page-loop", "--fixture", "example.com", "--dry-run"])
     .output()
-    .expect("run cargo xtask page-loop --dry-run");
+    .expect("run xtask page-loop --dry-run");
 
   assert!(
     output.status.success(),
@@ -56,7 +56,7 @@ fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
     .current_dir(repo_root())
     .args(["page-loop", "--fixture", "example.com", "--chrome", "--dry-run"])
     .output()
-    .expect("run cargo xtask page-loop --chrome --dry-run");
+    .expect("run xtask page-loop --chrome --dry-run");
 
   assert!(
     output.status.success(),
@@ -94,7 +94,7 @@ fn dry_run_forwards_timeout_to_all_steps() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --timeout 42 --dry-run");
+    .expect("run xtask page-loop --timeout 42 --dry-run");
 
   assert!(
     output.status.success(),
@@ -117,7 +117,7 @@ fn dry_run_accepts_pageset_url() {
     .current_dir(repo_root())
     .args(["page-loop", "--pageset", "https://example.com", "--dry-run"])
     .output()
-    .expect("run cargo xtask page-loop --pageset --dry-run");
+    .expect("run xtask page-loop --pageset --dry-run");
 
   assert!(
     output.status.success(),
@@ -145,7 +145,7 @@ fn dry_run_with_inspect_dump_json_includes_inspect_frag_dump_json_command() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --inspect-dump-json --dry-run");
+    .expect("run xtask page-loop --inspect-dump-json --dry-run");
 
   assert!(
     output.status.success(),
@@ -184,7 +184,7 @@ fn dry_run_forwards_inspect_filters() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --inspect-*filter --dry-run");
+    .expect("run xtask page-loop --inspect-*filter --dry-run");
 
   assert!(
     output.status.success(),
@@ -282,7 +282,7 @@ fn from_progress_top_worst_accuracy_prefers_existing_fixtures_and_tiebreaks_perc
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --top-worst-accuracy 1 --dry-run");
+    .expect("run xtask page-loop --from-progress --top-worst-accuracy 1 --dry-run");
 
   assert!(
     output.status.success(),
@@ -317,7 +317,7 @@ fn from_progress_top_slowest_selects_highest_total_ms() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --top-slowest 1 --dry-run");
+    .expect("run xtask page-loop --from-progress --top-slowest 1 --dry-run");
 
   assert!(
     output.status.success(),
@@ -351,7 +351,7 @@ fn from_progress_only_failures_selects_first_failing_stem() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --only-failures --dry-run");
+    .expect("run xtask page-loop --from-progress --only-failures --dry-run");
 
   assert!(
     output.status.success(),
@@ -396,7 +396,7 @@ fn from_progress_hotspot_filters_candidates() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --hotspot CSS --dry-run");
+    .expect("run xtask page-loop --from-progress --hotspot CSS --dry-run");
 
   assert!(
     output.status.success(),
@@ -437,7 +437,7 @@ fn from_progress_defaults_to_top_worst_accuracy_1() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --dry-run");
+    .expect("run xtask page-loop --from-progress --dry-run");
 
   assert!(
     output.status.success(),
@@ -470,7 +470,7 @@ fn from_progress_errors_when_no_offline_fixture_exists() {
       "--only-failures",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --only-failures");
+    .expect("run xtask page-loop --from-progress --only-failures");
 
   assert!(
     !output.status.success(),

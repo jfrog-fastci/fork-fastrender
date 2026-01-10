@@ -542,7 +542,7 @@ fn png_for_snapshot(path: &Path, stem: &str, html_dir: &Path) -> Option<String> 
       return Some(path_for_report(html_dir, &render));
     }
 
-    // For `render_fixtures --write-snapshot` (and `cargo xtask fixture-chrome-diff --write-snapshot`)
+    // For `render_fixtures --write-snapshot` (and `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --write-snapshot`)
     // outputs, the PNG lives next to the `<stem>/snapshot.json` directory.
     if let Some(grandparent) = parent.parent() {
       let render = grandparent.join(format!("{stem}.png"));

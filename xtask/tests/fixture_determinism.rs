@@ -252,7 +252,7 @@ fn run_fixture_determinism(
   cmd.arg("--out-dir").arg(out_dir);
   cmd.args(["--fixtures", "hello"]);
   cmd.args(["--repeat", "2"]);
-  cmd.output().expect("run cargo xtask fixture-determinism")
+  cmd.output().expect("run xtask fixture-determinism")
 }
 
 #[test]

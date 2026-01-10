@@ -18,7 +18,7 @@ fn analyze_lazy_loading_reports_common_data_attrs() {
     ])
     .arg(&report_path)
     .output()
-    .expect("run cargo xtask analyze-lazy-loading");
+    .expect("run xtask analyze-lazy-loading");
 
   assert!(
     output.status.success(),

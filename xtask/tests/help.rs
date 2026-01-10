@@ -5,7 +5,7 @@ fn help_lists_commands() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .arg("--help")
     .output()
-    .expect("run cargo xtask --help");
+    .expect("run xtask --help");
 
   assert!(
     output.status.success(),
@@ -48,7 +48,7 @@ fn js_help_lists_subcommands() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "--help"])
     .output()
-    .expect("run cargo xtask js --help");
+    .expect("run xtask js --help");
 
   assert!(
     output.status.success(),
@@ -69,7 +69,7 @@ fn js_test262_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "test262", "--help"])
     .output()
-    .expect("run cargo xtask js test262 --help");
+    .expect("run xtask js test262 --help");
 
   assert!(
     output.status.success(),
@@ -96,7 +96,7 @@ fn js_test262_parser_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "test262-parser", "--help"])
     .output()
-    .expect("run cargo xtask js test262-parser --help");
+    .expect("run xtask js test262-parser --help");
 
   assert!(
     output.status.success(),
@@ -120,7 +120,7 @@ fn js_wpt_dom_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "wpt-dom", "--help"])
     .output()
-    .expect("run cargo xtask js wpt-dom --help");
+    .expect("run xtask js wpt-dom --help");
 
   assert!(
     output.status.success(),
@@ -160,7 +160,7 @@ fn js_wpt_dom_smoke_sync_pass_reports_pass() {
     ])
     .arg(&report_path)
     .output()
-    .expect("run cargo xtask js wpt-dom");
+    .expect("run xtask js wpt-dom");
 
   assert!(
     output.status.success(),
@@ -186,7 +186,7 @@ fn chrome_baseline_fixtures_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["chrome-baseline-fixtures", "--help"])
     .output()
-    .expect("run cargo xtask chrome-baseline-fixtures --help");
+    .expect("run xtask chrome-baseline-fixtures --help");
 
   assert!(
     output.status.success(),
@@ -217,7 +217,7 @@ fn fixture_chrome_diff_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["fixture-chrome-diff", "--help"])
     .output()
-    .expect("run cargo xtask fixture-chrome-diff --help");
+    .expect("run xtask fixture-chrome-diff --help");
 
   assert!(
     output.status.success(),
@@ -266,7 +266,7 @@ fn fixture_determinism_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["fixture-determinism", "--help"])
     .output()
-    .expect("run cargo xtask fixture-determinism --help");
+    .expect("run xtask fixture-determinism --help");
 
   assert!(
     output.status.success(),
@@ -296,7 +296,7 @@ fn page_loop_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["page-loop", "--help"])
     .output()
-    .expect("run cargo xtask page-loop --help");
+    .expect("run xtask page-loop --help");
 
   assert!(
     output.status.success(),
@@ -338,7 +338,7 @@ fn refresh_progress_accuracy_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["refresh-progress-accuracy", "--help"])
     .output()
-    .expect("run cargo xtask refresh-progress-accuracy --help");
+    .expect("run xtask refresh-progress-accuracy --help");
 
   assert!(
     output.status.success(),
@@ -368,7 +368,7 @@ fn pageset_help_mentions_disk_cache_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -387,7 +387,7 @@ fn pageset_help_mentions_filters() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -406,7 +406,7 @@ fn pageset_help_mentions_font_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -427,7 +427,7 @@ fn pageset_help_mentions_cascade_diagnostics() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -446,7 +446,7 @@ fn pageset_help_mentions_allow_http_error_status() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -465,7 +465,7 @@ fn pageset_help_mentions_allow_collisions() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -484,7 +484,7 @@ fn pageset_help_mentions_timings() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -503,7 +503,7 @@ fn pageset_help_mentions_cache_dir() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -522,7 +522,7 @@ fn pageset_help_mentions_accuracy_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -546,7 +546,7 @@ fn pageset_diff_help_mentions_accuracy_regression_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset-diff", "--help"])
     .output()
-    .expect("run cargo xtask pageset-diff --help");
+    .expect("run xtask pageset-diff --help");
 
   assert!(
     output.status.success(),
@@ -566,7 +566,7 @@ fn diff_renders_help_mentions_ignore_alpha() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["diff-renders", "--help"])
     .output()
-    .expect("run cargo xtask diff-renders --help");
+    .expect("run xtask diff-renders --help");
 
   assert!(
     output.status.success(),
@@ -585,7 +585,7 @@ fn pageset_help_mentions_capture_missing_failure_fixtures() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -613,7 +613,7 @@ fn pageset_help_mentions_refresh_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["pageset", "--help"])
     .output()
-    .expect("run cargo xtask pageset --help");
+    .expect("run xtask pageset --help");
 
   assert!(
     output.status.success(),
@@ -632,7 +632,7 @@ fn update_pageset_guardrails_help_mentions_strategy_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-pageset-guardrails", "--help"])
     .output()
-    .expect("run cargo xtask update-pageset-guardrails --help");
+    .expect("run xtask update-pageset-guardrails --help");
 
   assert!(
     output.status.success(),
@@ -651,7 +651,7 @@ fn update_pageset_guardrails_help_mentions_cache_dir_alias() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-pageset-guardrails", "--help"])
     .output()
-    .expect("run cargo xtask update-pageset-guardrails --help");
+    .expect("run xtask update-pageset-guardrails --help");
 
   assert!(
     output.status.success(),
@@ -670,7 +670,7 @@ fn update_pageset_timeouts_alias_help_mentions_strategy_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-pageset-timeouts", "--help"])
     .output()
-    .expect("run cargo xtask update-pageset-timeouts --help");
+    .expect("run xtask update-pageset-timeouts --help");
 
   assert!(
     output.status.success(),
@@ -689,7 +689,7 @@ fn recapture_page_fixtures_help_mentions_cache_dir_alias() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["recapture-page-fixtures", "--help"])
     .output()
-    .expect("run cargo xtask recapture-page-fixtures --help");
+    .expect("run xtask recapture-page-fixtures --help");
 
   assert!(
     output.status.success(),
@@ -708,7 +708,7 @@ fn update_pageset_guardrails_budgets_help_mentions_multiplier_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-pageset-guardrails-budgets", "--help"])
     .output()
-    .expect("run cargo xtask update-pageset-guardrails-budgets --help");
+    .expect("run xtask update-pageset-guardrails-budgets --help");
 
   assert!(
     output.status.success(),
@@ -727,7 +727,7 @@ fn update_pageset_timeout_budgets_alias_help_mentions_multiplier_flag() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-pageset-timeout-budgets", "--help"])
     .output()
-    .expect("run cargo xtask update-pageset-timeout-budgets --help");
+    .expect("run xtask update-pageset-timeout-budgets --help");
 
   assert!(
     output.status.success(),
@@ -746,7 +746,7 @@ fn perf_smoke_help_mentions_suites_and_regression_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["perf-smoke", "--help"])
     .output()
-    .expect("run cargo xtask perf-smoke --help");
+    .expect("run xtask perf-smoke --help");
 
   assert!(
     output.status.success(),

@@ -245,7 +245,7 @@ pub struct FetchPagesFlagOverrides {
 
 /// Extract `fetch_pages`-specific flags from an argument vector.
 ///
-/// `cargo xtask pageset` forwards `args.extra` (intended for `pageset_progress run`) through to the
+/// `bash scripts/cargo_agent.sh xtask pageset` forwards `args.extra` (intended for `pageset_progress run`) through to the
 /// underlying binaries. Some flags apply only to the `fetch_pages` step (e.g. `--refresh`). To keep
 /// the wrapper forgiving (and consistent with how we forward `prefetch_assets` flags), strip these
 /// from the extra args and return them so the caller can forward them to `fetch_pages`.
@@ -291,7 +291,7 @@ pub struct PagesetExtraArgsOverrides {
 
 /// Extract pageset wrapper knobs that should apply to fetch/prefetch/render steps.
 ///
-/// `cargo xtask pageset` has first-class flags for common knobs like `--pages`, but callers
+/// `bash scripts/cargo_agent.sh xtask pageset` has first-class flags for common knobs like `--pages`, but callers
 /// sometimes accidentally place them after `--` (intended for `pageset_progress run`). Those flags
 /// would still affect `pageset_progress`, but would not filter the `fetch_pages`/`prefetch_assets`
 /// steps, wasting time during one-page debugging runs. To keep the wrapper forgiving (and aligned

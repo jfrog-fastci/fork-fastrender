@@ -11,7 +11,7 @@ fn run_validate(fixtures_root: &std::path::Path) -> std::process::Output {
       fixtures_root.to_str().expect("fixtures root path"),
     ])
     .output()
-    .expect("run cargo xtask validate-page-fixtures")
+    .expect("run xtask validate-page-fixtures")
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -174,7 +174,7 @@ fn validate_repo_pages_regression_fixtures_are_offline() {
       &fixtures.join(","),
     ])
     .output()
-    .expect("run cargo xtask validate-page-fixtures (regression fixtures)");
+    .expect("run xtask validate-page-fixtures (regression fixtures)");
 
   assert!(
     output.status.success(),

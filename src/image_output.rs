@@ -487,7 +487,7 @@ pub fn diff_png_with_alpha(
   }
 
   // When dimensions differ, fall back to a padded diff so reports remain usable (mirrors the old
-  // `cargo xtask diff-renders` behaviour). Missing pixels are treated as differences.
+  // `bash scripts/cargo_agent.sh xtask diff-renders` behaviour). Missing pixels are treated as differences.
   let rendered_img = image_compare::decode_png(rendered)?;
   let expected_img = image_compare::decode_png(expected)?;
 

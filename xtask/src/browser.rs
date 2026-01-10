@@ -44,7 +44,7 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   cmd.args(["--bin", "browser"]);
 
   // Always include the `--` separator so callers can append `<url>` without worrying about cargo
-  // arg ordering. `cargo run -- ...` with no trailing args is still valid.
+  // arg ordering. Cargo accepts a `run --` separator even when no trailing args are provided.
   cmd.arg("--");
   if let Some(url) = args.url.as_deref() {
     cmd.arg(url);
@@ -52,4 +52,3 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
 
   cmd
 }
-
