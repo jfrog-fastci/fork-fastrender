@@ -10899,6 +10899,11 @@ impl FlexFormattingContext {
     // If a wrapping row still overflows the container (e.g., items sized to 100% that Taffy
     // keeps on the same line), reflow the children into sequential rows within the container
     // width. This mirrors flex-wrap behaviour when items exceed the line length.
+    //
+    // Important: Flex items are allowed to overflow their flex line (for example, when a single
+    // item has a definite width larger than the container and `flex-shrink: 0`). Do not apply this
+    // fallback when any item is genuinely oversized; doing so would incorrectly clamp the item to
+    // the container width and also destroy legitimate negative `justify-content` offsets.
     if main_axis_is_horizontal
       && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
       && rect.width().is_finite()
@@ -10912,8 +10917,11 @@ impl FlexFormattingContext {
         .iter()
         .map(|c| c.bounds.x())
         .fold(f32::INFINITY, f32::min);
-      if max_child_x > rect.width() + 0.5 || min_child_x < -0.5 {
-        let avail = rect.width();
+      let avail = rect.width();
+      let has_oversized_item = children
+        .iter()
+        .any(|c| c.bounds.width().is_finite() && c.bounds.width() > avail + 0.5);
+      if !has_oversized_item && (max_child_x > avail + 0.5 || min_child_x < -0.5) {
         let start_y = children
           .iter()
           .map(|c| c.bounds.y())
