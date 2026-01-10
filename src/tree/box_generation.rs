@@ -1863,6 +1863,89 @@ fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opt
   any.then_some(out)
 }
 
+fn svg_attrs_have_overflow_declaration(attrs: &[(String, String)]) -> bool {
+  if attrs
+    .iter()
+    .any(|(name, _)| name.eq_ignore_ascii_case("overflow"))
+  {
+    return true;
+  }
+
+  let Some((_, style)) = attrs
+    .iter()
+    .find(|(name, _)| name.eq_ignore_ascii_case("style"))
+  else {
+    return false;
+  };
+
+  let declarations = crate::css::parser::parse_declarations(style);
+  declarations.iter().any(|decl| {
+    matches!(
+      decl.property.as_str(),
+      "overflow" | "overflow-x" | "overflow-y"
+    )
+  })
+}
+
+fn svg_overflow_style(
+  tag_name: &str,
+  style: &ComputedStyle,
+  attrs: &[(String, String)],
+) -> Option<String> {
+  use crate::style::types::Overflow;
+
+  // `overflow` affects only SVG viewport-establishing elements. Most real-world diffs that crop up
+  // when document CSS injection is disabled come from nested `<svg>` viewports that rely on
+  // `overflow: visible` via CSS classes.
+  if !tag_name.eq_ignore_ascii_case("svg") && !tag_name.eq_ignore_ascii_case("foreignObject") {
+    return None;
+  }
+
+  let overflow_x = style.overflow_x;
+  let overflow_y = style.overflow_y;
+
+  // usvg/resvg defaults match browsers: SVG viewports clip their contents by default.
+  let default = Overflow::Hidden;
+  if overflow_x == default && overflow_y == default && !svg_attrs_have_overflow_declaration(attrs) {
+    return None;
+  }
+
+  let mut out = String::new();
+  out.push_str("overflow: ");
+  let keyword = |value: Overflow| match value {
+    Overflow::Visible => "visible",
+    Overflow::Hidden => "hidden",
+    Overflow::Scroll => "scroll",
+    Overflow::Auto => "auto",
+    Overflow::Clip => "clip",
+  };
+  out.push_str(keyword(overflow_x));
+  if overflow_x != overflow_y {
+    out.push(' ');
+    out.push_str(keyword(overflow_y));
+  }
+  Some(out)
+}
+
+fn svg_mask_style(style: &ComputedStyle) -> Option<String> {
+  use crate::style::types::BackgroundImage;
+
+  // MVP: support a single `url(#id)` mask layer, which is the common pattern for SVG masks
+  // applied via CSS classes.
+  if style.mask_layers.len() != 1 {
+    return None;
+  }
+  let layer = style.mask_layers.first()?;
+  let image = layer.image.as_ref()?;
+  let BackgroundImage::Url(src) = image else {
+    return None;
+  };
+  let id = trim_ascii_whitespace(src)
+    .strip_prefix('#')
+    .filter(|id| !id.is_empty())?;
+  Some(format!("mask: url(#{id})"))
+}
+
 fn push_css_font_family_list(out: &mut String, families: &[String]) {
   for (idx, family) in families.iter().enumerate() {
     if idx != 0 {
@@ -2111,6 +2194,12 @@ fn serialize_svg_mask_subtree_with_namespaces(
           merge_style_attribute(&mut attrs, &extra);
         }
         if let Some(extra) = svg_paint_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+        if let Some(extra) = svg_overflow_style(tag_name, &styled.styles, &attrs) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+        if let Some(extra) = svg_mask_style(&styled.styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
       }
@@ -3099,6 +3188,18 @@ fn serialize_svg_subtree(
                 merge_style_attribute(attrs_mut, &extra);
               }
             }
+          }
+          if let Some(extra) = svg_overflow_style(
+            tag_name,
+            &styled.styles,
+            owned_attrs.as_deref().unwrap_or(attributes),
+          ) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
+          if let Some(extra) = svg_mask_style(&styled.styles) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
           }
         }
 

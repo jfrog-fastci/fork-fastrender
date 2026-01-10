@@ -330,6 +330,78 @@ fn inline_svg_serializes_css_transform_for_child_elements_when_document_css_inje
 }
 
 #[test]
+fn inline_svg_inlines_overflow_visible_for_nested_svg_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .nested { overflow: visible; }
+      </style>
+      <svg width="40" height="20" viewBox="0 0 40 20">
+        <svg class="nested" x="0" y="0" width="10" height="10" viewBox="0 0 10 10">
+          <rect x="0" y="0" width="20" height="10" fill="rgb(255, 0, 0)" />
+        </svg>
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 40, 20);
+      assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
+      assert_eq!(
+        pixel(&pixmap, 15, 5),
+        [255, 0, 0, 255],
+        "expected overflow:visible on nested <svg> to allow painting outside its viewport"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_inlines_mask_url_fragment_from_css_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .shape { mask: url(#m); }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <defs>
+          <mask id="m" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+            <rect x="0" y="0" width="10" height="20" fill="white"></rect>
+            <rect x="10" y="0" width="10" height="20" fill="black"></rect>
+          </mask>
+        </defs>
+        <rect class="shape" x="0" y="0" width="20" height="20" fill="rgb(255, 0, 0)"></rect>
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
+      assert_eq!(
+        pixel(&pixmap, 5, 10),
+        [255, 0, 0, 255],
+        "left half should be visible through the mask"
+      );
+      assert_eq!(
+        pixel(&pixmap, 15, 10),
+        [255, 255, 255, 255],
+        "right half should be masked out"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_marker_end_from_css_works_when_document_css_injection_disabled() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
