@@ -4146,6 +4146,13 @@ fn collect_forced_boundaries_with_axes_internal(
             }
             boundary = candidate;
           }
+          // Forced breaks after the last in-flow child propagate to the end edge of the containing
+          // block. This matches `collect_break_opportunities` so side constraints like
+          // `break-after: left/right` are applied at the actual page boundary instead of the child's
+          // border box end (which can be offset from the parent's end by padding/align-content gaps).
+          if break_after && node.children.get(idx + 1).is_none() {
+            boundary = abs_start + parent_block_size;
+          }
           forced.push(ForcedBoundary {
             position: boundary,
             page_side: break_side_hint(next_style.break_before, page_progression_is_ltr).or(
