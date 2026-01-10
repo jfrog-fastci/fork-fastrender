@@ -1789,7 +1789,18 @@ impl Canvas {
     if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
       return None;
     }
-    if transform.sx.abs() < 1e-6 || transform.sy.abs() < 1e-6 {
+    // This snapping path exists to avoid seams between adjacent opaque backgrounds whose edges
+    // land on fractional device pixels. It must not quantize animated CSS transforms (e.g.
+    // `transform: translateX(0.5px)`), otherwise transitions appear to "stick" to integer pixels.
+    //
+    // Restrict snapping to translation-only transforms whose translation is already near an
+    // integer device pixel.
+    if (transform.sx - 1.0).abs() > 1e-6 || (transform.sy - 1.0).abs() > 1e-6 {
+      return None;
+    }
+    let tx_round = transform.tx.round();
+    let ty_round = transform.ty.round();
+    if (transform.tx - tx_round).abs() > 1e-3 || (transform.ty - ty_round).abs() > 1e-3 {
       return None;
     }
     if !rect.x().is_finite()

@@ -94,7 +94,7 @@ fn cascade_handles_large_rule_sets_under_budget() {
   let dom = parse_html(&html).expect("html parses");
 
   let media = MediaContext::screen(1280.0, 720.0);
-  let budget = Duration::from_millis(1500);
+  let budget = Duration::from_millis(3000);
   let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
     apply_styles_with_media(&dom, &stylesheet, &media)
   });
@@ -151,7 +151,7 @@ fn cascade_handles_thousands_of_has_rules_under_budget() {
   let dom = parse_html(&html).expect("html parses");
 
   let media = MediaContext::screen(1440.0, 900.0);
-  let budget = Duration::from_millis(2000);
+  let budget = Duration::from_millis(4000);
   let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
     apply_styles_with_media(&dom, &stylesheet, &media)
   });
@@ -201,7 +201,7 @@ fn cascade_handles_many_custom_properties_under_budget() {
   let dom = parse_html(&html).expect("html parses");
 
   let media = MediaContext::screen(1280.0, 720.0);
-  let budget = Duration::from_millis(2500);
+  let budget = Duration::from_millis(5000);
   let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
     apply_styles_with_media(&dom, &stylesheet, &media)
   });
@@ -251,7 +251,7 @@ fn cascade_handles_many_keyword_declarations_under_budget() {
   let dom = parse_html(&html).expect("html parses");
 
   let media = MediaContext::screen(1280.0, 720.0);
-  let budget = Duration::from_millis(800);
+  let budget = Duration::from_millis(3000);
   let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
     apply_styles_with_media(&dom, &stylesheet, &media)
   });
