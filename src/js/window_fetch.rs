@@ -2090,9 +2090,6 @@ fn request_array_buffer_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // Note: `vm-js` does not yet expose a real `ArrayBuffer`/typed array implementation. As an MVP,
-  // `Request.arrayBuffer()` resolves to a binary string where each UTF-16 code unit is one byte
-  // (`0..=255`).
   let (env_id, request_id) = request_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
@@ -2111,11 +2108,14 @@ fn request_array_buffer_native(
 
   match result {
     Ok(bytes) => {
-      let mut units: Vec<u16> = Vec::new();
-      units.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
-      units.extend(bytes.into_iter().map(u16::from));
-      let s = scope.alloc_string_from_u16_vec(units)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::Object(ab)])?;
     }
     Err(err) => {
       let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
@@ -5121,6 +5121,238 @@ mod tests {
 
       heap.remove_root(req_root);
       heap.remove_root(cloned_root);
+      heap.remove_root(on_fulfilled_root);
+      heap.remove_root(on_rejected_root);
+
+      Ok(())
+    })();
+
+    drop(bindings);
+    realm.teardown(&mut heap);
+    result
+  }
+
+  #[test]
+  fn request_array_buffer_resolves_to_array_buffer_and_consumes_body() -> Result<(), VmError> {
+    #[derive(Default)]
+    struct HostState {
+      fulfilled_len: Option<u64>,
+      rejected: Option<String>,
+    }
+
+    fn capture_promise_array_buffer_len_native(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn vm_js::VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      callee: GcObject,
+      _this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      let slots = scope.heap().get_function_native_slots(callee)?;
+      let kind = slots.get(0).copied().unwrap_or(Value::Number(0.0));
+      let kind = number_to_u64(kind).unwrap_or(0);
+      let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+      let state = host
+        .as_any_mut()
+        .downcast_mut::<HostState>()
+        .ok_or(VmError::InvariantViolation("unexpected host state type"))?;
+
+      if kind == 0 {
+        let Value::Object(obj) = value else {
+          return Err(VmError::TypeError("expected ArrayBuffer object"));
+        };
+        if !scope.heap().is_array_buffer_object(obj) {
+          return Err(VmError::TypeError("expected ArrayBuffer object"));
+        }
+
+        // Use the public `byteLength` getter to validate the resolved object.
+        scope.push_root(Value::Object(obj))?;
+        let key = alloc_key(scope, "byteLength")?;
+        let len_val = vm.get(scope, obj, key)?;
+        let len = number_to_u64(len_val)?;
+        state.fulfilled_len = Some(len);
+      } else {
+        // For Promise rejections, extract `message` if the rejection value is an Error object.
+        let s = match value {
+          Value::Object(obj) => {
+            scope.push_root(Value::Object(obj))?;
+            let message_key_s = scope.alloc_string("message")?;
+            scope.push_root(Value::String(message_key_s))?;
+            let message_key = PropertyKey::from_string(message_key_s);
+            match vm.get(scope, obj, message_key)? {
+              Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy().to_string(),
+              _ => "[object]".to_string(),
+            }
+          }
+          other => {
+            let s = scope.heap_mut().to_string(other)?;
+            scope.heap().get_string(s)?.to_utf8_lossy().to_string()
+          }
+        };
+        state.rejected = Some(s);
+      }
+
+      Ok(Value::Undefined)
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let bindings = match install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    ) {
+      Ok(bindings) => bindings,
+      Err(err) => {
+        realm.teardown(&mut heap);
+        return Err(err);
+      }
+    };
+
+    let mut host_state = HostState::default();
+    let mut hooks = JobQueueHooks::default();
+
+    let result = (|| -> Result<(), VmError> {
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+        return Err(VmError::InvariantViolation("Request constructor missing"));
+      };
+
+      let url_s = scope.alloc_string("https://example.com/")?;
+      scope.push_root(Value::String(url_s))?;
+
+      let init_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(init_obj))?;
+      let body_s = scope.alloc_string("hello")?;
+      scope.push_root(Value::String(body_s))?;
+      let method_s = scope.alloc_string("POST")?;
+      scope.push_root(Value::String(method_s))?;
+      set_data_prop(&mut scope, init_obj, "method", Value::String(method_s), true)?;
+      set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+      let Value::Object(req_obj) = request_ctor_construct(
+        &mut vm,
+        &mut scope,
+        &mut host_state,
+        &mut hooks,
+        request_ctor,
+        &[Value::String(url_s), Value::Object(init_obj)],
+        Value::Object(request_ctor),
+      )?
+      else {
+        return Err(VmError::InvariantViolation("Request constructor must return an object"));
+      };
+
+      let array_buffer_key = alloc_key(&mut scope, "arrayBuffer")?;
+      let array_buffer_fn = vm.get(&mut scope, req_obj, array_buffer_key)?;
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        array_buffer_fn,
+        Value::Object(req_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation(
+          "Request.arrayBuffer must return a Promise object",
+        ));
+      };
+
+      let capture_id = vm.register_native_call(capture_promise_array_buffer_len_native)?;
+      let func_proto = realm.intrinsics().function_prototype();
+      let on_fulfilled = {
+        let name = scope.alloc_string("onFulfilled")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(0.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+      let on_rejected = {
+        let name = scope.alloc_string("onRejected")?;
+        scope.push_root(Value::String(name))?;
+        let f =
+          scope.alloc_native_function_with_slots(capture_id, None, name, 1, &[Value::Number(1.0)])?;
+        scope.heap_mut().object_set_prototype(f, Some(func_proto))?;
+        f
+      };
+
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      // Root values needed across microtask execution.
+      let req_root = scope.heap_mut().add_root(Value::Object(req_obj))?;
+      let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+      let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+
+      assert_eq!(host_state.fulfilled_len, Some(5));
+      assert!(host_state.rejected.is_none());
+
+      // Verify consumption is observable.
+      let mut scope = heap.scope();
+      let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+      assert!(matches!(
+        vm.get(&mut scope, req_obj, body_used_key)?,
+        Value::Bool(true)
+      ));
+
+      // Double-consume should reject.
+      host_state.fulfilled_len = None;
+      host_state.rejected = None;
+      let array_buffer_key = alloc_key(&mut scope, "arrayBuffer")?;
+      let array_buffer_fn = vm.get(&mut scope, req_obj, array_buffer_key)?;
+      let promise2 = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        array_buffer_fn,
+        Value::Object(req_obj),
+        &[],
+      )?;
+      let Value::Object(promise2_obj) = promise2 else {
+        return Err(VmError::InvariantViolation(
+          "Request.arrayBuffer must return a Promise object",
+        ));
+      };
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get(&mut scope, promise2_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        then_fn,
+        Value::Object(promise2_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      drop(scope);
+      drain_jobs(&mut vm, &mut heap, &mut host_state, &mut hooks)?;
+
+      let rejected = host_state.rejected.clone().unwrap_or_default();
+      assert!(
+        rejected.contains("body is already used"),
+        "expected rejection to mention BodyUsed, got {rejected:?}"
+      );
+
+      // Cleanup roots.
+      heap.remove_root(req_root);
       heap.remove_root(on_fulfilled_root);
       heap.remove_root(on_rejected_root);
 
