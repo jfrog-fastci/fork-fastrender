@@ -12909,6 +12909,167 @@ mod tests {
   }
 
   #[test]
+  fn event_target_listeners_can_be_registered_and_dispatched() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut _dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(_dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    // Window add/remove/dispatch plumbing.
+    let called = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        function cb(e) { if (e.type === 'ping') count++; }\n\
+        addEventListener('ping', cb);\n\
+        dispatchEvent(new Event('ping'));\n\
+        removeEventListener('ping', cb);\n\
+        dispatchEvent(new Event('ping'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(called, Value::Number(1.0));
+
+    // `dispatchEvent` return value reflects `preventDefault()` for cancelable events.
+    let prevented = realm.exec_script(
+      "(() => {\n\
+        function cb(e) { e.preventDefault(); }\n\
+        addEventListener('p', cb);\n\
+        const ev = new Event('p', { cancelable: true });\n\
+        return dispatchEvent(ev);\n\
+      })()",
+    )?;
+    assert_eq!(prevented, Value::Bool(false));
+
+    // Document dispatch also works and can use CustomEvent.
+    let doc_called = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        document.addEventListener('x', () => { count++; });\n\
+        document.dispatchEvent(new CustomEvent('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(doc_called, Value::Number(1.0));
+
+    Ok(())
+  }
+
+  #[test]
+  fn event_target_constructor_exists_and_dispatches() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut _dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(_dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (typeof EventTarget !== 'function') return false;\n\
+        if (typeof EventTarget.prototype.addEventListener !== 'function') return false;\n\
+        const et = new EventTarget();\n\
+        let count = 0;\n\
+        et.addEventListener('x', () => { count++; });\n\
+        et.dispatchEvent(new Event('x'));\n\
+        return count === 1;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn event_listener_this_and_targets_are_set() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut _dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(_dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        let ok = true;\n\
+        let called = false;\n\
+        function cb(e) {\n\
+          called = true;\n\
+          ok = ok && (this === et);\n\
+          ok = ok && (e.target === et);\n\
+          ok = ok && (e.currentTarget === et);\n\
+        }\n\
+        et.addEventListener('x', cb);\n\
+        et.dispatchEvent(new Event('x'));\n\
+        return ok && called;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn stop_immediate_propagation_stops_subsequent_listeners() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut _dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(_dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let result = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        let log = '';\n\
+        et.addEventListener('x', (e) => { log += 'a'; e.stopImmediatePropagation(); });\n\
+        et.addEventListener('x', () => { log += 'b'; });\n\
+        et.dispatchEvent(new Event('x'));\n\
+        return log;\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "a");
+    Ok(())
+  }
+
+  #[test]
+  fn add_event_listener_dedupes_by_callback_and_capture() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut _dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(_dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let count = realm.exec_script(
+      "(() => {\n\
+        const et = new EventTarget();\n\
+        let count = 0;\n\
+        function cb() { count++; }\n\
+        et.addEventListener('x', cb);\n\
+        et.addEventListener('x', cb);\n\
+        et.dispatchEvent(new Event('x'));\n\
+        et.addEventListener('x', cb, true);\n\
+        et.addEventListener('x', cb, true);\n\
+        et.dispatchEvent(new Event('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(count, Value::Number(3.0));
+    Ok(())
+  }
+
+  #[test]
   fn dom_event_prevent_default_affects_dispatch_event_return_value() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));

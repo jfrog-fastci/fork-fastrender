@@ -3126,9 +3126,10 @@ mod tests {
   use std::collections::HashMap;
   use std::ptr::NonNull;
   use std::rc::Rc;
-  use std::sync::atomic::{AtomicUsize, Ordering};
-  use std::sync::{Arc, Mutex};
-  use vm_js::{Value, VmError};
+  use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+  use std::sync::{Arc, Mutex, OnceLock};
+
+  use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmError, VmHost, VmHostHooks};
 
   use tempfile::tempdir;
   use url::Url;
@@ -4333,6 +4334,194 @@ mod tests {
     realm.heap().get_string(s).unwrap().to_utf8_lossy()
   }
 
+  static NEXT_QUEUE_MICROTASK_HOOK_ID: AtomicU64 = AtomicU64::new(1);
+  static QUEUE_MICROTASK_HOOKS: OnceLock<Mutex<HashMap<u64, Arc<AtomicUsize>>>> = OnceLock::new();
+
+  fn queue_microtask_hooks() -> &'static Mutex<HashMap<u64, Arc<AtomicUsize>>> {
+    QUEUE_MICROTASK_HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+  }
+
+  struct QueueMicrotaskHookGuard {
+    id: u64,
+  }
+
+  impl Drop for QueueMicrotaskHookGuard {
+    fn drop(&mut self) {
+      queue_microtask_hooks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&self.id);
+    }
+  }
+
+  fn queue_microtask_test_native(
+    _vm: &mut Vm,
+    scope: &mut vm_js::Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+      Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
+      _ => return Err(VmError::TypeError("__queueMicrotaskTest missing hook id slot")),
+    };
+
+    let counter = queue_microtask_hooks()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(&id)
+      .cloned()
+      .ok_or(VmError::TypeError("__queueMicrotaskTest hook id not registered"))?;
+
+    let Some(event_loop) = crate::js::runtime::current_event_loop_mut::<BrowserTabHost>() else {
+      return Err(VmError::TypeError(
+        "__queueMicrotaskTest called without an active EventLoop",
+      ));
+    };
+
+    event_loop
+      .queue_microtask(move |_host, _event_loop| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+      })
+      .map_err(|_err| VmError::TypeError("__queueMicrotaskTest failed to queue microtask"))?;
+    Ok(Value::Undefined)
+  }
+
+  fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> std::result::Result<PropertyKey, VmError> {
+    let s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(s))?;
+    Ok(PropertyKey::from_string(s))
+  }
+
+  fn data_desc(value: Value) -> PropertyDescriptor {
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    }
+  }
+
+  fn install_queue_microtask_test_global(
+    realm: &mut WindowRealm,
+    hook_id: u64,
+  ) -> std::result::Result<(), VmError> {
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm_ref.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let call_id = vm.register_native_call(queue_microtask_test_native)?;
+    let name = scope.alloc_string("__queueMicrotaskTest")?;
+    scope.push_root(Value::String(name))?;
+
+    let slots = [Value::Number(hook_id as f64)];
+    let func = scope.alloc_native_function_with_slots(call_id, None, name, 0, &slots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm_ref.intrinsics().function_prototype()))
+      ?;
+    scope.push_root(Value::Object(func))?;
+
+    let key = alloc_key(&mut scope, "__queueMicrotaskTest")?;
+    scope
+      .define_property(global, key, data_desc(Value::Object(func)))
+      ?;
+
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct VmJsLifecycleExecutor {
+    dom_source_id: Rc<Cell<Option<u64>>>,
+    microtask_hook_id: u64,
+    realm: Option<WindowRealm>,
+  }
+
+  impl VmJsLifecycleExecutor {
+    fn new(dom_source_id: Rc<Cell<Option<u64>>>, microtask_hook_id: u64) -> Self {
+      Self {
+        dom_source_id,
+        microtask_hook_id,
+        realm: None,
+      }
+    }
+
+    fn ensure_realm(&mut self) -> Result<()> {
+      if self.realm.is_some() {
+        return Ok(());
+      }
+      let dom_source_id = self
+        .dom_source_id
+        .get()
+        .expect("dom_source_id should be registered before script execution");
+      let mut realm = WindowRealm::new(
+        WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+      )
+      .map_err(|err| Error::Other(err.to_string()))?;
+      install_queue_microtask_test_global(&mut realm, self.microtask_hook_id)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      self.realm = Some(realm);
+      Ok(())
+    }
+  }
+
+  impl BrowserTabJsExecutor for VmJsLifecycleExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self.ensure_realm()?;
+      let realm = self.realm.as_mut().expect("realm should be initialized");
+      realm
+        .exec_script(script_text)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      Ok(())
+    }
+
+    fn dispatch_lifecycle_event(
+      &mut self,
+      target: EventTargetId,
+      event: &Event,
+      _document: &mut BrowserDocumentDom2,
+    ) -> Result<()> {
+      self.ensure_realm()?;
+      let realm = self.realm.as_mut().expect("realm should be initialized");
+
+      let dispatch_expr = match target {
+        EventTargetId::Document => "document.dispatchEvent(e);",
+        EventTargetId::Window => "dispatchEvent(e);",
+        EventTargetId::Node(_) | EventTargetId::Opaque(_) => return Ok(()),
+      };
+
+      let type_lit = serde_json::to_string(&event.type_).unwrap_or_else(|_| "\"\"".to_string());
+      let init_lit = serde_json::json!({
+        "bubbles": event.bubbles,
+        "cancelable": event.cancelable,
+        "composed": event.composed,
+      })
+      .to_string();
+      let source = format!(
+        "(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",
+      );
+
+      realm
+        .exec_script(&source)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      Ok(())
+    }
+  }
+
   #[test]
   fn vm_js_document_ready_state_tracks_document_lifecycle_transitions() -> Result<()> {
     let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
@@ -4379,6 +4568,72 @@ mod tests {
       .exec_script("document.readyState")
       .map_err(|err| Error::Other(err.to_string()))?;
     assert_eq!(value_to_string(&realm, ready_state), "complete");
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_lifecycle_dispatch_invokes_vm_js_listeners_and_microtasks() -> Result<()> {
+    let microtask_hook_id = NEXT_QUEUE_MICROTASK_HOOK_ID.fetch_add(1, Ordering::Relaxed);
+    let microtasks_run: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    queue_microtask_hooks()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .insert(microtask_hook_id, Arc::clone(&microtasks_run));
+    let _hook_guard = QueueMicrotaskHookGuard {
+      id: microtask_hook_id,
+    };
+
+    let dom_source_id_cell = Rc::new(Cell::new(None));
+    let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let executor = VmJsLifecycleExecutor::new(Rc::clone(&dom_source_id_cell), microtask_hook_id);
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    )?;
+    let mut event_loop = EventLoop::<BrowserTabHost>::new();
+
+    let dom_source_id = register_dom_source(NonNull::from(host.dom_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+    dom_source_id_cell.set(Some(dom_source_id));
+
+    // Register a JS listener that queues a microtask via the test-only native helper.
+    let setup_script = "document.addEventListener('readystatechange', () => { __queueMicrotaskTest(); });";
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: setup_script.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      force_async: false,
+      node_id: None,
+      script_type: ScriptType::Classic,
+    };
+    let current_script = host.current_script_node();
+    let (executor, document) = (&mut host.executor, &mut host.document);
+    executor.execute_classic_script(
+      setup_script,
+      &spec,
+      current_script,
+      document,
+      &mut event_loop,
+    )?;
+
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    assert_eq!(
+      microtasks_run.load(Ordering::SeqCst),
+      1,
+      "expected readystatechange listener to enqueue a microtask that runs during parsing completion"
+    );
     Ok(())
   }
 
