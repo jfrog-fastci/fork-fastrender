@@ -314,44 +314,61 @@ fn grid_item_parallel_flow_required_block_size(
   axes: FragmentAxes,
   fragmentainer_size: f32,
 ) -> f32 {
-  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
-    return axis_from_fragment_axes(axes).block_size(&item.bounds);
-  }
-
   let axis = axis_from_fragment_axes(axes);
-  let item_block_size = axis.block_size(&item.bounds);
+  let item_block_size = axis.block_size(&item.bounds).max(0.0);
   if item_block_size <= BREAK_EPSILON {
-    return item_block_size.max(0.0);
-  }
-
-  let mut boundaries = collect_forced_boundaries_with_axes(item, 0.0, axes);
-  if boundaries.is_empty() {
     return item_block_size;
   }
 
-  let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
-  positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-  positions.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
+  // Parallel-flow forced breaks are modeled by shifting descendants so that continuation content
+  // lands on later fragmentainers (see `apply_grid_parallel_flow_forced_break_shifts`). After those
+  // shifts, the grid item's logical bounding box captures the effective block-size increase.
+  //
+  // Prefer that geometry-derived extent here so column-forced breaks (and any other descendant
+  // overflow) are reflected when determining which fragmentainers this item overlaps.
+  let bbox_block_size = axis.block_size(&item.logical_bounding_box());
+  let mut required = if bbox_block_size.is_finite() {
+    bbox_block_size.max(item_block_size)
+  } else {
+    item_block_size
+  };
 
-  // Model forced breaks as inserting blank space up to the next fragmentainer boundary. This matches
-  // the spec language that a forced break "effectively increases the size of its contents" (CSS
-  // Grid 2 §Fragmenting Grid Layout).
-  let mut shift = 0.0f32;
-  for pos in positions {
-    if pos <= BREAK_EPSILON {
-      continue;
+  // Backwards-compatibility fallback: if no descendant overflow is visible but a fragmentainer size
+  // is available, still model forced *page* breaks as inserting blank space. This keeps pagination
+  // robust even when callers invoke clipping without applying shift modelling first.
+  if required <= item_block_size + BREAK_EPSILON
+    && fragmentainer_size.is_finite()
+    && fragmentainer_size > 0.0
+  {
+    let mut boundaries = collect_forced_boundaries_with_axes(item, 0.0, axes);
+    if !boundaries.is_empty() {
+      let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
+      positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+      positions.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
+
+      // Model forced breaks as inserting blank space up to the next fragmentainer boundary. This
+      // matches the spec language that a forced break "effectively increases the size of its
+      // contents" (CSS Grid 2 §Fragmenting Grid Layout).
+      let mut shift = 0.0f32;
+      for pos in positions {
+        if pos <= BREAK_EPSILON {
+          continue;
+        }
+        if pos >= item_block_size - BREAK_EPSILON {
+          continue;
+        }
+        let effective = pos + shift;
+        let remainder = effective.rem_euclid(fragmentainer_size);
+        // If the forced break already aligns to a fragmentainer boundary, no extra space is needed.
+        let advance = (fragmentainer_size - remainder).rem_euclid(fragmentainer_size);
+        shift += advance;
+      }
+
+      required = required.max(item_block_size + shift);
     }
-    if pos >= item_block_size - BREAK_EPSILON {
-      continue;
-    }
-    let effective = pos + shift;
-    let remainder = effective.rem_euclid(fragmentainer_size);
-    // If the forced break already aligns to a fragmentainer boundary, no extra space is needed.
-    let advance = (fragmentainer_size - remainder).rem_euclid(fragmentainer_size);
-    shift += advance;
   }
 
-  (item_block_size + shift).max(item_block_size)
+  required
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +448,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
   root: &mut FragmentNode,
   axes: FragmentAxes,
   fragmentainer_size: f32,
+  context: FragmentationContext,
 ) {
   if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
     return;
@@ -445,6 +463,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
     axis: &FragmentAxis,
     axes: FragmentAxes,
     fragmentainer_size: f32,
+    context: FragmentationContext,
     default_style: &ComputedStyle,
   ) {
     let style = node
@@ -452,6 +471,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
+    let node_writing_mode = style.writing_mode;
     let node_block_size = axis.block_size(&node.bounds);
 
     if matches!(style.display, Display::Grid | Display::InlineGrid) {
@@ -473,11 +493,33 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
 
           // Discover forced breaks inside this grid item and model them as inserting blank space up
           // to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout).
-          let mut boundaries = collect_forced_boundaries_with_axes(child, 0.0, axes);
-          if boundaries.is_empty() {
-            continue;
-          }
-          let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
+          //
+          // Use `collect_break_opportunities` so we respect the current fragmentation context (page
+          // vs. column) and suppress nested parallel flows like floats.
+          let child_writing_mode = child
+            .style
+            .as_ref()
+            .map(|s| s.writing_mode)
+            .unwrap_or(node_writing_mode);
+          let mut collection = BreakCollection::default();
+          collect_break_opportunities(
+            child,
+            0.0,
+            &mut collection,
+            0,
+            0,
+            context,
+            axis,
+            child_writing_mode,
+            true,
+            false,
+          );
+          let mut positions: Vec<f32> = collection
+            .opportunities
+            .into_iter()
+            .filter(|o| matches!(o.strength, BreakStrength::Forced))
+            .map(|o| o.pos)
+            .collect();
           positions.retain(|p| *p > BREAK_EPSILON && *p < child_block_size - BREAK_EPSILON);
           let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
           else {
@@ -497,12 +539,21 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
         axis,
         axes,
         fragmentainer_size,
+        context,
         default_style,
       );
     }
   }
 
-  walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
+  walk(
+    root,
+    0.0,
+    &axis,
+    axes,
+    fragmentainer_size,
+    context,
+    default_style,
+  );
 }
 
 pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
@@ -1695,10 +1746,7 @@ impl FragmentationAnalyzer {
       // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
       // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
       // effectively at the limit.
-      if kind_rank == 0
-        && matches!(self.context, FragmentationContext::Page)
-        && !self.allow_early_sibling_breaks
-      {
+      if kind_rank == 0 && self.enforce_fragmentainer_size && !self.allow_early_sibling_breaks {
         // Allow a small amount of slack for sibling boundaries near the limit: the closer the
         // boundary is, the less it perturbs the flow→fragment mapping. Cap the slack so huge pages
         // do not accept large shifts.
@@ -1911,9 +1959,7 @@ fn fragment_tree_impl(
   // ensures the continuation content appears on later pages without forcing sibling grid items onto
   // the next page.
   let mut root = root.clone();
-  if matches!(context, FragmentationContext::Page) {
-    apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size);
-  }
+  apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size, context);
   apply_float_parallel_flow_forced_break_shifts(
     &mut root,
     axes,
@@ -2284,9 +2330,7 @@ pub(crate) fn clip_node(
     return Ok(Some(cloned));
   }
 
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
+  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
     node.grid_fragmentation.as_ref()
   } else {
     None
@@ -3198,9 +3242,7 @@ fn collect_break_opportunities(
     None
   };
 
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
+  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
     node.grid_fragmentation.as_ref()
   } else {
     None
@@ -3271,9 +3313,14 @@ fn collect_break_opportunities(
       });
     }
 
-    let skip_descendants = grid_items
+    let parallel_grid_item = grid_items
       .and_then(|info| info.items.get(idx))
       .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
+    // Grid items that span a single track in the fragmentation axis establish a parallel
+    // fragmentation flow (CSS Grid 2 §Fragmenting Grid Layout). Their internal break opportunities
+    // are handled when fragmenting the item itself, so suppress them when collecting opportunities
+    // for the main flow.
+    let skip_descendants = parallel_grid_item;
     if !skip_descendants {
       collect_break_opportunities(
         child,
@@ -4011,9 +4058,7 @@ fn collect_atomic_candidates_with_axis(
   if style.float.is_floating() {
     return;
   }
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
+  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
     node.grid_fragmentation.as_ref()
   } else {
     None
@@ -4238,9 +4283,7 @@ fn collect_atomic_ranges_with_axis(
   if style.float.is_floating() {
     return;
   }
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
+  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
     node.grid_fragmentation.as_ref()
   } else {
     None

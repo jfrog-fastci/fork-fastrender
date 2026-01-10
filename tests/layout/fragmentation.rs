@@ -11,6 +11,7 @@ use fastrender::style::types::{
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::fragment_tree::{GridFragmentationInfo, GridItemFragmentationData};
 use fastrender::{
   BoxTree, ComputedStyle, FastRender, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
   LayoutEngine, Point, Rect, Size,
@@ -262,6 +263,87 @@ fn flex_item_forced_column_break_does_not_force_sibling_breaks() {
     fragments_with_id(&fragments[1], 20).len(),
     0,
     "sibling flex item must not be duplicated or split into the next column"
+  );
+}
+
+#[test]
+fn grid_item_forced_column_break_does_not_force_sibling_breaks() {
+  let mut breaker_style = ComputedStyle::default();
+  breaker_style.break_after = BreakBetween::Column;
+  let breaker_style = Arc::new(breaker_style);
+
+  let mut breaker =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
+  breaker.style = Some(breaker_style);
+  let follower =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
+
+  let item_a = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![breaker, follower],
+  );
+  let item_b = FragmentNode::new_block_with_id(Rect::from_xywh(50.0, 0.0, 40.0, 40.0), 20, vec![]);
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  let mut grid = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+    vec![item_a, item_b],
+    Arc::new(grid_style),
+  );
+  grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+    items: vec![
+      GridItemFragmentationData {
+        box_id: 10,
+        row_start: 1,
+        row_end: 2,
+        column_start: 1,
+        column_end: 2,
+      },
+      GridItemFragmentationData {
+        box_id: 20,
+        row_start: 1,
+        row_end: 2,
+        column_start: 2,
+        column_end: 3,
+      },
+    ],
+  }));
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![grid]);
+
+  let options = FragmentationOptions::new(50.0).with_columns(2, 0.0);
+  let fragments = fragment_tree(&root, &options).unwrap();
+  assert_eq!(
+    fragments.len(),
+    2,
+    "expected content to fragment after blank insertion"
+  );
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert!(
+    fragments_with_id(&fragments[0], 2).is_empty(),
+    "post-break content should not be in the first column"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[0], 20).len(),
+    1,
+    "sibling grid item should remain in the first column"
+  );
+
+  let follower_frags = fragments_with_id(&fragments[1], 2);
+  assert_eq!(
+    follower_frags.len(),
+    1,
+    "post-break content should appear in the next column"
+  );
+  assert!(
+    follower_frags[0].bounds.y().abs() < 0.1,
+    "expected the continuation content to start at the top of the next column"
+  );
+  assert!(
+    fragments_with_id(&fragments[1], 20).is_empty(),
+    "sibling grid item must not be duplicated or split onto the next column"
   );
 }
 

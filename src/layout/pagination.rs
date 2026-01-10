@@ -695,7 +695,12 @@ impl CachedLayout {
       style.content_size.height
     };
 
-    apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
+    apply_grid_parallel_flow_forced_break_shifts(
+      &mut root,
+      axes,
+      style_block_size,
+      FragmentationContext::Page,
+    );
     apply_float_parallel_flow_forced_break_shifts(
       &mut root,
       axes,
