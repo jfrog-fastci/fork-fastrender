@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::render_control;
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -673,6 +674,10 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
       arguments,
     )
   }
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    Some(self)
+  }
 }
 
 struct FastRenderJobContext {
@@ -1264,10 +1269,8 @@ mod tests {
       _overload: usize,
       _args: &[Value],
     ) -> std::result::Result<Value, VmError> {
-      // The EcmaVmRuntime test harness does not currently install any generated WebIDL bindings.
-      // This implementation exists to satisfy the runtime's generic bound and to provide a clear
-      // failure mode if a test accidentally routes a generated binding through this host.
-      Err(VmError::Unimplemented("WebIDL bindings host not implemented for TestState"))
+      self.log.push("downcast");
+      Ok(Value::Undefined)
     }
   }
 
@@ -1288,6 +1291,28 @@ mod tests {
       node_id: None,
       script_type: ScriptType::Classic,
     }
+  }
+
+  fn log_downcast_via_hooks(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let host = webidl_vm_js::host_from_hooks(hooks)?;
+    let _ = host.call_operation(
+      _vm,
+      _scope,
+      None,
+      "Test",
+      "log_downcast_via_hooks",
+      0,
+      &[],
+    )?;
+    Ok(Value::Undefined)
   }
 
   fn log_sync(
@@ -1431,6 +1456,17 @@ mod tests {
     )?;
 
     Ok(Value::Object(obj))
+  }
+
+  #[test]
+  fn hooks_as_any_mut_downcasts_to_runtime_in_evaluator() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+    host.define_global_native_function("__log_downcast", 0, log_downcast_via_hooks)?;
+    host.execute_classic_script("__log_downcast();", &classic_spec(), &mut event_loop)?;
+    assert_eq!(host.state.log, vec!["downcast"]);
+    Ok(())
   }
 
   #[test]

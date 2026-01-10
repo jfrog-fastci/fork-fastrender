@@ -675,14 +675,24 @@ impl VmJobContext for WindowRealmJobContext<'_> {
 }
 
 struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
+  host_ctx: *mut dyn VmHost,
   pending_discard: Vec<Job>,
   enqueue_error: Option<Error>,
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
 
 impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
-  fn new() -> Self {
+  fn new(host_ctx: &mut dyn VmHost) -> Self {
+    // `*mut dyn VmHost` defaults the trait object lifetime to `'static`; erase the shorter
+    // lifetime of the borrow we're handed.
+    //
+    // SAFETY: The returned pointer is only used within VM call boundaries while the original
+    // `&mut dyn VmHost` is still borrowed by the enclosing event-loop task/microtask.
+    let host_ctx: *mut (dyn VmHost + '_) = host_ctx;
+    let host_ctx: *mut dyn VmHost =
+      unsafe { std::mem::transmute::<*mut (dyn VmHost + '_), *mut dyn VmHost>(host_ctx) };
     Self {
+      host_ctx,
       pending_discard: Vec::new(),
       enqueue_error: None,
       _marker: std::marker::PhantomData,
@@ -701,6 +711,13 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
 }
 
 impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
+  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    // SAFETY: `VmJsEventLoopHooks` is only constructed for the duration of a JS call while the
+    // referenced `VmHost` context is already borrowed mutably by the event loop task/microtask.
+    // The returned `&mut dyn Any` must not escape the native call boundary.
+    Some(unsafe { (&mut *self.host_ctx).as_any_mut() })
+  }
+
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
     if self.enqueue_error.is_some() {
       self.pending_discard.push(job);
@@ -723,8 +740,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           return Ok(());
         };
 
-        // Borrow-split the host so we can pass both a real `VmHost` context and a mutable
-        // `WindowRealm` when executing the job.
+        // Borrow-split the host so we can pass both:
+        // - a real `VmHost` context to native calls, and
+        // - a mutable `WindowRealm` for executing the job.
         let (host_ctx, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
 
@@ -733,7 +751,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           vm.set_budget(callback_budget_from_render_deadline());
           let tick_result = vm.tick();
 
-          let mut hooks = VmJsEventLoopHooks::<Host>::new();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
           let job_result = match tick_result {
             Ok(()) => {
               let mut ctx = WindowRealmJobContext::new(window_realm, host_ctx, realm);
@@ -749,7 +767,6 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           if let Some(err) = hooks.finish(window_realm.heap_mut()) {
             return Err(err);
           }
-
           job_result
             .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
             .map(|_| ())
@@ -3228,12 +3245,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let vm = window_realm.vm_mut();
             vm.set_budget(callback_budget_from_render_deadline());
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new();
+            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
-              let type_error = create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+              let type_error =
+                create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
                 &mut *vm_host,
                 &mut scope,
@@ -3298,15 +3316,15 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         scope.heap().to_boolean(value).ok()
       })();
 
-        if aborted.unwrap_or(false) {
-          let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
-            let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
-            window_realm.reset_interrupt();
-            with_event_loop(event_loop, || {
-              let vm = window_realm.vm_mut();
-              vm.set_budget(callback_budget_from_render_deadline());
+      if aborted.unwrap_or(false) {
+        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+          window_realm.reset_interrupt();
+          with_event_loop(event_loop, || {
+            let vm = window_realm.vm_mut();
+            vm.set_budget(callback_budget_from_render_deadline());
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new();
+            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
@@ -3319,7 +3337,14 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 }
                 _ => Value::Undefined,
               };
-              vm.call_with_host_and_hooks(&mut *vm_host, &mut scope, &mut hooks, reject, Value::Undefined, &[reason])?;
+              vm.call_with_host_and_hooks(
+                &mut *vm_host,
+                &mut scope,
+                &mut hooks,
+                reject,
+                Value::Undefined,
+                &[reason],
+              )?;
               Ok(())
             });
 
@@ -3380,7 +3405,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 let vm = window_realm.vm_mut();
                 vm.set_budget(callback_budget_from_render_deadline());
                 let tick_result = vm.tick();
-                let mut hooks = VmJsEventLoopHooks::<Host>::new();
+                let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
                 let call_result = tick_result.and_then(|_| {
                   let (vm, heap) = window_realm.vm_and_heap_mut();
                   let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
@@ -3437,14 +3462,15 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let vm = window_realm.vm_mut();
             vm.set_budget(callback_budget_from_render_deadline());
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new();
+            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
 
             let call_result = tick_result.and_then(|_| {
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let resolve = heap.get_root(resolve_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
 
-              let resp_obj = make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
+              let resp_obj =
+                make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
 
               // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
               // EventLoop microtask queue.
@@ -3501,12 +3527,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let vm = window_realm.vm_mut();
             vm.set_budget(callback_budget_from_render_deadline());
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new();
+            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
-              let type_error = create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+              let type_error =
+                create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
                 &mut *vm_host,
                 &mut scope,

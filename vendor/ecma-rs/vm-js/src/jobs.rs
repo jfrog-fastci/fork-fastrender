@@ -606,9 +606,20 @@ pub trait VmHostHooks {
     Ok(None)
   }
 
-  /// Allows downcasting host hook trait objects in tests/embeddings.
+  /// Returns embedder-defined state for downcasting.
   ///
-  /// Most embeddings should ignore this. The default implementation returns `None`.
+  /// ## Why this exists
+  ///
+  /// Native call/construct handlers receive both:
+  /// - `host: &mut dyn VmHost`, and
+  /// - `hooks: &mut dyn VmHostHooks`.
+  ///
+  /// Some `vm-js` entrypoints pass a dummy [`VmHost`] (commonly `()`) when no per-call host context
+  /// is needed. In those cases, embeddings (and generated bindings) that need access to embedder
+  /// state should downcast via `hooks.as_any_mut()` instead of relying on `host`.
+  ///
+  /// The default implementation returns `None`. Embeddings that require downcasting must override
+  /// this and return a `&mut dyn Any` that is valid for the duration of the native call.
   #[inline]
   fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
     None
