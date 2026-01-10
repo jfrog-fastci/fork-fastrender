@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
 use fastrender::js::bindings::{install_worker_bindings, BindingValue, WebHostBindings};
-use fastrender::js::webidl::{VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime};
+use fastrender::js::webidl::{
+  DataPropertyAttributes, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
+};
 use fastrender::js::{UrlLimits, UrlSearchParams};
 use vm_js::{
   Heap, HeapLimits, MicrotaskQueue, PropertyKey, Realm, Scope, Value, Vm, VmError, VmOptions,
   WeakGcObject,
 };
 use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
-use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 struct NoHooks;
 

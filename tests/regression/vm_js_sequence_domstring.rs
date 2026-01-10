@@ -1,12 +1,11 @@
 use fastrender::js::webidl::{
-  VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime as _,
+  DataPropertyAttributes, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime as _,
 };
 use vm_js::{
   GcObject, Heap, HeapLimits, MicrotaskQueue, NativeFunctionId, PropertyDescriptor, PropertyKey,
   PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
-use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 struct NoHooks;
 
