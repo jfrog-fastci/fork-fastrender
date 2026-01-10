@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::collections::BTreeMap;
 
 use xtask::webidl::resolve::ExposureTarget;
 use xtask::webidl_bindings_codegen::{
