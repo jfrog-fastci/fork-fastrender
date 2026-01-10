@@ -17,16 +17,20 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 if [[ -f vendor/ecma-rs/Cargo.toml ]]; then
+  # Vendored layout (current): nothing to initialize.
   exit 0
 fi
 
 # Backwards compatibility for older checkouts where `vendor/ecma-rs` is a submodule.
-if grep -qE '^[[:space:]]*path[[:space:]]*=[[:space:]]*vendor/ecma-rs[[:space:]]*$' .gitmodules 2>/dev/null; then
+if git config -f .gitmodules --get submodule.vendor/ecma-rs.path >/dev/null 2>&1 \
+  || grep -qE '^[[:space:]]*path[[:space:]]*=[[:space:]]*vendor/ecma-rs[[:space:]]*$' .gitmodules 2>/dev/null
+then
   git submodule update --init vendor/ecma-rs
-  exit 0
 fi
 
-echo "::error::Missing vendor/ecma-rs checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
-echo "If your clone is missing vendored files, ensure you have a full checkout of the repository." >&2
-exit 1
-
+if [[ ! -f vendor/ecma-rs/Cargo.toml ]]; then
+  echo "::error::Missing vendor/ecma-rs checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+  echo "If your clone uses the legacy submodule layout, run:" >&2
+  echo "  git submodule update --init vendor/ecma-rs" >&2
+  exit 1
+fi

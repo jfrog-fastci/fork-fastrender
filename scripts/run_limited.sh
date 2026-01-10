@@ -32,7 +32,8 @@ EOF
 to_kib() {
   local raw="${1:-}"
   raw="${raw//[[:space:]]/}"
-  raw="${raw,,}"
+  # Lowercase (portable across Bash 3.x, which is still the default on macOS runners).
+  raw="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
 
   # Accept common suffixes: k, m, g, t (optionally with b/ib).
   raw="${raw%ib}"

@@ -370,12 +370,19 @@ jobs:
           if-no-files-found: error
 
   # ===========================================================================
-  # Browser UI Headless Smoke - Build browser_ui feature and run headless smoke path (no display/GPU)
+  # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)
   # ===========================================================================
   browser_ui_headless_smoke:
-    name: Browser UI headless smoke (Linux stable)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: browser_ui (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -385,6 +392,7 @@ jobs:
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
       - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
         run: bash scripts/ci_install_gui_deps_ubuntu.sh
 
       - name: Install Rust toolchain
@@ -408,19 +416,23 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs (vendored) checkout
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
       - name: Build browser binary (browser_ui feature)
-        shell: bash
         run: |
           set -euo pipefail
           bash scripts/cargo_agent.sh build --locked --features browser_ui --bin browser
 
       - name: Headless smoke (no X11/Wayland display required)
-        shell: bash
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           out="$(mktemp)"
           FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 \
           FASTR_BROWSER_MEM_LIMIT_MB=4096 \
+          FASTR_USE_BUNDLED_FONTS=1 \
+          RAYON_NUM_THREADS=1 \
             bash scripts/run_limited.sh --as 64G -- \
               bash scripts/cargo_agent.sh run --locked --features browser_ui --bin browser \
             | tee "${out}"

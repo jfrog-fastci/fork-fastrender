@@ -138,9 +138,29 @@ fi
 nproc="${FASTR_CARGO_NPROC:-}"
 if [[ -z "${nproc}" ]]; then
   if command -v nproc >/dev/null 2>&1; then
-    nproc="$(nproc)"
-  else
-    nproc="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    nproc="$(nproc 2>/dev/null || true)"
+  fi
+
+  # Fall back to `getconf` when `nproc` is missing (macOS, some CI images). Be defensive:
+  # some `getconf` builds print "undefined" while still exiting 0.
+  if ! [[ "${nproc}" =~ ^[0-9]+$ ]] || [[ "${nproc}" -lt 1 ]]; then
+    nproc="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  fi
+
+  # macOS fallback (when `_NPROCESSORS_ONLN` is unavailable).
+  if ! [[ "${nproc}" =~ ^[0-9]+$ ]] || [[ "${nproc}" -lt 1 ]]; then
+    if command -v sysctl >/dev/null 2>&1; then
+      nproc="$(sysctl -n hw.logicalcpu 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || true)"
+    fi
+  fi
+
+  # Windows runners commonly expose processor count via NUMBER_OF_PROCESSORS.
+  if ! [[ "${nproc}" =~ ^[0-9]+$ ]] || [[ "${nproc}" -lt 1 ]]; then
+    nproc="${NUMBER_OF_PROCESSORS:-1}"
+  fi
+
+  if ! [[ "${nproc}" =~ ^[0-9]+$ ]] || [[ "${nproc}" -lt 1 ]]; then
+    nproc=1
   fi
 fi
 
@@ -280,11 +300,40 @@ if [[ -n "${FASTR_CARGO_SLOT:-}" ]]; then
   exit $?
 fi
 
+# Git Bash / MSYS / Cygwin note:
+#
+# The slot-throttling implementation relies on `flock` + inherited file descriptors. That works well
+# on Linux, but is unreliable across Windows shell environments. Prefer correctness over
+# parallelism: on Windows, disable slot throttling and run cargo directly.
+uname_s="$(uname -s 2>/dev/null || echo "")"
+case "${uname_s}" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "warning: Windows shell detected; running cargo without slot throttling" >&2
+    run_cargo "$@"
+    exit $?
+    ;;
+esac
+
 if ! command -v flock >/dev/null 2>&1; then
   echo "warning: flock not available; running cargo without slot throttling" >&2
   run_cargo "$@"
   exit $?
 fi
+
+# Some non-Linux environments ship a `flock` binary that doesn't support locking inherited file
+# descriptors. Probe it once so we don't deadlock in the retry loop below.
+if ! exec 199>"${lock_dir}/.flock_probe.lock" 2>/dev/null; then
+  echo "warning: unable to open flock probe lock; running cargo without slot throttling" >&2
+  run_cargo "$@"
+  exit $?
+fi
+if ! flock -n 199 >/dev/null 2>&1; then
+  echo "warning: flock appears unusable; running cargo without slot throttling" >&2
+  exec 199>&- || true
+  run_cargo "$@"
+  exit $?
+fi
+exec 199>&-
 
 acquire_slot() {
   local i k start lockfile fd
@@ -293,12 +342,14 @@ acquire_slot() {
   for ((k = 0; k < slots; k++)); do
     i=$(( (start + k) % slots ))
     lockfile="${lock_dir}/slot.${i}.lock"
-    exec {fd}>"${lockfile}" || continue
+    # Use a fixed fd number per slot (Bash 3.x compatible; avoids `exec {var}>...`).
+    fd=$((200 + i))
+    eval "exec ${fd}>\"${lockfile}\"" || continue
     if flock -n "${fd}"; then
       echo "${fd}:${i}"
       return 0
     fi
-    exec {fd}>&-
+    eval "exec ${fd}>&-" || true
   done
   return 1
 }
@@ -325,5 +376,5 @@ status=$?
 set -e
 
 # Release lock.
-exec {slot_fd}>&-
+eval "exec ${slot_fd}>&-" || true
 exit "${status}"

@@ -29,8 +29,8 @@ jobs:
           set -euo pipefail
           bash scripts/ci_init_ecma_rs_submodule.sh
 
-          if ! grep -q "vendor/ecma-rs/test262-semantic/data" .gitmodules; then
-            echo "::error::Missing test262 semantic corpus submodule entry (vendor/ecma-rs/test262-semantic/data). Update the ecma-rs submodule pointer to a revision that includes the curated corpus." >&2
+          if ! grep -q 'submodule "vendor/ecma-rs/test262-semantic/data"' .gitmodules; then
+            echo "::error::Missing test262 semantic corpus submodule entry (vendor/ecma-rs/test262-semantic/data)." >&2
             exit 1
           fi
 

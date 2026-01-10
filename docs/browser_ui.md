@@ -67,6 +67,9 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
+CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` binary with
+`--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
+
 Note: the windowed `browser` app currently starts by navigating to `about:newtab`.
 
 ## Keyboard / mouse shortcuts
