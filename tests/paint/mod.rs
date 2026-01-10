@@ -84,6 +84,7 @@ mod mix_blend_mode_non_isolated_group_surface_test;
 mod multi_root_display_list;
 mod missing_image_placeholder;
 mod unscaled_image_device_snapping;
+mod vertical_align_middle_inline_image;
 mod offscreen_culling_stress;
 mod optimize_test;
 mod optimizer_pixel_equivalence_test;

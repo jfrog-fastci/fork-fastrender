@@ -78,8 +78,10 @@ fn variable_font_metrics_apply_mvar_variations() {
     );
   };
 
-  expect("scaled A line_height", a.line_height, 43.2);
-  expect("scaled B line_height", b.line_height, 71.04);
+  // Scaled line-height snaps to whole CSS pixels (see `FontMetrics::scale`), so verify the
+  // snapped values reflect the underlying MVAR deltas.
+  expect("scaled A line_height", a.line_height, 44.0);
+  expect("scaled B line_height", b.line_height, 71.0);
   expect("scaled A underline_thickness", a.underline_thickness, 1.44);
   expect("scaled B underline_thickness", b.underline_thickness, 3.36);
 

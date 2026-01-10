@@ -2194,7 +2194,144 @@ fn apply_face_variations(face: &mut ttf_parser::Face<'_>, variations: &[(Tag, f3
 }
 
 #[inline]
-fn select_css_line_metrics(face: &ttf_parser::Face<'_>) -> (i16, i16, i16) {
+fn apply_mvar_line_metric_deltas(
+  face: &ttf_parser::Face<'_>,
+  variations: &[(Tag, f32)],
+  ascent: &mut i16,
+  descent: &mut i16,
+  line_gap: &mut i16,
+) {
+  use crate::text::otvar::item_variation_store::{parse_item_variation_store, DeltaSetIndex};
+
+  let Some(mvar) = face.raw_face().table(Tag::from_bytes(b"MVAR")) else {
+    return;
+  };
+
+  // MVAR table format (OpenType 1.8):
+  // - Fixed Version (0x00010000)
+  // - u16 reserved
+  // - u16 valueRecordSize
+  // - u16 valueRecordCount
+  // - u16 itemVariationStoreOffset
+  // - MetricsValueRecord[valueRecordCount] (Tag + VarIdx)
+  //
+  // The VarIdx values index into the VarStore immediately following the value records. We reuse
+  // the ItemVariationStore parser (same VarStore encoding) to evaluate deltas.
+  if mvar.len() < 12 {
+    return;
+  }
+
+  let version = u32::from_be_bytes([mvar[0], mvar[1], mvar[2], mvar[3]]);
+  if version != 0x0001_0000 {
+    return;
+  }
+
+  let value_record_size = u16::from_be_bytes([mvar[6], mvar[7]]) as usize;
+  let value_record_count = u16::from_be_bytes([mvar[8], mvar[9]]) as usize;
+  let item_var_store_offset = u16::from_be_bytes([mvar[10], mvar[11]]) as usize;
+  if value_record_size < 8 || item_var_store_offset > mvar.len() {
+    return;
+  }
+
+  let records_offset = 12usize;
+  let Some(records_len) = value_record_size.checked_mul(value_record_count) else {
+    return;
+  };
+  let Some(records_end) = records_offset.checked_add(records_len) else {
+    return;
+  };
+  if records_end > mvar.len() {
+    return;
+  }
+
+  let var_store_data = mvar.get(item_var_store_offset..).unwrap_or(&[]);
+  let store = match parse_item_variation_store(var_store_data) {
+    Ok(store) => store,
+    Err(_) => return,
+  };
+
+  let axis_count = store.region_list.axis_count as usize;
+  if axis_count == 0 {
+    return;
+  }
+
+  let axes: Vec<_> = face.variation_axes().into_iter().collect();
+  if axes.len() < axis_count {
+    return;
+  }
+
+  let mut coords: Vec<f32> = Vec::with_capacity(axis_count);
+  for axis in axes.iter().take(axis_count) {
+    let requested = variations
+      .iter()
+      .find(|(tag, _)| *tag == axis.tag)
+      .map(|(_, v)| *v)
+      .unwrap_or(axis.def_value)
+      .clamp(axis.min_value, axis.max_value);
+
+    let normalized = if requested < axis.def_value {
+      let denom = axis.def_value - axis.min_value;
+      if denom.abs() > f32::EPSILON {
+        (requested - axis.def_value) / denom
+      } else {
+        0.0
+      }
+    } else if requested > axis.def_value {
+      let denom = axis.max_value - axis.def_value;
+      if denom.abs() > f32::EPSILON {
+        (requested - axis.def_value) / denom
+      } else {
+        0.0
+      }
+    } else {
+      0.0
+    };
+
+    coords.push(normalized.clamp(-1.0, 1.0));
+  }
+
+  let apply_delta = |base: &mut i16, delta: f32| {
+    let value = (*base as f32) + delta;
+    if !value.is_finite() {
+      return;
+    }
+    *base = value
+      .round()
+      .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+  };
+
+  let lookup_delta = |tag: Tag| -> Option<f32> {
+    for i in 0..value_record_count {
+      let rec_offset = records_offset.checked_add(i.checked_mul(value_record_size)?)?;
+      let bytes: [u8; 4] = mvar.get(rec_offset..rec_offset + 4)?.try_into().ok()?;
+      if Tag::from_bytes(&bytes) != tag {
+        continue;
+      }
+      let var_idx = u32::from_be_bytes(
+        mvar
+          .get(rec_offset + 4..rec_offset + 8)?
+          .try_into()
+          .ok()?,
+      );
+      let index = DeltaSetIndex::from_u32(var_idx);
+      return store.evaluate_delta(index, &coords);
+    }
+    None
+  };
+
+  if let Some(delta) = lookup_delta(Tag::from_bytes(b"hasc")) {
+    apply_delta(ascent, delta);
+  }
+  if let Some(delta) = lookup_delta(Tag::from_bytes(b"hdsc")) {
+    apply_delta(descent, delta);
+  }
+  if let Some(delta) = lookup_delta(Tag::from_bytes(b"hlgp")) {
+    apply_delta(line_gap, delta);
+  }
+}
+
+#[inline]
+fn select_css_line_metrics(face: &ttf_parser::Face<'_>, variations: &[(Tag, f32)]) -> (i16, i16, i16) {
   // Use the same line metric selection as the shaping backend (FreeType) and browser engines:
   //
   // - When the OS/2 `USE_TYPO_METRICS` bit (fsSelection bit 7) is **set**, prefer OS/2
@@ -2244,6 +2381,10 @@ fn select_css_line_metrics(face: &ttf_parser::Face<'_>) -> (i16, i16, i16) {
     }
   }
 
+  // `ttf-parser` does not currently apply MVAR deltas to hhea/OS/2 line metrics, so apply those
+  // ourselves to keep variable font `line-height: normal` behavior variation-aware.
+  apply_mvar_line_metric_deltas(face, variations, &mut ascent, &mut descent, &mut line_gap);
+
   // CSS Inline 3 § Line Gap Metrics: negative line-gap values are treated as 0.
   if line_gap < 0 {
     line_gap = 0;
@@ -2252,14 +2393,36 @@ fn select_css_line_metrics(face: &ttf_parser::Face<'_>) -> (i16, i16, i16) {
   (ascent, descent, line_gap)
 }
 
-fn extract_metrics(face: &ttf_parser::Face) -> Result<FontMetrics> {
+fn extract_metrics(face: &ttf_parser::Face, variations: &[(Tag, f32)]) -> Result<FontMetrics> {
   let units_per_em = face.units_per_em();
-  let (ascent, descent, line_gap) = select_css_line_metrics(face);
+  let (ascent, descent, line_gap) = select_css_line_metrics(face, variations);
 
   // CSS spec: line-height = ascent - descent + line-gap
   let line_height = ascent - descent + line_gap;
 
-  let x_height = face.x_height();
+  // CSS defines the x-height as the height of the lowercase 'x' glyph. Many fonts also provide an
+  // OS/2 `sxHeight` metric, but that value is not always identical to the glyph's bounds (e.g. the
+  // Nunito webfont used by cdc.gov reports a smaller `sxHeight` than the actual glyph, which can
+  // shift `vertical-align: middle` replaced elements down by a fraction of a pixel and cause
+  // visible diffs).
+  //
+  // Prefer a glyph-derived x-height when possible, falling back to OS/2 when the font has no 'x'
+  // (non-Latin scripts, icon fonts, etc.).
+  let x_height = {
+    let glyph_x_height = face
+      .glyph_index('x')
+      .filter(|gid| gid.0 != 0)
+      .and_then(|gid| face.glyph_bounding_box(gid))
+      .map(|bbox| bbox.y_max)
+      .filter(|y_max| *y_max > 0);
+    let os2_x_height = face.x_height().filter(|xh| *xh > 0);
+    match (glyph_x_height, os2_x_height) {
+      (Some(glyph), Some(os2)) => Some(glyph.max(os2)),
+      (Some(glyph), None) => Some(glyph),
+      (None, Some(os2)) => Some(os2),
+      (None, None) => None,
+    }
+  };
   let cap_height = face.capital_height();
 
   // Underline metrics
@@ -2354,7 +2517,7 @@ impl FontMetrics {
   ///
   /// Returns an error if the font data cannot be parsed.
   pub fn from_font(font: &LoadedFont) -> Result<Self> {
-    face_cache::with_face(font, |face| extract_metrics(face))
+    face_cache::with_face(font, |face| extract_metrics(face, &[]))
       .transpose()?
       .ok_or_else(|| {
         FontError::LoadFailed {
@@ -2374,7 +2537,7 @@ impl FontMetrics {
     face_cache::with_face(font, |face| -> Result<FontMetrics> {
       let mut face = face.clone();
       apply_face_variations(&mut face, variations);
-      extract_metrics(&face)
+      extract_metrics(&face, variations)
     })
     .transpose()?
     .ok_or_else(|| {
@@ -2404,12 +2567,12 @@ impl FontMetrics {
     }
 
     apply_face_variations(&mut face, variations);
-    extract_metrics(&face)
+    extract_metrics(&face, variations)
   }
 
   /// Extract metrics from ttf-parser Face
   pub fn from_face(face: &ttf_parser::Face) -> Result<Self> {
-    extract_metrics(face)
+    extract_metrics(face, &[])
   }
 
   /// Extract metrics from ttf-parser Face with variation coordinates applied.
@@ -2423,7 +2586,7 @@ impl FontMetrics {
 
     let mut face = face.clone();
     apply_face_variations(&mut face, variations);
-    extract_metrics(&face)
+    extract_metrics(&face, variations)
   }
 
   /// Scale metrics to pixel size
