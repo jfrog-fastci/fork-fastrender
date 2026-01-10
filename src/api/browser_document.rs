@@ -256,7 +256,21 @@ impl BrowserDocument {
       self.renderer.set_document_url(sanitized_document_url.to_string());
     }
 
-    let dom = match self.renderer.parse_html(html) {
+    // Like `BrowserDocument::new`/`reset_with_html`, install a scoped deadline so callers can
+    // cooperatively cancel HTML parsing via `RenderOptions::{timeout,cancel_callback}`.
+    //
+    // This is important for browser-UI integrations that render internal `about:` pages through
+    // this API and may need to abort a large parse when a navigation is superseded.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom_result = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      self.renderer.parse_html(html)
+    } else {
+      self.renderer.parse_html(html)
+    };
+    let dom = match dom_result {
       Ok(dom) => dom,
       Err(err) => {
         self.set_navigation_urls(prev_document_url, prev_base_url);
@@ -1022,6 +1036,7 @@ mod tests {
   use crate::dom::DomNodeType;
   use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat};
   use crate::text::font_db::FontConfig;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::time::Duration;
   use std::sync::{Arc, Mutex};
   use tiny_skia::PremultipliedColorU8;
@@ -1443,6 +1458,79 @@ mod tests {
 
     // Cancellation must not perturb the currently committed URL hints. These are used for
     // resolving relative resource/link URLs and should remain stable for long-lived documents.
+    assert_eq!(document.base_url(), Some("https://example.com/base/"));
+    assert_eq!(document.document_url(), Some("https://example.com/doc"));
+    assert_eq!(
+      document.renderer.document_url.as_deref(),
+      Some("https://example.com/doc")
+    );
+    assert_eq!(
+      document.renderer.base_url.as_deref(),
+      Some("https://example.com/base/")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn navigate_html_with_options_cancels_dom_parse_and_restores_navigation_urls() -> Result<()> {
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<!doctype html><html><head><title>Old</title></head><body>old</body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+    document.set_document_url_without_invalidation(Some("https://example.com/doc".to_string()));
+    document.set_navigation_urls(
+      Some("https://example.com/doc".to_string()),
+      Some("https://example.com/base/".to_string()),
+    );
+
+    // Cancel on the *second* `DomParse` deadline check. Without a scoped deadline around
+    // `navigate_html_with_options`'s HTML parse, the cancel callback is only invoked during the
+    // subsequent prepare/layout pipeline (which checks `DomParse` once in its preamble).
+    let dom_parse_checks = Arc::new(AtomicUsize::new(0));
+    let dom_parse_checks_for_cb = Arc::clone(&dom_parse_checks);
+    let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(move || {
+      if crate::render_control::active_stage() != Some(RenderStage::DomParse) {
+        return false;
+      }
+      dom_parse_checks_for_cb.fetch_add(1, Ordering::Relaxed) >= 1
+    });
+
+    // Ensure the HTML is large enough to require multiple reads; `DeadlineCheckedRead` caps reads
+    // to 16KiB, so a >16KiB document guarantees multiple deadline checks during parsing.
+    let large_comment = "x".repeat(32 * 1024);
+    let html = format!(
+      "<!doctype html><html><head><!--{large_comment}--></head><body>new</body></html>"
+    );
+
+    let options = RenderOptions::new()
+      .with_viewport(64, 64)
+      .with_cancel_callback(Some(cancel));
+    let err = match document.navigate_html_with_options(
+      "https://example.com/new",
+      &html,
+      Some("https://example.com/new_base/"),
+      options,
+    ) {
+      Ok(_) => panic!("expected navigation to be cancelled"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::Timeout {
+          stage: RenderStage::DomParse,
+          ..
+        })
+      ),
+      "expected dom_parse timeout/cancel error; got {err:?}"
+    );
+    assert!(
+      dom_parse_checks.load(Ordering::Relaxed) >= 2,
+      "expected cancel callback to be invoked multiple times during dom parse"
+    );
+
+    // Cancellation must not perturb the currently committed URL hints.
     assert_eq!(document.base_url(), Some("https://example.com/base/"));
     assert_eq!(document.document_url(), Some("https://example.com/doc"));
     assert_eq!(
