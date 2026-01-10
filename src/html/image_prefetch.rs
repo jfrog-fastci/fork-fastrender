@@ -8,7 +8,7 @@
 use crate::css::loader::resolve_href_with_base;
 use crate::css::parser::tokenize_rel_list;
 use crate::dom::{
-  img_src_is_placeholder, DomNode, COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES,
+  img_src_is_placeholder, srcset_is_placeholder, DomNode, COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES,
   COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES, COMPAT_SIZES_DATA_ATTR_CANDIDATES,
   COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES,
 };
@@ -117,14 +117,24 @@ fn get_img_src_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
 }
 
 fn get_img_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
-  get_non_empty_attr(node, "srcset")
-    .or_else(|| get_first_non_empty_attr(node, &IMG_SRCSET_DATA_ATTR_FALLBACKS))
+  if let Some(srcset) = get_non_empty_attr(node, "srcset") {
+    if !srcset_is_placeholder(srcset) {
+      return Some(srcset);
+    }
+  }
+
+  get_first_non_empty_attr(node, &IMG_SRCSET_DATA_ATTR_FALLBACKS)
     .or_else(|| get_first_non_empty_attr(node, &COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES))
 }
 
 fn get_source_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
-  get_non_empty_attr(node, "srcset")
-    .or_else(|| get_first_non_empty_attr(node, &COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES))
+  if let Some(srcset) = get_non_empty_attr(node, "srcset") {
+    if !srcset_is_placeholder(srcset) {
+      return Some(srcset);
+    }
+  }
+
+  get_first_non_empty_attr(node, &COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES)
 }
 
 fn get_sizes_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
@@ -1275,6 +1285,27 @@ mod tests {
   #[test]
   fn discovers_img_srcset_from_data_srcset() {
     let html = r#"<img data-srcset="a1.jpg 1x, a2.jpg 2x">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 2.0);
+    let ctx = ctx_for((800.0, 600.0), 2.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 1,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+    assert_eq!(out.urls, vec!["https://example.com/a2.jpg".to_string()]);
+  }
+
+  #[test]
+  fn falls_back_from_placeholder_srcset_to_data_srcset() {
+    let html = r#"<img srcset="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-srcset="a1.jpg 1x, a2.jpg 2x">"#;
     let dom = parse_html(html).unwrap();
 
     let media_ctx = media_ctx_for((800.0, 600.0), 2.0);

@@ -3375,14 +3375,17 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
 
   let rest = &value["data:".len()..];
   let Some((metadata, payload)) = rest.split_once(',') else {
+    let mut parts = rest.split(';');
+    let mediatype = trim_ascii_whitespace(parts.next().unwrap_or(""));
+    let is_base64 = parts.any(|part| trim_ascii_whitespace(part).eq_ignore_ascii_case("base64"));
+    if starts_with_ignore_ascii_case(mediatype, "image/") && is_base64 {
+      return true;
+    }
     return false;
   };
 
   let mut parts = metadata.split(';');
   let mediatype = trim_ascii_whitespace(parts.next().unwrap_or(""));
-  if !mediatype.eq_ignore_ascii_case("image/gif") {
-    return false;
-  }
   let is_base64 = parts.any(|part| trim_ascii_whitespace(part).eq_ignore_ascii_case("base64"));
   if !is_base64 {
     return false;
@@ -3392,27 +3395,90 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
   if payload.is_empty() {
     return true;
   }
-  // Avoid decoding unusually large data URLs; placeholders are tiny and should decode quickly.
-  if payload.len() > 512 {
-    return false;
+
+  if mediatype.eq_ignore_ascii_case("image/gif") {
+    // Avoid decoding unusually large data URLs; placeholders are tiny and should decode quickly.
+    if payload.len() > 512 {
+      return false;
+    }
+
+    let Ok(resource) = crate::resource::decode_data_url(value) else {
+      return false;
+    };
+    let decoded = resource.bytes;
+
+    if decoded.len() < 10 {
+      return false;
+    }
+
+    if &decoded[..6] != b"GIF87a" && &decoded[..6] != b"GIF89a" {
+      return false;
+    }
+
+    let width = u16::from_le_bytes([decoded[6], decoded[7]]);
+    let height = u16::from_le_bytes([decoded[8], decoded[9]]);
+    return width == 1 && height == 1;
   }
 
-  let Ok(resource) = crate::resource::decode_data_url(value) else {
-    return false;
-  };
-  let decoded = resource.bytes;
+  if mediatype.eq_ignore_ascii_case("image/png") {
+    // Avoid decoding unusually large data URLs; placeholders are tiny and should decode quickly.
+    if payload.len() > 2048 {
+      return false;
+    }
 
-  if decoded.len() < 10 {
-    return false;
+    let Ok(resource) = crate::resource::decode_data_url(value) else {
+      return false;
+    };
+    let decoded = resource.bytes;
+
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if decoded.len() < PNG_SIG.len() {
+      return false;
+    }
+    if decoded.as_slice().get(..PNG_SIG.len()) != Some(PNG_SIG.as_slice()) {
+      return false;
+    }
+
+    if decoded.len() < 8 + 8 + 8 {
+      return false;
+    }
+    let ihdr_len = u32::from_be_bytes([decoded[8], decoded[9], decoded[10], decoded[11]]) as usize;
+    if &decoded[12..16] != b"IHDR" {
+      return false;
+    }
+    if ihdr_len != 13 {
+      return false;
+    }
+    let Some(data_end) = 16usize.checked_add(ihdr_len) else {
+      return false;
+    };
+    if decoded.len() < data_end {
+      return false;
+    }
+
+    let width = u32::from_be_bytes([decoded[16], decoded[17], decoded[18], decoded[19]]);
+    let height = u32::from_be_bytes([decoded[20], decoded[21], decoded[22], decoded[23]]);
+    return width == 1 && height == 1;
   }
 
-  if &decoded[..6] != b"GIF87a" && &decoded[..6] != b"GIF89a" {
-    return false;
+  false
+}
+
+pub(crate) fn srcset_is_placeholder(value: &str) -> bool {
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
-  let width = u16::from_le_bytes([decoded[6], decoded[7]]);
-  let height = u16::from_le_bytes([decoded[8], decoded[9]]);
-  width == 1 && height == 1
+  let value = trim_ascii_whitespace(value);
+  if value.is_empty() {
+    return true;
+  }
+
+  let candidates = crate::html::image_attrs::parse_srcset_with_limit(value, 32);
+  if candidates.is_empty() {
+    return true;
+  }
+  candidates.iter().all(|candidate| img_src_is_placeholder(&candidate.url))
 }
 
 /// Optional DOM compatibility tweaks applied after HTML parsing.
@@ -9111,6 +9177,23 @@ mod tests {
   fn img_src_is_placeholder_accepts_base64_data_url_with_whitespace() {
     let url = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEK\nAAEALAAAAAABAAEAAAICTAEAOw==";
     assert!(img_src_is_placeholder(url));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_accepts_1x1_png_base64_data_url() {
+    let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+    assert!(img_src_is_placeholder(url));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_rejects_non_1x1_png_base64_data_url() {
+    let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAC0lEQVR4nGNggAIAAAkAAftSuKkAAAAASUVORK5CYII=";
+    assert!(!img_src_is_placeholder(url));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_treats_base64_image_header_without_payload_as_placeholder() {
+    assert!(img_src_is_placeholder("data:image/png;base64"));
   }
 
   #[test]

@@ -353,6 +353,20 @@ fn compatibility_mode_lifts_srcset_for_img_and_picture_sources() {
 }
 
 #[test]
+fn compatibility_mode_overwrites_placeholder_srcset_from_data_srcset() {
+  let html = r#"<html><body><img srcset="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-srcset="real.jpg 1x, real2.jpg 2x"></body></html>"#;
+
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("srcset"),
+    Some("real.jpg 1x, real2.jpg 2x"),
+    "compat mode should lift data-srcset when authored srcset is placeholder-only"
+  );
+}
+
+#[test]
 fn compatibility_mode_lifts_sizes_from_data_sizes() {
   let html = r#"<html><body><img data-src="a.jpg" data-sizes="100vw"></body></html>"#;
 
