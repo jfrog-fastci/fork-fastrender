@@ -1350,6 +1350,15 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      }\n");
   out.push_str("      Ok(obj)\n");
   out.push_str("    }\n");
+  out.push_str("    BindingValue::FrozenArray(values) => {\n");
+  out.push_str("      let obj = rt.create_object()?;\n");
+  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
+  out.push_str("        let key = idx.to_string();\n");
+  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
+  out.push_str("        rt.define_data_property_str(obj, &key, value, true)?;\n");
+  out.push_str("      }\n");
+  out.push_str("      Ok(obj)\n");
+  out.push_str("    }\n");
   out.push_str("    BindingValue::Dictionary(map) => {\n");
   out.push_str("      let obj = rt.create_object()?;\n");
   out.push_str("      for (key, item) in map {\n");
@@ -1923,7 +1932,17 @@ fn emit_conversion_expr_for_optional(
   let default_expr = arg
     .default
     .as_ref()
-    .map(|lit| emit_default_literal(lit))
+    .map(|lit| match lit {
+      // Preserve FrozenArray distinction even when the default is `[]`.
+      IdlLiteral::EmptyArray => match &arg.type_ {
+        IdlType::FrozenArray(_) => "BindingValue::FrozenArray(Vec::new())".to_string(),
+        IdlType::Nullable(inner) if matches!(inner.as_ref(), IdlType::FrozenArray(_)) => {
+          "BindingValue::FrozenArray(Vec::new())".to_string()
+        }
+        _ => emit_default_literal(lit),
+      },
+      _ => emit_default_literal(lit),
+    })
     .unwrap_or_else(|| "BindingValue::Undefined".to_string());
 
   format!(
@@ -2000,11 +2019,61 @@ fn emit_conversion_expr(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_iden
       // Union conversion is non-trivial; for MVP treat as opaque.
       format!("BindingValue::Object({value_ident})")
     }
-    IdlType::Sequence(_)
-    | IdlType::FrozenArray(_)
-    | IdlType::Promise(_)
-    | IdlType::Record { .. } => format!("BindingValue::Object({value_ident})"),
+    IdlType::Sequence(elem) => emit_iterable_list_conversion_expr(
+      resolved,
+      elem,
+      value_ident,
+      "sequence",
+      "Sequence",
+    ),
+    IdlType::FrozenArray(elem) => emit_iterable_list_conversion_expr(
+      resolved,
+      elem,
+      value_ident,
+      "FrozenArray",
+      "FrozenArray",
+    ),
+    IdlType::Promise(_) | IdlType::Record { .. } => format!("BindingValue::Object({value_ident})"),
   }
+}
+
+fn emit_iterable_list_conversion_expr(
+  resolved: &ResolvedWebIdlWorld,
+  elem_ty: &IdlType,
+  value_ident: &str,
+  kind_label: &str,
+  out_variant: &str,
+) -> String {
+  let elem_expr = emit_conversion_expr(resolved, elem_ty, "next");
+  format!(
+    r#"{{
+  if !rt.is_object({value_ident}) {{
+    return Err(rt.throw_type_error("expected object for {kind_label}"));
+  }}
+  rt.with_stack_roots(&[{value_ident}], |rt| {{
+    let iterator_key = rt.symbol_iterator()?;
+    let Some(method) = rt.get_method({value_ident}, iterator_key)? else {{
+      return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
+    }};
+    let mut iterator_record = rt.get_iterator_from_method({value_ident}, method)?;
+    rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
+      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+      while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {{
+        if values.len() >= rt.limits().max_sequence_length {{
+          return Err(rt.throw_range_error("{kind_label} exceeds maximum length"));
+        }}
+        let converted = rt.with_stack_roots(&[next], |rt| Ok({elem_expr}))?;
+        values.push(converted);
+      }}
+      Ok(BindingValue::{out_variant}(values))
+    }})
+  }})?
+}}"#,
+    value_ident = value_ident,
+    kind_label = kind_label,
+    out_variant = out_variant,
+    elem_expr = elem_expr,
+  )
 }
 
 fn required_arg_count(args: &[Argument]) -> usize {

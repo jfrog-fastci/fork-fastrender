@@ -33,6 +33,15 @@ pub mod window {
         }
         Ok(obj)
       }
+      BindingValue::FrozenArray(values) => {
+        let obj = rt.create_object()?;
+        for (idx, item) in values.into_iter().enumerate() {
+          let key = idx.to_string();
+          let value = binding_value_to_js::<Host, R>(rt, item)?;
+          rt.define_data_property_str(obj, &key, value, true)?;
+        }
+        Ok(obj)
+      }
       BindingValue::Dictionary(map) => {
         let obj = rt.create_object()?;
         for (key, item) in map {
@@ -158,4 +167,126 @@ pub mod window {
   }
 }
 
+<<<<<<< HEAD
 pub use window::install_window_bindings;
+=======
+#[allow(dead_code)]
+fn foo_takes_frozen_array<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      if !rt.is_object(v0) {
+        return Err(rt.throw_type_error("expected object for FrozenArray"));
+      }
+      rt.with_stack_roots(&[v0], |rt| {
+        let iterator_key = rt.symbol_iterator()?;
+        let Some(method) = rt.get_method(v0, iterator_key)? else {
+          return Err(rt.throw_type_error("FrozenArray: object is not iterable"));
+        };
+        let mut iterator_record = rt.get_iterator_from_method(v0, method)?;
+        rt.with_stack_roots(
+          &[iterator_record.iterator, iterator_record.next_method],
+          |rt| {
+            let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+            while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+              if values.len() >= rt.limits().max_sequence_length {
+                return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
+              }
+              let converted =
+                rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+              values.push(converted);
+            }
+            Ok(BindingValue::FrozenArray(values))
+          },
+        )
+      })?
+    });
+    let result =
+      host.call_operation(rt, Some(this), "Foo", "takesFrozenArray", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn foo_takes_sequence<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      if !rt.is_object(v0) {
+        return Err(rt.throw_type_error("expected object for sequence"));
+      }
+      rt.with_stack_roots(&[v0], |rt| {
+        let iterator_key = rt.symbol_iterator()?;
+        let Some(method) = rt.get_method(v0, iterator_key)? else {
+          return Err(rt.throw_type_error("sequence: object is not iterable"));
+        };
+        let mut iterator_record = rt.get_iterator_from_method(v0, method)?;
+        rt.with_stack_roots(
+          &[iterator_record.iterator, iterator_record.next_method],
+          |rt| {
+            let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+            while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+              if values.len() >= rt.limits().max_sequence_length {
+                return Err(rt.throw_range_error("sequence exceeds maximum length"));
+              }
+              let converted =
+                rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+              values.push(converted);
+            }
+            Ok(BindingValue::Sequence(values))
+          },
+        )
+      })?
+    });
+    let result = host.call_operation(rt, Some(this), "Foo", "takesSequence", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  let global = rt.global_object()?;
+  let proto_foo = rt.create_object()?;
+  let func = rt.create_function(foo_baz::<Host, R>)?;
+  rt.define_data_property_str(proto_foo, "baz", func, true)?;
+  let func = rt.create_function(foo_qux::<Host, R>)?;
+  rt.define_data_property_str(proto_foo, "qux", func, true)?;
+  let func = rt.create_function(foo_takes_frozen_array::<Host, R>)?;
+  rt.define_data_property_str(proto_foo, "takesFrozenArray", func, true)?;
+  let func = rt.create_function(foo_takes_sequence::<Host, R>)?;
+  rt.define_data_property_str(proto_foo, "takesSequence", func, true)?;
+  let _ = host;
+  Ok(())
+}
+>>>>>>> f8ed64b9 (feat(webidl): support sequence/FrozenArray conversion in vm-js bindings)

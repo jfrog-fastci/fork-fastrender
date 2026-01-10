@@ -60,6 +60,15 @@ pub trait JsRuntime {
   /// Error type used by the runtime (usually the engine's exception/termination type).
   type Error;
 
+  /// Run `f` with `roots` treated as GC roots for the duration of the call.
+  ///
+  /// WebIDL conversion algorithms often keep VM values in local variables across allocations
+  /// (e.g. iterator records when converting `sequence<T>`). GC-backed runtimes must ensure those
+  /// values remain rooted so they cannot be collected while host code is still using them.
+  fn with_stack_roots<R, F>(&mut self, roots: &[Self::JsValue], f: F) -> Result<R, Self::Error>
+  where
+    F: FnOnce(&mut Self) -> Result<R, Self::Error>;
+
   fn js_undefined(&self) -> Self::JsValue;
   fn js_null(&self) -> Self::JsValue;
   fn js_boolean(&self, value: bool) -> Self::JsValue;

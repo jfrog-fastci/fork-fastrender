@@ -16,6 +16,7 @@ pub enum BindingValue<JsValue: Copy> {
   String(String),
   Object(JsValue),
   Sequence(Vec<BindingValue<JsValue>>),
+  FrozenArray(Vec<BindingValue<JsValue>>),
   Dictionary(BTreeMap<String, BindingValue<JsValue>>),
 }
 

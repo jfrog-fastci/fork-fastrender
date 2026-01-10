@@ -232,17 +232,44 @@ impl VmJsRuntime {
     //
     // Instead, explicitly push stack roots and truncate them after `f` returns.
     let base_len = self.heap.stack_root_len();
-    for v in roots {
-      // `vm-js` only debug-asserts root validity when pushing stack roots. Ensure we return an
-      // error in release builds rather than silently enqueuing stale handles.
+
+    // Collect roots so we can push them onto the `vm-js` root stack in a single operation.
+    //
+    // This ensures *all* pending roots are treated as roots if growing the root stack triggers a
+    // GC. Pushing one-by-one is incorrect under extreme GC pressure: GC could collect not-yet-pushed
+    // values between individual `push_stack_root` calls.
+    // Allocate the temporary root list fallibly so hostile input cannot abort the host process on
+    // allocator OOM.
+    let mut roots_vec: Vec<Value> = Vec::new();
+    let mut iter = roots.into_iter();
+    let (lower, upper) = iter.size_hint();
+    let reserve = upper.unwrap_or(lower);
+    if reserve != 0 {
+      roots_vec
+        .try_reserve_exact(reserve)
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+    for v in iter {
+      if roots_vec.len() == roots_vec.capacity() {
+        roots_vec
+          .try_reserve_exact(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+      }
+      roots_vec.push(v);
+    }
+
+    // `vm-js` only debug-asserts root validity when pushing stack roots. Ensure we return an error
+    // in release builds rather than silently enqueuing stale handles.
+    for &v in &roots_vec {
       if !self.value_is_valid_or_primitive(v) {
         self.heap.truncate_stack_roots(base_len);
         return Err(VmError::InvalidHandle);
       }
-      if let Err(err) = self.heap.push_stack_root(v) {
-        self.heap.truncate_stack_roots(base_len);
-        return Err(err);
-      }
+    }
+
+    if let Err(err) = self.heap.push_stack_roots(&roots_vec) {
+      self.heap.truncate_stack_roots(base_len);
+      return Err(err);
     }
 
     let result = f(self);
@@ -763,35 +790,51 @@ impl VmJsRuntime {
       Err(_) => return Value::Undefined,
     };
 
-    let message_handle = match self
-      .alloc_string_handle(message)
-      .or_else(|_| self.alloc_string_handle("error"))
-    {
-      Ok(s) => s,
-      Err(_) => return Value::Undefined,
-    };
-
+    // Record host-side metadata immediately. This does not keep the wrapper alive (keyed by
+    // `WeakGcObject`), but lets us implement `Error.prototype.toString`-like behavior.
     self
       .host_objects
       .insert(WeakGcObject::from(obj), HostObjectKind::Error { name });
 
-    let _ = self.with_stack_roots([Value::Object(obj), Value::String(message_handle)], |rt| {
-      let name_key = rt.property_key_from_str("name")?;
-      let name_value = rt.alloc_string("TypeError")?; // overwritten below when name != TypeError
-      let name_value = match name {
-        "TypeError" => name_value,
-        other => rt.alloc_string(other)?,
-      };
-      rt.define_data_property(Value::Object(obj), name_key, name_value, false)?;
+    // Under extreme GC pressure (e.g. tests that force a GC before every allocation), we must keep
+    // the error object rooted while allocating its `name`/`message` strings and property keys.
+    //
+    // `vm-js` does not trace Rust locals, so an allocation for `message` can GC and collect `obj`
+    // unless it is explicitly rooted.
+    let Ok(message_handle) = self.with_stack_roots([Value::Object(obj)], |rt| {
+      rt.alloc_string_handle(message)
+        .or_else(|_| rt.alloc_string_handle("error"))
+    }) else {
+      return Value::Undefined;
+    };
 
-      let message_key = rt.property_key_from_str("message")?;
-      rt.define_data_property(
-        Value::Object(obj),
-        message_key,
-        Value::String(message_handle),
-        false,
-      )?;
-      Ok(())
+    let _ = self.with_stack_roots([Value::Object(obj), Value::String(message_handle)], |rt| {
+      let name_value = rt.alloc_string(name)?;
+      rt.with_stack_roots([name_value], |rt| {
+        let name_key = rt.property_key_from_str("name")?;
+        let name_key_value = match name_key {
+          PropertyKey::String(s) => Some(Value::String(s)),
+          PropertyKey::Symbol(s) => Some(Value::Symbol(s)),
+        };
+        rt.with_stack_roots(name_key_value, |rt| {
+          rt.define_data_property(Value::Object(obj), name_key, name_value, false)
+        })?;
+
+        let message_key = rt.property_key_from_str("message")?;
+        let message_key_value = match message_key {
+          PropertyKey::String(s) => Some(Value::String(s)),
+          PropertyKey::Symbol(s) => Some(Value::Symbol(s)),
+        };
+        rt.with_stack_roots(message_key_value, |rt| {
+          rt.define_data_property(
+            Value::Object(obj),
+            message_key,
+            Value::String(message_handle),
+            false,
+          )
+        })?;
+        Ok(())
+      })
     });
 
     Value::Object(obj)
@@ -940,6 +983,13 @@ impl JsRuntime for VmJsRuntime {
   type JsValue = Value;
   type PropertyKey = PropertyKey;
   type Error = VmError;
+
+  fn with_stack_roots<R, F>(&mut self, roots: &[Value], f: F) -> Result<R, VmError>
+  where
+    F: FnOnce(&mut Self) -> Result<R, VmError>,
+  {
+    VmJsRuntime::with_stack_roots(self, roots.iter().copied(), f)
+  }
 
   fn js_undefined(&self) -> Value {
     Value::Undefined

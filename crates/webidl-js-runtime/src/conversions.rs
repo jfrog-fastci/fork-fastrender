@@ -940,11 +940,13 @@ fn convert_to_sequence<R: WebIdlJsRuntime>(
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   // `GetMethod(V, @@iterator)` uses `ToObject(V)` under the hood, so accept primitives here.
   let v = rt.to_object(v)?;
-  let iterator_key = rt.symbol_iterator()?;
-  let Some(method) = rt.get_method(v, iterator_key)? else {
-    return Err(rt.throw_type_error("Value is not iterable"));
-  };
-  create_sequence_from_iterable(rt, v, method, elem_ty, ctx, typedef_stack)
+  rt.with_stack_roots(&[v], |rt| {
+    let iterator_key = rt.symbol_iterator()?;
+    let Some(method) = rt.get_method(v, iterator_key)? else {
+      return Err(rt.throw_type_error("Value is not iterable"));
+    };
+    create_sequence_from_iterable(rt, v, method, elem_ty, ctx, typedef_stack)
+  })
 }
 
 fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
@@ -956,25 +958,36 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   let mut iterator_record = rt.get_iterator_from_method(iterable, method)?;
-  let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
-  while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
-    if values.len() >= rt.limits().max_sequence_length {
-      return Err(rt.throw_range_error("sequence exceeds maximum length"));
-    }
-    let converted = convert_to_idl_inner(
-      rt,
-      next,
-      elem_ty,
-      ctx,
-      typedef_stack,
-      ConversionState::default(),
-    )?;
-    values.push(converted);
-  }
-  Ok(ConvertedValue::Sequence {
-    elem_ty: Box::new(elem_ty.clone()),
-    values,
-  })
+  rt.with_stack_roots(
+    &[
+      iterable,
+      iterator_record.iterator,
+      iterator_record.next_method,
+    ],
+    |rt| {
+      let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
+      while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+        if values.len() >= rt.limits().max_sequence_length {
+          return Err(rt.throw_range_error("sequence exceeds maximum length"));
+        }
+        let converted = rt.with_stack_roots(&[next], |rt| {
+          convert_to_idl_inner(
+            rt,
+            next,
+            elem_ty,
+            ctx,
+            typedef_stack,
+            ConversionState::default(),
+          )
+        })?;
+        values.push(converted);
+      }
+      Ok(ConvertedValue::Sequence {
+        elem_ty: Box::new(elem_ty.clone()),
+        values,
+      })
+    },
+  )
 }
 
 fn convert_to_record<R: WebIdlJsRuntime>(

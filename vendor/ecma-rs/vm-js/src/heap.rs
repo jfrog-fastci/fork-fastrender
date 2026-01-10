@@ -235,6 +235,36 @@ impl Heap {
     Ok(())
   }
 
+  /// Pushes multiple value stack roots in one operation.
+  ///
+  /// This is equivalent to calling [`Heap::push_stack_root`] repeatedly, but ensures *all* values
+  /// are treated as roots if the root stack needs to grow (and therefore potentially trigger GC).
+  pub fn push_stack_roots(&mut self, values: &[Value]) -> Result<(), VmError> {
+    if values.is_empty() {
+      return Ok(());
+    }
+
+    for value in values {
+      debug_assert!(self.debug_value_is_valid_or_primitive(*value));
+    }
+
+    let new_len = self
+      .root_stack
+      .len()
+      .checked_add(values.len())
+      .ok_or(VmError::OutOfMemory)?;
+    let growth_bytes = vec_capacity_growth_bytes::<Value>(self.root_stack.capacity(), new_len);
+    if growth_bytes != 0 {
+      // Ensure `values` are treated as roots if this triggers a GC while we grow `root_stack`.
+      self.ensure_can_allocate_with_extra_roots(|_| growth_bytes, values, &[], &[], &[])?;
+      reserve_vec_to_len::<Value>(&mut self.root_stack, new_len)?;
+    }
+    for value in values {
+      self.root_stack.push(*value);
+    }
+    Ok(())
+  }
+
   /// Truncates the value stack root set.
   pub fn truncate_stack_roots(&mut self, len: usize) {
     self.root_stack.truncate(len);
