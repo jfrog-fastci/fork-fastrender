@@ -135,7 +135,7 @@ pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
-pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost};
+pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost, LoadBlockerKind};
 pub use crate::web::dom::DocumentReadyState;
 pub use event_loop::{
   AnimationFrameId, EventLoop, MicrotaskCheckpointLimitedOutcome, QueueLimits, RunAnimationFrameOutcome,

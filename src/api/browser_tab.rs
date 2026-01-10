@@ -10,11 +10,10 @@ use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::resource::ResourceFetcher;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
-  DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
-  DocumentWriteState, JsDomEvents, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
-  ScriptElementSpec, ScriptId, LocationNavigationRequest, ScriptBlockingStyleSheetSet,
-  ScriptOrchestrator,
-  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  DocumentReadyState, DocumentWriteState, DomHost, EventLoop, JsDomEvents, JsExecutionOptions,
+  LoadBlockerKind, LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec, ScriptId,
+  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::js::runtime::with_event_loop;
 use crate::js::script_encoding::decode_classic_script_bytes;
@@ -203,6 +202,7 @@ pub struct BrowserTabHost {
   scheduled_script_nodes: HashSet<NodeId>,
   deferred_scripts: HashSet<ScriptId>,
   executed: HashSet<ScriptId>,
+  pending_script_load_blockers: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
@@ -263,6 +263,7 @@ impl BrowserTabHost {
       scheduled_script_nodes: HashSet::new(),
       deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
+      pending_script_load_blockers: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
       base_url: None,
@@ -358,6 +359,7 @@ impl BrowserTabHost {
     self.scheduled_script_nodes.clear();
     self.deferred_scripts.clear();
     self.executed.clear();
+    self.pending_script_load_blockers.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
     self.base_url = document_url;
@@ -422,7 +424,6 @@ impl BrowserTabHost {
     // Cached query results depend on the context fingerprint, so clear on updates.
     self.stylesheet_media_query_cache = MediaQueryCache::default();
   }
-
   fn load_stylesheet_and_imports(&mut self, url: &str) -> Result<()> {
     let fetcher = self.document.fetcher();
     let mut req = FetchRequest::new(url, FetchDestination::Style);
@@ -574,11 +575,18 @@ impl BrowserTabHost {
     let key = self.next_stylesheet_key;
     self.next_stylesheet_key = self.next_stylesheet_key.wrapping_add(1);
     self.stylesheet_keys_by_node.insert(link_node_id, key);
-    self.script_blocking_stylesheets.register_blocking_stylesheet(key);
+    let inserted = self
+      .script_blocking_stylesheets
+      .register_blocking_stylesheet(key);
 
-    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+    let queued = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
       let load_result = host.load_stylesheet_and_imports(&url);
-      host.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      let removed = host.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      if inserted && removed {
+        host
+          .lifecycle
+          .load_blocker_completed(LoadBlockerKind::StyleSheet, event_loop)?;
+      }
       if !host.script_blocking_stylesheets.has_blocking_stylesheet() {
         // Wake parser-blocking scripts/parsing if this was the last blocking stylesheet.
         if let Err(err) = host.queue_parse_task(event_loop) {
@@ -593,7 +601,19 @@ impl BrowserTabHost {
         Err(err @ Error::Render(_)) => Err(err),
         Err(_) => Ok(()),
       }
-    })?;
+    });
+    if let Err(err) = queued {
+      // If we cannot queue the networking task, do not leave script/blocking + load/lifecycle
+      // tracking state wedged.
+      self.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      self.stylesheet_keys_by_node.remove(&link_node_id);
+      return Err(err);
+    }
+    if inserted {
+      self
+        .lifecycle
+        .register_pending_load_blocker(LoadBlockerKind::StyleSheet);
+    }
 
     Ok(())
   }
@@ -711,10 +731,10 @@ impl BrowserTabHost {
 
         // Start fetching any script-blocking stylesheet links discovered during this parse step.
         for (node_id, url) in state.parser.take_pending_stylesheet_links() {
-            self.start_script_blocking_stylesheet_load(node_id, url, event_loop)?;
-          }
+          self.start_script_blocking_stylesheet_load(node_id, url, event_loop)?;
+        }
 
-          match yield_result {
+        match yield_result {
           StreamingParserYield::NeedMoreInput => {
             if state.input_offset < state.input.len() {
               let mut end = (state.input_offset + INPUT_CHUNK_BYTES).min(state.input.len());
@@ -1365,6 +1385,15 @@ impl BrowserTabHost {
           destination,
           ..
         } => {
+          if !self.pending_script_load_blockers.insert(script_id) {
+            return Err(Error::Other(format!(
+              "ScriptScheduler requested StartFetch more than once for script_id={}",
+              script_id.as_u64()
+            )));
+          }
+          self
+            .lifecycle
+            .register_pending_load_blocker(LoadBlockerKind::Script);
           self.start_fetch(script_id, url, destination, event_loop)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
@@ -1586,6 +1615,11 @@ impl BrowserTabHost {
     }
     if newly_executed && self.deferred_scripts.contains(&script_id) {
       self.lifecycle.deferred_script_executed(event_loop)?;
+    }
+    if newly_executed && self.pending_script_load_blockers.remove(&script_id) {
+      self
+        .lifecycle
+        .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
     }
     Ok(())
   }
@@ -6491,6 +6525,54 @@ html, body { margin: 0; padding: 0; }
         .expect("get_attribute should succeed"),
       Some("1")
     );
+    Ok(())
+  }
+
+  #[test]
+  fn load_waits_for_async_external_script_execution() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host(
+      "<script async src=\"https://example.com/a.js\"></script>",
+      Rc::clone(&log),
+    )?;
+    host.register_external_script_source("https://example.com/a.js".to_string(), "A".to_string());
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    let actions = host.scheduler.parsing_completed()?;
+    host.apply_scheduler_actions(actions, &mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    // Tasks should run in this order:
+    // - networking fetch (queues async execution task)
+    // - DOMContentLoaded barrier
+    // - DOMContentLoaded
+    // - async script execution
+    // - load
+    assert_eq!(host.dom().ready_state().as_str(), "interactive");
+
+    assert!(event_loop.run_next_task(&mut host)?); // fetch
+    assert!(event_loop.run_next_task(&mut host)?); // barrier
+    assert!(event_loop.run_next_task(&mut host)?); // DOMContentLoaded
+
+    // `load` must not have fired yet because the async script has not executed.
+    assert_eq!(host.dom().ready_state().as_str(), "interactive");
+    assert_eq!(&*log.borrow(), &Vec::<String>::new());
+
+    // Async script execution task (and its microtask checkpoint).
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(
+      &*log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()]
+    );
+
+    // `load` should now be queued and should advance `document.readyState` to `complete`.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(host.dom().ready_state().as_str(), "complete");
     Ok(())
   }
 }

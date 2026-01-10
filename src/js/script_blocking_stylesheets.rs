@@ -14,12 +14,12 @@ impl ScriptBlockingStyleSheetSet {
     self.keys.len()
   }
 
-  pub fn register_blocking_stylesheet(&mut self, key: usize) {
-    self.keys.insert(key);
+  pub fn register_blocking_stylesheet(&mut self, key: usize) -> bool {
+    self.keys.insert(key)
   }
 
-  pub fn unregister_blocking_stylesheet(&mut self, key: usize) {
-    self.keys.remove(&key);
+  pub fn unregister_blocking_stylesheet(&mut self, key: usize) -> bool {
+    self.keys.remove(&key)
   }
 
   pub fn has_blocking_stylesheet(&self) -> bool {

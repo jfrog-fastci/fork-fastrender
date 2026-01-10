@@ -5,6 +5,19 @@ use crate::web::events::{Event, EventInit, EventTargetId};
 
 pub use crate::web::dom::DocumentReadyState;
 
+/// Category of a subresource that delays the `window` `load` event.
+///
+/// This is intentionally minimal and can be extended as more subresources are modeled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LoadBlockerKind {
+  /// External scripts (`<script src=...>`) that have been discovered and not yet executed.
+  Script,
+  /// Render-blocking stylesheets (e.g. `<link rel=stylesheet href=...>`).
+  StyleSheet,
+  /// Catch-all for future expansion.
+  Other,
+}
+
 /// Host hooks required by the HTML document lifecycle scheduler.
 ///
 /// This is intentionally minimal: it models the lifecycle algorithm ("queue tasks to dispatch
@@ -79,14 +92,18 @@ pub trait DocumentLifecycleHost {
 /// - scheduling/firing of `DOMContentLoaded` and `load`
 /// - a "deferred scripts pending" gate used to delay `DOMContentLoaded` until all deferred scripts
 ///   have executed
+/// - a "pending load blockers" gate used to delay `load` until all critical subresources have
+///   completed (at minimum: external scripts and render-blocking stylesheets)
 ///
 /// It intentionally does **not** model:
-/// - subresource loading
 /// - navigation / BFCache
 #[derive(Debug, Clone)]
 pub struct DocumentLifecycle {
   parsing_completed: bool,
   pending_deferred_scripts: usize,
+  pending_load_blockers_script: usize,
+  pending_load_blockers_stylesheet: usize,
+  pending_load_blockers_other: usize,
   dom_content_loaded_queued: bool,
   dom_content_loaded_fired: bool,
   load_queued: bool,
@@ -104,6 +121,9 @@ impl DocumentLifecycle {
     Self {
       parsing_completed: false,
       pending_deferred_scripts: 0,
+      pending_load_blockers_script: 0,
+      pending_load_blockers_stylesheet: 0,
+      pending_load_blockers_other: 0,
       dom_content_loaded_queued: false,
       dom_content_loaded_fired: false,
       load_queued: false,
@@ -111,15 +131,64 @@ impl DocumentLifecycle {
     }
   }
 
+  fn pending_load_blockers_total(&self) -> usize {
+    self
+      .pending_load_blockers_script
+      .saturating_add(self.pending_load_blockers_stylesheet)
+      .saturating_add(self.pending_load_blockers_other)
+  }
+
   /// Record discovery of a parser-inserted `defer` script that should delay `DOMContentLoaded`.
   pub fn register_deferred_script(&mut self) {
     self.pending_deferred_scripts = self.pending_deferred_scripts.saturating_add(1);
   }
 
+  /// Register a new subresource that should delay `window.load`.
+  ///
+  /// Hosts should call this when a "load blocker" subresource starts (typically when the fetch for
+  /// an external script or render-blocking stylesheet begins).
+  pub fn register_pending_load_blocker(&mut self, kind: LoadBlockerKind) {
+    match kind {
+      LoadBlockerKind::Script => {
+        self.pending_load_blockers_script = self.pending_load_blockers_script.saturating_add(1);
+      }
+      LoadBlockerKind::StyleSheet => {
+        self.pending_load_blockers_stylesheet =
+          self.pending_load_blockers_stylesheet.saturating_add(1);
+      }
+      LoadBlockerKind::Other => {
+        self.pending_load_blockers_other = self.pending_load_blockers_other.saturating_add(1);
+      }
+    }
+  }
+
+  /// Notify the lifecycle that a previously registered load blocker completed (success or error).
+  ///
+  /// When this call decrements the last remaining load blocker and `DOMContentLoaded` has already
+  /// fired, this queues the `load` task.
+  pub fn load_blocker_completed<Host: DocumentLifecycleHost + 'static>(
+    &mut self,
+    kind: LoadBlockerKind,
+    event_loop: &mut EventLoop<Host>,
+  ) -> Result<()> {
+    let counter = match kind {
+      LoadBlockerKind::Script => &mut self.pending_load_blockers_script,
+      LoadBlockerKind::StyleSheet => &mut self.pending_load_blockers_stylesheet,
+      LoadBlockerKind::Other => &mut self.pending_load_blockers_other,
+    };
+    if *counter == 0 {
+      return Err(Error::Other(format!(
+        "DocumentLifecycle load_blocker_completed underflow for {kind:?}"
+      )));
+    }
+    *counter -= 1;
+    self.maybe_queue_load_task(event_loop)
+  }
+
   /// Notify the lifecycle that one deferred script finished executing.
   ///
   /// If parsing is complete and this was the last pending deferred script, this queues the
-  /// `DOMContentLoaded` and `load` tasks into the event loop.
+  /// `DOMContentLoaded` task into the event loop.
   pub fn deferred_script_executed<Host: DocumentLifecycleHost + 'static>(
     &mut self,
     event_loop: &mut EventLoop<Host>,
@@ -130,7 +199,7 @@ impl DocumentLifecycle {
       ));
     }
     self.pending_deferred_scripts -= 1;
-    self.maybe_queue_lifecycle_tasks(event_loop)
+    self.maybe_queue_dom_content_loaded_task(event_loop)
   }
 
   /// Notify the lifecycle that HTML parsing has completed.
@@ -146,10 +215,10 @@ impl DocumentLifecycle {
     event_loop: &mut EventLoop<Host>,
   ) -> Result<()> {
     self.parsing_completed = true;
-    self.maybe_queue_lifecycle_tasks(event_loop)
+    self.maybe_queue_dom_content_loaded_task(event_loop)
   }
 
-  fn maybe_queue_lifecycle_tasks<Host: DocumentLifecycleHost + 'static>(
+  fn maybe_queue_dom_content_loaded_task<Host: DocumentLifecycleHost + 'static>(
     &mut self,
     event_loop: &mut EventLoop<Host>,
   ) -> Result<()> {
@@ -178,19 +247,34 @@ impl DocumentLifecycle {
     // always holds, even when parsing completion is signalled from the host stack.
     event_loop.queue_task(TaskSource::DOMManipulation, |_host, _event_loop| Ok(()))?;
     event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
-      with_event_loop(event_loop, || fire_dom_content_loaded(host))
+      // Dispatch DOMContentLoaded within the event loop runtime context, then decide whether `load`
+      // can be queued (after listeners have had a chance to register load blockers).
+      with_event_loop(event_loop, || fire_dom_content_loaded(host))?;
+      host.document_lifecycle_mut().maybe_queue_load_task(event_loop)?;
+      Ok(())
     })?;
 
-    // `load` must be after DOMContentLoaded and after a microtask checkpoint. Queueing it as a
-    // subsequent task ensures the event loop's post-task microtask checkpoint provides the
-    // required boundary.
-    if !self.load_queued && !self.load_fired {
-      self.load_queued = true;
-      event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
-        with_event_loop(event_loop, || fire_load(host))
-      })?;
+    Ok(())
+  }
+
+  fn maybe_queue_load_task<Host: DocumentLifecycleHost + 'static>(
+    &mut self,
+    event_loop: &mut EventLoop<Host>,
+  ) -> Result<()> {
+    if self.load_queued || self.load_fired {
+      return Ok(());
+    }
+    if !self.dom_content_loaded_fired {
+      return Ok(());
+    }
+    if self.pending_load_blockers_total() != 0 {
+      return Ok(());
     }
 
+    self.load_queued = true;
+    event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      with_event_loop(event_loop, || maybe_fire_load(host))
+    })?;
     Ok(())
   }
 }
@@ -236,10 +320,17 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
   Ok(())
 }
 
-fn fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+fn maybe_fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+  // The `load` task can be queued when the last load blocker reaches 0, but new blockers can still
+  // be registered before that queued task runs (for example: scripts inserted from DOMContentLoaded
+  // listeners). Re-check the current blocker count at dispatch time and no-op if still blocked.
   {
     let lifecycle = host.document_lifecycle_mut();
     if lifecycle.load_fired {
+      return Ok(());
+    }
+    if !lifecycle.dom_content_loaded_fired || lifecycle.pending_load_blockers_total() != 0 {
+      lifecycle.load_queued = false;
       return Ok(());
     }
     lifecycle.load_fired = true;
@@ -646,6 +737,140 @@ mod tests {
     assert_eq!(host.dom.ready_state().as_str(), "complete");
 
     assert!(!event_loop.run_next_task(&mut host)?);
+    Ok(())
+  }
+
+  #[test]
+  fn dom_content_loaded_does_not_wait_for_async_script_but_load_does() -> Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let dom_listener = ListenerId::new(1);
+    host.invoker.register(dom_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("dom".to_string());
+        Ok(())
+      }
+    });
+    host.dom.events().add_event_listener(
+      EventTargetId::Document,
+      "DOMContentLoaded",
+      dom_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    let load_listener = ListenerId::new(2);
+    host.invoker.register(load_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("load".to_string());
+        Ok(())
+      }
+    });
+    host.dom.events().add_event_listener(
+      EventTargetId::Window,
+      "load",
+      load_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    // Simulate an external async script that is still pending.
+    host
+      .lifecycle
+      .register_pending_load_blocker(LoadBlockerKind::Script);
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    // Barrier + DOMContentLoaded should run even though the script is still pending.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(&*log.borrow(), &vec!["dom".to_string()]);
+
+    // `load` must not have been queued yet.
+    assert!(!event_loop.run_next_task(&mut host)?);
+
+    // Complete the async script and signal the lifecycle.
+    {
+      event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+        host
+          .lifecycle
+          .load_blocker_completed(LoadBlockerKind::Script, event_loop)?;
+        Ok(())
+      })?;
+    }
+
+    // Script completion task, then `load`.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(&*log.borrow(), &vec!["dom".to_string(), "load".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn load_waits_for_blocking_stylesheet() -> Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let dom_listener = ListenerId::new(1);
+    host.invoker.register(dom_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("dom".to_string());
+        Ok(())
+      }
+    });
+    host.dom.events().add_event_listener(
+      EventTargetId::Document,
+      "DOMContentLoaded",
+      dom_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    let load_listener = ListenerId::new(2);
+    host.invoker.register(load_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("load".to_string());
+        Ok(())
+      }
+    });
+    host.dom.events().add_event_listener(
+      EventTargetId::Window,
+      "load",
+      load_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    // Simulate a render-blocking stylesheet load.
+    host
+      .lifecycle
+      .register_pending_load_blocker(LoadBlockerKind::StyleSheet);
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    // Barrier + DOMContentLoaded should run even though the stylesheet is still pending.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(&*log.borrow(), &vec!["dom".to_string()]);
+
+    // `load` must not have been queued yet.
+    assert!(!event_loop.run_next_task(&mut host)?);
+
+    // Complete stylesheet load and signal the lifecycle.
+    {
+      event_loop.queue_task(TaskSource::Networking, |host, event_loop| {
+        host
+          .lifecycle
+          .load_blocker_completed(LoadBlockerKind::StyleSheet, event_loop)?;
+        Ok(())
+      })?;
+    }
+
+    // Stylesheet completion task, then `load`.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(&*log.borrow(), &vec!["dom".to_string(), "load".to_string()]);
     Ok(())
   }
 
