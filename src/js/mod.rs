@@ -160,6 +160,8 @@ pub enum ScriptType {
 
 // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
 // Notably, this does *not* include U+000B VT (vertical tab).
+// Avoid `str::trim()` because it removes additional Unicode whitespace like NBSP (U+00A0), which
+// HTML does not treat as ASCII whitespace.
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
