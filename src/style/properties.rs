@@ -191,6 +191,58 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
   }
 
   if let Some(bounds) = crate::style::grid::validate_area_rectangles(&styles.grid_template_areas) {
+    // `grid-template-areas` can be specified multiple times in the cascade (e.g. via media
+    // queries). Each time it changes, the implicit `<name>-start` / `<name>-end` line names must
+    // be regenerated to match the final template.
+    //
+    // Previously, we only *added* synthesized line names and never removed them. That allowed
+    // stale area-derived line indices to persist across overrides. Grid items that resolve
+    // `grid-area: <name>` via these implicit line names would then use the *old* placement (often
+    // the first synthesized line), causing overlaps when a media query moved areas around.
+    //
+    // Clear any previously-synthesized area line names for the current template's area names
+    // before re-inserting them at their current positions.
+    let mut synthesized_names = HashSet::new();
+    for name in bounds.keys() {
+      synthesized_names.insert(format!("{}-start", name));
+      synthesized_names.insert(format!("{}-end", name));
+    }
+
+    let retain_non_synthesized = |line: &mut Vec<String>| {
+      line.retain(|name| !synthesized_names.contains(name));
+    };
+
+    for line in styles.grid_column_line_names.iter_mut() {
+      retain_non_synthesized(line);
+    }
+    for line in styles.grid_row_line_names.iter_mut() {
+      retain_non_synthesized(line);
+    }
+    if styles.grid_column_subgrid {
+      for line in styles.subgrid_column_line_names.iter_mut() {
+        retain_non_synthesized(line);
+      }
+    }
+    if styles.grid_row_subgrid {
+      for line in styles.subgrid_row_line_names.iter_mut() {
+        retain_non_synthesized(line);
+      }
+    }
+
+    // Rebuild the named line maps from the (now-cleaned) per-line vectors.
+    styles.grid_column_names.clear();
+    for (idx, names) in styles.grid_column_line_names.iter().enumerate() {
+      for name in names {
+        styles.grid_column_names.entry(name.clone()).or_default().push(idx);
+      }
+    }
+    styles.grid_row_names.clear();
+    for (idx, names) in styles.grid_row_line_names.iter().enumerate() {
+      for name in names {
+        styles.grid_row_names.entry(name.clone()).or_default().push(idx);
+      }
+    }
+
     // `validate_area_rectangles` returns a HashMap, whose iteration order depends on the per-process
     // hash seed. Avoid leaking that nondeterminism into the per-line Vec order by sorting the
     // bounds entries and then sorting each line's name list after insertion.
