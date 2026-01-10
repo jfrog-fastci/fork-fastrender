@@ -143,6 +143,67 @@ fn matches_html_spec_normalization_example() {
 }
 
 #[test]
+fn imports_normalization_collision_uses_input_key_order() {
+  // Regression: import maps operate on Infra ordered maps, so JSON object insertion order must be
+  // preserved when collisions occur during normalization.
+  //
+  // Use an ordering that differs from lexicographic sorting so this test would fail if parsing
+  // materialized objects into a `BTreeMap`.
+  let (map, _warnings) = parse_import_map_string(
+    r#"{
+      "imports": {
+        "https://example.com/base/a": "/first.js",
+        "./a": "/second.js"
+      }
+    }"#,
+    &base_url(),
+  )
+  .unwrap();
+
+  let entry = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "https://example.com/base/a")
+    .expect("expected normalized /a entry");
+  assert_eq!(
+    entry.1.as_ref().expect("URL").as_str(),
+    "https://example.com/second.js"
+  );
+}
+
+#[test]
+fn scopes_normalization_collision_uses_input_key_order() {
+  let (map, _warnings) = parse_import_map_string(
+    r#"{
+      "scopes": {
+        "https://example.com/scope/": { "x": "/first.js" },
+        "/scope/": { "x": "/second.js" }
+      }
+    }"#,
+    &base_url(),
+  )
+  .unwrap();
+
+  let scope = map
+    .scopes
+    .entries
+    .iter()
+    .find(|(prefix, _)| prefix == "https://example.com/scope/")
+    .expect("expected normalized scope");
+  let entry = scope
+    .1
+    .entries
+    .iter()
+    .find(|(k, _)| k == "x")
+    .expect("expected x mapping");
+  assert_eq!(
+    entry.1.as_ref().expect("URL").as_str(),
+    "https://example.com/second.js"
+  );
+}
+
+#[test]
 fn trailing_slash_mismatch_sets_address_to_null() {
   let (map, warnings) =
     parse_import_map_string(r#"{ "imports": { "pkg/": "/not-a-dir.js" } }"#, &base_url()).unwrap();
