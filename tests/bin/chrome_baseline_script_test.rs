@@ -214,7 +214,7 @@ fn chrome_baseline_script_errors_on_unknown_flag() {
   let script_path = repo_root.join("scripts/chrome_baseline.sh");
 
   let output = Command::new(&script_path)
-    .env("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX", "88")
+    .env("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX", "87")
     .arg("--definitely-not-a-flag")
     .output()
     .expect("run scripts/chrome_baseline.sh");

@@ -27,7 +27,7 @@ set -euo pipefail
 #   VIEWPORT=320x240
 #   DPRS=1.0,1.333
 #   FIXTURE_HTML=tests/pages/fixtures/br_linebreak/index.html
-#   HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88  (override if your Chrome/OS differs)
+#   HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=87  (override if your Chrome/OS differs)
 #   KEEP_TMP=1  (keep the temporary output directory for debugging)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,7 +46,7 @@ fi
 VIEWPORT_W="${VIEWPORT%x*}"
 VIEWPORT_H="${VIEWPORT#*x}"
 
-EXPECTED_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-88}"
+EXPECTED_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-87}"
 if ! [[ "${EXPECTED_PAD_PX}" =~ ^[0-9]+$ ]]; then
   echo "invalid HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: ${EXPECTED_PAD_PX} (expected a non-negative integer)" >&2
   exit 2
@@ -106,7 +106,7 @@ html_template='<!doctype html>
     left: 0;
     right: 0;
     bottom: 0;
-    height: 24px;
+    height: 5px;
     background: rgb(255, 0, 0);
   }
 </style>

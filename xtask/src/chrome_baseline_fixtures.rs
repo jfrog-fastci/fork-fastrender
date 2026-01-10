@@ -118,7 +118,7 @@ impl Drop for ChromeRlimitAsGuard {
 use std::os::unix::process::CommandExt;
 
 /// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
-/// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~88px
+/// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~87px
 /// (default).
 ///
 /// This manifests as a white bar at the bottom of `--screenshot` outputs. To make the captured PNG
@@ -132,7 +132,7 @@ use std::os::unix::process::CommandExt;
 /// artifacts on a different Chrome build/OS.
 ///
 /// See `docs/notes/chrome-headless-viewport-padding.md`.
-const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 87;
 
 fn headless_window_viewport_height_pad_px() -> Result<u32> {
   match std::env::var("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX") {

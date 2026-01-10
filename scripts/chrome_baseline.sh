@@ -85,7 +85,7 @@ ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
 ALLOW_DARK_MODE="${ALLOW_DARK_MODE:-0}"
 HEADLESS_FLAG="--headless=new"
 # When Chrome runs in headless screenshot mode, `--window-size=WxH` sets the *outer* window size,
-# but the CSS/layout viewport height is consistently shorter by ~88px (default; leaving a white bar
+# but the CSS/layout viewport height is consistently shorter by ~87px (default; leaving a white bar
 # at the bottom of `--screenshot` PNGs).
 #
 # To capture an image that matches the requested viewport, we:
@@ -98,7 +98,7 @@ HEADLESS_FLAG="--headless=new"
 # If you see cropped screenshots with a missing bottom edge (pad too large) or a persistent white
 # bar (pad too small), override this value. Different Chrome builds/OSes may report different
 # window chrome heights even in headless mode.
-HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-88}"
+HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-87}"
 if ! [[ "${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX}" =~ ^[0-9]+$ ]]; then
   echo "invalid HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: ${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX} (expected a non-negative integer)" >&2
   exit 2

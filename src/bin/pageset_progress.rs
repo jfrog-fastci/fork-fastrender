@@ -7537,7 +7537,7 @@ struct ChromeBaselineMetadata {
   html_sha256: String,
 }
 
-const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 87;
 
 fn headless_window_viewport_height_pad_px() -> Result<u32, String> {
   const KEY: &str = "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX";

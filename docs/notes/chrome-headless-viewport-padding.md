@@ -1,4 +1,4 @@
-# Headless Chrome viewport height padding (`88px`)
+# Headless Chrome viewport height padding (`87px`)
 
 When using Chrome/Chromium in headless screenshot mode (`--headless` / `--headless=new` +
 `--screenshot`), the `--window-size=WxH` flag controls the **outer** window size, but the
@@ -23,7 +23,7 @@ The workaround is:
 2. Let Chrome produce a screenshot PNG of that outer window.
 3. Crop the PNG back down to exactly `<w>x<h>`.
 
-The default `pad_px` is **88px** (`HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX`).
+The default `pad_px` is **87px** (`HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX`).
 
 ## Configuration
 
@@ -32,7 +32,7 @@ The pad value is empirically derived and may vary across Chrome versions / OS pa
 Override it by setting:
 
 ```bash
-export HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88
+export HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=87
 ```
 
 Both the bash scripts and the Rust `xtask` implementation respect this environment variable.

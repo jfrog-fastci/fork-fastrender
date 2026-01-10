@@ -8,7 +8,7 @@ use tempfile::tempdir;
 const TEST_VIEWPORT: &str = "64x64";
 const TEST_VIEWPORT_W: u32 = 64;
 const TEST_VIEWPORT_H: u32 = 64;
-const HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+const HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 87;
 
 fn repo_root() -> PathBuf {
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -444,7 +444,10 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
     "chrome args should omit --disable-gpu for --headless=new (it can break screenshots on some Chrome builds); got:\n{log}"
   );
   assert!(
-    log.contains("--window-size=64,152"),
+    log.contains(&format!(
+      "--window-size={TEST_VIEWPORT_W},{}",
+      TEST_VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX
+    )),
     "chrome args should include viewport height padding for headless screenshots; got:\n{log}"
   );
   assert!(
