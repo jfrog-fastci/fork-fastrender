@@ -34,7 +34,6 @@
 
 pub mod dom_scripts;
 // Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
-//
 // This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
 // and streaming execution are still being integrated.
 pub mod dom_integration;
@@ -118,9 +117,10 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
-// NOTE: `dom_integration` is declared above (it is used by tests and DOM-mutation plumbing, and
-// historically lived under `legacy/`). Keep the stable `crate::js::dom_integration` module path and
-// do not re-declare it here.
+// NOTE: `dom_integration` is declared above to keep the stable `crate::js::dom_integration` path.
+// It provides HTML "prepare the script element" helpers for dynamically inserted `<script>`
+// elements. It is still referenced by integration tests and DOM-mutation plumbing (and
+// historically lived under `src/js/legacy/`). Do not re-declare it here.
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
