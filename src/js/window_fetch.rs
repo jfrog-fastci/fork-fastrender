@@ -1890,8 +1890,13 @@ fn request_ctor_construct(
       state
         .requests
         .get(&other_request_id)
-        .cloned()
         .ok_or(VmError::TypeError("Request: invalid backing request"))
+        .and_then(|req| {
+          if req.body.as_ref().map_or(false, |b| b.body_used()) {
+            return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+          }
+          Ok(req.clone())
+        })
     })?
   } else {
     let url = to_rust_string_limited(
@@ -2796,8 +2801,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       state
         .requests
         .get(&other_request_id)
-        .cloned()
         .ok_or(VmError::TypeError("Request: invalid backing request"))
+        .and_then(|req| {
+          if req.body.as_ref().map_or(false, |b| b.body_used()) {
+            return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+          }
+          Ok(req.clone())
+        })
     })?
   } else {
     let url = to_rust_string_limited(
@@ -4744,6 +4754,211 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_ctor_rejects_used_body_input_request() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let env_id = bindings.env_id();
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    // new Request(url, { method: "POST", body: "hello" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let body_s = scope.alloc_string("hello")?;
+    scope.push_root(Value::String(body_s))?;
+    let method_s = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(method_s))?;
+    set_data_prop(&mut scope, init_obj, "method", Value::String(method_s), true)?;
+    set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Request constructor must return an object"));
+    };
+
+    // Mark the body as used directly in the backing state.
+    let request_id = number_to_u64(get_data_prop(&mut scope, req_obj, REQUEST_ID_KEY)?)?;
+    with_env_state_mut(env_id, |state| {
+      let req = state
+        .requests
+        .get_mut(&request_id)
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      if let Some(body) = req.body.as_mut() {
+        let _ = body.consume_bytes().expect("consume_bytes");
+      }
+      Ok(())
+    })?;
+
+    // new Request(existingRequest) should throw if body is already used.
+    let err = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::Object(req_obj)],
+      Value::Object(request_ctor),
+    )
+    .expect_err("expected TypeError for used body");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let Value::String(name_s) = vm.get(&mut scope, err_obj, name_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.name missing"));
+    };
+    let Value::String(msg_s) = vm.get(&mut scope, err_obj, msg_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.message missing"));
+    };
+    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+    assert_eq!(
+      scope.heap().get_string(msg_s)?.to_utf8_lossy(),
+      "Request body is already used"
+    );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_rejects_used_body_input_request() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let env_id = bindings.env_id();
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+    let Value::Object(fetch_fn) = get_data_prop(&mut scope, global, "fetch")? else {
+      return Err(VmError::InvariantViolation("fetch function missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url_s))?;
+
+    // new Request(url, { method: "POST", body: "hello" })
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let body_s = scope.alloc_string("hello")?;
+    scope.push_root(Value::String(body_s))?;
+    let method_s = scope.alloc_string("POST")?;
+    scope.push_root(Value::String(method_s))?;
+    set_data_prop(&mut scope, init_obj, "method", Value::String(method_s), true)?;
+    set_data_prop(&mut scope, init_obj, "body", Value::String(body_s), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(req_obj) = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Object(init_obj)],
+      Value::Object(request_ctor),
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Request constructor must return an object"));
+    };
+
+    let request_id = number_to_u64(get_data_prop(&mut scope, req_obj, REQUEST_ID_KEY)?)?;
+    with_env_state_mut(env_id, |state| {
+      let req = state
+        .requests
+        .get_mut(&request_id)
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      if let Some(body) = req.body.as_mut() {
+        let _ = body.consume_bytes().expect("consume_bytes");
+      }
+      Ok(())
+    })?;
+
+    let err = fetch_call::<DummyHost>(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      fetch_fn,
+      Value::Undefined,
+      &[Value::Object(req_obj)],
+    )
+    .expect_err("expected TypeError for used body");
+
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let name_key = alloc_key(&mut scope, "name")?;
+    let msg_key = alloc_key(&mut scope, "message")?;
+    let Value::String(name_s) = vm.get(&mut scope, err_obj, name_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.name missing"));
+    };
+    let Value::String(msg_s) = vm.get(&mut scope, err_obj, msg_key)? else {
+      return Err(VmError::InvariantViolation("TypeError.message missing"));
+    };
+    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+    assert_eq!(
+      scope.heap().get_string(msg_s)?.to_utf8_lossy(),
+      "Request body is already used"
+    );
+
+    drop(scope);
+    drop(bindings);
     realm.teardown(&mut heap);
     Ok(())
   }
