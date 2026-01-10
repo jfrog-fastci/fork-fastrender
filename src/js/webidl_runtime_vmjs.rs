@@ -107,6 +107,14 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
+  /// Create a JavaScript `Array` object.
+  ///
+  /// The default implementation falls back to [`WebIdlBindingsRuntime::create_object`] so runtimes
+  /// that do not yet support arrays can still compile generated bindings.
+  fn create_array(&mut self, _len: usize) -> Result<Self::JsValue, Self::Error> {
+    self.create_object()
+  }
+
   /// Create a host-defined function object with WebIDL-visible metadata.
   ///
   /// - `name` is used for the function's `.name` property.
@@ -674,6 +682,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(Value::Object(obj))
   }
 
+  fn create_array(&mut self, len: usize) -> Result<Self::JsValue, Self::Error> {
+    use webidl::JsRuntime as _;
+    let obj = self.cx.alloc_array(len)?;
+    Ok(Value::Object(obj))
+  }
+
   fn create_function(
     &mut self,
     name: &str,
@@ -1101,6 +1115,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::create_object(
       self,
     )
+  }
+
+  fn create_array(&mut self, _len: usize) -> Result<Self::JsValue, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::alloc_array(self)
   }
 
   fn create_function(
