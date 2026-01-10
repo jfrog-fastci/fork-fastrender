@@ -3740,6 +3740,30 @@ mod tests {
     }
   }
 
+  struct RealmTeardownGuard {
+    realm: *mut Realm,
+    heap: *mut Heap,
+  }
+
+  impl RealmTeardownGuard {
+    fn new(realm: &mut Realm, heap: &mut Heap) -> Self {
+      Self {
+        realm: realm as *mut Realm,
+        heap: heap as *mut Heap,
+      }
+    }
+  }
+
+  impl Drop for RealmTeardownGuard {
+    fn drop(&mut self) {
+      // `vm-js` requires realms to be torn down before drop so persistent roots are cleaned up.
+      // Make tests robust to early returns/panics by always tearing down during unwind.
+      unsafe {
+        (&mut *self.realm).teardown(&mut *self.heap);
+      }
+    }
+  }
+
   #[derive(Default)]
   struct JobQueueHooks {
     jobs: VecDeque<(Job, Option<RealmId>)>,
@@ -3891,6 +3915,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -3924,6 +3949,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
 
     let callee = scope.alloc_object()?;
@@ -3957,6 +3983,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
 
     let this_obj = scope.alloc_object()?;
@@ -3994,6 +4021,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let mut scope = heap.scope();
 
     let this_obj = scope.alloc_object()?;
@@ -4029,8 +4057,12 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
+    vm.set_user_data(WindowRealmUserData::new(
+      "https://example.com/dir/page".to_string(),
+    ));
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4081,6 +4113,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4128,6 +4161,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4186,6 +4220,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4251,6 +4286,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4312,6 +4348,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4397,8 +4434,14 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
+    // `Response.redirect("relative")` resolves against the current document base URL, which is
+    // stored on the VM by `WindowRealm`.
+    vm.set_user_data(WindowRealmUserData::new(
+      "https://example.com/dir/page".to_string(),
+    ));
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4509,6 +4552,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -4574,6 +4618,7 @@ mod tests {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,

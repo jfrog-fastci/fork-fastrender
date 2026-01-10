@@ -742,6 +742,35 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
   Ok(())
 }
 
+// --- Compile-time regression guard (vm-js Promise-job GC safety) ---
+//
+// FastRender's host microtask queue is not traced by `vm-js`'s GC. Promise jobs can outlive the
+// stack/rooting scope that created them, so queued jobs must be able to own persistent roots for
+// any captured `vm_js::Value`s. If `vendor/ecma-rs` is updated to a `vm-js` version that regresses
+// this API, we want compilation to fail immediately instead of silently reintroducing stale-handle
+// bugs.
+#[allow(dead_code)]
+mod vm_js_gc_safety_guard {
+  // Keep this guard signature-based so it fails at compile time if the `vm-js` job API regresses.
+  #[allow(clippy::type_complexity)]
+  const _: () = {
+    // `Job` must support owning persistent roots for captured Values.
+    let _add_root: fn(
+      &mut vm_js::Job,
+      &mut dyn vm_js::VmJobContext,
+      vm_js::Value,
+    ) -> Result<vm_js::RootId, vm_js::VmError> = vm_js::Job::add_root;
+
+    // `Job` must be executable/discardable with access to a `VmJobContext` so it can clean up roots.
+    let _run: fn(
+      vm_js::Job,
+      &mut dyn vm_js::VmJobContext,
+      &mut dyn vm_js::VmHostHooks,
+    ) -> vm_js::JobResult = vm_js::Job::run;
+    let _discard: fn(vm_js::Job, &mut dyn vm_js::VmJobContext) = vm_js::Job::discard;
+  };
+}
+
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1240,24 +1269,55 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   Ok(())
 }
 
-  #[cfg(test)]
-  mod tests {
-    use super::*;
-    use crate::js::clock::VirtualClock;
-    use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
-    use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::Duration;
-    use vm_js::Realm;
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::clock::VirtualClock;
+  use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use std::collections::HashMap;
+  use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+  use std::sync::{Arc, Mutex, OnceLock};
+  use std::time::Duration;
+  use vm_js::Realm;
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
+
+  fn assert_type_error_contains(heap: &mut Heap, err: VmError, expected: &str) {
+    match err {
+      VmError::TypeError(msg) => {
+        assert!(msg.contains(expected), "msg={msg:?} expected={expected:?}");
+      }
+      other => {
+        let rendered = vm_error_format::vm_error_to_string(heap, other);
+        let first_line = rendered.lines().next().unwrap_or("");
+        assert!(
+          first_line.starts_with("TypeError"),
+          "expected TypeError, got {rendered:?}"
+        );
+        assert!(
+          first_line.contains(expected),
+          "expected TypeError message containing {expected:?}, got {rendered:?}"
+        );
+      }
+    }
+  }
 
   static PROMISE_JOB_LOGS: OnceLock<Mutex<HashMap<usize, Arc<Mutex<Vec<&'static str>>>>>> =
     OnceLock::new();
 
   fn promise_job_logs() -> &'static Mutex<HashMap<usize, Arc<Mutex<Vec<&'static str>>>>> {
     PROMISE_JOB_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
+  }
+
+  static JOB_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+  type CurrentRealmLog = Arc<Mutex<Option<Option<vm_js::RealmId>>>>;
+
+  static CURRENT_REALM_LOGS: OnceLock<Mutex<HashMap<usize, CurrentRealmLog>>> = OnceLock::new();
+
+  fn current_realm_logs() -> &'static Mutex<HashMap<usize, CurrentRealmLog>> {
+    CURRENT_REALM_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
   }
 
   struct HeapPromiseJobLogGuard {
@@ -1288,6 +1348,22 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
 
   struct HostCtx {
     hook_downcast_count: usize,
+  }
+
+  struct HeapCurrentRealmLogGuard {
+    heap_ptr: usize,
+  }
+
+  impl Drop for HeapCurrentRealmLogGuard {
+    fn drop(&mut self) {
+      current_realm_logs().lock().unwrap().remove(&self.heap_ptr);
+    }
+  }
+
+  fn install_current_realm_log(heap: &Heap, log: CurrentRealmLog) -> HeapCurrentRealmLogGuard {
+    let heap_ptr = heap as *const Heap as usize;
+    current_realm_logs().lock().unwrap().insert(heap_ptr, log);
+    HeapCurrentRealmLogGuard { heap_ptr }
   }
 
   struct Host {
@@ -1414,6 +1490,36 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
     scope.push_root(Value::Object(func)).unwrap();
     set_prop(scope, func, CALLBACK_GLOBAL_KEY, Value::Object(global));
     func
+  }
+
+  fn record_callback_call(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    JOB_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
+    Ok(Value::Undefined)
+  }
+
+  fn record_current_realm_native(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let heap_ptr = scope.heap() as *const Heap as usize;
+    let log = current_realm_logs().lock().unwrap().get(&heap_ptr).cloned();
+    if let Some(log) = log {
+      *log.lock().unwrap() = Some(vm.current_realm());
+    }
+    Ok(Value::Undefined)
   }
 
   fn cb_enqueue_promise_job(
@@ -1630,10 +1736,8 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       ],
     );
 
-    let Err(VmError::TypeError(msg)) = err else {
-      panic!("expected setTimeout to return VmError::TypeError for non-callable callback");
-    };
-    assert_eq!(msg, SET_TIMEOUT_NOT_CALLABLE_ERROR);
+    let err = err.expect_err("expected TypeError for non-callable callback");
+    assert_type_error_contains(scope.heap_mut(), err, SET_TIMEOUT_NOT_CALLABLE_ERROR);
 
     Ok(())
   }
@@ -1686,10 +1790,12 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       ],
     );
 
-    let Err(VmError::TypeError(msg)) = err else {
-      panic!("expected TypeError for invalid this");
-    };
-    assert_eq!(msg, "setTimeout called with invalid this value");
+    let err = err.expect_err("expected TypeError for invalid this");
+    assert_type_error_contains(
+      scope.heap_mut(),
+      err,
+      "setTimeout called with invalid this value",
+    );
     Ok(())
   }
 
@@ -1717,10 +1823,8 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       &[Value::Object(timeout_cb), Value::Symbol(sym)],
     );
 
-    let Err(VmError::TypeError(msg)) = err else {
-      panic!("expected setTimeout to throw a TypeError for Symbol delay");
-    };
-    assert_eq!(msg, SYMBOL_TO_NUMBER_ERROR);
+    let err = err.expect_err("expected TypeError for Symbol delay");
+    assert_type_error_contains(scope.heap_mut(), err, SYMBOL_TO_NUMBER_ERROR);
     Ok(())
   }
 
@@ -1746,10 +1850,8 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       &[Value::Symbol(sym)],
     );
 
-    let Err(VmError::TypeError(msg)) = err else {
-      panic!("expected clearTimeout to throw a TypeError for Symbol handle");
-    };
-    assert_eq!(msg, SYMBOL_TO_NUMBER_ERROR);
+    let err = err.expect_err("expected TypeError for Symbol handle");
+    assert_type_error_contains(scope.heap_mut(), err, SYMBOL_TO_NUMBER_ERROR);
     Ok(())
   }
 
@@ -2290,12 +2392,7 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       .expect_err("string handlers should be rejected")
     };
 
-    match err {
-      VmError::TypeError(msg) => {
-        assert!(msg.contains("string handlers"), "msg={msg}");
-      }
-      other => panic!("expected TypeError, got {other:?}"),
-    }
+    assert_type_error_contains(host.window.heap_mut(), err, "string handlers");
 
     Ok(())
   }
@@ -2331,12 +2428,7 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       .expect_err("string callbacks should be rejected")
     };
 
-    match err {
-      VmError::TypeError(msg) => {
-        assert!(msg.contains("string callbacks"), "msg={msg}");
-      }
-      other => panic!("expected TypeError, got {other:?}"),
-    }
+    assert_type_error_contains(host.window.heap_mut(), err, "string callbacks");
 
     Ok(())
   }
@@ -2452,12 +2544,11 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       .expect_err("non-callable handlers should be rejected")
     };
 
-    match err {
-      VmError::TypeError(msg) => {
-        assert_eq!(msg, QUEUE_MICROTASK_NOT_CALLABLE_ERROR);
-      }
-      other => panic!("expected TypeError, got {other:?}"),
-    }
+    assert_type_error_contains(
+      host.window.heap_mut(),
+      err,
+      QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
+    );
 
     Ok(())
   }
@@ -2561,6 +2652,387 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
       "expected Promise job budget to remain set"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_run_after_a_task_and_before_the_next_task() -> crate::error::Result<()> {
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_for_task = Arc::clone(&log);
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+      log_for_task.lock().unwrap().push("task1");
+
+      with_event_loop(event_loop, || -> crate::error::Result<()> {
+        let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+        let log1 = Arc::clone(&log_for_task);
+        hooks.host_enqueue_promise_job(
+          vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+            log1.lock().unwrap().push("job1");
+            Ok(())
+          }),
+          None,
+        );
+        let log2 = Arc::clone(&log_for_task);
+        hooks.host_enqueue_promise_job(
+          vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+            log2.lock().unwrap().push("job2");
+            Ok(())
+          }),
+          None,
+        );
+        if let Some(err) = hooks.finish(host.window_realm().heap_mut()) {
+          return Err(err);
+        }
+        Ok(())
+      })?;
+
+      let log_for_task2 = Arc::clone(&log_for_task);
+      event_loop.queue_task(TaskSource::Timer, move |_host, _event_loop| {
+        log_for_task2.lock().unwrap().push("task2");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(&*log.lock().unwrap(), &["task1", "job1", "job2", "task2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_enqueued_by_jobs_run_in_the_same_microtask_checkpoint(
+  ) -> crate::error::Result<()> {
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+    let log_for_job1 = Arc::clone(&log);
+
+    with_event_loop(&mut event_loop, || {
+      hooks.host_enqueue_promise_job(
+        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, hooks| {
+          log_for_job1.lock().unwrap().push("job1");
+
+          let log_for_job2 = Arc::clone(&log_for_job1);
+          hooks.host_enqueue_promise_job(
+            vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+              log_for_job2.lock().unwrap().push("job2");
+              Ok(())
+            }),
+            None,
+          );
+
+          Ok(())
+        }),
+        None,
+      );
+    });
+
+    assert!(hooks.finish(host.window_realm().heap_mut()).is_none());
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(&*log.lock().unwrap(), &["job1", "job2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_discard_persistent_roots_when_enqueue_fails() -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut queue_limits = QueueLimits::unbounded();
+    queue_limits.max_pending_microtasks = 0;
+    event_loop.set_queue_limits(queue_limits);
+
+    let ran1 = Arc::new(AtomicBool::new(false));
+    let ran2 = Arc::new(AtomicBool::new(false));
+
+    let (root1, job1) = {
+      let ran = Arc::clone(&ran1);
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        ran.store(true, Ordering::Relaxed);
+        Ok(())
+      });
+      let heap = host.window.heap_mut();
+      let mut ctx = HeapRootContext { heap };
+      let root = job.add_root(&mut ctx, Value::Null).unwrap();
+      (root, job)
+    };
+
+    let (root2, job2) = {
+      let ran = Arc::clone(&ran2);
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        ran.store(true, Ordering::Relaxed);
+        Ok(())
+      });
+      let heap = host.window.heap_mut();
+      let mut ctx = HeapRootContext { heap };
+      let root = job.add_root(&mut ctx, Value::Undefined).unwrap();
+      (root, job)
+    };
+
+    assert_eq!(host.window.heap().get_root(root1), Some(Value::Null));
+    assert_eq!(host.window.heap().get_root(root2), Some(Value::Undefined));
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+    with_event_loop(&mut event_loop, || {
+      hooks.host_enqueue_promise_job(job1, None);
+      hooks.host_enqueue_promise_job(job2, None);
+    });
+
+    let err = hooks.finish(host.window.heap_mut()).expect("expected enqueue error");
+    assert!(
+      err.to_string().contains("max pending microtasks"),
+      "unexpected error: {err}"
+    );
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      !ran1.load(Ordering::Relaxed),
+      "job should not run when it could not be enqueued"
+    );
+    assert!(
+      !ran2.load(Ordering::Relaxed),
+      "job should not run when it could not be enqueued"
+    );
+
+    assert_eq!(host.window.heap().get_root(root1), None);
+    assert_eq!(host.window.heap().get_root(root2), None);
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_job_failure_is_propagated_to_the_event_loop() -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+    with_event_loop(&mut event_loop, || {
+      hooks.host_enqueue_promise_job(
+        vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
+          Err(vm_js::VmError::TypeError("boom"))
+        }),
+        None,
+      );
+    });
+    assert!(hooks.finish(host.window.heap_mut()).is_none());
+
+    let err = event_loop
+      .perform_microtask_checkpoint(&mut host)
+      .expect_err("expected job failure to surface via microtask checkpoint");
+    assert!(
+      err.to_string().contains("boom"),
+      "expected error to mention boom, got: {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_call_under_the_enqueued_realm() -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let observed: CurrentRealmLog = Arc::new(Mutex::new(None));
+    let _log_guard = install_current_realm_log(host.window.heap(), Arc::clone(&observed));
+
+    let call_id = host
+      .window
+      .vm_mut()
+      .register_native_call(record_current_realm_native)
+      .expect("register_native_call");
+
+    let callback_func = {
+      let mut scope = host.window.heap_mut().scope();
+      let name = scope.alloc_string("recordRealm").unwrap();
+      scope.push_root(Value::String(name)).unwrap();
+      scope.alloc_native_function(call_id, None, name, 0).unwrap()
+    };
+
+    let realm = host.window.realm().id();
+    let previous_realm = host.window.vm().current_realm();
+
+    let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+      ctx.call(
+        hooks,
+        Value::Object(callback_func),
+        Value::Undefined,
+        &[],
+      )?;
+      Ok(())
+    });
+    {
+      let heap = host.window.heap_mut();
+      let mut ctx = HeapRootContext { heap };
+      job
+        .add_root(&mut ctx, Value::Object(callback_func))
+        .expect("root callback");
+    }
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+    with_event_loop(&mut event_loop, || {
+      hooks.host_enqueue_promise_job(job, Some(realm));
+    });
+    assert!(hooks.finish(host.window.heap_mut()).is_none());
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    assert_eq!(*observed.lock().unwrap(), Some(Some(realm)));
+    assert_eq!(
+      host.window.vm().current_realm(),
+      previous_realm,
+      "execution_context_guard should restore the previous realm after the call returns"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_root_captured_values_until_run() -> crate::error::Result<()> {
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+
+    struct GcHost {
+      host_ctx: (),
+      window: WindowRealm,
+    }
+
+    impl WindowRealmHost for GcHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        let GcHost { host_ctx, window } = self;
+        (host_ctx, window)
+      }
+    }
+
+    let mut host = GcHost {
+      host_ctx: (),
+      window: WindowRealm::new(
+        WindowRealmConfig::new("https://example.com").with_heap_limits(limits),
+      )
+      .expect("create WindowRealm"),
+    };
+    let mut event_loop = EventLoop::<GcHost>::new();
+
+    let call_id = host
+      .window
+      .vm_mut()
+      .register_native_call(cb_noop)
+      .expect("register_native_call");
+
+    // Queue a PromiseReactionJob that captures heap values, then run GC before the microtask runs.
+    // The job should keep the captures alive until it executes and cleans up its roots.
+    let mut callback_obj: Option<vm_js::GcObject> = None;
+    let mut argument_obj: Option<vm_js::GcObject> = None;
+
+    let mut hooks = VmJsEventLoopHooks::<GcHost>::new(host.vm_host());
+    with_event_loop(&mut event_loop, || {
+      let window = host.window_realm();
+      let mut scope = window.heap_mut().scope();
+
+      let callback = {
+        let name = scope.alloc_string("onFulfilled").unwrap();
+        scope
+          .alloc_native_function(call_id, None, name, 1)
+          .unwrap()
+      };
+      scope.push_root(Value::Object(callback)).unwrap();
+      callback_obj = Some(callback);
+
+      let argument = scope.alloc_object().unwrap();
+      scope.push_root(Value::Object(argument)).unwrap();
+      argument_obj = Some(argument);
+
+      let job_callback = hooks.host_make_job_callback(callback);
+      let fulfill_reaction = vm_js::PromiseReactionRecord {
+        reaction_type: vm_js::PromiseReactionType::Fulfill,
+        handler: Some(job_callback),
+      };
+
+      let current_realm = fulfill_reaction.handler.as_ref().and_then(|cb| cb.realm());
+      let job = vm_js::new_promise_reaction_job(
+        scope.heap_mut(),
+        fulfill_reaction,
+        Value::Object(argument),
+      )
+      .unwrap();
+      hooks.host_enqueue_promise_job(job, current_realm);
+    });
+    assert!(hooks.finish(host.window.heap_mut()).is_none());
+
+    let callback_obj = callback_obj.expect("callback_obj");
+    let argument_obj = argument_obj.expect("argument_obj");
+
+    host.window.heap_mut().collect_garbage();
+    assert!(
+      host.window.heap().is_valid_object(callback_obj),
+      "Promise job should keep callback object alive until the microtask runs"
+    );
+    assert!(
+      host.window.heap().is_valid_object(argument_obj),
+      "Promise job should keep captured argument alive until the microtask runs"
+    );
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    host.window.heap_mut().collect_garbage();
+    assert!(
+      !host.window.heap().is_valid_object(callback_obj),
+      "Job::run should remove persistent roots after execution"
+    );
+    assert!(
+      !host.window.heap().is_valid_object(argument_obj),
+      "Job::run should remove persistent roots after execution"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_host_call_job_callback_invokes_the_callback() -> crate::error::Result<()> {
+    let call_count_before = JOB_CALLBACK_CALLS.load(Ordering::SeqCst);
+
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let callback_func = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      let mut scope = heap.scope();
+      make_callback(vm, &mut scope, global, "callback", record_callback_call)
+    };
+
+    let job_callback = vm_js::JobCallback::new(callback_func);
+
+    let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+      hooks.host_call_job_callback(ctx, &job_callback, Value::Undefined, &[])?;
+      Ok(())
+    });
+    {
+      let heap = host.window.heap_mut();
+      let mut ctx = HeapRootContext { heap };
+      job
+        .add_root(&mut ctx, Value::Object(callback_func))
+        .expect("root callback func");
+    }
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new(host.vm_host());
+    with_event_loop(&mut event_loop, || {
+      hooks.host_enqueue_promise_job(job, None);
+    });
+    if let Some(err) = hooks.finish(host.window.heap_mut()) {
+      return Err(err);
+    }
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(
+      JOB_CALLBACK_CALLS.load(Ordering::SeqCst),
+      call_count_before + 1,
+      "host_call_job_callback should invoke the callback"
+    );
     Ok(())
   }
 }

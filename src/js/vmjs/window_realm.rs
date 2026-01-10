@@ -181,7 +181,7 @@ impl std::fmt::Debug for WindowRealmUserData {
 }
 
 impl WindowRealmUserData {
-  fn new(document_url: String) -> Self {
+  pub(crate) fn new(document_url: String) -> Self {
     Self {
       base_url: Some(document_url.clone()),
       pending_navigation: None,

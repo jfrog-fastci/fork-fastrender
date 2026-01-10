@@ -116,16 +116,6 @@ pub mod events_bindings;
 pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
-//
-// NOTE: `dom_integration` is declared above (it is still referenced by some integration tests and
-// DOM-mutation plumbing). Do not re-declare it here.
-
-// `dom_integration` is a legacy helper used by some unit tests (e.g. dynamic `<script>` insertion
-// during streaming HTML parsing). Keep it test-only so production builds don't depend on the legacy
-// DOM mutation integration layer.
-#[cfg(test)]
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
