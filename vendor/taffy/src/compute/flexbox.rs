@@ -344,7 +344,10 @@ fn compute_preliminary(
       .main(constants.dir)
       .maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis))
       .unwrap_or(0.0);
-    constants.gap.set_main(constants.dir, new_gap);
+    constants.gap.set_main(
+      constants.dir,
+      if new_gap.is_finite() && new_gap >= 0.0 { new_gap } else { 0.0 },
+    );
   }
 
   // 6. Resolve the flexible lengths of all the flex items to find their used main size.
@@ -536,7 +539,8 @@ fn compute_constants(
     .gap()
     .resolve_or_zero(node_inner_size.or(Size::zero()), |val, basis| {
       tree.calc(val, basis)
-    });
+    })
+    .map(|gap| if gap.is_finite() && gap >= 0.0 { gap } else { 0.0 });
 
   let container_size = Size::zero();
   let inner_container_size = Size::zero();
