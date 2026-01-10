@@ -1913,6 +1913,29 @@ mod tests {
     }
   }
 
+  #[test]
+  fn gradient_lut_stop_positions_are_relative_to_first_stop() {
+    // `GradientLut` stores samples in the coordinate space where `t` is shifted by the first stop.
+    // Ensure the stop metadata used for sharp-boundary handling is expressed in that same space.
+    //
+    // Regression test: when stop positions were stored in absolute coordinates while `t` was
+    // sampled relative to the first stop, the boundary math would clamp and the midpoint stop
+    // would incorrectly blend with the segment endpoints.
+    let stops = &[
+      (10.0, Rgba::BLACK),
+      (11.0, Rgba::WHITE),
+      (12.0, Rgba::BLACK),
+    ];
+    let span = gradient_period(stops);
+    // Use a tiny bucket so the LUT endpoints don't capture the middle stop; the sharp-stop logic
+    // must kick in to preserve the boundary.
+    let lut = build_gradient_lut(stops, SpreadMode::Pad, span, 1);
+    let mid = lut.sample_pad(11.0);
+    let expected =
+      PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("valid premultiplied color");
+    assert_eq!(mid, expected);
+  }
+
   fn naive_conic(
     width: u32,
     height: u32,
