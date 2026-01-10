@@ -49,4 +49,7 @@ mod parse_tests;
 mod resolve_tests;
 
 #[cfg(test)]
+mod fixture_tests;
+
+#[cfg(test)]
 mod tests;
