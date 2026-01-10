@@ -648,92 +648,110 @@ impl BlockFormattingContext {
     // CSS2.1 §10.5: Percentage `height` values on in-flow elements compute to `auto` when the
     // containing block's height depends on content (i.e. it is not specified explicitly).
     //
-    // Block layout often carries a definite *available* height from an ancestor (e.g. the
-    // viewport) even though the containing block itself is `height:auto`. Using that available
-    // height as the percentage basis incorrectly resolves `height:100%` against the viewport and
-    // can blow up layouts (common in carousels that use `height:100%` in descendants).
-    //
-    // Only allow percentage heights to resolve when this block container has a definite block
-    // size. In practice this means it has a non-auto physical size (height/width depending on
-    // writing mode) or a parent layout algorithm has already forced a used border-box size.
-    // Percentage block sizes on in-flow children resolve against the used size of the containing
-    // block’s content box (CSS2.1 §10.5). This matters even when the parent itself was laid out
-    // with an indefinite available height (the common block-flow case): a fixed-height parent like
-    // `height: 28px` must still provide a definite percentage base for descendants (`height:100%`)
-    // even though its own *available* height is `auto`.
-    let parent_block_size_length = if inline_is_horizontal {
-      parent.style.height
-    } else {
-      parent.style.width
-    };
-    let parent_block_size_keyword = if inline_is_horizontal {
-      parent.style.height_keyword
-    } else {
-      parent.style.width_keyword
-    };
-    let parent_block_size_is_auto = parent_block_size_length.is_none() && parent_block_size_keyword.is_none();
-    // When the parent formatting context already computed a final used border-box size for this
-    // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
-    // percentage basis after converting it to a content-box size.
-    let parent_used_border_box_block_size = if inline_is_horizontal {
-      constraints.used_border_box_height
-    } else {
-      constraints.used_border_box_width
-    };
-    let containing_height_for_percentages =
-      if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
-        None
+    // Prefer an explicit percentage base provided by the parent layout pass (e.g. specified
+    // height, flex/grid-used size, absolute-positioning inset sizing). This allows block layout to
+    // carry a definite percentage base even when `available_height` is indefinite (the common
+    // block-flow case), and avoids incorrectly resolving `height:100%` against a definite
+    // *available* height inherited from an ancestor (e.g. viewport).
+    let containing_height_for_percentages = constraints.block_percentage_base.or_else(|| {
+      // Only allow percentage heights to resolve when this block container has a definite block
+      // size, or when the parent layout algorithm has already forced a used border-box size.
+      //
+      // Percentage block sizes on in-flow children resolve against the used size of the containing
+      // block’s content box (CSS2.1 §10.5). This matters even when the parent itself was laid out
+      // with an indefinite available height (the common block-flow case): a fixed-height parent
+      // like `height: 28px` must still provide a definite percentage base for descendants
+      // (`height:100%`) even though its own *available* height is `auto`.
+      let parent_block_size_length = if inline_is_horizontal {
+        parent.style.height
       } else {
-        let parent_axis_edges = if inline_is_horizontal {
-          vertical_padding_and_borders(&parent.style, containing_width, self.viewport_size, &self.font_context)
-        } else {
-          horizontal_padding_and_borders(&parent.style, containing_width, self.viewport_size, &self.font_context)
-        };
-        let parent_content_block_size = if let Some(border_box) = parent_used_border_box_block_size {
-          Some((border_box - parent_axis_edges).max(0.0))
-        } else if let Some(block_len) = parent_block_size_length {
-          resolve_length_with_percentage_metrics(
-            block_len,
-            containing_height,
-            self.viewport_size,
-            parent.style.font_size,
-            parent.style.root_font_size,
-            Some(&parent.style),
-            Some(&self.font_context),
-          )
-          .map(|resolved| {
-            let mut content =
-              content_size_from_box_sizing(resolved, parent_axis_edges, parent.style.box_sizing);
-            // Stable scrollbar gutters consume space from the content box even when
-            // `box-sizing: content-box` (mirrors the adjustment in this function when computing
-            // the parent's own used block size).
-            if parent.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
-              let reserve_gutter = if inline_is_horizontal {
-                parent.style.scrollbar_gutter.stable
-                  && matches!(parent.style.overflow_x, Overflow::Hidden | Overflow::Auto | Overflow::Scroll)
-              } else {
-                parent.style.scrollbar_gutter.stable
-                  && matches!(parent.style.overflow_y, Overflow::Hidden | Overflow::Auto | Overflow::Scroll)
-              };
-              if reserve_gutter {
-                let gutter = resolve_scrollbar_width(&parent.style);
-                if gutter > 0.0 {
-                  let delta = if parent.style.scrollbar_gutter.both_edges {
-                    gutter * 2.0
-                  } else {
-                    gutter
-                  };
-                  content = (content - delta).max(0.0);
-                }
+        parent.style.width
+      };
+      let parent_block_size_keyword = if inline_is_horizontal {
+        parent.style.height_keyword
+      } else {
+        parent.style.width_keyword
+      };
+      let parent_block_size_is_auto =
+        parent_block_size_length.is_none() && parent_block_size_keyword.is_none();
+      // When the parent formatting context already computed a final used border-box size for this
+      // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
+      // percentage basis after converting it to a content-box size.
+      let parent_used_border_box_block_size = if inline_is_horizontal {
+        constraints.used_border_box_height
+      } else {
+        constraints.used_border_box_width
+      };
+      if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
+        return None;
+      }
+
+      let parent_axis_edges = if inline_is_horizontal {
+        vertical_padding_and_borders(
+          &parent.style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      } else {
+        horizontal_padding_and_borders(
+          &parent.style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      };
+      let parent_content_block_size = if let Some(border_box) = parent_used_border_box_block_size {
+        Some((border_box - parent_axis_edges).max(0.0))
+      } else if let Some(block_len) = parent_block_size_length {
+        resolve_length_with_percentage_metrics(
+          block_len,
+          containing_height,
+          self.viewport_size,
+          parent.style.font_size,
+          parent.style.root_font_size,
+          Some(&parent.style),
+          Some(&self.font_context),
+        )
+        .map(|resolved| {
+          let mut content =
+            content_size_from_box_sizing(resolved, parent_axis_edges, parent.style.box_sizing);
+          // Stable scrollbar gutters consume space from the content box even when
+          // `box-sizing: content-box` (mirrors the adjustment in this function when computing
+          // the parent's own used block size).
+          if parent.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+            let reserve_gutter = if inline_is_horizontal {
+              parent.style.scrollbar_gutter.stable
+                && matches!(
+                  parent.style.overflow_x,
+                  Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+                )
+            } else {
+              parent.style.scrollbar_gutter.stable
+                && matches!(
+                  parent.style.overflow_y,
+                  Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+                )
+            };
+            if reserve_gutter {
+              let gutter = resolve_scrollbar_width(&parent.style);
+              if gutter > 0.0 {
+                let delta = if parent.style.scrollbar_gutter.both_edges {
+                  gutter * 2.0
+                } else {
+                  gutter
+                };
+                content = (content - delta).max(0.0);
               }
             }
-            content.max(0.0)
-          })
-        } else {
-          None
-        };
-        parent_content_block_size.filter(|value| value.is_finite())
+          }
+          content.max(0.0)
+        })
+      } else {
+        None
       };
+      parent_content_block_size.filter(|value| value.is_finite())
+    });
 
     // Handle block-axis margins (resolve em/rem units with font-size)
     let block_sides = block_axis_sides(style);
@@ -1284,6 +1302,8 @@ impl BlockFormattingContext {
         computed_width.margin_right = margin_right;
       }
     }
+
+    let block_percentage_base = specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         AvailableSpace::Definite(computed_width.content_width),
@@ -1295,7 +1315,8 @@ impl BlockFormattingContext {
         AvailableSpace::Definite(computed_width.content_width),
       )
     }
-    .with_inline_percentage_base(Some(computed_width.content_width));
+    .with_inline_percentage_base(Some(computed_width.content_width))
+    .with_block_percentage_base(block_percentage_base);
 
     // Check if this child establishes a different formatting context
     let fc_type = child.formatting_context();
@@ -2187,6 +2208,20 @@ impl BlockFormattingContext {
           Some(query_parent_id),
         );
 
+        // When both insets are specified and the corresponding size is `auto`, the absolute
+        // positioning algorithm resolves a definite used size from the constraint equation.
+        //
+        // Even if that used size matches the initial "static" layout size (e.g. because floats
+        // stretch the box to the same height), descendants still need the definite size as the
+        // percentage base for `height:100%`/`width:100%`. Force a relayout pass with the computed
+        // used border-box size so percentage resolution is spec-correct.
+        let relayout_for_definite_insets = (positioned_style.width.is_auto()
+          && !positioned_style.left.is_auto()
+          && !positioned_style.right.is_auto())
+          || (positioned_style.height.is_auto()
+            && !positioned_style.top.is_auto()
+            && !positioned_style.bottom.is_auto());
+
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
         if cb == parent_padding_cb {
           static_pos = Point::new(
@@ -2412,7 +2447,8 @@ impl BlockFormattingContext {
           (border_origin_physical, border_size_physical)
         };
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_definite_insets;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,
@@ -3411,6 +3447,13 @@ impl BlockFormattingContext {
         positioned_style.min_height_keyword = original_style.min_height_keyword;
         positioned_style.max_height_keyword = original_style.max_height_keyword;
 
+        let relayout_for_definite_insets = (positioned_style.width.is_auto()
+          && !positioned_style.left.is_auto()
+          && !positioned_style.right.is_auto())
+          || (positioned_style.height.is_auto()
+            && !positioned_style.top.is_auto()
+            && !positioned_style.bottom.is_auto());
+
         let actual_horizontal = positioned_style.padding.left
           + positioned_style.padding.right
           + positioned_style.border_width.left
@@ -3443,7 +3486,8 @@ impl BlockFormattingContext {
           result.position.y - content_offset.y,
         );
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_definite_insets;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,
@@ -5727,7 +5771,8 @@ impl BlockFormattingContext {
     } else {
       LayoutConstraints::new(available_block, AvailableSpace::Definite(column_width))
     }
-    .with_inline_percentage_base(Some(column_width));
+    .with_inline_percentage_base(Some(column_width))
+    .with_block_percentage_base(available_block.to_option());
 
     if column_count <= 1 {
       let parent_clone = Self::clone_with_children(parent, children.to_vec());
@@ -6527,7 +6572,8 @@ impl BlockFormattingContext {
         } else {
           LayoutConstraints::new(available_block, AvailableSpace::Definite(available_inline))
         }
-        .with_inline_percentage_base(Some(available_inline));
+        .with_inline_percentage_base(Some(available_inline))
+        .with_block_percentage_base(available_block.to_option());
         let (mut span_fragments, span_height, mut span_positioned) = self.layout_children(
           &span_parent,
           &span_constraints,
@@ -7836,6 +7882,7 @@ impl FormattingContext for BlockFormattingContext {
       .map(|h| AvailableSpace::Definite(h.max(0.0)))
       .unwrap_or(AvailableSpace::Indefinite);
 
+    let block_percentage_base = resolved_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         AvailableSpace::Definite(computed_width.content_width),
@@ -7847,7 +7894,8 @@ impl FormattingContext for BlockFormattingContext {
         AvailableSpace::Definite(computed_width.content_width),
       )
     }
-    .with_inline_percentage_base(Some(computed_width.content_width));
+    .with_inline_percentage_base(Some(computed_width.content_width))
+    .with_block_percentage_base(block_percentage_base);
 
     let content_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,
@@ -8474,6 +8522,13 @@ impl FormattingContext for BlockFormattingContext {
           Some(query_parent_id),
         );
 
+        let relayout_for_definite_insets = (positioned_style.width.is_auto()
+          && !positioned_style.left.is_auto()
+          && !positioned_style.right.is_auto())
+          || (positioned_style.height.is_auto()
+            && !positioned_style.top.is_auto()
+            && !positioned_style.bottom.is_auto());
+
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
         if cb == parent_padding_cb {
           static_pos = Point::new(
@@ -8699,7 +8754,8 @@ impl FormattingContext for BlockFormattingContext {
           (border_origin_physical, border_size_physical)
         };
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
+          || relayout_for_definite_insets;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,

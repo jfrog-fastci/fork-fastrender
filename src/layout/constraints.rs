@@ -264,6 +264,15 @@ pub struct LayoutConstraints {
   /// percentage resolution can still use a definite parent width instead of falling back to the
   /// viewport.
   pub inline_percentage_base: Option<f32>,
+
+  /// The containing block block size used for resolving percentage-based lengths in the block
+  /// axis (e.g. percentage heights in horizontal writing modes).
+  ///
+  /// Unlike the inline axis, percentage heights often compute to `auto` when the containing block
+  /// block size depends on content. Callers should set this explicitly only when the containing
+  /// block has a definite block-size (e.g. a specified height, a flex/grid-used size, or the
+  /// absolute-positioning inset sizing algorithm).
+  pub block_percentage_base: Option<f32>,
 }
 
 impl LayoutConstraints {
@@ -293,12 +302,19 @@ impl LayoutConstraints {
       used_border_box_width: None,
       used_border_box_height: None,
       inline_percentage_base,
+      block_percentage_base: None,
     }
   }
 
   /// Overrides the inline percentage base while keeping the available space unchanged.
   pub fn with_inline_percentage_base(mut self, base: Option<f32>) -> Self {
     self.inline_percentage_base = base;
+    self
+  }
+
+  /// Overrides the block percentage base while keeping the available space unchanged.
+  pub fn with_block_percentage_base(mut self, base: Option<f32>) -> Self {
+    self.block_percentage_base = base;
     self
   }
 

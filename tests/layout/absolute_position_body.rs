@@ -19,6 +19,10 @@ fn is_red(pixel: [u8; 4]) -> bool {
   pixel == [255, 0, 0, 255]
 }
 
+fn is_green(pixel: [u8; 4]) -> bool {
+  pixel == [0, 255, 0, 255]
+}
+
 #[test]
 fn absolutely_positioned_body_with_insets_renders_content() {
   std::thread::Builder::new()
@@ -100,6 +104,44 @@ fn absolute_inset_auto_width_fills_parent() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn absolutely_positioned_inset_height_resolves_percent_height_children() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      // When an absolutely positioned element has both vertical insets specified and `height:auto`,
+      // its used height is definite (CSS 2.1 §10.6.4). Percentage heights on in-flow children
+      // should therefore resolve against that used height.
+      //
+      // Regression: FastRender skipped the absolute-positioning relayout pass when the computed
+      // used size happened to match the "static" layout size, leaving descendants unable to
+      // resolve `height:100%` and collapsing them to 0px.
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        .abs { position: absolute; top: 20px; bottom: 0; left: 0; right: 0; overflow: hidden; }
+        .sidebar { float: left; width: 50px; height: 180px; }
+        .map { width: 70px; height: 100%; background: rgb(0, 255, 0); }
+      </style>
+       <div class="abs"><div class="sidebar"></div><div class="map"></div></div>
+       "#;
+      let pixmap = renderer.render_html(html, 120, 200).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 80, 10),
+        [255, 255, 255, 255],
+        "pixel above abspos inset area should be white"
+      );
+      let has_green = pixmap.data().chunks_exact(4).any(|px| {
+        is_green([px[0], px[1], px[2], px[3]])
+      });
+      assert!(has_green, "expected percent-height child to paint inside abspos inset area");
+    })
+    .unwrap()
+    .join()
+    .unwrap();
 }
 
 #[test]
