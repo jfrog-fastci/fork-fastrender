@@ -8,6 +8,23 @@ const MAX_STACK_FRAME_TEXT_BYTES: usize = 256;
 const MAX_STACK_TRACE_BYTES: usize = 16 * 1024;
 const MAX_THROWN_OBJECT_PROTOTYPE_CHAIN: usize = 16;
 
+fn format_number_fallback(n: f64) -> String {
+  if n.is_nan() {
+    return "NaN".to_string();
+  }
+  if n == f64::INFINITY {
+    return "Infinity".to_string();
+  }
+  if n == f64::NEG_INFINITY {
+    return "-Infinity".to_string();
+  }
+  // Match ECMAScript: `(-0).toString()` is `"0"`.
+  if n == 0.0 {
+    return "0".to_string();
+  }
+  format!("{n}")
+}
+
 fn truncate_utf8(s: &str, max_bytes: usize) -> Cow<'_, str> {
   if s.len() <= max_bytes {
     return Cow::Borrowed(s);
@@ -85,28 +102,31 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     Value::Undefined => return Some("undefined".to_string()),
     Value::Null => return Some("null".to_string()),
     Value::Bool(b) => return Some(b.to_string()),
-    Value::Number(_) => {
-      if let Ok(s) = heap.to_string(value) {
+    Value::Number(n) => {
+      if let Ok(s) = heap.to_string(Value::Number(n)) {
         if let Ok(js) = heap.get_string(s) {
           if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
             return Some(js.to_utf8_lossy());
           }
         }
       }
-      return None;
+      return Some(format_number_fallback(n));
     }
     // Converting arbitrary BigInts to decimal strings can allocate unbounded host memory. Keep this
     // bounded and return a stable marker instead.
     Value::BigInt(_) => return Some("[bigint]".to_string()),
     Value::Symbol(_) => return Some("[symbol]".to_string()),
     Value::String(s) => {
-      if let Ok(js) = heap.get_string(s) {
-        if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
-          return Some(js.to_utf8_lossy());
+      return Some(match heap.get_string(s) {
+        Ok(js) => {
+          if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
+            js.to_utf8_lossy()
+          } else {
+            "[exception string exceeded limit]".to_string()
+          }
         }
-        return Some("[exception string exceeded limit]".to_string());
-      }
-      return None;
+        Err(_) => "[string]".to_string(),
+      });
     }
     Value::Object(obj) => obj,
   };
@@ -418,6 +438,30 @@ mod tests {
     assert!(
       msg.starts_with("[object]"),
       "expected thrown object without name/message to use marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_number_falls_back_when_heap_cannot_allocate_string() {
+    let mut heap = Heap::new(HeapLimits::new(1, 1));
+    let err = VmError::ThrowWithStack {
+      value: Value::Number(1.0),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(&mut heap, err);
+    assert!(
+      msg.starts_with('1'),
+      "expected thrown number to be formatted even when heap OOM, got {msg:?}"
     );
     assert!(
       msg.contains("at f (<test>:1:2)"),
