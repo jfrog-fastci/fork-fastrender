@@ -709,7 +709,7 @@ where
   )?;
 
   globals.set(
-    "__fastrender_dom_script_async_get",
+    "__fastrender_dom_get_script_force_async",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, node: u32| {
@@ -724,13 +724,10 @@ where
             } if (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
               && tag_name.eq_ignore_ascii_case("script")
           );
-          if is_script {
-            let force_async = dom.node(node_id).script_force_async;
-            let has_attr = dom.has_attribute(node_id, "async")?;
-            Ok(force_async || has_attr)
-          } else {
-            dom.has_attribute(node_id, "async")
+          if !is_script {
+            return Err(DomError::InvalidNodeType);
           }
+          Ok(dom.node(node_id).script_force_async)
         });
         match result {
           Ok(v) => Ok(v),
@@ -741,10 +738,10 @@ where
   )?;
 
   globals.set(
-    "__fastrender_dom_script_async_set",
+    "__fastrender_dom_set_script_force_async_false",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
-      move |ctx: Ctx<'js>, node: u32, value: bool| {
+      move |ctx: Ctx<'js>, node: u32| {
         let mut host = dom.borrow_mut();
         let result = host.mutate_dom(|dom| {
           let node_id = match dom.node_id_from_index(node as usize) {
@@ -760,13 +757,11 @@ where
             } if (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
               && tag_name.eq_ignore_ascii_case("script")
           );
-          if is_script {
-            dom.node_mut(node_id).script_force_async = false;
+          if !is_script {
+            return (Err(DomError::InvalidNodeType), false);
           }
-          match dom.set_bool_attribute(node_id, "async", value) {
-            Ok(changed) => (Ok(()), changed),
-            Err(err) => (Err(err), false),
-          }
+          dom.node_mut(node_id).script_force_async = false;
+          (Ok(()), false)
         });
         match result {
           Ok(_) => Ok(()),
@@ -1689,10 +1684,42 @@ const DOM_BINDINGS_SHIM: &str = r##"
   try {
     Object.defineProperty(Element.prototype, "async", {
       get: function () {
-        return !!g.__fastrender_dom_script_async_get(this.__node_id);
+        // WHATWG HTML: HTMLScriptElement.async is not a simple reflected boolean attribute.
+        //
+        // For script elements, it is `true` when the `async` attribute is present, otherwise it
+        // returns the element's "force async" internal slot.
+        //
+        // This shim defines the property on `Element.prototype` (we do not model the full
+        // HTMLScriptElement prototype chain yet), so keep non-script behavior backwards-compatible
+        // by reflecting the `async` boolean attribute.
+        var tag = "";
+        try {
+          tag = String(this.tagName).toUpperCase();
+        } catch (_e) {
+          tag = "";
+        }
+        if (tag !== "SCRIPT") {
+          return this.hasAttribute("async");
+        }
+        if (this.hasAttribute("async")) return true;
+        return !!g.__fastrender_dom_get_script_force_async(this.__node_id);
       },
       set: function (value) {
-        g.__fastrender_dom_script_async_set(this.__node_id, !!value);
+        value = !!value;
+        var tag = "";
+        try {
+          tag = String(this.tagName).toUpperCase();
+        } catch (_e) {
+          tag = "";
+        }
+        if (tag === "SCRIPT") {
+          g.__fastrender_dom_set_script_force_async_false(this.__node_id);
+        }
+        if (value) {
+          this.setAttribute("async", "");
+        } else {
+          this.removeAttribute("async");
+        }
       },
       enumerable: true,
       configurable: true,
@@ -2969,9 +2996,9 @@ const DOM_BINDINGS_SHIM: &str = r##"
             function assert(cond) { if (!cond) throw new Error("assert"); }
             var s = document.createElement("script");
             assert(s.async === true);
-            assert(s.getAttribute("async") === null);
+            assert(s.hasAttribute("async") === false);
             s.async = false;
-            assert(s.getAttribute("async") === null);
+            assert(s.hasAttribute("async") === false);
             assert(s.async === false);
             s.setAttribute("async", "");
             s.removeAttribute("async");
@@ -3003,6 +3030,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
             var s = document.createElement("script");
             assert(s.async === true);
             s.setAttribute("async", "");
+            assert(s.async === true);
             s.removeAttribute("async");
             assert(s.getAttribute("async") === null);
             assert(s.async === false);
@@ -3012,6 +3040,60 @@ const DOM_BINDINGS_SHIM: &str = r##"
       })
       .map_err(|e| Error::Other(e.to_string()))?;
     assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn script_async_tracks_dom2_force_async_internal_slot() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    // Expose a detached <script> element so we can inspect the host-side internal slot.
+    let node_id = ctx
+      .with(|ctx| {
+        ctx.eval::<u32, _>(r#"(function () {
+          globalThis.__test_script = document.createElement("script");
+          return globalThis.__test_script.__node_id;
+        })()"#)
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    {
+      let dom_ref = &dom.borrow().dom;
+      let node_id = dom_ref
+        .node_id_from_index(node_id as usize)
+        .expect("script node id");
+      assert!(
+        dom_ref.node(node_id).script_force_async,
+        "expected fresh <script> to start with force_async=true"
+      );
+    }
+
+    // Setting `.async = false` must clear the internal slot and remove the attribute.
+    ctx
+      .with(|ctx| ctx.eval::<(), _>("globalThis.__test_script.async = false"))
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    {
+      let dom_ref = &dom.borrow().dom;
+      let node_id = dom_ref
+        .node_id_from_index(node_id as usize)
+        .expect("script node id");
+      assert!(
+        !dom_ref.node(node_id).script_force_async,
+        "expected setting async=false to clear force_async"
+      );
+      assert!(
+        !dom_ref.has_attribute(node_id, "async").unwrap(),
+        "expected setting async=false to remove the async attribute"
+      );
+    }
+
     Ok(())
   }
 
