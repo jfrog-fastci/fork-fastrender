@@ -74,3 +74,28 @@ fn run_script_restores_budget_after_success_and_termination() {
   }
   assert_eq!(agent.vm().budget(), initial);
 }
+
+#[test]
+fn prototype_cycle_throws_type_error_with_stack() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script(
+      "proto_cycle.js",
+      "const a = {}; Object.setPrototypeOf(a, a);",
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  match err {
+    VmError::ThrowWithStack { stack, .. } => {
+      assert!(
+        !stack.is_empty(),
+        "expected a captured stack for prototype cycle TypeError"
+      );
+      assert_eq!(&*stack[0].source, "proto_cycle.js");
+    }
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+}
