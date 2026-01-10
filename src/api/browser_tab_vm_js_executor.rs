@@ -887,9 +887,57 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::api::FastRender;
   use crate::api::RenderOptions;
+  use crate::resource::{FetchRequest, FetchedResource};
+  use crate::text::font_db::FontConfig;
+  use std::collections::HashMap;
+  use std::sync::Mutex;
 
-  fn get_global_prop_utf8(realm: &mut WindowRealm, name: &str) -> Option<String> {
+  #[derive(Default)]
+  struct MapFetcher {
+    map: HashMap<String, FetchedResource>,
+    calls: Mutex<Vec<String>>,
+  }
+
+  impl MapFetcher {
+    fn new(map: HashMap<String, FetchedResource>) -> Self {
+      Self {
+        map,
+        calls: Mutex::new(Vec::new()),
+      }
+    }
+
+    #[allow(dead_code)]
+    fn calls(&self) -> Vec<String> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
+  }
+
+  impl ResourceFetcher for MapFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self.fetch_with_request(FetchRequest::new(url, crate::resource::FetchDestination::Other))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(req.url.to_string());
+      self
+        .map
+        .get(req.url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("no fixture for url {url}", url = req.url)))
+    }
+  }
+
+  fn get_global_prop(realm: &mut WindowRealm, name: &str) -> Value {
     let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm_ref.global_object();
@@ -897,14 +945,18 @@ mod tests {
     let key_s = scope.alloc_string(name).expect("alloc name");
     scope.push_root(Value::String(key_s)).expect("root name");
     let key = PropertyKey::from_string(key_s);
-    let value = scope
+    scope
       .heap()
       .object_get_own_data_property_value(global, &key)
       .expect("get prop")
-      .unwrap_or(Value::Undefined);
+      .unwrap_or(Value::Undefined)
+  }
+
+  fn get_global_prop_utf8(realm: &mut WindowRealm, name: &str) -> Option<String> {
+    let value = get_global_prop(realm, name);
     match value {
       Value::String(s) => Some(
-        scope
+        realm
           .heap()
           .get_string(s)
           .expect("get string")
@@ -955,6 +1007,86 @@ mod tests {
       get_global_prop_utf8(realm, "__metaUrl").as_deref(),
       Some("https://example.com/doc.html#inline-module-0")
     );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_resolves_bare_specifiers_via_import_maps() -> Result<()> {
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 7;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::new(map));
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()?;
+    let mut document =
+      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      options,
+    )?;
+
+    let import_map_text = r#"{ "imports": { "dep": "/dep.js" } }"#;
+    let import_map_spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: import_map_text.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      force_async: false,
+      node_id: None,
+      script_type: crate::js::ScriptType::ImportMap,
+    };
+    executor.execute_import_map_script(import_map_text, &import_map_spec, None, &mut document, &mut event_loop)?;
+
+    let module_text = "import { value } from 'dep'; globalThis.result = value;";
+    let module_spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: module_text.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      force_async: false,
+      node_id: None,
+      script_type: crate::js::ScriptType::Module,
+    };
+    executor.execute_module_script(module_text, &module_spec, None, &mut document, &mut event_loop)?;
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
     Ok(())
   }
 }
