@@ -1266,13 +1266,23 @@ fn media_query_font_relative_units_resolve_against_initial_font_metrics() {
 
   // 1cap ~= 0.7em => 11.2px with a 16px base font.
   let cap_query = MediaQuery::parse("(min-width: 1cap)").unwrap();
-  assert!(MediaContext::screen(12.0, 10.0).evaluate(&cap_query));
-  assert!(!MediaContext::screen(10.0, 10.0).evaluate(&cap_query));
+  assert!(!MediaContext::screen(11.0, 100.0).evaluate(&cap_query));
+  assert!(MediaContext::screen(12.0, 100.0).evaluate(&cap_query));
+
+  // 1ic ~= 1em => 16px with a 16px base font.
+  let ic_query = MediaQuery::parse("(min-width: 1ic)").unwrap();
+  assert!(!MediaContext::screen(15.0, 100.0).evaluate(&ic_query));
+  assert!(MediaContext::screen(16.0, 100.0).evaluate(&ic_query));
 
   // Root font-relative units resolve identically in MQ context.
   let rcap_query = MediaQuery::parse("(min-width: 1rcap)").unwrap();
-  assert!(MediaContext::screen(12.0, 10.0).evaluate(&rcap_query));
-  assert!(!MediaContext::screen(10.0, 10.0).evaluate(&rcap_query));
+  assert!(!MediaContext::screen(11.0, 100.0).evaluate(&rcap_query));
+  assert!(MediaContext::screen(12.0, 100.0).evaluate(&rcap_query));
+
+  // Media queries lack access to computed `line-height`; treat `rlh` as `normal` (1.2em).
+  let rlh_query = MediaQuery::parse("(min-width: 1rlh)").unwrap();
+  assert!(!MediaContext::screen(19.0, 100.0).evaluate(&rlh_query));
+  assert!(MediaContext::screen(20.0, 100.0).evaluate(&rlh_query));
 }
 
 // ============================================================================
