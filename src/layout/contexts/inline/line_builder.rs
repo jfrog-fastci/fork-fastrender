@@ -3811,6 +3811,16 @@ impl<'a> LineBuilder<'a> {
 
     let mut remaining: VecDeque<InlineItem> = inline_box.children.into();
     let mut fragment_children: Vec<InlineItem> = Vec::new();
+    // `fragment_children` can contain out-of-flow placeholders (floats/static-position anchors)
+    // that should not influence whether we treat the fragment as having "real" in-flow content
+    // for fragmentation decisions.
+    //
+    // In particular, absolutely positioned descendants are represented as
+    // `InlineItem::StaticPositionAnchor` with zero width. If we treat these as normal in-flow
+    // children, we can incorrectly conclude that the fragment is non-empty and refuse to split
+    // the next in-flow child inline box, producing a zero-width inline box fragment that creates
+    // an empty line box before the first line of text (e.g. on theverge.com headlines).
+    let mut fragment_has_in_flow_children = false;
     let mut ends_with_hard_break = false;
     let mut force_break = false;
     let mut used_width: f32 = 0.0;
@@ -3841,6 +3851,10 @@ impl<'a> LineBuilder<'a> {
             _ => LINE_FIT_EPSILON,
           };
           if used_width + next_width <= available_children_width + fit_epsilon {
+            fragment_has_in_flow_children |= !matches!(
+              next,
+              InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_)
+            );
             fragment_children.push(next);
             used_width += next_width;
             continue;
@@ -3850,7 +3864,7 @@ impl<'a> LineBuilder<'a> {
             InlineItem::Text(text_item) => {
               let remaining_width = (available_children_width - used_width).max(0.0);
               let mut break_opportunity = text_item.find_break_point(remaining_width);
-              if fragment_children.is_empty() && !allow_emergency_breaks {
+              if !fragment_has_in_flow_children && !allow_emergency_breaks {
                 // When the inline box starts mid-line, we should not apply emergency breaks to the
                 // first child if the box would fit on the next line. Instead, break the line
                 // *before* the box and try again.
@@ -3976,7 +3990,7 @@ impl<'a> LineBuilder<'a> {
                 }
               }
 
-              if break_opportunity.is_none() && fragment_children.is_empty() {
+              if break_opportunity.is_none() && !fragment_has_in_flow_children {
                 break_opportunity = text_item.break_opportunities.first().copied();
                 if break_opportunity.is_none()
                   && allows_soft_wrap(text_item.style.as_ref())
@@ -4072,7 +4086,7 @@ impl<'a> LineBuilder<'a> {
                 }
               }
 
-              if fragment_children.is_empty() || !allows_soft_wrap(text_item.style.as_ref()) {
+              if !fragment_has_in_flow_children || !allows_soft_wrap(text_item.style.as_ref()) {
                 fragment_children.push(InlineItem::Text(text_item));
               } else {
                 remaining.push_front(InlineItem::Text(text_item));
@@ -4080,7 +4094,7 @@ impl<'a> LineBuilder<'a> {
               break;
             }
             InlineItem::InlineBox(child_box) => {
-              if fragment_children.is_empty() {
+              if !fragment_has_in_flow_children {
                 let remaining_width = (available_children_width - used_width).max(0.0);
                 let split = self.split_inline_box_for_line(
                   child_box,
@@ -4142,7 +4156,7 @@ impl<'a> LineBuilder<'a> {
               remaining.push_front(InlineItem::InlineBox(child_box));
               break;
             }
-            other if fragment_children.is_empty() => {
+            other if !fragment_has_in_flow_children => {
               fragment_children.push(other);
               break;
             }

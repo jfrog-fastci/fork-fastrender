@@ -205,7 +205,6 @@ pub(super) fn render_turbulence(
     return Ok(Some(pixmap));
   }
 
-  let octaves = octaves.max(1);
   let tables = TurbulenceTables::new(seed);
 
   let scale_x = if scale_x.is_finite() && scale_x > 0.0 {
@@ -522,10 +521,16 @@ fn turbulence(
     if let Some(ref mut stitch) = stitch {
       // Update stitch values. Subtracting PerlinN before the multiplication and adding it
       // afterward simplifies to subtracting it once.
-      stitch.width *= 2;
-      stitch.wrap_x = 2 * stitch.wrap_x - PERLIN_N;
-      stitch.height *= 2;
-      stitch.wrap_y = 2 * stitch.wrap_y - PERLIN_N;
+      stitch.width = stitch.width.wrapping_mul(2);
+      stitch.wrap_x = stitch
+        .wrap_x
+        .wrapping_mul(2)
+        .wrapping_sub(PERLIN_N);
+      stitch.height = stitch.height.wrapping_mul(2);
+      stitch.wrap_y = stitch
+        .wrap_y
+        .wrapping_mul(2)
+        .wrapping_sub(PERLIN_N);
     }
   }
 
@@ -541,13 +546,16 @@ fn noise2(
 ) -> f64 {
   let t = x + PERLIN_N as f64;
   let mut bx0 = t as i32;
-  let mut bx1 = bx0 + 1;
+  // `t` can become very large for high octave counts, and Rust saturates float-to-int casts at the
+  // integer bounds. In debug builds, `bx0 + 1` can overflow and panic when `bx0 == i32::MAX`;
+  // use wrapping arithmetic so our implementation matches release behaviour and never panics.
+  let mut bx1 = bx0.wrapping_add(1);
   let rx0 = t - (t as i64) as f64;
   let rx1 = rx0 - 1.0;
 
   let t = y + PERLIN_N as f64;
   let mut by0 = t as i32;
-  let mut by1 = by0 + 1;
+  let mut by1 = by0.wrapping_add(1);
   let ry0 = t - (t as i64) as f64;
   let ry1 = ry0 - 1.0;
 

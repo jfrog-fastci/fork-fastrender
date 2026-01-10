@@ -37,7 +37,9 @@ type FilterHasher = BuildHasherDefault<FxHasher>;
 type RenderResult<T> = std::result::Result<T, RenderError>;
 
 const MAX_FILTER_RES: u32 = 4096;
-const MAX_TURBULENCE_OCTAVES: u32 = 8;
+// resvg's `feTurbulence` implementation overflows/panics for extremely large `numOctaves` values.
+// Clamp to a conservative upper bound to match upstream behavior and avoid pathological work.
+const MAX_TURBULENCE_OCTAVES: u32 = 32;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -611,13 +613,13 @@ impl SvgFilterRegion {
     }
   }
 
-  pub fn resolve(&self, bbox: Rect) -> Rect {
+  fn resolve_for_surface(&self, bbox: Rect, surface_origin_css: (f32, f32)) -> Rect {
     let width_basis = bbox.width();
     let height_basis = bbox.height();
-    let (x, y, width, height) = match self.units {
+    match self.units {
       SvgFilterUnits::ObjectBoundingBox => {
         let units = SvgCoordinateUnits::ObjectBoundingBox;
-        (
+        Rect::from_xywh(
           bbox.min_x() + self.x.resolve(units, width_basis),
           bbox.min_y() + self.y.resolve(units, height_basis),
           self.width.resolve(units, width_basis).max(0.0),
@@ -626,15 +628,28 @@ impl SvgFilterRegion {
       }
       SvgFilterUnits::UserSpaceOnUse => {
         let units = SvgCoordinateUnits::UserSpaceOnUse;
-        (
-          bbox.min_x() + self.x.resolve(units, width_basis),
-          bbox.min_y() + self.y.resolve(units, height_basis),
+        let x = match self.x {
+          // Numbers are absolute user-space values. Convert to surface coordinates by shifting
+          // relative to the surface origin.
+          SvgLength::Number(v) => v - surface_origin_css.0,
+          other => bbox.min_x() + other.resolve(units, width_basis),
+        };
+        let y = match self.y {
+          SvgLength::Number(v) => v - surface_origin_css.1,
+          other => bbox.min_y() + other.resolve(units, height_basis),
+        };
+        Rect::from_xywh(
+          x,
+          y,
           self.width.resolve(units, width_basis).max(0.0),
           self.height.resolve(units, height_basis).max(0.0),
         )
       }
-    };
-    Rect::from_xywh(x, y, width, height)
+    }
+  }
+
+  pub fn resolve(&self, bbox: Rect) -> Rect {
+    self.resolve_for_surface(bbox, (0.0, 0.0))
   }
 }
 
@@ -2801,9 +2816,9 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   };
   let octaves = node
     .attribute("numOctaves")
-    .and_then(|v| v.parse::<u32>().ok())
+    .and_then(|v| v.parse::<i32>().ok())
     .unwrap_or(1)
-    .clamp(1, MAX_TURBULENCE_OCTAVES);
+    .clamp(0, MAX_TURBULENCE_OCTAVES as i32) as u32;
   let stitch_tiles = node
     .attribute("stitchTiles")
     .map(|v| {
@@ -2946,7 +2961,7 @@ pub(crate) fn apply_svg_filter_with_cache(
     1.0
   };
 
-  let Some((_, filter_region)) = resolve_filter_regions(def, scale, scale, bbox) else {
+  let Some((_, filter_region)) = resolve_filter_regions(def, scale, scale, bbox, (0.0, 0.0)) else {
     for px in pixmap.pixels_mut() {
       *px = PremultipliedColorU8::TRANSPARENT;
     }
@@ -3519,6 +3534,7 @@ fn resolve_filter_regions(
   scale_x: f32,
   scale_y: f32,
   bbox: Rect,
+  surface_origin_css: (f32, f32),
 ) -> Option<(Rect, Rect)> {
   let scale_x = if scale_x.is_finite() && scale_x > 0.0 {
     scale_x
@@ -3537,7 +3553,7 @@ fn resolve_filter_regions(
     bbox.width() / scale_x,
     bbox.height() / scale_y,
   );
-  let css_region = def.resolve_region(css_bbox);
+  let css_region = def.region.resolve_for_surface(css_bbox, surface_origin_css);
   let filter_region = Rect::from_xywh(
     css_region.x() * scale_x,
     css_region.y() * scale_y,
@@ -3567,7 +3583,9 @@ fn apply_svg_filter_scaled(
   mut blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
   surface_origin_css: (f32, f32),
 ) -> RenderResult<()> {
-  let Some((css_bbox, filter_region)) = resolve_filter_regions(def, scale_x, scale_y, bbox) else {
+  let Some((css_bbox, filter_region)) =
+    resolve_filter_regions(def, scale_x, scale_y, bbox, surface_origin_css)
+  else {
     for px in pixmap.pixels_mut() {
       *px = PremultipliedColorU8::TRANSPARENT;
     }
@@ -3645,7 +3663,7 @@ fn apply_svg_filter_scaled(
 
   clip_to_region(pixmap, filter_region)?;
 
-  let css_filter_region = def.resolve_region(css_bbox);
+  let css_filter_region = def.region.resolve_for_surface(css_bbox, surface_origin_css);
 
   let should_infer_paint = (uses_fill_paint && inputs.fill_paint.is_none())
     || (uses_stroke_paint && inputs.stroke_paint.is_none());
@@ -3686,10 +3704,16 @@ fn apply_svg_filter_scaled(
         SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
       };
       if let Some(x) = region_override.x {
-        css_prim_region.origin.x = css_bbox.min_x() + x.resolve(units, css_bbox.width());
+        css_prim_region.origin.x = match (region_override.units, x) {
+          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Number(v)) => v - surface_origin_css.0,
+          _ => css_bbox.min_x() + x.resolve(units, css_bbox.width()),
+        };
       }
       if let Some(y) = region_override.y {
-        css_prim_region.origin.y = css_bbox.min_y() + y.resolve(units, css_bbox.height());
+        css_prim_region.origin.y = match (region_override.units, y) {
+          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Number(v)) => v - surface_origin_css.1,
+          _ => css_bbox.min_y() + y.resolve(units, css_bbox.height()),
+        };
       }
       if let Some(width) = region_override.width {
         css_prim_region.size.width = width.resolve(units, css_bbox.width()).max(0.0);
