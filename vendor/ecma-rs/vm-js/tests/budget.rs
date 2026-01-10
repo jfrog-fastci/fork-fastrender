@@ -205,6 +205,43 @@ fn external_interrupt_flag_is_not_cleared_by_vm_reset_interrupt() {
 }
 
 #[test]
+fn vm_reset_interrupt_clears_internal_but_not_external_interrupt_flag() {
+  let internal = Arc::new(AtomicBool::new(false));
+  let external = Arc::new(AtomicBool::new(false));
+  let mut vm = Vm::new(VmOptions {
+    max_stack_depth: 16,
+    default_fuel: None,
+    default_deadline: None,
+    check_time_every: 1,
+    interrupt_flag: Some(internal.clone()),
+    external_interrupt_flag: Some(external.clone()),
+  });
+  vm.set_budget(Budget::unlimited(1));
+
+  internal.store(true, Ordering::Relaxed);
+  external.store(true, Ordering::Relaxed);
+
+  let err = vm.tick().unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  vm.reset_interrupt();
+  assert!(!internal.load(Ordering::Relaxed));
+  assert!(external.load(Ordering::Relaxed));
+
+  let err = vm.tick().unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  external.store(false, Ordering::Relaxed);
+  assert!(vm.tick().is_ok());
+}
+
+#[test]
 fn reset_budget_to_default_recomputes_deadline_relative_to_now() {
   let mut vm = Vm::new(VmOptions {
     max_stack_depth: 16,
