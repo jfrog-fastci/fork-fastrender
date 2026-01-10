@@ -105,3 +105,36 @@ fn script_load_listeners_can_schedule_microtasks_via_event_loop_web_apis() -> Re
 
   Ok(())
 }
+
+#[test]
+fn click_listener_registered_with_abort_signal_is_removed_when_signal_aborts() -> Result<()> {
+  let html = r#"<!doctype html>
+ <div id="target"></div>
+ <script>
+   var t = document.getElementById("target");
+   var c = new AbortController();
+   t.addEventListener("click", function () {
+     t.setAttribute("data-fired", "1");
+   }, { signal: c.signal });
+   c.abort();
+ </script>
+ "#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+  let target = tab
+    .dom()
+    .get_element_by_id("target")
+    .expect("expected <div id=target> to be present");
+
+  let _default_allowed = tab.dispatch_click_event(target)?;
+  let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(
+    tab.dom().get_attribute(target, "data-fired").unwrap(),
+    None,
+    "expected click listener to be removed when its AbortSignal aborts"
+  );
+  Ok(())
+}

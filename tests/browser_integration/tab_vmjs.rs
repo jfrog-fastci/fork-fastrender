@@ -340,17 +340,22 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
       <body>
         <div id="box" class="a"></div>
         <script>
-          fetch("hello.txt")
-            .then((r) => r.text())
-            .then((t) => {
-              const box = document.getElementById("box");
-              box.setAttribute("data-fetch", t);
-              box.setAttribute("class", "b");
-            })
-            .catch((e) => {
-              const box = document.getElementById("box");
-              box.setAttribute("data-fetch", "err:" + String(e && e.name));
-            });
+          // `BrowserTab::from_html_with_document_url_and_fetcher` runs the event loop between parser
+          // yield points (to allow async/defer loads to interleave with parsing). Defer `fetch()` to
+          // a timer so the networking task runs only after the initial render.
+          setTimeout(function () {
+            fetch("hello.txt")
+              .then((r) => r.text())
+              .then((t) => {
+                const box = document.getElementById("box");
+                box.setAttribute("data-fetch", t);
+                box.setAttribute("class", "b");
+              })
+              .catch((e) => {
+                const box = document.getElementById("box");
+                box.setAttribute("data-fetch", "err:" + String(e && e.name));
+              });
+          }, 0);
         </script>
       </body>
     </html>"#;
@@ -399,5 +404,143 @@ fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
   assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
   assert!(tab.render_if_needed()?.is_none());
 
+  Ok(())
+}
+
+#[test]
+fn browser_tab_vmjs_fetch_rejects_when_signal_is_pre_aborted() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let document_url = "https://client.example/page.html";
+
+  let fetcher = Arc::new(StubFetcher::default());
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+        <script>
+          (function () {
+            const box = document.getElementById("box");
+            const c = new AbortController();
+            c.abort();
+            fetch("hello.txt", { signal: c.signal })
+              .then(() => { box.setAttribute("data-fetch", "unexpected"); })
+              .catch((e) => { box.setAttribute("data-fetch", e && e.name); });
+          })();
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
+    html,
+    document_url,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    fetcher.clone(),
+  )?;
+
+  let box_id = tab
+    .dom()
+    .get_element_by_id("box")
+    .ok_or_else(|| Error::Other("expected #box element".to_string()))?;
+
+  // The promise rejection happens synchronously, and Promise reactions should be run via the
+  // microtask checkpoint performed after the parser-inserted script executes.
+  assert_eq!(get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(), Some("AbortError"));
+  assert!(
+    fetcher.take_recorded().is_empty(),
+    "expected aborted fetch to never call ResourceFetcher"
+  );
+
+  let frame = tab.render_frame()?;
+  assert_eq!(rgba_at(&frame, 32, 32), [255, 0, 0, 255]);
+  Ok(())
+}
+
+#[test]
+fn browser_tab_vmjs_fetch_can_be_aborted_after_scheduling_before_execution() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let document_url = "https://client.example/page.html";
+
+  let fetcher = Arc::new(StubFetcher::default());
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; }
+          .a { background: rgb(255, 0, 0); }
+          .b { background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body>
+        <div id="box" class="a"></div>
+        <script>
+          (function () {
+            const box = document.getElementById("box");
+            const c = new AbortController();
+            // Defer the fetch so the initial render happens before the abort-driven rejection.
+            setTimeout(function () {
+              fetch("hello.txt", { signal: c.signal })
+                .then(() => { box.setAttribute("data-fetch", "unexpected"); })
+                .catch((e) => {
+                  box.setAttribute("data-fetch", e && e.name);
+                  box.setAttribute("class", "b");
+                });
+              // Abort after scheduling `fetch()` but before the networking task begins.
+              c.abort();
+            }, 0);
+          })();
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
+    html,
+    document_url,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    fetcher.clone(),
+  )?;
+
+  let box_id = tab
+    .dom()
+    .get_element_by_id("box")
+    .ok_or_else(|| Error::Other("expected #box element".to_string()))?;
+
+  let frame_a = tab.render_frame()?;
+  assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
+
+  assert!(matches!(
+    tab.run_until_stable(20)?,
+    RunUntilStableOutcome::Stable { .. }
+  ));
+
+  assert_eq!(get_attr(tab.dom(), box_id, "data-fetch")?.as_deref(), Some("AbortError"));
+  assert_eq!(get_attr(tab.dom(), box_id, "class")?.as_deref(), Some("b"));
+  assert!(
+    fetcher.take_recorded().is_empty(),
+    "expected aborted fetch to never call ResourceFetcher"
+  );
+
+  let frame_b = tab
+    .render_if_needed()?
+    .expect("expected a new frame after abort-driven fetch rejection");
+  assert_ne!(frame_b.data(), frame_a.data(), "expected pixels to change");
+  assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
+  assert!(tab.render_if_needed()?.is_none());
   Ok(())
 }
