@@ -1283,7 +1283,6 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }

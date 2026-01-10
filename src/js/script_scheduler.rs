@@ -895,7 +895,6 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -913,7 +912,6 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -942,7 +940,6 @@ mod tests {
         integrity: None,
         referrer_policy: None,
         parser_inserted: false,
-        force_async: true,
         node_id: None,
         script_type: ScriptType::Classic,
       },
@@ -976,7 +973,6 @@ mod tests {
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
-        force_async: false,
         node_id: None,
         script_type: ScriptType::Classic,
       },
@@ -1028,7 +1024,6 @@ mod tests {
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
-        force_async: false,
         node_id: None,
         script_type: ScriptType::Classic,
       },
@@ -1254,7 +1249,6 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -1272,7 +1266,6 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -1290,7 +1283,6 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: false,
-      force_async: true,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -1308,7 +1300,6 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: false,
-      force_async: true,
       node_id: None,
       script_type: ScriptType::Classic,
     }
@@ -1520,7 +1511,6 @@ mod state_machine_tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     })?;
