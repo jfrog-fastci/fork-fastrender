@@ -222,6 +222,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             *control_flow = ControlFlow::Exit;
           }
           WindowEvent::Resized(new_size) => {
+            app.window_minimized = new_size.width == 0 || new_size.height == 0;
             app.resize(new_size);
             app.window.request_redraw();
           }
@@ -229,6 +230,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             scale_factor,
             new_inner_size,
           } => {
+            app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
             app.set_pixels_per_point(scale_factor as f32);
             app.resize(*new_inner_size);
             app.window.request_redraw();
@@ -516,6 +518,12 @@ struct App {
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
+  /// Pending `FrameReady` pixmaps coalesced until the next window redraw.
+  ///
+  /// Uploading a pixmap into a wgpu texture is expensive; the UI worker can produce multiple frames
+  /// before the windowed UI draws again. We store at most one pending frame per tab and only upload
+  /// for the active tab.
+  pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
 
   page_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
@@ -525,6 +533,10 @@ struct App {
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
   modifiers: winit::event::ModifiersState,
+
+  window_focused: bool,
+  window_occluded: bool,
+  window_minimized: bool,
 
   page_has_focus: bool,
   pointer_captured: bool,
@@ -659,6 +671,7 @@ impl App {
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
+      pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       page_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
@@ -667,6 +680,9 @@ impl App {
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
       modifiers: winit::event::ModifiersState::default(),
+      window_focused: true,
+      window_occluded: false,
+      window_minimized: size.width == 0 || size.height == 0,
       page_has_focus: false,
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
@@ -719,6 +735,9 @@ impl App {
   }
 
   fn desired_animation_tick_tab(&self) -> Option<fastrender::ui::TabId> {
+    if self.window_occluded || self.window_minimized || !self.window_focused {
+      return None;
+    }
     let tab_id = self.browser_state.active_tab_id()?;
     let wants_ticks = self
       .browser_state
@@ -1091,15 +1110,11 @@ impl App {
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
-        let pixmap = frame_ready.pixmap;
-        if let Some(tex) = self.tab_textures.get_mut(&frame_ready.tab_id) {
-          tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-        } else {
-          let mut tex =
-            fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap);
-          tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-          self.tab_textures.insert(frame_ready.tab_id, tex);
-        }
+        // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
+        // expensive, and we do not upload frames for inactive/background tabs.
+        self
+          .pending_frame_uploads
+          .push_for_active_tab(self.browser_state.active_tab_id(), frame_ready);
       }
     }
 
@@ -1155,6 +1170,33 @@ impl App {
 
     request_redraw |= update.request_redraw;
     request_redraw
+  }
+
+  fn flush_pending_frame_uploads(&mut self) {
+    let active_tab = self.browser_state.active_tab_id();
+    for frame_ready in self.pending_frame_uploads.drain() {
+      // If the active tab changed after we queued this frame (e.g. the user clicked another tab
+      // before the next redraw), do not upload it.
+      if Some(frame_ready.tab_id) != active_tab {
+        continue;
+      }
+
+      // Ignore stale frames for tabs that have already been closed.
+      if self.browser_state.tab(frame_ready.tab_id).is_none() {
+        continue;
+      }
+
+      let tab_id = frame_ready.tab_id;
+      let pixmap = frame_ready.pixmap;
+      if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
+        tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      } else {
+        let mut tex =
+          fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap);
+        tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+        self.tab_textures.insert(tab_id, tex);
+      }
+    }
   }
 
   fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
@@ -1546,7 +1588,14 @@ impl App {
     use winit::event::WindowEvent;
 
     match event {
-      WindowEvent::Focused(false) => {
+      WindowEvent::Occluded(occluded) => {
+        self.window_occluded = *occluded;
+      }
+      WindowEvent::Focused(focused) => {
+        self.window_focused = *focused;
+        if *focused {
+          return;
+        }
         // Losing window focus should cancel temporary UI state such as `<select>` popups and active
         // pointer drags.
         if self.open_select_dropdown.is_some() {
@@ -2036,6 +2085,7 @@ impl App {
           self.cursor_in_page = false;
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
+          self.pending_frame_uploads.clear();
 
           self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
@@ -2096,6 +2146,7 @@ impl App {
             continue;
           }
 
+          self.pending_frame_uploads.remove_tab(tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -2115,6 +2166,7 @@ impl App {
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
             self.pending_pointer_move = None;
+            self.pending_frame_uploads.clear();
           }
 
           if let Some(created_tab) = close_result.created_tab {
@@ -2163,6 +2215,7 @@ impl App {
             self.cursor_in_page = false;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
+            self.pending_frame_uploads.clear();
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id,
@@ -2247,6 +2300,10 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
+    // Upload any newly received page pixmaps now (coalesced). We do this right before drawing so
+    // multiple `FrameReady` messages received between redraws result in a single GPU upload.
+    self.flush_pending_frame_uploads();
+
     let (raw_input, wheel_events) = {
       let mut raw = self.egui_state.take_egui_input(&self.window);
       raw.pixels_per_point = Some(self.pixels_per_point);

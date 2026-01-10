@@ -18,6 +18,7 @@ pub mod render_worker;
 pub mod cancel;
 pub mod history;
 pub mod messages;
+pub mod frame_upload;
 pub mod shortcuts;
 pub mod worker;
 pub mod url;
@@ -66,6 +67,8 @@ pub use zoom::{
   clamp_zoom, viewport_css_and_dpr_for_zoom, zoom_in, zoom_out, zoom_percent, zoom_reset,
   DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
+
+pub use frame_upload::FrameUploadCoalescer;
 
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};

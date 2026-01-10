@@ -116,6 +116,7 @@ mod ui_worker_about_pages;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;
 mod ui_worker_prioritization_preemption;
+mod ui_frame_upload_coalescing;
 mod worker_harness;
 mod browser_thread_worker;
 mod ui_worker_protocol_smoke;
