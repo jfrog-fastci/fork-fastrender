@@ -4952,11 +4952,6 @@ impl GridFormattingContext {
         }
       }
       child_bounds.push(bounds);
-      child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
-        bounds,
-        constraints,
-        container_block_size,
-      );
       let skip_contents = match child.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
         crate::style::types::ContentVisibility::Auto => {
@@ -4979,7 +4974,115 @@ impl GridFormattingContext {
         ));
         continue;
       }
-      if child_continuation_available[idx].is_some() {
+    }
+
+    let container_style = taffy.style(root_id).ok();
+    let is_grid_style = matches!(container_style.map(|style| style.display), Some(Display::Grid));
+
+    if fragmentainer_axes_hint().is_some()
+      && fragmentainer_block_size_hint()
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .is_some()
+      && container_block_size.is_finite()
+    {
+      if is_grid_style {
+        let axis_style = GridAxisStyle::from_style(&box_node.style);
+        let area_bounds: Option<Vec<Rect>> = container_style.and_then(|container_style| {
+          if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
+            if info.items.len() != child_ids.len() {
+              return None;
+            }
+            let row_offsets = compute_track_offsets(
+              &info.rows,
+              root_layout.size.height,
+              root_layout.padding.top,
+              root_layout.padding.bottom,
+              root_layout.border.top,
+              root_layout.border.bottom,
+              container_style
+                .align_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            );
+            let col_offsets = compute_track_offsets(
+              &info.columns,
+              root_layout.size.width,
+              root_layout.padding.left,
+              root_layout.padding.right,
+              root_layout.border.left,
+              root_layout.border.right,
+              container_style
+                .justify_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            );
+
+            let mut out = Vec::with_capacity(child_ids.len());
+            for placement in info.items.iter() {
+              let (x_start, x_end) =
+                grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
+              let (y_start, y_end) =
+                grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)?;
+              out.push(Rect::from_xywh(
+                x_start,
+                y_start,
+                (x_end - x_start).max(0.0),
+                (y_end - y_start).max(0.0),
+              ));
+            }
+            return Some(out);
+          }
+          None
+        });
+
+        let mut dummy_children = Vec::with_capacity(child_ids.len());
+        for idx in 0..child_ids.len() {
+          let bounds = area_bounds
+            .as_ref()
+            .and_then(|bounds| bounds.get(idx))
+            .copied()
+            .unwrap_or(child_bounds[idx]);
+          dummy_children.push(FragmentNode::new_block(bounds, vec![]));
+        }
+        let root_bounds = Rect::from_xywh(
+          root_layout.location.x,
+          root_layout.location.y,
+          root_layout.size.width,
+          root_layout.size.height,
+        );
+        let mut dummy_root = FragmentNode::new_block(root_bounds, dummy_children);
+        if let Err(err) = self.apply_grid_axis_mirroring(
+          taffy,
+          root_id,
+          root_layout,
+          &mut dummy_root,
+          axis_style,
+          &mut deadline_counter,
+        ) {
+          return Some(Err(err));
+        }
+
+        for idx in 0..child_ids.len() {
+          child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
+            dummy_root.children[idx].bounds,
+            constraints,
+            container_block_size,
+          );
+        }
+      } else {
+        for idx in 0..child_ids.len() {
+          child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
+            child_bounds[idx],
+            constraints,
+            container_block_size,
+          );
+        }
+      }
+    }
+
+    for (idx, child_id) in child_ids.iter().copied().enumerate() {
+      if let Err(err) = check_layout_deadline(&mut deadline_counter) {
+        return Some(Err(err));
+      }
+      if reused_fragments[idx].is_some() || child_continuation_available[idx].is_some() {
         // Continuation fragments need to re-run layout under a reduced fragmentainer size; skip any
         // cached subtree captured during Taffy measurement.
         continue;
@@ -4992,10 +5095,8 @@ impl GridFormattingContext {
           taffy.unrounded_layout(child_id).size.height,
         ) {
           fragment_clone_profile::record_fragment_reuse_without_clone(CloneSite::GridMeasureReuse);
-          let delta = Point::new(
-            bounds.x() - reused.bounds.x(),
-            bounds.y() - reused.bounds.y(),
-          );
+          let bounds = child_bounds[idx];
+          let delta = Point::new(bounds.x() - reused.bounds.x(), bounds.y() - reused.bounds.y());
           if let Err(err) = translate_fragment_tree(&mut reused, delta, &mut deadline_counter) {
             return Some(Err(err));
           }
@@ -5442,11 +5543,6 @@ impl GridFormattingContext {
     );
     let has_in_flow_children = !fragment.children.is_empty();
 
-    let container_style = taffy.style(root_id).ok();
-    let is_grid_style = matches!(
-      container_style.map(|style| style.display),
-      Some(Display::Grid)
-    );
     if is_grid_style {
       let axis_style = GridAxisStyle::from_style(&box_node.style);
       if let Err(err) = self.apply_grid_baseline_alignment(
@@ -5509,6 +5605,7 @@ impl GridFormattingContext {
     root_id: TaffyNodeId,
     constraints: &LayoutConstraints,
     containing_grid_axis: Option<GridAxisStyle>,
+    root_child_continuation_available: Option<&FxHashMap<TaffyNodeId, f32>>,
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
@@ -5541,6 +5638,123 @@ impl GridFormattingContext {
       containing_grid_axis
     };
 
+    let mut root_child_continuation_available_owned: Option<FxHashMap<TaffyNodeId, f32>> = None;
+    let root_child_continuation_available = if node_id == root_id
+      && root_child_continuation_available.is_none()
+      && fragmentainer_axes_hint().is_some()
+      && fragmentainer_block_size_hint()
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .is_some()
+    {
+      let fragment_block_axis = fragmentainer_axes_hint()
+        .map(|axes| axes.block_axis())
+        .unwrap_or(PhysicalAxis::Y);
+      let container_block_size = match fragment_block_axis {
+        PhysicalAxis::X => layout.size.width,
+        PhysicalAxis::Y => layout.size.height,
+      };
+
+      if let Some(axis_style) = node_axis_style {
+        let area_bounds: Option<Vec<Rect>> = node_taffy_style
+          .and_then(|container_style| {
+            if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+              if info.items.len() != children.len() {
+                return None;
+              }
+              let row_offsets = compute_track_offsets(
+                &info.rows,
+                layout.size.height,
+                layout.padding.top,
+                layout.padding.bottom,
+                layout.border.top,
+                layout.border.bottom,
+                container_style
+                  .align_content
+                  .unwrap_or(TaffyAlignContent::Stretch),
+              );
+              let col_offsets = compute_track_offsets(
+                &info.columns,
+                layout.size.width,
+                layout.padding.left,
+                layout.padding.right,
+                layout.border.left,
+                layout.border.right,
+                container_style
+                  .justify_content
+                  .unwrap_or(TaffyAlignContent::Stretch),
+              );
+
+              let mut out = Vec::with_capacity(children.len());
+              for placement in info.items.iter() {
+                let (x_start, x_end) =
+                  grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
+                let (y_start, y_end) =
+                  grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)?;
+                out.push(Rect::from_xywh(
+                  x_start,
+                  y_start,
+                  (x_end - x_start).max(0.0),
+                  (y_end - y_start).max(0.0),
+                ));
+              }
+              return Some(out);
+            }
+            None
+          });
+
+        let mut dummy_children = Vec::with_capacity(children.len());
+        for (idx, &child_id) in children.iter().enumerate() {
+          let child_bounds = area_bounds.as_ref().and_then(|bounds| bounds.get(idx)).copied();
+          let child_bounds = match child_bounds {
+            Some(bounds) => bounds,
+            None => {
+              let child_layout = taffy
+                .layout(child_id)
+                .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
+              Rect::from_xywh(
+                child_layout.location.x,
+                child_layout.location.y,
+                child_layout.size.width,
+                child_layout.size.height,
+              )
+            }
+          };
+          dummy_children.push(FragmentNode::new_block(child_bounds, vec![]));
+        }
+        let root_bounds = Rect::from_xywh(
+          layout.location.x,
+          layout.location.y,
+          layout.size.width,
+          layout.size.height,
+        );
+        let mut dummy_root = FragmentNode::new_block(root_bounds, dummy_children);
+        self.apply_grid_axis_mirroring(
+          taffy,
+          node_id,
+          layout,
+          &mut dummy_root,
+          axis_style,
+          deadline_counter,
+        )?;
+
+        let mut map: FxHashMap<TaffyNodeId, f32> = FxHashMap::default();
+        for (idx, &child_id) in children.iter().enumerate() {
+          if let Some(available) = self.grid_item_continuation_available_block_size(
+            dummy_root.children[idx].bounds,
+            constraints,
+            container_block_size,
+          ) {
+            map.insert(child_id, available);
+          }
+        }
+        root_child_continuation_available_owned = Some(map);
+      }
+
+      root_child_continuation_available_owned.as_ref()
+    } else {
+      root_child_continuation_available
+    };
+
     // Convert children recursively, propagating the effective grid axes to descendants.
     let mut child_fragments = Vec::with_capacity(children.len());
     for &child_id in children.iter() {
@@ -5551,6 +5765,7 @@ impl GridFormattingContext {
         root_id,
         constraints,
         child_axis_style,
+        root_child_continuation_available,
         auto_unskipped,
         measured_fragments,
         measured_node_keys,
@@ -5694,8 +5909,17 @@ impl GridFormattingContext {
       } else {
         None
       };
-      let continuation_available = container_block_size
-        .and_then(|size| self.grid_item_continuation_available_block_size(bounds, constraints, size));
+      let continuation_available = if taffy.parent(node_id) == Some(root_id) {
+        if let Some(map) = root_child_continuation_available {
+          map.get(&node_id).copied()
+        } else {
+          container_block_size.and_then(|size| {
+            self.grid_item_continuation_available_block_size(bounds, constraints, size)
+          })
+        }
+      } else {
+        None
+      };
 
       if continuation_available.is_none() {
         if let Some(keys) = measured_node_keys.get(&node_id) {
@@ -10984,6 +11208,7 @@ impl FormattingContext for GridFormattingContext {
           root_id,
           &constraints,
           None,
+          None,
           auto_unskipped,
           &mut measured_fragments,
           &measured_node_keys,
@@ -10997,6 +11222,7 @@ impl FormattingContext for GridFormattingContext {
         root_id,
         root_id,
         &constraints,
+        None,
         None,
         auto_unskipped,
         &mut measured_fragments,
@@ -12622,7 +12848,10 @@ mod tests {
       Direction::Ltr,
     )));
 
-    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    // Force the parallel root-children conversion path so this regression covers continuation
+    // detection under `apply_grid_axis_mirroring` (vertical writing modes + negative progression).
+    let fc = GridFormattingContext::new()
+      .with_parallelism(LayoutParallelism::enabled(3).with_max_threads(Some(2)));
 
     // In vertical writing modes the fragmentation block axis can be physical X. Place the target
     // item in a later block track so it starts in a continuation fragment (x >= 100px), then
@@ -12673,6 +12902,72 @@ mod tests {
       (target_fragment.bounds.width() - 80.0).abs() < 0.5,
       "expected continuation relayout to clamp item width to remaining fragmentainer space (80px), got {:.2}",
       target_fragment.bounds.width()
+    );
+  }
+
+  #[test]
+  fn grid_item_continuation_relayout_reduces_physical_width_in_vertical_rl_negative_progression() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(
+      WritingMode::VerticalRl,
+      Direction::Ltr,
+    )));
+ 
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+ 
+    // `writing-mode: vertical-rl` has a horizontal block axis with negative progression. Place the
+    // target item in a later block track so its *block-start* edge (the right edge) begins 20px
+    // into the continuation fragment (flow position 120px with a 100px fragmentainer), leaving 80px
+    // remaining.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.writing_mode = WritingMode::VerticalRl;
+    // One inline track so the item's physical height is stable.
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(20.0))];
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(90.0)),
+    ];
+    let grid_style = Arc::new(grid_style);
+ 
+    let mut item_a = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_a.id = 511;
+    let mut item_b = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_b.id = 512;
+ 
+    let mut target_style = ComputedStyle::default();
+    target_style.writing_mode = WritingMode::VerticalRl;
+    target_style.width = None;
+    target_style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+    let mut target = BoxNode::new_block(
+      Arc::new(target_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    target.id = 513;
+ 
+    let grid = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![item_a, item_b, target],
+    );
+ 
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(500.0, 500.0))
+      .expect("layout should succeed");
+ 
+    let target_fragment = find_block_fragment(&fragment, 513);
+    let container_width = fragment.bounds.width();
+    let block_start = container_width - target_fragment.bounds.x() - target_fragment.bounds.width();
+    assert!(
+      (target_fragment.bounds.width() - 80.0).abs() < 0.5,
+      "expected continuation relayout to clamp item width to remaining fragmentainer space (80px), got width={:.2} x={:.2} container_width={:.2} block_start={:.2}",
+      target_fragment.bounds.width(),
+      target_fragment.bounds.x(),
+      container_width,
+      block_start,
     );
   }
 
@@ -15872,6 +16167,7 @@ mod tests {
             root_id,
             root_id,
             &constraints,
+            None,
             None,
             None,
             &mut measured_fragments,
