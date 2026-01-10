@@ -45,6 +45,10 @@ pub mod dom2_bindings;
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 pub mod clock;
+// `dom_integration` is still referenced by some DOM-mutation plumbing and integration tests, but the
+// implementation lives under `legacy/` while the HTML script processing pipeline migrates.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod document_lifecycle;
 pub mod event_loop;
 pub mod host_document;
