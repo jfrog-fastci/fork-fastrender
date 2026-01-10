@@ -806,7 +806,7 @@ fn storage_key_native(
 }
 
 fn install_storage_object(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   realm: &Realm,
   global: GcObject,
@@ -4619,7 +4619,7 @@ fn event_target_constructor_native(
 }
 
 fn event_target_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
