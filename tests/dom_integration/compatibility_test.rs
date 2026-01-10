@@ -281,6 +281,19 @@ fn compatibility_mode_lifts_data_default_src_images() {
 }
 
 #[test]
+fn compatibility_mode_lifts_svg_placeholder_img_src_from_data_src() {
+  let fixture_dir =
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/dom_compat_svg_placeholder");
+  let html_path = fixture_dir.join("index.html");
+  let html = fs::read_to_string(&html_path).expect("read fixture HTML");
+
+  let dom =
+    parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let img = find_by_id(&dom, "img").expect("img element");
+  assert_eq!(img.get_attribute_ref("src"), Some("assets/real.png"));
+}
+
+#[test]
 fn compatibility_mode_lifts_img_src_from_lazy_data_attributes() {
   let html = r#"<html><body><img data-src="https://example.com/a.jpg"></body></html>"#;
 

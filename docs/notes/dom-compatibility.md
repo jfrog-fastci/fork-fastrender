@@ -65,9 +65,14 @@ These lifts are intentionally conservative:
 - start with `javascript:`, `vbscript:`, or `mailto:` (case-insensitive)
 - a `data:image/gif;base64,…` that decodes to a `1×1` GIF (payload length is capped to keep this
   check cheap)
+- a small `data:image/svg+xml,…` that decodes to a structurally blank SVG (no visible shape
+  elements; payload decoding is size-capped)
 
 These placeholder rules are reused anywhere compat mode decides whether to replace an existing
 `src`-like attribute (`<img>`, `<iframe>`, `<video>`, `<audio>`, and `<video poster>`).
+
+FastRender's HTML image prefetch discovery uses the same placeholder heuristics, so tools like
+`prefetch_assets` prefer `data-src`/`data-srcset` when `src` is a recognized placeholder.
 
 When lifting a URL from `data-*` candidates, placeholder values are ignored and later candidates are
 tried instead.

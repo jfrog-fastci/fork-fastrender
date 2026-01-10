@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: rgb(0, 255, 0);
+      }
+
+      img {
+        display: block;
+        width: 64px;
+        height: 64px;
+      }
+
+      img[src^="data:image/svg"] {
+        opacity: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Some pages use blank SVG `data:` URLs as the initial <img src> placeholder.
+      Without DOM compatibility mode, the image stays on the placeholder and is hidden by CSS.
+      Compatibility mode should lift `data-src` into `src` so the real PNG becomes visible.
+    -->
+    <img
+      id="img"
+      width="64"
+      height="64"
+      src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/>"
+      data-src="assets/real.png"
+      alt=""
+    />
+  </body>
+</html>

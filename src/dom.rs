@@ -3339,6 +3339,15 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
     value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
   }
 
+  fn contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+      return false;
+    }
+    haystack
+      .windows(needle.len())
+      .any(|window| window.eq_ignore_ascii_case(needle))
+  }
+
   // `<img src>` is stripped of leading/trailing ASCII whitespace, but not all Unicode whitespace
   // (e.g. NBSP). Use an explicit ASCII trim so placeholder detection does not incorrectly treat
   // non-ASCII whitespace as empty.
@@ -3367,6 +3376,10 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
 
   // Treat the common "1x1 transparent GIF" data URLs used as placeholders for lazy-loaded images
   // as empty. These are typically replaced by client-side bootstrap JS with the real image URL.
+  //
+  // Some pages use blank SVG `data:` URLs for the same purpose. Those should also be treated as
+  // placeholders, but conservatively: real SVG `data:` images exist, so only classify SVG payloads
+  // that look structurally empty (no visible shape elements).
   if !value
     .get(.."data:".len())
     .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
@@ -3389,11 +3402,64 @@ pub fn img_src_is_placeholder(value: &str) -> bool {
   let mut parts = metadata.split(';');
   let mediatype = trim_ascii_whitespace(parts.next().unwrap_or(""));
   let is_base64 = parts.any(|part| trim_ascii_whitespace(part).eq_ignore_ascii_case("base64"));
+  let payload = trim_ascii_whitespace(payload);
+
+  if mediatype.eq_ignore_ascii_case("image/svg+xml") {
+    const MAX_SVG_PLACEHOLDER_BYTES: usize = 16 * 1024;
+    if payload.is_empty() {
+      return true;
+    }
+    // Avoid decoding unusually large data URLs; placeholders are tiny and should decode quickly.
+    if payload.len() > MAX_SVG_PLACEHOLDER_BYTES {
+      return false;
+    }
+
+    let Ok(resource) =
+      crate::resource::data_url::decode_data_url_prefix(value, MAX_SVG_PLACEHOLDER_BYTES + 1)
+    else {
+      return false;
+    };
+    let decoded = resource.bytes;
+    // Only classify small SVGs as placeholders so we don't misidentify large real SVG data URLs.
+    if decoded.len() > MAX_SVG_PLACEHOLDER_BYTES {
+      return false;
+    }
+
+    // Require a `<svg` root tag; this avoids treating arbitrary data as a placeholder just because
+    // the mediatype claims it is SVG.
+    if !contains_ignore_ascii_case(&decoded, b"<svg") {
+      return false;
+    }
+
+    // Reject SVGs that contain common visible primitives; a blank placeholder should not draw
+    // anything (aside from optional metadata like <title>/<desc>/<defs>).
+    const VISIBLE_TAGS: [&[u8]; 12] = [
+      b"<path",
+      b"<rect",
+      b"<circle",
+      b"<ellipse",
+      b"<polygon",
+      b"<polyline",
+      b"<line",
+      b"<text",
+      b"<image",
+      b"<use",
+      b"<foreignobject",
+      b"<pattern",
+    ];
+    for tag in VISIBLE_TAGS {
+      if contains_ignore_ascii_case(&decoded, tag) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   if !is_base64 {
     return false;
   }
 
-  let payload = trim_ascii_whitespace(payload);
   if payload.is_empty() {
     return true;
   }
@@ -9190,6 +9256,27 @@ mod tests {
   #[test]
   fn img_src_is_placeholder_rejects_non_1x1_png_base64_data_url() {
     let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAC0lEQVR4nGNggAIAAAkAAftSuKkAAAAASUVORK5CYII=";
+    assert!(!img_src_is_placeholder(url));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_accepts_blank_svg_data_urls() {
+    let plain = "data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+    assert!(img_src_is_placeholder(plain));
+
+    let percent_encoded =
+      "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
+    assert!(img_src_is_placeholder(percent_encoded));
+
+    let base64 =
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz4=";
+    assert!(img_src_is_placeholder(base64));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_rejects_non_blank_svg_data_urls() {
+    // From `tests/pages/fixtures/replaced_max_width_probe/index.html`.
+    let url = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iNTAiPjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNTAiIGZpbGw9IiNmOTAiLz48L3N2Zz4=";
     assert!(!img_src_is_placeholder(url));
   }
 

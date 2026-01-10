@@ -231,3 +231,56 @@ fn dom_compatibility_lifts_data_default_src_images_at_render_time() {
     "compat render should preserve authored src (blue); got rgb({r},{g},{b})"
   );
 }
+
+#[test]
+fn dom_compatibility_lifts_svg_placeholder_images_at_render_time() {
+  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("tests/pages/fixtures/dom_compat_svg_placeholder");
+  let html_path = fixture_dir.join("index.html");
+  let html = fs::read_to_string(&html_path).expect("read fixture HTML");
+
+  let base_url = Url::from_directory_path(&fixture_dir)
+    .expect("build file:// base url")
+    .to_string();
+  let policy = ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false)
+    .allow_file(true)
+    .allow_data(true);
+
+  let mut standard = FastRender::builder()
+    .base_url(base_url.clone())
+    .resource_policy(policy.clone())
+    .dom_compatibility_mode(DomCompatibilityMode::Standard)
+    .build()
+    .expect("build standard renderer");
+
+  let mut compat = FastRender::builder()
+    .base_url(base_url)
+    .resource_policy(policy)
+    .dom_compatibility_mode(DomCompatibilityMode::Compatibility)
+    .build()
+    .expect("build compat renderer");
+
+  let standard_pixmap = standard
+    .render_html_with_options(&html, RenderOptions::new().with_viewport(64, 64))
+    .expect("render standard fixture");
+  let compat_pixmap = compat
+    .render_html_with_options(&html, RenderOptions::new().with_viewport(64, 64))
+    .expect("render compat fixture");
+
+  let is_red = |r: u8, g: u8, b: u8| r > 200 && g < 80 && b < 80;
+  let is_green = |r: u8, g: u8, b: u8| g > 200 && r < 80 && b < 80;
+
+  let (r, g, b, _) = get_pixel(&standard_pixmap, 32, 32);
+  assert!(
+    is_green(r, g, b),
+    "standard render should keep the SVG placeholder hidden; got rgb({r},{g},{b})"
+  );
+
+  let (r, g, b, _) = get_pixel(&compat_pixmap, 32, 32);
+  assert!(
+    is_red(r, g, b),
+    "compat render should lift the real PNG from data-src; got rgb({r},{g},{b})"
+  );
+}
