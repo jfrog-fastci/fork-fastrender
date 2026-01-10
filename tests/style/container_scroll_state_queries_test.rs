@@ -718,3 +718,134 @@ fn container_scroll_state_scrollable_top_tracks_viewport_scroll_offset() {
     "expected scrollable: top to match at scroll end for viewport scrolling"
   );
 }
+
+#[test]
+fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respects_rtl_direction() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        writing-mode: vertical-rl;
+        direction: rtl;
+        container-name: scroller;
+      }
+      #spacer { height: 200px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: inline-start) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+  let bounds = scroll_bounds_for_box_id(prepared.fragment_tree(), scroller_box_id).expect("bounds");
+
+  let prepared_min = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 0.0, bounds.min_y),
+    )
+    .expect("prepare min");
+  let target_min = find_by_id(prepared_min.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_min.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: inline-start to match when not at the inline-start edge in vertical writing mode"
+  );
+
+  let prepared_max = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 0.0, bounds.max_y),
+    )
+    .expect("prepare max");
+  let target_max = find_by_id(prepared_max.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_max.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: inline-start to be false at the inline-start edge in vertical writing mode"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_horizontal_scroll_offset() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        writing-mode: vertical-rl;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: block-end) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+  let bounds = scroll_bounds_for_box_id(prepared.fragment_tree(), scroller_box_id).expect("bounds");
+
+  let prepared_min = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, bounds.min_x, 0.0),
+    )
+    .expect("prepare min");
+  let target_min = find_by_id(prepared_min.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_min.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: block-end to be false at the block-end edge in vertical writing mode"
+  );
+
+  let prepared_max = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, bounds.max_x, 0.0),
+    )
+    .expect("prepare max");
+  let target_max = find_by_id(prepared_max.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_max.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: block-end to match when not at the block-end edge in vertical writing mode"
+  );
+}
