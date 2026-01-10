@@ -9,13 +9,22 @@
   "stages_ms": {
     "fetch": 116.219021685,
     "css": 24.56662247,
-    "cascade": 10.139579008344887,
+    "cascade": 10.139579008344889,
     "box_tree": 6.868082701655114,
     "layout": 8.503830855,
     "paint": 22.67688228
   },
   "notes": "",
   "auto_notes": "cached_html_status=403",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 0,
+    "diff_percent": 0.0,
+    "perceptual": 0.0,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,

@@ -5,16 +5,41 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 430.88802300000003,
+  "total_ms": 430.888023,
   "stages_ms": {
     "fetch": 97.9745388723898,
     "css": 16.995583273781904,
-    "cascade": 190.95037678190258,
+    "cascade": 190.95037678190255,
     "box_tree": 6.998181348027843,
     "layout": 72.98103405800465,
     "paint": 44.98830866589328
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 16925,
+    "diff_percent": 1.3124,
+    "perceptual": 0.351,
+    "first_mismatch": {
+      "x": 156,
+      "y": 28,
+      "baseline_rgba": [
+        239,
+        207,
+        167,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -26,13 +51,13 @@
         "html_decode_ms": null,
         "dom_parse_ms": 8.140888,
         "dom_html5ever_ms": 5.675191,
-        "dom_convert_ms": 1.9172639999999999,
-        "dom_shadow_attach_ms": 0.12119300000000001,
+        "dom_convert_ms": 1.917264,
+        "dom_shadow_attach_ms": 0.121193,
         "dom_compat_ms": 0.0,
         "dom_meta_viewport_ms": 0.0049,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
-        "css_inlining_ms": 13.482769000000001,
+        "css_inlining_ms": 13.482769,
         "css_inline_extract_links_ms": null,
         "css_inline_extract_embedded_urls_ms": null,
         "css_inline_stylesheet_fetch_cpu_ms": null,
@@ -53,7 +78,7 @@
         "paint_build_ms": 11.208948,
         "paint_optimize_ms": 0.02341,
         "paint_rasterize_ms": 21.629137,
-        "text_rasterize_cpu_ms": 1.9212649999999998,
+        "text_rasterize_cpu_ms": 1.921265,
         "encode_ms": null
       },
       "counts": {

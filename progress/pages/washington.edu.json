@@ -15,6 +15,31 @@
     "paint": 441.26214806782326
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 675960,
+    "diff_percent": 52.4163,
+    "perceptual": 0.1626,
+    "first_mismatch": {
+      "x": 151,
+      "y": 0,
+      "baseline_rgba": [
+        75,
+        46,
+        131,
+        255
+      ],
+      "rendered_rgba": [
+        47,
+        29,
+        82,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -29,7 +54,7 @@
         "dom_convert_ms": 0.496681,
         "dom_shadow_attach_ms": 0.028751,
         "dom_compat_ms": 0.0,
-        "dom_meta_viewport_ms": 0.020069999999999998,
+        "dom_meta_viewport_ms": 0.02007,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
         "css_inlining_ms": 23.873887,
@@ -42,7 +67,7 @@
         "css_inline_inject_ms": null,
         "css_parse_ms": 3.1499789999999996,
         "css_parse_used_codepoints_ms": 0.06493199999999999,
-        "css_parse_collect_font_faces_ms": 0.12317299999999999,
+        "css_parse_collect_font_faces_ms": 0.123173,
         "css_parse_load_webfonts_ms": 2.960895,
         "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 44.4456,
@@ -170,7 +195,7 @@
         "parallel_threads": 1,
         "parallel_fallback_reason": "parallel paint thread budget is single-threaded; dedicated paint pool disabled (set FASTR_PAINT_THREADS>1 to enable)",
         "parallel_ms": 0.0,
-        "serial_ms": 429.40504699999997,
+        "serial_ms": 429.405047,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,
         "blur_cache_hits": 0,

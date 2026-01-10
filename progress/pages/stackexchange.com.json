@@ -15,6 +15,31 @@
     "paint": 41.02020352089137
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 259980,
+    "diff_percent": 20.1597,
+    "perceptual": 0.2028,
+    "first_mismatch": {
+      "x": 205,
+      "y": 4,
+      "baseline_rgba": [
+        12,
+        13,
+        14,
+        255
+      ],
+      "rendered_rgba": [
+        63,
+        64,
+        66,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -46,9 +71,9 @@
         "css_parse_load_webfonts_ms": 0.000029999999999999997,
         "css_parse_collect_keyframes_ms": 0.000029999999999999997,
         "cascade_ms": 108.640377,
-        "box_tree_ms": 21.312459999999998,
-        "layout_ms": 56.862826999999996,
-        "text_fallback_cpu_ms": 2.2808049999999986,
+        "box_tree_ms": 21.31246,
+        "layout_ms": 56.862827,
+        "text_fallback_cpu_ms": 2.280804999999998,
         "text_shape_cpu_ms": 6.316161,
         "paint_build_ms": 13.709855,
         "paint_optimize_ms": 0.033741,
@@ -171,7 +196,7 @@
         "layer_alloc_bytes": 12160,
         "parallel_tasks": 20,
         "parallel_threads": 20,
-        "parallel_ms": 11.530985000000001,
+        "parallel_ms": 11.530985,
         "serial_ms": 18.292869999999997,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,

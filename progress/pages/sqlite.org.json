@@ -15,6 +15,31 @@
     "paint": 23.024816233333333
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 171264,
+    "diff_percent": 13.2804,
+    "perceptual": 0.9114,
+    "first_mismatch": {
+      "x": 78,
+      "y": 7,
+      "baseline_rgba": [
+        216,
+        225,
+        229,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -45,12 +70,12 @@
         "css_parse_collect_font_faces_ms": 0.00184,
         "css_parse_load_webfonts_ms": 0.00011,
         "css_parse_collect_keyframes_ms": 0.00002,
-        "cascade_ms": 14.165621999999999,
+        "cascade_ms": 14.165622,
         "box_tree_ms": 2.312261,
         "layout_ms": 7.235129,
         "text_fallback_cpu_ms": 0.65854,
-        "text_shape_cpu_ms": 1.5768120000000005,
-        "paint_build_ms": 11.335090000000001,
+        "text_shape_cpu_ms": 1.5768120000000003,
+        "paint_build_ms": 11.33509,
         "paint_optimize_ms": 0.021901,
         "paint_rasterize_ms": 7.876364000000001,
         "text_rasterize_cpu_ms": 5.724143999999999,

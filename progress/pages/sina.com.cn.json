@@ -8,14 +8,39 @@
   "status": "ok",
   "total_ms": 472.947518,
   "stages_ms": {
-    "fetch": 110.98768392811839,
-    "css": 11.998668532769555,
+    "fetch": 110.9876839281184,
+    "css": 11.998668532769557,
     "cascade": 193.9784746131078,
     "box_tree": 32.996338465116274,
     "layout": 80.9910125961945,
     "paint": 41.99533986469344
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 228557,
+    "diff_percent": 17.7231,
+    "perceptual": 0.3386,
+    "first_mismatch": {
+      "x": 38,
+      "y": 18,
+      "baseline_rgba": [
+        252,
+        252,
+        252,
+        255
+      ],
+      "rendered_rgba": [
+        219,
+        219,
+        219,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -44,13 +69,13 @@
         "css_parse_ms": 0.01187,
         "css_parse_used_codepoints_ms": 0.000029999999999999997,
         "css_parse_collect_font_faces_ms": 0.01058,
-        "css_parse_load_webfonts_ms": 0.00019999999999999998,
+        "css_parse_load_webfonts_ms": 0.0002,
         "css_parse_collect_keyframes_ms": 0.000029999999999999997,
         "cascade_ms": 193.484638,
         "box_tree_ms": 32.393031,
         "layout_ms": 76.302833,
         "text_fallback_cpu_ms": 25.696751,
-        "text_shape_cpu_ms": 9.504978000000001,
+        "text_shape_cpu_ms": 9.504978,
         "paint_build_ms": 16.386569,
         "paint_optimize_ms": 0.038861,
         "paint_rasterize_ms": 8.112397,
@@ -208,7 +233,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 1.0416239999999999
+        "image_decode_ms": 1.041624
       }
     }
   }
