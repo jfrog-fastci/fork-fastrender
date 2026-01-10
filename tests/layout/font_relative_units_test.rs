@@ -12,22 +12,31 @@ fn approx_eq(actual: f32, expected: f32, epsilon: f32, msg: &str) {
   );
 }
 
-fn find_text_fragment<'a>(
-  fragment: &'a fastrender::FragmentNode,
+fn find_text_fragment_pos(
+  fragment: &fastrender::FragmentNode,
   needle: &str,
-) -> Option<&'a fastrender::FragmentNode> {
-  let mut stack = vec![fragment];
-  while let Some(node) = stack.pop() {
+) -> Option<(f32, f32)> {
+  fn walk(
+    node: &fastrender::FragmentNode,
+    origin: (f32, f32),
+    needle: &str,
+  ) -> Option<(f32, f32)> {
+    let abs_x = origin.0 + node.bounds.x();
+    let abs_y = origin.1 + node.bounds.y();
     if let FragmentContent::Text { text, .. } = &node.content {
       if text.contains(needle) {
-        return Some(node);
+        return Some((abs_x, abs_y));
       }
     }
-    for child in node.children.iter().rev() {
-      stack.push(child);
+    for child in node.children.iter() {
+      if let Some(found) = walk(child, (abs_x, abs_y), needle) {
+        return Some(found);
+      }
     }
+    None
   }
-  None
+
+  walk(fragment, (0.0, 0.0), needle)
 }
 
 #[test]
@@ -153,11 +162,8 @@ fn margin_left_cap_differs_from_em_with_font_metrics() {
   let dom = renderer.parse_html(&html).expect("parse");
   let tree = renderer.layout_document(&dom, 200, 200).expect("layout");
 
-  let cap_frag = find_text_fragment(&tree.root, "CAP_UNIT").expect("cap text fragment");
-  let em_frag = find_text_fragment(&tree.root, "EM_UNIT").expect("em text fragment");
-
-  let cap_x = cap_frag.bounds.x();
-  let em_x = em_frag.bounds.x();
+  let (cap_x, _) = find_text_fragment_pos(&tree.root, "CAP_UNIT").expect("cap text fragment");
+  let (em_x, _) = find_text_fragment_pos(&tree.root, "EM_UNIT").expect("em text fragment");
 
   // Compute the expected cap height from the bundled sans-serif font metrics.
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());

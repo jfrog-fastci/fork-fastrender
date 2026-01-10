@@ -85,6 +85,7 @@ mod flex_wrap_percent_width_items_wrap_to_new_lines;
 mod flex_wrap_gap_intrinsic_width_exact_fit;
 mod flex_wrap_subpixel_intrinsic_overflow_does_not_wrap;
 mod flex_wrap_subpixel_overflow_rounding_does_not_wrap;
+mod flex_subpixel_sizes;
 mod flex_item_blockification;
 mod flex_nested_wrap_item_cross_size;
 mod flex_leaf_remeasure_after_main_size_flexing;

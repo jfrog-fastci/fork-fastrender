@@ -8917,8 +8917,67 @@ impl GridFormattingContext {
         actual_insets_h
       };
 
+      // Grid items with `justify-self`/`justify-items` values other than `stretch` use a
+      // content-based size in the inline axis (roughly: max-content clamped to the grid area).
+      //
+      // Taffy can request intrinsic block-size probes (min-/max-content height) while still
+      // providing a definite inline size. The early-return path below must therefore apply the
+      // same shrink-to-fit width logic as the full layout path, otherwise the probe would return
+      // the full grid area width and the item would incorrectly stretch.
+      let shrink_width = (intrinsic_width.is_none()
+        && physical_width_is_auto(style)
+        && matches!(available_space.width, taffy::style::AvailableSpace::Definite(_)))
+      .then(|| {
+        let taffy::style::AvailableSpace::Definite(area_width) = available_space.width else {
+          return None;
+        };
+        let justify = taffy_style
+          .justify_self
+          .unwrap_or(taffy::style::AlignItems::Stretch);
+        if justify == taffy::style::AlignItems::Stretch {
+          return None;
+        }
+
+        match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
+          Ok(intrinsic_border_width) => {
+            let mut used_width = intrinsic_border_width.max(0.0);
+
+            if should_adjust_for_calc_percentage_edges && area_width.is_finite() && area_width > 1.0
+            {
+              let (
+                padding_left,
+                padding_right,
+                _padding_top,
+                _padding_bottom,
+                border_left,
+                border_right,
+                _border_top,
+                _border_bottom,
+              ) = self.resolved_padding_border_for_measure(style, area_width);
+              let base0_insets_w = {
+                let (p_l, p_r, _p_t, _p_b, b_l, b_r, _b_t, _b_b) =
+                  self.resolved_padding_border_for_measure(style, 0.0);
+                p_l + p_r + b_l + b_r
+              };
+              let insets_w = padding_left + padding_right + border_left + border_right;
+              let delta = insets_w - base0_insets_w;
+              if delta.is_finite() {
+                used_width = (used_width + delta).max(0.0);
+              }
+            }
+
+            used_width = used_width.min(area_width.max(0.0));
+            Some((used_width - width_inset).max(0.0))
+          }
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        }
+      })
+      .flatten();
+
       let width = intrinsic_width
         .map(|border_width| (border_width - width_inset).max(0.0))
+        .or(shrink_width)
         .unwrap_or_else(|| fallback_size(known_dimensions.width, available_space.width).max(0.0));
 
       let height = if let Some(border_height) = intrinsic_height {

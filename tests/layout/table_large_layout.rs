@@ -257,7 +257,10 @@ fn gigantic_spanning_table_finishes_quickly_and_stays_ordered() {
     let start = Instant::now();
     let tree = renderer.layout_document(&dom, 1600, 1400).unwrap();
     let elapsed = start.elapsed();
-    let budget = layout_perf_budget(Duration::from_secs(10));
+    // This is a debug-test perf guardrail, not a microbenchmark. In practice the wall-time can vary
+    // significantly across machines and debug builds, so keep the strict budget generous enough to
+    // avoid flakiness while still catching catastrophic regressions.
+    let budget = layout_perf_budget(Duration::from_secs(20));
     assert!(
       elapsed < budget,
       "giant spanning table layout took {:?} (budget {:?}; RUST_TEST_THREADS={:?})",

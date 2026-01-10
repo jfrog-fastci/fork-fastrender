@@ -657,9 +657,18 @@ pub(crate) struct PooledTaffyTree {
 
 impl PooledTaffyTree {
   pub(crate) fn new() -> Self {
-    let tree = TAFFY_TREE_POOL
+    let mut tree = TAFFY_TREE_POOL
       .with(|pool| pool.borrow_mut().pop())
       .unwrap_or_else(TaffyTree::new);
+    // Taffy rounds computed layouts to integer pixel coordinates by default. While this behavior
+    // matches Yoga's historical defaults, it is not appropriate for web layout where subpixel sizes
+    // are observable and required for correct text metrics (e.g. line heights derived from font
+    // ascender/descender values).
+    //
+    // When rounding is enabled Taffy can round a flex/grid item's cross size down, causing its
+    // contents to overflow and producing visible 1px mismatches on real pages (fortune.com header
+    // nav was one example).
+    tree.disable_rounding();
     Self { tree: Some(tree) }
   }
 }

@@ -78,6 +78,7 @@ use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::MarkerContent;
+use crate::tree::fragment_tree::BlockFragmentMetadata;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::TableCollapsedBorders;
@@ -7974,14 +7975,16 @@ impl FormattingContext for TableFormattingContext {
       };
       let height = (bottom - top).max(0.0);
       let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
-      fragments.push(FragmentNode::new_with_style(
+      let mut fragment = FragmentNode::new_with_style(
         rect,
         FragmentContent::Block {
           box_id: Some(row_group_id),
         },
         Vec::new(),
         style,
-      ));
+      );
+      fragment.block_metadata = Some(BlockFragmentMetadata::default());
+      fragments.push(fragment);
     }
 
     // Rows
