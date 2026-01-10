@@ -1159,6 +1159,7 @@ impl<'a> Evaluator<'a> {
         continue;
       }
       for declarator in &var.stx.declarators {
+        self.tick()?;
         self.collect_lexical_decl_names_from_pat(
           &declarator.pattern.stx.pat.stx,
           stmt.loc,
@@ -1191,6 +1192,7 @@ impl<'a> Evaluator<'a> {
       self.collect_var_names(&stmt.stx, &mut names)?;
     }
     for name in names {
+      self.tick()?;
       self.env.declare_var(scope, &name)?;
     }
     Ok(())
@@ -1337,7 +1339,7 @@ impl<'a> Evaluator<'a> {
   }
 
   fn collect_lexical_decl_names_from_pat(
-    &self,
+    &mut self,
     pat: &Pat,
     loc: parse_js::loc::Loc,
     seen: &mut HashSet<String>,
@@ -1356,20 +1358,24 @@ impl<'a> Evaluator<'a> {
       }
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
+          self.tick()?;
           self.collect_lexical_decl_names_from_pat(&prop.stx.target.stx, loc, seen, out)?;
         }
         if let Some(rest) = &obj.stx.rest {
+          self.tick()?;
           self.collect_lexical_decl_names_from_pat(&rest.stx, loc, seen, out)?;
         }
         Ok(())
       }
       Pat::Arr(arr) => {
         for elem in &arr.stx.elements {
+          self.tick()?;
           if let Some(elem) = elem {
             self.collect_lexical_decl_names_from_pat(&elem.target.stx, loc, seen, out)?;
           }
         }
         if let Some(rest) = &arr.stx.rest {
+          self.tick()?;
           self.collect_lexical_decl_names_from_pat(&rest.stx, loc, seen, out)?;
         }
         Ok(())
@@ -1477,6 +1483,7 @@ impl<'a> Evaluator<'a> {
       match &*stmt.stx {
         Stmt::VarDecl(var) if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const => {
           for declarator in &var.stx.declarators {
+            self.tick()?;
             // Reuse lexical declaration collection logic to detect duplicates across complex patterns.
             let mut tmp = Vec::new();
             self.collect_lexical_decl_names_from_pat(
@@ -1569,6 +1576,7 @@ impl<'a> Evaluator<'a> {
       match var.stx.mode {
         VarDeclMode::Let => {
           for declarator in &var.stx.declarators {
+            self.tick()?;
             self.instantiate_lexical_names_from_pat(
               scope,
               env,
@@ -1580,6 +1588,7 @@ impl<'a> Evaluator<'a> {
         }
         VarDeclMode::Const => {
           for declarator in &var.stx.declarators {
+            self.tick()?;
             self.instantiate_lexical_names_from_pat(
               scope,
               env,
@@ -1620,20 +1629,24 @@ impl<'a> Evaluator<'a> {
       }
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
+          self.tick()?;
           self.instantiate_lexical_names_from_pat(scope, env, &prop.stx.target.stx, loc, mutable)?;
         }
         if let Some(rest) = &obj.stx.rest {
+          self.tick()?;
           self.instantiate_lexical_names_from_pat(scope, env, &rest.stx, loc, mutable)?;
         }
         Ok(())
       }
       Pat::Arr(arr) => {
         for elem in &arr.stx.elements {
+          self.tick()?;
           if let Some(elem) = elem {
             self.instantiate_lexical_names_from_pat(scope, env, &elem.target.stx, loc, mutable)?;
           }
         }
         if let Some(rest) = &arr.stx.rest {
+          self.tick()?;
           self.instantiate_lexical_names_from_pat(scope, env, &rest.stx, loc, mutable)?;
         }
         Ok(())
@@ -1650,6 +1663,7 @@ impl<'a> Evaluator<'a> {
           return Ok(());
         }
         for decl in &var.stx.declarators {
+          self.tick()?;
           self.collect_var_names_from_pat_decl(&decl.pattern.stx, out)?;
         }
       }
@@ -1689,6 +1703,7 @@ impl<'a> Evaluator<'a> {
         if let parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) = &stmt.stx.init {
           if decl.stx.mode == VarDeclMode::Var {
             for d in &decl.stx.declarators {
+              self.tick()?;
               self.collect_var_names_from_pat_decl(&d.pattern.stx, out)?;
             }
           }
@@ -1742,14 +1757,14 @@ impl<'a> Evaluator<'a> {
   }
 
   fn collect_var_names_from_pat_decl(
-    &self,
+    &mut self,
     pat_decl: &PatDecl,
     out: &mut HashSet<String>,
   ) -> Result<(), VmError> {
     self.collect_var_names_from_pat(&pat_decl.pat.stx, out)
   }
 
-  fn collect_var_names_from_pat(&self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
+  fn collect_var_names_from_pat(&mut self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
         out.insert(id.stx.name.clone());
@@ -1757,20 +1772,24 @@ impl<'a> Evaluator<'a> {
       }
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
+          self.tick()?;
           self.collect_var_names_from_pat(&prop.stx.target.stx, out)?;
         }
         if let Some(rest) = &obj.stx.rest {
+          self.tick()?;
           self.collect_var_names_from_pat(&rest.stx, out)?;
         }
         Ok(())
       }
       Pat::Arr(arr) => {
         for elem in &arr.stx.elements {
+          self.tick()?;
           if let Some(elem) = elem {
             self.collect_var_names_from_pat(&elem.target.stx, out)?;
           }
         }
         if let Some(rest) = &arr.stx.rest {
+          self.tick()?;
           self.collect_var_names_from_pat(&rest.stx, out)?;
         }
         Ok(())
@@ -2021,6 +2040,7 @@ impl<'a> Evaluator<'a> {
         // `var` bindings are hoisted to `undefined` at function/script entry.
         for declarator in &decl.declarators {
           let Some(init) = &declarator.initializer else {
+            self.tick()?;
             // Destructuring declarations require an initializer (early error in real JS).
             if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
               return Err(VmError::Unimplemented("destructuring var without initializer"));
@@ -2068,7 +2088,10 @@ impl<'a> Evaluator<'a> {
           let name = id.stx.name.as_str();
           let value = match &declarator.initializer {
             Some(init) => self.eval_expr(scope, init)?,
-            None => Value::Undefined,
+            None => {
+              self.tick()?;
+              Value::Undefined
+            }
           };
 
           if !scope.heap().env_has_binding(self.env.lexical_env, name)? {

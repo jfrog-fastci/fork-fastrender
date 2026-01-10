@@ -104,6 +104,56 @@ fn instantiation_consumes_fuel() {
 }
 
 #[test]
+fn var_declarator_list_instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // A single `var` statement can contain a huge number of declarators. Ensure instantiation work is
+  // budgeted at declarator/pattern granularity instead of only per statement.
+  let mut src = String::from("var ");
+  for i in 0..5000 {
+    if i != 0 {
+      src.push(',');
+    }
+    src.push_str(&format!("v{i}"));
+  }
+  src.push(';');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn let_declarator_list_instantiation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Block-scoped `let` declarations are instantiated at block entry; large declarator lists should
+  // also be budgeted.
+  let mut src = String::from("{ let ");
+  for i in 0..5000 {
+    if i != 0 {
+      src.push(',');
+    }
+    src.push_str(&format!("v{i}"));
+  }
+  src.push_str("; }");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn empty_script_ticks_at_entry() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
