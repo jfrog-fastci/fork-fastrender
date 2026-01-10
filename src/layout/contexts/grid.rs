@@ -957,19 +957,17 @@ impl GridFormattingContext {
     // Grid item bounds are local to the grid container origin. In paged media, the container can
     // begin mid-fragmentainer; adjust the first fragment size so continuation detection uses the
     // container's absolute block offset within the fragmentainer slice.
-    if fragment_axes.block_positive() {
-      let container_abs_block_start = fragmentainer_block_offset_hint();
-      if !container_abs_block_start.is_finite() {
-        return None;
-      }
-      let offset_in_fragment = container_abs_block_start.rem_euclid(fragmentainer_block_size);
-      if !offset_in_fragment.is_finite() {
-        return None;
-      }
-      let remaining_in_fragment = (fragmentainer_block_size - offset_in_fragment).max(0.0);
-      if remaining_in_fragment.is_finite() {
-        first_fragment_block_size = first_fragment_block_size.min(remaining_in_fragment);
-      }
+    let container_abs_block_start = fragmentainer_block_offset_hint();
+    if !container_abs_block_start.is_finite() {
+      return None;
+    }
+    let offset_in_fragment = container_abs_block_start.rem_euclid(fragmentainer_block_size);
+    if !offset_in_fragment.is_finite() {
+      return None;
+    }
+    let remaining_in_fragment = (fragmentainer_block_size - offset_in_fragment).max(0.0);
+    if remaining_in_fragment.is_finite() {
+      first_fragment_block_size = first_fragment_block_size.min(remaining_in_fragment);
     }
 
     let physical_block_start = match fragment_axes.block_axis() {
@@ -4724,6 +4722,39 @@ impl GridFormattingContext {
     let fragmentainer_axes = fragmentainer_axes_hint();
     let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
     let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
+    let propagated_fragmentainer_offset_for_bounds = |bounds: Rect| -> Option<f32> {
+      if !(parent_fragmentainer_offset.is_finite() && parent_fragmentainer_offset >= 0.0) {
+        return None;
+      }
+      if !(container_block_size.is_finite() && container_block_size >= 0.0) {
+        return None;
+      }
+      let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
+        PhysicalAxis::Y => bounds.y(),
+        PhysicalAxis::X => bounds.x(),
+      };
+      let child_block_size = match fragmentainer_axes_resolved.block_axis() {
+        PhysicalAxis::Y => bounds.height(),
+        PhysicalAxis::X => bounds.width(),
+      };
+      if !(child_block_start_phys.is_finite()
+        && child_block_start_phys >= 0.0
+        && child_block_size.is_finite()
+        && child_block_size >= 0.0)
+      {
+        return None;
+      }
+      let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
+        child_block_start_phys
+      } else {
+        container_block_size - child_block_start_phys - child_block_size
+      };
+      if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
+        return None;
+      }
+      let child_abs_flow_start = parent_fragmentainer_offset + child_rel_flow_start;
+      (child_abs_flow_start.is_finite() && child_abs_flow_start >= 0.0).then_some(child_abs_flow_start)
+    };
 
     let deadline = active_deadline();
     let stage = active_stage();
@@ -4756,16 +4787,11 @@ impl GridFormattingContext {
             };
             let child_scroll = Point::new(parent_scroll.x - origin.x, parent_scroll.y - origin.y);
 
-            let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
-              PhysicalAxis::Y => origin.y,
-              PhysicalAxis::X => origin.x,
-            };
             let _fragmentainer_hint_guard =
               set_fragmentainer_block_size_hint(fragmentainer_size_hint);
             let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-            let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
-              set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
-            });
+            let _fragmentainer_offset_guard = propagated_fragmentainer_offset_for_bounds(bounds)
+              .map(set_fragmentainer_block_offset_hint);
 
             let child_factory = factory.translated_for_child(origin);
             let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block)
@@ -4907,16 +4933,11 @@ impl GridFormattingContext {
               Point::ZERO
             };
 
-            let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
-              PhysicalAxis::Y => origin.y,
-              PhysicalAxis::X => origin.x,
-            };
             let _fragmentainer_hint_guard =
               set_fragmentainer_block_size_hint(fragmentainer_size_hint);
             let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-            let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
-              set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
-            });
+            let _fragmentainer_offset_guard = propagated_fragmentainer_offset_for_bounds(bounds)
+              .map(set_fragmentainer_block_offset_hint);
 
             let child_factory = factory.translated_for_child(origin);
             let fc: std::sync::Arc<dyn FormattingContext> =
@@ -5337,18 +5358,19 @@ impl GridFormattingContext {
       let fragment_block_axis = fragmentainer_axes_hint()
         .map(|axes| axes.block_axis())
         .unwrap_or(PhysicalAxis::Y);
-      let continuation_available = if taffy.parent(node_id) == Some(root_id) {
+      let container_block_size = if taffy.parent(node_id) == Some(root_id) {
         let root_layout = taffy
           .layout(root_id)
           .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
-        let container_block_size = match fragment_block_axis {
+        Some(match fragment_block_axis {
           PhysicalAxis::X => root_layout.size.width,
           PhysicalAxis::Y => root_layout.size.height,
-        };
-        self.grid_item_continuation_available_block_size(bounds, constraints, container_block_size)
+        })
       } else {
         None
       };
+      let continuation_available = container_block_size
+        .and_then(|size| self.grid_item_continuation_available_block_size(bounds, constraints, size));
 
       if continuation_available.is_none() {
         if let Some(keys) = measured_node_keys.get(&node_id) {
@@ -5396,15 +5418,44 @@ impl GridFormattingContext {
       let fragmentainer_axes = fragmentainer_axes_hint();
       let fragmentainer_axes_resolved = fragmentainer_axes.unwrap_or_default();
       let parent_fragmentainer_offset = fragmentainer_block_offset_hint();
-      let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
-        PhysicalAxis::Y => origin.y,
-        PhysicalAxis::X => origin.x,
-      };
       let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
       let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-      let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
-        set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
-      });
+      let _fragmentainer_offset_guard = container_block_size
+        .and_then(|container_block_size| {
+          if !(parent_fragmentainer_offset.is_finite() && parent_fragmentainer_offset >= 0.0) {
+            return None;
+          }
+          if !(container_block_size.is_finite() && container_block_size >= 0.0) {
+            return None;
+          }
+          let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
+            PhysicalAxis::Y => bounds.y(),
+            PhysicalAxis::X => bounds.x(),
+          };
+          let child_block_size = match fragmentainer_axes_resolved.block_axis() {
+            PhysicalAxis::Y => bounds.height(),
+            PhysicalAxis::X => bounds.width(),
+          };
+          if !(child_block_start_phys.is_finite()
+            && child_block_start_phys >= 0.0
+            && child_block_size.is_finite()
+            && child_block_size >= 0.0)
+          {
+            return None;
+          }
+          let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
+            child_block_start_phys
+          } else {
+            container_block_size - child_block_start_phys - child_block_size
+          };
+          if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
+            return None;
+          }
+          let child_abs_flow_start = parent_fragmentainer_offset + child_rel_flow_start;
+          (child_abs_flow_start.is_finite() && child_abs_flow_start >= 0.0)
+            .then_some(child_abs_flow_start)
+        })
+        .map(set_fragmentainer_block_offset_hint);
 
       let child_factory = self.factory.translated_for_child(origin);
       let fc: Arc<dyn FormattingContext> = if matches!(fc_type, FormattingContextType::Block) {
@@ -12340,6 +12391,33 @@ mod tests {
     let ctx = GridFormattingContext::new();
     let constraints = LayoutConstraints::definite(200.0, 1000.0);
     let bounds = Rect::from_xywh(0.0, 160.0, 10.0, 10.0);
+
+    let _offset = set_fragmentainer_block_offset_hint(0.0);
+    let remaining = ctx
+      .grid_item_continuation_available_block_size(bounds, &constraints, 1000.0)
+      .expect("expected continuation fragment");
+    assert!((remaining - 40.0).abs() < 0.001);
+
+    drop(_offset);
+    let _offset = set_fragmentainer_block_offset_hint(60.0);
+    let remaining = ctx
+      .grid_item_continuation_available_block_size(bounds, &constraints, 1000.0)
+      .expect("expected continuation fragment");
+    assert!((remaining - 80.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn grid_item_continuation_available_block_size_accounts_for_fragmentainer_offset_vertical_rl() {
+    let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(
+      WritingMode::VerticalRl,
+      Direction::Ltr,
+    )));
+    let ctx = GridFormattingContext::new();
+    let constraints = LayoutConstraints::definite(1000.0, 200.0);
+    // Container block-size is physical width (1000px). With negative block progression, a box at
+    // x=830..840 starts 160px into the flow coordinate system (1000 - 830 - 10).
+    let bounds = Rect::from_xywh(830.0, 0.0, 10.0, 10.0);
 
     let _offset = set_fragmentainer_block_offset_hint(0.0);
     let remaining = ctx

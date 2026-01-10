@@ -9564,20 +9564,62 @@ impl FlexFormattingContext {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
         let child_scroll = Point::new(parent_scroll.x - work.origin.x, parent_scroll.y - work.origin.y);
 
-        let origin_in_fragmentation_axis = match fragmentainer_axes_resolved.block_axis() {
-          PhysicalAxis::Y => work.origin.y,
-          PhysicalAxis::X => work.origin.x,
-        };
-        let origin_in_fragmentation_axis = if origin_in_fragmentation_axis.is_finite() {
-          origin_in_fragmentation_axis
-        } else {
-          0.0
-        };
         let _fragmentainer_hint_guard = set_fragmentainer_block_size_hint(fragmentainer_size_hint);
         let _fragmentainer_axes_guard = set_fragmentainer_axes_hint(fragmentainer_axes);
-        let _fragmentainer_offset_guard = fragmentainer_axes_resolved.block_positive().then(|| {
-          set_fragmentainer_block_offset_hint(parent_fragmentainer_offset + origin_in_fragmentation_axis)
-        });
+        let _fragmentainer_offset_guard = {
+          let parent_block_size = match fragmentainer_axes_resolved.block_axis() {
+            PhysicalAxis::X => rect_w,
+            PhysicalAxis::Y => rect_h,
+          };
+          if !(parent_fragmentainer_offset.is_finite()
+            && parent_fragmentainer_offset >= 0.0
+            && parent_block_size.is_finite()
+            && parent_block_size >= 0.0
+            && work.origin.x.is_finite()
+            && work.origin.y.is_finite()
+            && work.layout_width.is_finite()
+            && work.layout_width >= 0.0
+            && work.layout_height.is_finite()
+            && work.layout_height >= 0.0)
+          {
+            None
+          } else {
+            let child_bounds = Rect::from_xywh(
+              work.origin.x,
+              work.origin.y,
+              work.layout_width,
+              work.layout_height,
+            );
+            let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
+              PhysicalAxis::Y => child_bounds.y(),
+              PhysicalAxis::X => child_bounds.x(),
+            };
+            let child_block_size = match fragmentainer_axes_resolved.block_axis() {
+              PhysicalAxis::Y => child_bounds.height(),
+              PhysicalAxis::X => child_bounds.width(),
+            };
+            if !(child_block_start_phys.is_finite()
+              && child_block_start_phys >= 0.0
+              && child_block_size.is_finite()
+              && child_block_size >= 0.0)
+            {
+              None
+            } else {
+              let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
+                child_block_start_phys
+              } else {
+                parent_block_size - child_block_start_phys - child_block_size
+              };
+              if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
+                None
+              } else {
+                let child_abs_flow_start = parent_fragmentainer_offset + child_rel_flow_start;
+                (child_abs_flow_start.is_finite() && child_abs_flow_start >= 0.0)
+                  .then(|| set_fragmentainer_block_offset_hint(child_abs_flow_start))
+              }
+            }
+          }
+        };
 
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()

@@ -31,7 +31,6 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::layout::axis::FragmentAxes;
-use crate::layout::axis::PhysicalAxis;
 use crate::layout::constraints::AvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::width::MarginValue;
@@ -1698,17 +1697,16 @@ impl BlockFormattingContext {
             fc_type,
             FormattingContextType::Flex | FormattingContextType::Grid
           ) {
-            let axes =
-              crate::layout::formatting_context::fragmentainer_axes_hint().unwrap_or_default();
-            if axes.block_positive() {
-              let origin = match axes.block_axis() {
-                PhysicalAxis::Y => child_border_origin.y,
-                PhysicalAxis::X => child_border_origin.x,
-              };
-              let origin = if origin.is_finite() { origin } else { 0.0 };
-              Some(crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
-                crate::layout::formatting_context::fragmentainer_block_offset_hint() + origin,
-              ))
+            let origin = child_border_origin.y;
+            if origin.is_finite() && origin >= 0.0 {
+              let parent_offset = crate::layout::formatting_context::fragmentainer_block_offset_hint();
+              if parent_offset.is_finite() && parent_offset >= 0.0 {
+                Some(crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+                  parent_offset + origin,
+                ))
+              } else {
+                None
+              }
             } else {
               None
             }

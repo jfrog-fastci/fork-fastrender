@@ -100,7 +100,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     script_text: &str,
     spec: &ScriptElementSpec,
     _current_script: Option<crate::dom2::NodeId>,
-    _document: &mut BrowserDocumentDom2,
+    document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let Some(realm) = self.realm.as_mut() else {
@@ -118,10 +118,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       .unwrap_or("source=inline");
     let source = Arc::new(SourceText::new(source_name, script_text));
 
-    let mut host = ();
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host);
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
     let result = with_event_loop(event_loop, || {
-      realm.exec_script_source_with_host_and_hooks(&mut host, &mut hooks, source)
+      realm.exec_script_source_with_hooks(&mut hooks, source)
     });
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);
@@ -178,9 +177,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     );
 
     realm.reset_interrupt();
-    let mut host = ();
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host);
-    let result = realm.exec_script_with_host_and_hooks(&mut host, &mut hooks, &source);
+    let mut host_ctx = ();
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host_ctx);
+    let result = realm.exec_script_with_hooks(&mut hooks, &source);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);
     }
