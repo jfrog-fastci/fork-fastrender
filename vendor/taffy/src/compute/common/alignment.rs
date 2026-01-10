@@ -11,6 +11,8 @@ pub(crate) fn apply_alignment_fallback(
   mut alignment_mode: AlignContent,
   mut is_safe: bool,
 ) -> AlignContent {
+  let free_space = if free_space.is_finite() { free_space } else { 0.0 };
+
   // Fallback occurs in two cases:
 
   // 1. If there is only a single item being aligned and alignment is a distributed alignment keyword
