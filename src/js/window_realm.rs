@@ -8991,6 +8991,32 @@ fn document_cookie_set_native(
   Ok(Value::Undefined)
 }
 
+fn document_text_content_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Document.textContent is always null (DOM Standard).
+  Ok(Value::Null)
+}
+
+fn document_text_content_set_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Setting textContent on a Document is a no-op.
+  Ok(Value::Undefined)
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -9507,6 +9533,51 @@ fn init_window_globals(
       },
     )?;
   }
+
+  // Document.textContent (from Node): always null.
+  let document_text_content_key = alloc_key(&mut scope, "textContent")?;
+  let document_text_content_get_call_id = vm.register_native_call(document_text_content_get_native)?;
+  let document_text_content_get_name = scope.alloc_string("get textContent")?;
+  scope.push_root(Value::String(document_text_content_get_name))?;
+  let document_text_content_get_func = scope.alloc_native_function(
+    document_text_content_get_call_id,
+    None,
+    document_text_content_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    document_text_content_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_text_content_get_func))?;
+
+  let document_text_content_set_call_id = vm.register_native_call(document_text_content_set_native)?;
+  let document_text_content_set_name = scope.alloc_string("set textContent")?;
+  scope.push_root(Value::String(document_text_content_set_name))?;
+  let document_text_content_set_func = scope.alloc_native_function(
+    document_text_content_set_call_id,
+    None,
+    document_text_content_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    document_text_content_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_text_content_set_func))?;
+
+  scope.define_property(
+    document_obj,
+    document_text_content_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_text_content_get_func),
+        set: Value::Object(document_text_content_set_func),
+      },
+    },
+  )?;
 
   // document.documentElement
   let document_element_key = alloc_key(&mut scope, "documentElement")?;
@@ -11892,11 +11963,20 @@ mod tests {
     }
   }
 
+  fn new_realm(config: WindowRealmConfig) -> Result<WindowRealm, VmError> {
+    let mut js_execution_options = JsExecutionOptions::default();
+    // These unit tests validate DOM/Web API behaviour, not the per-run wall time budget. Increase
+    // it so debug builds running tests in parallel don't trip the default 100ms budget.
+    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    // Keep the heap limits configured by `WindowRealmConfig` (some tests tweak it).
+    js_execution_options.max_vm_heap_bytes = None;
+    WindowRealm::new_with_js_execution_options(config, js_execution_options)
+  }
+
   #[test]
   fn window_env_shims_exist_and_match_media_evaluates() -> Result<(), VmError> {
     let media = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
-    let mut realm =
-      WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
 
     let dpr = realm.exec_script("devicePixelRatio")?;
     assert!(matches!(dpr, Value::Number(v) if (v - 2.0).abs() < f64::EPSILON));
@@ -11928,7 +12008,7 @@ mod tests {
 
   #[test]
   fn window_storage_exists_and_round_trips() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     assert_eq!(
       realm.exec_script("localStorage.getItem('missing')")?,
@@ -11980,7 +12060,7 @@ mod tests {
 
   #[test]
   fn url_objects_coerce_via_string_constructor_and_to_string() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     // `String(urlObj)` should invoke `ToString`, which for objects uses `ToPrimitive` and then
     // calls the URL wrapper's `toString()` method.
@@ -12005,7 +12085,7 @@ mod tests {
     let clock = Arc::new(VirtualClock::new());
     let clock_for_realm: Arc<dyn Clock> = clock.clone();
     let web_time = WebTime::new(0);
-    let realm = WindowRealm::new(
+    let realm = new_realm(
       WindowRealmConfig::new("https://example.com/")
         .with_clock(clock_for_realm)
         .with_web_time(web_time),
@@ -12025,7 +12105,7 @@ mod tests {
     let clock = Arc::new(VirtualClock::new());
     let clock_for_realm: Arc<dyn Clock> = clock.clone();
     let web_time = WebTime::new(1_000);
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/")
         .with_clock(clock_for_realm)
         .with_web_time(web_time),
@@ -12057,7 +12137,7 @@ mod tests {
 
   #[test]
   fn document_state_properties_exist() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     let ready_state = realm.exec_script("document.readyState")?;
     assert_eq!(get_string(realm.heap(), ready_state), "complete");
@@ -12077,7 +12157,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12101,7 +12181,7 @@ mod tests {
 
   #[test]
   fn document_referrer_exists_and_defaults_to_empty_string() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     let referrer = realm.exec_script("document.referrer")?;
     assert_eq!(get_string(realm.heap(), referrer), "");
@@ -12117,7 +12197,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12215,7 +12295,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12289,7 +12369,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12362,7 +12442,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12432,7 +12512,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12456,7 +12536,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
     realm.exec_script("document.documentElement.className = 'hello'")?;
@@ -12478,7 +12558,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12509,7 +12589,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12558,7 +12638,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12591,7 +12671,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12612,7 +12692,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12651,7 +12731,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12675,7 +12755,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12702,7 +12782,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12731,7 +12811,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12752,7 +12832,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12784,11 +12864,14 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
-    let result = realm.exec_script(
+    // This test performs several DOM operations (including fragment parsing for `innerHTML`). Run
+    // them across multiple script evaluations so each call stays within the per-run VM wall-time
+    // budget.
+    let step1 = realm.exec_script(
       "(() => {\n\
         const root = document.getElementById('root');\n\
         const t = document.createTextNode('hello');\n\
@@ -12799,35 +12882,69 @@ mod tests {
         t.textContent = 'world';\n\
         if (root.textContent !== 'world') return 'r2:' + root.textContent;\n\
         if (root.innerHTML !== 'world') return 'html1:' + root.innerHTML;\n\
-\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), step1), "ok");
+
+    let step2 = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
         root.innerHTML = '<span>hi</span><b>!</b>';\n\
         if (root.textContent !== 'hi!') return 'r3:' + root.textContent;\n\
-\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), step2), "ok");
+
+    let step3 = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
         root.textContent = 'x';\n\
         if (root.innerHTML !== 'x') return 'html2:' + root.innerHTML;\n\
         root.textContent = '';\n\
         if (root.innerHTML !== '') return 'html3:' + root.innerHTML;\n\
-\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), step3), "ok");
+
+    let step4 = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
         const frag = document.createDocumentFragment();\n\
         frag.appendChild(document.createTextNode('a'));\n\
         frag.appendChild(document.createTextNode('b'));\n\
         root.appendChild(frag);\n\
         if (root.textContent !== 'ab') return 'frag1:' + root.textContent;\n\
         if (frag.textContent !== '') return 'frag2:' + frag.textContent;\n\
-\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), step4), "ok");
+
+    let step5 = realm.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
         const c = document.createComment('ignore');\n\
         root.appendChild(c);\n\
         if (c.textContent !== 'ignore') return 'c1:' + c.textContent;\n\
         c.textContent = 'changed';\n\
         if (c.textContent !== 'changed') return 'c2:' + c.textContent;\n\
         if (root.textContent !== 'ab') return 'c3:' + root.textContent;\n\
-\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), step5), "ok");
+
+    let step6 = realm.exec_script(
+      "(() => {\n\
         const docNode = document.documentElement.parentNode;\n\
         if (docNode.textContent !== null) return 'doc:' + docNode.textContent;\n\
         return 'ok';\n\
       })()",
     )?;
-    assert_eq!(get_string(realm.heap(), result), "ok");
+    assert_eq!(get_string(realm.heap(), step6), "ok");
 
     let root = dom.get_element_by_id("root").expect("missing #root");
     assert_eq!(dom.inner_html(root).unwrap(), "ab");
@@ -12845,7 +12962,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12877,7 +12994,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12915,7 +13032,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12947,7 +13064,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -12975,7 +13092,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -13008,7 +13125,7 @@ mod tests {
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(
+    let mut realm = new_realm(
       WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
 
@@ -13192,7 +13309,7 @@ mod tests {
   #[test]
   fn window_realm_shims_exist_and_are_linked() -> Result<(), VmError> {
     let url = "https://example.com/path";
-    let mut realm = WindowRealm::new(WindowRealmConfig::new(url))?;
+    let mut realm = new_realm(WindowRealmConfig::new(url))?;
 
     let global = realm.global_object();
     let (vm, heap) = realm.vm_and_heap_mut();
@@ -13262,7 +13379,7 @@ mod tests {
 
   #[test]
   fn window_or_worker_global_scope_primitives_exist_and_behave() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/path"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
     let window_origin = realm.exec_script("window.origin")?;
     assert_eq!(
       get_string(realm.heap(), window_origin),
@@ -13427,7 +13544,7 @@ mod tests {
 
     let mut config = WindowRealmConfig::new(url);
     config.console_sink = Some(sink);
-    let mut realm = WindowRealm::new(config)?;
+    let mut realm = new_realm(config)?;
 
     let global = realm.global_object();
     let (vm, heap) = realm.vm_and_heap_mut();
@@ -13487,7 +13604,7 @@ mod tests {
 
   #[test]
   fn atob_btoa_roundtrip() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
     let encoded = realm.exec_script("btoa('hello')")?;
     assert_eq!(get_string(realm.heap(), encoded), "aGVsbG8=");
 
@@ -13498,7 +13615,7 @@ mod tests {
 
   #[test]
   fn atob_btoa_invalid_character_errors() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     {
       let err = realm
@@ -13540,7 +13657,7 @@ mod tests {
       }
     }
 
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
     let flag = crate::render_control::interrupt_flag();
     let _guard = RestoreFlag {
