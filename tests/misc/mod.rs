@@ -51,6 +51,7 @@ mod is_alias_matches_test;
 mod dom2_closest;
 mod dom2_js_events;
 mod js_current_script;
+mod js_script_fetch_semantics;
 mod js_dom_quickjs_bindings;
 mod js_event_loop_timers;
 mod js_diagnostics;

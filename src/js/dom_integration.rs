@@ -123,6 +123,28 @@ fn collect_html_script_elements(dom: &Document, node: NodeId, out: &mut Vec<Node
 fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> ScriptElementSpec {
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
+  let crossorigin = dom
+    .get_attribute(script, "crossorigin")
+    .ok()
+    .flatten()
+    .map(|value| {
+      let value = trim_ascii_whitespace(value);
+      if value.eq_ignore_ascii_case("use-credentials") {
+        crate::resource::CorsMode::UseCredentials
+      } else {
+        crate::resource::CorsMode::Anonymous
+      }
+    });
+  let integrity = dom
+    .get_attribute(script, "integrity")
+    .ok()
+    .flatten()
+    .map(|value| value.to_string());
+  let referrer_policy = dom
+    .get_attribute(script, "referrerpolicy")
+    .ok()
+    .flatten()
+    .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
   let src_attr_present = dom.has_attribute(script, "src").unwrap_or(false);
   let src = dom
@@ -147,6 +169,9 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     inline_text,
     async_attr,
     defer_attr,
+    crossorigin,
+    integrity,
+    referrer_policy,
     parser_inserted: false,
     node_id: Some(script),
     script_type: determine_script_type_dom2(dom, script),

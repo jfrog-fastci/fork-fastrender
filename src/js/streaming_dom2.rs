@@ -37,6 +37,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
@@ -54,6 +57,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
@@ -73,6 +79,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
@@ -81,6 +90,28 @@ pub fn build_parser_inserted_script_element_spec_dom2(
 
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
+  let crossorigin = doc
+    .get_attribute(script, "crossorigin")
+    .ok()
+    .flatten()
+    .map(|value| {
+      let value = super::trim_ascii_whitespace(value);
+      if value.eq_ignore_ascii_case("use-credentials") {
+        crate::resource::CorsMode::UseCredentials
+      } else {
+        crate::resource::CorsMode::Anonymous
+      }
+    });
+  let integrity = doc
+    .get_attribute(script, "integrity")
+    .ok()
+    .flatten()
+    .map(|value| value.to_string());
+  let referrer_policy = doc
+    .get_attribute(script, "referrerpolicy")
+    .ok()
+    .flatten()
+    .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
   let raw_src = doc.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
@@ -100,6 +131,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     inline_text,
     async_attr,
     defer_attr,
+    crossorigin,
+    integrity,
+    referrer_policy,
     parser_inserted: true,
     node_id: Some(script),
     script_type: determine_script_type_dom2(doc, script),

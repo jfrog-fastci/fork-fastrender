@@ -980,6 +980,10 @@ pub enum FetchDestination {
   /// `Sec-Fetch-Dest` remains `style`, but `Sec-Fetch-Mode` becomes `cors` and a browser-like
   /// `Origin` header is sent when request headers are enabled.
   StyleCors,
+  /// Classic script fetched in `no-cors` mode (e.g. `<script src=...>` without `crossorigin`).
+  Script,
+  /// Script fetched in `cors` mode (e.g. `<script crossorigin src=...>`).
+  ScriptCors,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
   ///
@@ -1037,7 +1041,7 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
-      Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
+      Self::Script | Self::ScriptCors | Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
     }
   }
 
@@ -1064,6 +1068,7 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser => "document",
       Self::Iframe => "iframe",
       Self::Style | Self::StyleCors => "style",
+      Self::Script | Self::ScriptCors => "script",
       Self::Image | Self::ImageCors => "image",
       Self::Font => "font",
       Self::Other | Self::Fetch => "empty",
@@ -1073,8 +1078,8 @@ impl FetchDestination {
   fn sec_fetch_mode(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
-      Self::Font | Self::ImageCors | Self::StyleCors | Self::Fetch => "cors",
-      Self::Style | Self::Image | Self::Other => "no-cors",
+      Self::Font | Self::ImageCors | Self::StyleCors | Self::ScriptCors | Self::Fetch => "cors",
+      Self::Style | Self::Script | Self::Image | Self::Other => "no-cors",
     }
   }
 
@@ -1083,6 +1088,8 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "none",
       Self::Style
       | Self::StyleCors
+      | Self::Script
+      | Self::ScriptCors
       | Self::Image
       | Self::ImageCors
       | Self::Font
@@ -1107,7 +1114,7 @@ impl FetchDestination {
 
   fn origin_and_referer(self, url: &Url) -> Option<(String, String)> {
     match self {
-      Self::Font | Self::ImageCors | Self::StyleCors => {
+      Self::Font | Self::ImageCors | Self::StyleCors | Self::ScriptCors => {
         http_browser_origin_and_referer_for_url(url)
       }
       _ => None,
@@ -3179,6 +3186,9 @@ pub enum FetchContextKind {
   Stylesheet,
   /// Stylesheet fetched in CORS mode (e.g. `<link rel=stylesheet crossorigin>`).
   StylesheetCors,
+  Script,
+  /// Script fetched in CORS mode (e.g. `<script crossorigin src=...>`).
+  ScriptCors,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
   ImageCors,
@@ -3197,6 +3207,8 @@ impl FetchContextKind {
       Self::ImageCors => 5,
       Self::Iframe => 6,
       Self::StylesheetCors => 7,
+      Self::Script => 8,
+      Self::ScriptCors => 9,
     }
   }
 
@@ -3206,6 +3218,8 @@ impl FetchContextKind {
       Self::Iframe => "iframe",
       Self::Stylesheet => "stylesheet",
       Self::StylesheetCors => "stylesheet-cors",
+      Self::Script => "script",
+      Self::ScriptCors => "script-cors",
       Self::Image => "image",
       Self::ImageCors => "image-cors",
       Self::Font => "font",
@@ -3236,6 +3250,8 @@ impl From<FetchDestination> for FetchContextKind {
       FetchDestination::Iframe => Self::Iframe,
       FetchDestination::Style => Self::Stylesheet,
       FetchDestination::StyleCors => Self::StylesheetCors,
+      FetchDestination::Script => Self::Script,
+      FetchDestination::ScriptCors => Self::ScriptCors,
       FetchDestination::Image => Self::Image,
       FetchDestination::ImageCors => Self::ImageCors,
       FetchDestination::Font => Self::Font,
@@ -3252,6 +3268,8 @@ impl From<FetchContextKind> for FetchDestination {
       FetchContextKind::Iframe => Self::Iframe,
       FetchContextKind::Stylesheet => Self::Style,
       FetchContextKind::StylesheetCors => Self::StyleCors,
+      FetchContextKind::Script => Self::Script,
+      FetchContextKind::ScriptCors => Self::ScriptCors,
       FetchContextKind::Image => Self::Image,
       FetchContextKind::ImageCors => Self::ImageCors,
       FetchContextKind::Font => Self::Font,
@@ -3990,7 +4008,10 @@ fn build_http_header_pairs<'a>(
             headers.push(("Referer".to_string(), referer));
           }
         }
-      } else if profile == FetchDestination::ImageCors || profile == FetchDestination::StyleCors {
+      } else if profile == FetchDestination::ImageCors
+        || profile == FetchDestination::StyleCors
+        || profile == FetchDestination::ScriptCors
+      {
         // For CORS-mode image/stylesheet requests, always send an `Origin` header. When a client
         // origin isn't available, fall back to using the target origin as a best-effort
         // approximation.
@@ -9157,6 +9178,7 @@ fn render_stage_hint_for_context(kind: FetchContextKind, url: &str) -> RenderSta
     FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors | FetchContextKind::Font => {
       RenderStage::Css
     }
+    FetchContextKind::Script | FetchContextKind::ScriptCors => RenderStage::Script,
     FetchContextKind::Image | FetchContextKind::ImageCors => RenderStage::Paint,
     FetchContextKind::Other => render_stage_hint_from_url(url),
   }

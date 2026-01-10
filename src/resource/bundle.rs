@@ -57,6 +57,8 @@ pub fn request_partitioned_resource_key_v2(
     FetchContextKind::Image => "image",
     FetchContextKind::ImageCors => "image-cors",
     FetchContextKind::Font => "font",
+    FetchContextKind::Script => "script",
+    FetchContextKind::ScriptCors => "script-cors",
     FetchContextKind::Other => "other",
   };
   format!("{url}@@fastr:bundle:req_v2@@kind={kind_tag}@@partition={partition_key}")
@@ -81,6 +83,8 @@ pub fn request_partitioned_resource_key_v3(
     FetchContextKind::Image => "image",
     FetchContextKind::ImageCors => "image-cors",
     FetchContextKind::Font => "font",
+    FetchContextKind::Script => "script",
+    FetchContextKind::ScriptCors => "script-cors",
     FetchContextKind::Other => "other",
   };
   format!(
@@ -122,6 +126,8 @@ pub fn request_partitioned_resource_key_with_credentials(
     FetchContextKind::Image => "image",
     FetchContextKind::ImageCors => "image-cors",
     FetchContextKind::Font => "font",
+    FetchContextKind::Script => "script",
+    FetchContextKind::ScriptCors => "script-cors",
     FetchContextKind::Other => "other",
   };
   let mut key = format!("{url}@@fastr:bundle:req_v1@@kind={kind_tag}@@origin={origin}");

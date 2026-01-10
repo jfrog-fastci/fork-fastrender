@@ -41,6 +41,7 @@ pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
 pub mod promise;
 pub mod script_loader_resource;
+pub(crate) mod sri;
 pub mod runtime;
 pub mod time;
 pub mod url;
@@ -163,6 +164,20 @@ pub struct ScriptElementSpec {
   pub async_attr: bool,
   /// Whether the `defer` boolean attribute is present.
   pub defer_attr: bool,
+  /// Parsed `crossorigin` attribute state (CORS settings attribute).
+  ///
+  /// When `None`, classic scripts are fetched in `no-cors` mode (no CORS enforcement).
+  /// When `Some`, scripts are fetched in `cors` mode and CORS response headers are enforced.
+  pub crossorigin: Option<crate::resource::CorsMode>,
+  /// Raw `integrity` attribute value (Subresource Integrity).
+  ///
+  /// When present, the fetched script bytes must match the provided digest(s) or execution is
+  /// blocked.
+  pub integrity: Option<String>,
+  /// Parsed `referrerpolicy` attribute value.
+  ///
+  /// When `None`, the document's default referrer policy applies.
+  pub referrer_policy: Option<crate::resource::ReferrerPolicy>,
   /// Whether the script was inserted by the HTML parser.
   ///
   /// This affects scheduling (`defer` only applies to parser-inserted scripts; parser-inserted

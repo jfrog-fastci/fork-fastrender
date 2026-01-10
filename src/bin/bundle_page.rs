@@ -1619,6 +1619,19 @@ fn placeholder_resource(
       Some("text/css".to_string()),
       Some(url.to_string()),
     ),
+    FetchDestination::Script | FetchDestination::ScriptCors => {
+      let mut res = FetchedResource::with_final_url(
+        b"/* missing */".to_vec(),
+        Some("text/javascript".to_string()),
+        Some(url.to_string()),
+      );
+      if destination == FetchDestination::ScriptCors {
+        // CORS-mode scripts expect `Access-Control-Allow-Origin` when CORS enforcement is enabled.
+        res.access_control_allow_origin = Some(allow_origin.clone());
+        res.access_control_allow_credentials = true;
+      }
+      res
+    }
     FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
       FetchedResource::with_final_url(
         b"<!doctype html><html></html>".to_vec(),
@@ -2194,6 +2207,7 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
+      FetchDestination::Script | FetchDestination::ScriptCors => ensure_http_success(&res, &url),
       FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
         ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {

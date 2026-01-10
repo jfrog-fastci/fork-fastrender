@@ -14,7 +14,7 @@ use crate::js::{
   LocationNavigationRequest,
 };
 use crate::render_control::{DeadlineGuard, RenderDeadline};
-use crate::resource::{FetchDestination, FetchRequest};
+use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 use std::cell::Cell;
@@ -92,6 +92,8 @@ pub struct BrowserTabHost {
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
+  document_origin: Option<crate::resource::DocumentOrigin>,
+  document_referrer_policy: ReferrerPolicy,
   pending_navigation: Option<LocationNavigationRequest>,
   external_script_sources: HashMap<String, String>,
   js_execution_options: JsExecutionOptions,
@@ -118,6 +120,8 @@ impl BrowserTabHost {
       executed: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
+      document_origin: None,
+      document_referrer_policy: ReferrerPolicy::default(),
       pending_navigation: None,
       external_script_sources: HashMap::new(),
       js_execution_options,
@@ -146,7 +150,11 @@ impl BrowserTabHost {
     self.current_script.borrow().current_script
   }
 
-  fn reset_scripting_state(&mut self, document_url: Option<String>) {
+  fn reset_scripting_state(
+    &mut self,
+    document_url: Option<String>,
+    document_referrer_policy: ReferrerPolicy,
+  ) {
     self.current_script = CurrentScriptStateHandle::default();
     self.orchestrator = ScriptOrchestrator::new();
     self.scheduler = ScriptScheduler::new();
@@ -155,6 +163,11 @@ impl BrowserTabHost {
     self.executed.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url;
+    self.document_origin = self
+      .document_url
+      .as_deref()
+      .and_then(|url| origin_from_url(url));
+    self.document_referrer_policy = document_referrer_policy;
     self.pending_navigation = None;
     self.executor.on_navigation_committed(self.document_url.as_deref());
     self.js_execution_depth.set(0);
@@ -207,40 +220,12 @@ impl BrowserTabHost {
           );
 
           if tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace) {
-            let base_url = base_url_tracker.current_base_url();
-            let async_attr = dom.has_attribute(id, "async").unwrap_or(false);
-            let defer_attr = dom.has_attribute(id, "defer").unwrap_or(false);
-            let src_attr_present = dom.has_attribute(id, "src").unwrap_or(false);
-            let src = dom
-              .get_attribute(id, "src")
-              .ok()
-              .flatten()
-              .and_then(|value| base_url_tracker.resolve_script_src(value));
-
-            let mut inline_text = String::new();
-            for &child in &node.children {
-              if let NodeKind::Text { content } = &dom.node(child).kind {
-                inline_text.push_str(content);
-              }
-            }
-
-            // Reuse the shared HTML script `type`/`language` classification logic.
-            let script_type = crate::js::determine_script_type_dom2(dom, id);
-
-            out.push((
+            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+              dom,
               id,
-              ScriptElementSpec {
-                base_url,
-                src,
-                src_attr_present,
-                inline_text,
-                async_attr,
-                defer_attr,
-                parser_inserted: true,
-                node_id: Some(id),
-                script_type,
-              },
-            ));
+              &base_url_tracker,
+            );
+            out.push((id, spec));
           }
 
           let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
@@ -492,16 +477,32 @@ impl BrowserTabHost {
       .is_some_and(|entry| entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr);
 
     if is_blocking {
-      let source = self.fetch_script_source(script_id, &url)?;
-      let actions = self.scheduler.fetch_completed(script_id, source)?;
-      self.apply_scheduler_actions(actions, event_loop)?;
+      match self.fetch_script_source(script_id, &url) {
+        Ok(source) => {
+          let actions = self.scheduler.fetch_completed(script_id, source)?;
+          self.apply_scheduler_actions(actions, event_loop)?;
+        }
+        Err(_err) => {
+          let actions = self.scheduler.fetch_failed(script_id)?;
+          self.apply_scheduler_actions(actions, event_loop)?;
+          self.finish_script_execution(script_id, event_loop)?;
+        }
+      }
       return Ok(());
     }
 
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let source = host.fetch_script_source(script_id, &url)?;
-      let actions = host.scheduler.fetch_completed(script_id, source)?;
-      host.apply_scheduler_actions(actions, event_loop)?;
+      match host.fetch_script_source(script_id, &url) {
+        Ok(source) => {
+          let actions = host.scheduler.fetch_completed(script_id, source)?;
+          host.apply_scheduler_actions(actions, event_loop)?;
+        }
+        Err(_err) => {
+          let actions = host.scheduler.fetch_failed(script_id)?;
+          host.apply_scheduler_actions(actions, event_loop)?;
+          host.finish_script_execution(script_id, event_loop)?;
+        }
+      }
       Ok(())
     })?;
     Ok(())
@@ -512,26 +513,76 @@ impl BrowserTabHost {
     span.arg_u64("script_id", script_id.as_u64());
     span.arg_str("url", url);
 
+    let spec = self
+      .scripts
+      .get(&script_id)
+      .map(|entry| &entry.spec)
+      .ok_or_else(|| {
+        Error::Other(format!(
+          "fetch_script_source called for unknown script_id={}",
+          script_id.as_u64()
+        ))
+      })?;
+
     if let Some(source) = self.external_script_sources.get(url) {
       span.arg_u64("bytes", source.as_bytes().len() as u64);
       self.js_execution_options.check_script_source_bytes(
         source.as_bytes().len(),
         &format!("source=external url={url}"),
       )?;
+      if let Some(integrity) = spec.integrity.as_deref() {
+        crate::js::sri::verify_integrity_sha256(source.as_bytes(), integrity).map_err(|message| {
+          Error::Other(format!("SRI blocked script {url}: {message}"))
+        })?;
+      }
       return Ok(source.clone());
     }
 
     let fetcher = self.document.fetcher();
-    let mut req = FetchRequest::new(url, FetchDestination::Other);
+    let is_cors = spec.crossorigin.is_some();
+    let destination = if is_cors {
+      FetchDestination::ScriptCors
+    } else {
+      FetchDestination::Script
+    };
+    let mut req = FetchRequest::new(url, destination);
     if let Some(referrer) = self.document_url.as_deref() {
       req = req.with_referrer_url(referrer);
     }
-    let resource = fetcher.fetch_with_request(req)?;
+    if let Some(origin) = self.document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
+    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
+    req = req.with_referrer_policy(effective_referrer_policy);
+    if let Some(cors_mode) = spec.crossorigin {
+      req = req.with_credentials_mode(cors_mode.credentials_mode());
+    }
+
+    let max_fetch = self.js_execution_options.max_script_bytes.saturating_add(1);
+    let resource = fetcher.fetch_partial_with_request(req, max_fetch)?;
     span.arg_u64("bytes", resource.bytes.len() as u64);
     self.js_execution_options.check_script_source_bytes(
       resource.bytes.len(),
       &format!("source=external url={url}"),
     )?;
+
+    crate::resource::ensure_http_success(&resource, url)?;
+    if let Some(cors_mode) = spec.crossorigin {
+      if crate::resource::cors_enforcement_enabled() {
+        crate::resource::ensure_cors_allows_origin(
+          self.document_origin.as_ref(),
+          &resource,
+          url,
+          cors_mode,
+        )?;
+      }
+    }
+    if let Some(integrity) = spec.integrity.as_deref() {
+      crate::js::sri::verify_integrity_sha256(&resource.bytes, integrity).map_err(|message| {
+        Error::Other(format!("SRI blocked script {url}: {message}"))
+      })?;
+    }
+
     Ok(String::from_utf8_lossy(&resource.bytes).to_string())
   }
 }
@@ -861,7 +912,11 @@ impl BrowserTab {
       host,
       event_loop,
     };
-    tab.host.reset_scripting_state(None);
+    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
+      .unwrap_or_default();
+    tab
+      .host
+      .reset_scripting_state(None, document_referrer_policy);
     let _ = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
       tab.navigate_to_url(&req.url, options.clone())?;
@@ -902,7 +957,11 @@ impl BrowserTab {
       host,
       event_loop,
     };
-    tab.host.reset_scripting_state(None);
+    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
+      .unwrap_or_default();
+    tab
+      .host
+      .reset_scripting_state(None, document_referrer_policy);
     tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
@@ -932,7 +991,11 @@ impl BrowserTab {
       .reset_with_dom(Document::new(QuirksMode::NoQuirks), options);
     self.reset_event_loop();
     self.host.trace = self.trace.clone();
-    self.host.reset_scripting_state(None);
+    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
+      .unwrap_or_default();
+    self
+      .host
+      .reset_scripting_state(None, document_referrer_policy);
     let _ = self.parse_html_streaming_and_schedule_scripts(html, None, &options_for_parse)?;
     if let Some(req) = self.host.pending_navigation.take() {
       self.navigate_to_url(&req.url, options_for_parse.clone())?;
@@ -961,9 +1024,13 @@ impl BrowserTab {
     self.host.trace = self.trace.clone();
 
     // Keep document fetch + parse cancellable via `RenderOptions::{timeout,cancel_callback}`.
-    let deadline_enabled = options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
+    let deadline_enabled =
+      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
     let _deadline_guard = deadline_enabled.then(|| {
-      let deadline = RenderDeadline::new(options_for_parse.timeout, options_for_parse.cancel_callback.clone());
+      let deadline = RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      );
       DeadlineGuard::install(Some(&deadline))
     });
 
@@ -983,9 +1050,13 @@ impl BrowserTab {
       renderer.set_base_url(final_url.clone());
     }
 
-    self.host.reset_scripting_state(Some(final_url.clone()));
-
     let html = decode_html_bytes(&fetched.bytes, fetched.content_type.as_deref());
+    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
+      .unwrap_or_default();
+    self
+      .host
+      .reset_scripting_state(Some(final_url.clone()), document_referrer_policy);
+
     let base_url = self.parse_html_streaming_and_schedule_scripts(
       &html,
       Some(final_url.as_str()),
@@ -1227,6 +1298,87 @@ impl BrowserTab {
   }
 }
 
+fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<ReferrerPolicy> {
+  fn is_html_namespace(namespace: &str) -> bool {
+    namespace.is_empty() || namespace == HTML_NAMESPACE
+  }
+
+  let mut stack = vec![dom.root()];
+  let mut head: Option<NodeId> = None;
+  while let Some(id) = stack.pop() {
+    let node = dom.node(id);
+
+    if node.inert_subtree {
+      continue;
+    }
+    if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+
+    if let NodeKind::Element {
+      tag_name, namespace, ..
+    } = &node.kind
+    {
+      if tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace) {
+        head = Some(id);
+        break;
+      }
+    }
+
+    for &child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  let head = head?;
+  let mut policy: Option<ReferrerPolicy> = None;
+
+  let mut stack: Vec<(NodeId, bool)> = vec![(head, false)];
+  while let Some((id, in_foreign_namespace)) = stack.pop() {
+    let node = dom.node(id);
+
+    if node.inert_subtree {
+      continue;
+    }
+    if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+
+    let mut next_in_foreign_namespace = in_foreign_namespace;
+    if let NodeKind::Element {
+      tag_name, namespace, ..
+    } = &node.kind
+    {
+      next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
+
+      if !in_foreign_namespace && tag_name.eq_ignore_ascii_case("meta") && is_html_namespace(namespace) {
+        let name_attr = dom.get_attribute(id, "name").ok().flatten();
+        if name_attr
+          .map(|name| name.eq_ignore_ascii_case("referrer"))
+          .unwrap_or(false)
+        {
+          let content_attr = dom.get_attribute(id, "content").ok().flatten();
+          if let Some(content) = content_attr {
+            if let Some(parsed) = ReferrerPolicy::parse_value_list(content) {
+              policy = Some(parsed);
+            }
+          }
+        }
+      }
+    }
+
+    if next_in_foreign_namespace {
+      continue;
+    }
+
+    for &child in node.children.iter().rev() {
+      stack.push((child, next_in_foreign_namespace));
+    }
+  }
+
+  policy
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1276,7 +1428,7 @@ mod tests {
       TraceHandle::default(),
       JsExecutionOptions::default(),
     );
-    host.reset_scripting_state(None);
+    host.reset_scripting_state(None, ReferrerPolicy::default());
     Ok((host, EventLoop::new()))
   }
 
@@ -1455,7 +1607,7 @@ mod tests {
     let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
 
     // Reset scripting state so parsing new HTML will schedule/execute scripts.
-    tab.host.reset_scripting_state(None);
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default());
 
     tab.event_loop.queue_microtask({
       let log = Rc::clone(&log);

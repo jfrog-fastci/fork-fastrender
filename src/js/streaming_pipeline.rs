@@ -269,6 +269,9 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -286,6 +289,9 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -301,6 +307,9 @@ impl ClassicScriptPipelineState {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: true,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
@@ -309,6 +318,28 @@ impl ClassicScriptPipelineState {
 
     let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
     let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
+    let crossorigin = dom
+      .get_attribute(script_node_id, "crossorigin")
+      .ok()
+      .flatten()
+      .map(|value| {
+        let value = super::trim_ascii_whitespace(value);
+        if value.eq_ignore_ascii_case("use-credentials") {
+          crate::resource::CorsMode::UseCredentials
+        } else {
+          crate::resource::CorsMode::Anonymous
+        }
+      });
+    let integrity = dom
+      .get_attribute(script_node_id, "integrity")
+      .ok()
+      .flatten()
+      .map(|value| value.to_string());
+    let referrer_policy = dom
+      .get_attribute(script_node_id, "referrerpolicy")
+      .ok()
+      .flatten()
+      .and_then(crate::resource::ReferrerPolicy::from_attribute);
     let raw_src = dom
       .get_attribute(script_node_id, "src")
       .ok()
@@ -339,6 +370,9 @@ impl ClassicScriptPipelineState {
       inline_text,
       async_attr,
       defer_attr,
+      crossorigin,
+      integrity,
+      referrer_policy,
       parser_inserted: true,
       node_id: Some(script_node_id),
       script_type,

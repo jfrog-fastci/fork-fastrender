@@ -3181,8 +3181,7 @@ impl MediaContext {
       //   query context's base font size.
       LengthUnit::Cap => Some(length.value * (base_font * 0.7)),
       LengthUnit::Ic => Some(length.value * base_font),
-      LengthUnit::Rex => Some(length.value * (base_font * 0.5)),
-      LengthUnit::Rch => Some(length.value * (base_font * 0.5)),
+      LengthUnit::Rex | LengthUnit::Rch => Some(length.value * (base_font * 0.5)),
       LengthUnit::Rcap => Some(length.value * (base_font * 0.7)),
       LengthUnit::Ric => Some(length.value * base_font),
       // Media queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).

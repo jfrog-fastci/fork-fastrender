@@ -70,6 +70,22 @@ pub fn extract_script_elements(
         let base_url = base_url_tracker.current_base_url();
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
+        let crossorigin = node
+          .get_attribute_ref("crossorigin")
+          .map(|value| {
+            let value = super::trim_ascii_whitespace(value);
+            if value.eq_ignore_ascii_case("use-credentials") {
+              crate::resource::CorsMode::UseCredentials
+            } else {
+              crate::resource::CorsMode::Anonymous
+            }
+          });
+        let integrity = node
+          .get_attribute_ref("integrity")
+          .map(|value| value.to_string());
+        let referrer_policy = node
+          .get_attribute_ref("referrerpolicy")
+          .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
         let raw_src = node.get_attribute_ref("src");
         let src_attr_present = raw_src.is_some();
@@ -89,6 +105,9 @@ pub fn extract_script_elements(
           inline_text,
           async_attr,
           defer_attr,
+          crossorigin,
+          integrity,
+          referrer_policy,
           // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and
           // enabling scheduler tests). This is not reliable for dynamically inserted scripts.
           parser_inserted: true,

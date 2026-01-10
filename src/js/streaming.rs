@@ -25,6 +25,22 @@ pub fn build_parser_inserted_script_element_spec(
   let base_url_ref = base_url_at_this_point.as_deref();
   let async_attr = script.get_attribute_ref("async").is_some();
   let defer_attr = script.get_attribute_ref("defer").is_some();
+  let crossorigin = script
+    .get_attribute_ref("crossorigin")
+    .map(|value| {
+      let value = super::trim_ascii_whitespace(value);
+      if value.eq_ignore_ascii_case("use-credentials") {
+        crate::resource::CorsMode::UseCredentials
+      } else {
+        crate::resource::CorsMode::Anonymous
+      }
+    });
+  let integrity = script
+    .get_attribute_ref("integrity")
+    .map(|value| value.to_string());
+  let referrer_policy = script
+    .get_attribute_ref("referrerpolicy")
+    .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
   let raw_src = script.get_attribute_ref("src");
   let src_attr_present = raw_src.is_some();
@@ -44,6 +60,9 @@ pub fn build_parser_inserted_script_element_spec(
     inline_text,
     async_attr,
     defer_attr,
+    crossorigin,
+    integrity,
+    referrer_policy,
     parser_inserted: true,
     node_id: None,
     script_type: determine_script_type(script),

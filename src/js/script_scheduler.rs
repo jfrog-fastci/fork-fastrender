@@ -608,6 +608,39 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     }
   }
 
+  /// Notify the scheduler that an external script fetch failed (network error, CORS failure, SRI
+  /// mismatch, etc).
+  ///
+  /// Failed scripts are treated as "completed" for ordering purposes:
+  /// - blocking scripts unblock the parser
+  /// - deferred scripts are skipped so later deferred scripts can still run
+  pub fn fetch_failed(&mut self, script_id: ScriptId) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
+    let mode = {
+      let Some(entry) = self.scripts.get_mut(&script_id) else {
+        return Err(Error::Other(format!(
+          "fetch_failed called for unknown script_id={}",
+          script_id.as_u64()
+        )));
+      };
+
+      if entry.fetch_completed {
+        return Err(Error::Other(format!(
+          "fetch_failed called more than once for script_id={}",
+          script_id.as_u64()
+        )));
+      }
+
+      entry.fetch_completed = true;
+      entry.queued_for_execution = true;
+      entry.mode
+    };
+
+    match mode {
+      ExternalMode::Defer => self.queue_defer_scripts_if_ready(),
+      ExternalMode::Blocking | ExternalMode::Async => Ok(Vec::new()),
+    }
+  }
+
   /// Notify the scheduler that HTML parsing has completed.
   pub fn parsing_completed(&mut self) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     self.parsing_completed = true;
@@ -755,6 +788,9 @@ mod tests {
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -769,6 +805,9 @@ mod tests {
       inline_text: String::new(),
       async_attr,
       defer_attr,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -794,6 +833,9 @@ mod tests {
         inline_text: String::new(),
         async_attr: false,
         defer_attr: true,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: false,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -824,6 +866,9 @@ mod tests {
         inline_text: String::new(),
         async_attr: true,
         defer_attr: true,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: true,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -872,6 +917,9 @@ mod tests {
         inline_text: "INLINE".to_string(),
         async_attr: false,
         defer_attr: false,
+        crossorigin: None,
+        integrity: None,
+        referrer_policy: None,
         parser_inserted: true,
         node_id: None,
         script_type: ScriptType::Classic,
@@ -1084,6 +1132,9 @@ mod state_machine_tests {
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1098,6 +1149,9 @@ mod state_machine_tests {
       inline_text: String::new(),
       async_attr,
       defer_attr,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1112,6 +1166,9 @@ mod state_machine_tests {
       inline_text: String::new(),
       async_attr,
       defer_attr,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: false,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1126,6 +1183,9 @@ mod state_machine_tests {
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: false,
       node_id: None,
       script_type: ScriptType::Classic,
@@ -1318,6 +1378,9 @@ mod state_machine_tests {
       inline_text: "INLINE".to_string(),
       async_attr: false,
       defer_attr: false,
+      crossorigin: None,
+      integrity: None,
+      referrer_policy: None,
       parser_inserted: true,
       node_id: None,
       script_type: ScriptType::Classic,

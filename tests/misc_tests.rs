@@ -5,3 +5,4 @@
 //! harness if one exists.
 
 mod misc;
+mod test_support;
