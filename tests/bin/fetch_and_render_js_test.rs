@@ -13,7 +13,10 @@ fn render_pixel(url: &str, out_path: &Path, js: bool) -> image::Rgba<u8> {
     .args(["--viewport", "64x64"])
     .status()
     .expect("run fetch_and_render");
-  assert!(status.success(), "fetch_and_render should exit successfully");
+  assert!(
+    status.success(),
+    "fetch_and_render should exit successfully"
+  );
 
   image::open(out_path)
     .expect("open rendered image")
@@ -162,9 +165,14 @@ html.js-enabled body { background: rgb(0, 255, 0); }
 
 #[test]
 fn js_flag_executes_module_script_and_mutates_dom() {
-  let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_simple");
+  let fixture_dir =
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_simple");
   let html_path = fixture_dir.join("index.html");
-  assert!(html_path.exists(), "fixture missing: {}", html_path.display());
+  assert!(
+    html_path.exists(),
+    "fixture missing: {}",
+    html_path.display()
+  );
 
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let url = url::Url::from_file_path(&html_path).unwrap().to_string();
@@ -174,8 +182,43 @@ fn js_flag_executes_module_script_and_mutates_dom() {
   let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
-  assert_red(no_js_pixel, "baseline run should keep the red background from html.no-js");
-  assert_green(js_pixel, "JS run should flip to the green background from html.js-enabled");
+  assert_red(
+    no_js_pixel,
+    "baseline run should keep the red background from html.no-js",
+  );
+  assert_green(
+    js_pixel,
+    "JS run should flip to the green background from html.js-enabled",
+  );
+}
+
+#[test]
+fn js_flag_executes_module_script_with_import_map_bare_specifier() {
+  let fixture_dir =
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_importmap_bare");
+  let html_path = fixture_dir.join("index.html");
+  assert!(
+    html_path.exists(),
+    "fixture missing: {}",
+    html_path.display()
+  );
+
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(
+    no_js_pixel,
+    "baseline run should keep the red background from html.no-js",
+  );
+  assert_green(
+    js_pixel,
+    "JS run should resolve bare module imports using <script type=importmap>",
+  );
 }
 
 #[test]
@@ -241,8 +284,14 @@ html[data-a="1"][data-b="1"][data-c="1"][data-defer1="1"][data-defer2="1"][data-
   let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
-  assert_red(no_js_pixel, "baseline run should not execute external scripts");
-  assert_green(js_pixel, "JS run should execute external/async/defer scripts");
+  assert_red(
+    no_js_pixel,
+    "baseline run should not execute external scripts",
+  );
+  assert_green(
+    js_pixel,
+    "JS run should execute external/async/defer scripts",
+  );
 }
 
 #[test]
@@ -253,8 +302,11 @@ fn js_flag_resolves_script_src_using_base_href_timing() {
   fs::create_dir_all(&sub_dir).expect("create sub dir");
 
   // Script before <base href>: should resolve relative to the document URL.
-  fs::write(tmp.path().join("a.js"), "document.documentElement.setAttribute('data-a', 'root');")
-    .expect("write a.js");
+  fs::write(
+    tmp.path().join("a.js"),
+    "document.documentElement.setAttribute('data-a', 'root');",
+  )
+  .expect("write a.js");
   // If base URL timing is wrong, the first script might resolve to sub/a.js instead.
   fs::write(
     sub_dir.join("a.js"),
@@ -263,8 +315,11 @@ fn js_flag_resolves_script_src_using_base_href_timing() {
   .expect("write sub/a.js");
 
   // Script after <base href>: should resolve relative to the new base URL.
-  fs::write(tmp.path().join("b.js"), "document.documentElement.setAttribute('data-b', 'root');")
-    .expect("write b.js");
+  fs::write(
+    tmp.path().join("b.js"),
+    "document.documentElement.setAttribute('data-b', 'root');",
+  )
+  .expect("write b.js");
   fs::write(
     sub_dir.join("b.js"),
     "document.documentElement.setAttribute('data-b', 'sub');",
@@ -293,7 +348,10 @@ html[data-a="root"][data-b="sub"] body { background: rgb(0, 255, 0); }
   let js_pixel = render_pixel(&url, &js_png, /* js */ true);
 
   assert_red(no_js_pixel, "baseline run should not execute scripts");
-  assert_green(js_pixel, "JS run should resolve script src with correct base URL timing");
+  assert_green(
+    js_pixel,
+    "JS run should resolve script src with correct base URL timing",
+  );
 }
 
 #[test]
