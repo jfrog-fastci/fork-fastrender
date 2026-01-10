@@ -690,6 +690,12 @@ fn render_page(
                 if spec.src_attr_present {
                   // External import maps are not supported (HTML requires them to queue `error`).
                   log("JavaScript: skipping <script type=importmap src> (external import maps are not supported)");
+                } else if spec.inline_text.as_bytes().len() > max_script_bytes {
+                  log(&format!(
+                    "JavaScript: skipping import map ({} bytes > max {})",
+                    spec.inline_text.as_bytes().len(),
+                    max_script_bytes
+                  ));
                 } else {
                   let base_url_str = spec
                     .base_url
@@ -1511,6 +1517,12 @@ fn render_page(
               if spec.src_attr_present {
                 // External import maps are not supported (HTML requires them to queue `error`).
                 log("JavaScript: skipping <script type=importmap src> (external import maps are not supported)");
+              } else if spec.inline_text.as_bytes().len() > max_script_bytes {
+                log(&format!(
+                  "JavaScript: skipping import map ({} bytes > max {})",
+                  spec.inline_text.as_bytes().len(),
+                  max_script_bytes
+                ));
               } else {
                 let base_url_str = spec
                   .base_url
