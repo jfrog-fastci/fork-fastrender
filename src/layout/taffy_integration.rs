@@ -660,6 +660,8 @@ impl PooledTaffyTree {
     let mut tree = TAFFY_TREE_POOL
       .with(|pool| pool.borrow_mut().pop())
       .unwrap_or_else(TaffyTree::new);
+    // FastRender aims to preserve subpixel layout precision for web compatibility.
+    //
     // Taffy rounds computed layouts to integer pixel coordinates by default. While this behavior
     // matches Yoga's historical defaults, it is not appropriate for web layout where subpixel sizes
     // are observable and required for correct text metrics (e.g. line heights derived from font

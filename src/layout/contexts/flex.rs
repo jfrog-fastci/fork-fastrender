@@ -250,6 +250,20 @@ use taffy::TaffyTree;
 
 type FingerprintHasher = FxHasher;
 
+/// Snap near-integer intrinsic border-box sizes without collapsing legitimate subpixel values.
+#[inline]
+fn snap_intrinsic_border_box_size(value: f32) -> f32 {
+  if !value.is_finite() {
+    return value;
+  }
+  let rounded = value.round();
+  if (value - rounded).abs() <= 0.01 {
+    rounded
+  } else {
+    value
+  }
+}
+
 #[cfg(test)]
 thread_local! {
   static FLEX_MEASURE_INTRINSIC_INLINE_HINT_COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -2934,28 +2948,24 @@ impl FormattingContext for FlexFormattingContext {
                         // the content-box size that Taffy expects from the measure callback.
                         // Flex line-breaking happens during intrinsic-width probes. Inline/text
                         // max-content sizing can be fractional, while downstream used sizes are
-                        // often effectively pixel-snapped; rounding here avoids wrap decisions
-                        // that would not occur once those used sizes are applied.
-                        let border_box_width = if border_box_width.is_finite() {
-                          border_box_width.round()
-                        } else {
-                          border_box_width
-                        };
+                        // often effectively pixel-snapped; snap near-integer values to avoid wrap
+                        // decisions that would not occur once those used sizes are applied.
+                        let border_box_width = snap_intrinsic_border_box_size(border_box_width);
                         let mut content_w = (border_box_width - fit_inset_w).max(0.0);
                         // Mirror the clamp behavior from the intrinsic fast path to avoid runaway
                         // widths propagating through flex sizing.
                         content_w = content_w.min(this.viewport_size.width.max(0.0));
 
-                         // For intrinsic inline-size probes, the `known_dimensions.height` that
-                         // Taffy supplies is often just the flex line's tentative cross size (or a
-                         // fallback like the viewport width/height) rather than a meaningful
-                         // constraint for the measured box.
-                         //
-                         // Using it directly can wildly inflate measured block sizes and cause the
-                         // entire flex/grid track to expand (e.g. large carousels on
-                         // theguardian.com). Instead, compute an intrinsic block size when we
-                         // don't otherwise have a reliable value.
-                         let mut content_h = 0.0;
+                        // For intrinsic inline-size probes, the `known_dimensions.height` that
+                        // Taffy supplies is often just the flex line's tentative cross size (or a
+                        // fallback like the viewport width/height) rather than a meaningful
+                        // constraint for the measured box.
+                        //
+                        // Using it directly can wildly inflate measured block sizes and cause the
+                        // entire flex/grid track to expand (e.g. large carousels on
+                        // theguardian.com). Instead, compute an intrinsic block size when we
+                        // don't otherwise have a reliable value.
+                        let mut content_h = 0.0;
                         let eps = 0.01;
                         if content_h <= eps {
                           let intrinsic_block_result = if let Some(style) = override_style.clone() {
@@ -3025,11 +3035,7 @@ impl FormattingContext for FlexFormattingContext {
                           // See the comment in the fit-content branch above: make the intrinsic
                           // probe consistent with pixel-snapped used sizes so Taffy doesn't wrap
                           // items that would fit after snapping.
-                          let border_box_width = if border_box_width.is_finite() {
-                            border_box_width.round()
-                          } else {
-                            border_box_width
-                          };
+                          let border_box_width = snap_intrinsic_border_box_size(border_box_width);
                           // `compute_intrinsic_inline_size` returns a border-box size. Convert to a
                           // content-box size because Taffy adds padding/border/scrollbars from the
                           // style when computing the used border-box size for the flex item.
@@ -5308,37 +5314,37 @@ fn measure_cache_key_and_snap(
 
   fn quantize(val: f32) -> f32 {
     // Quantize measure keys to merge near-duplicate probes without visibly affecting layout.
-    // Use progressively coarser steps as sizes grow to curb key cardinality on large pages
-    // while keeping typical sizes precise. Thresholds favor tighter precision for small
-    // items while aggressively merging large, near-identical probes common on wide carousels.
+    //
+    // Flex/grid measure callbacks are extremely hot on real pages; the per-node cache is keyed by
+    // the incoming constraint sizes. Taffy sometimes propagates float jitter (e.g. 300.30002 vs
+    // 300.29999), which can explode cache cardinality if we key on raw f32 bits.
+    //
+    // However, snapping "real" sizes too coarsely (e.g. rounding 308.6px to 308.5px) can flip
+    // line-breaking decisions in `flex-wrap` containers that are sized via intrinsic probes.
+    //
+    // Strategy:
+    // - For typical sizes (<= 1024px), round to a very fine decimal grid (0.001px). This collapses
+    //   float noise while preserving legitimate subpixel values.
+    // - For large sizes, use coarser power-of-two steps to keep key counts bounded.
     let abs = val.abs();
-    let step = if abs > 32768.0 {
-      512.0
-    } else if abs > 16384.0 {
-      256.0
-    } else if abs > 8192.0 {
-      128.0
-    } else if abs > 4096.0 {
-      64.0
-    } else if abs > 2048.0 {
-      32.0
-    } else if abs > 1024.0 {
-      16.0
-    } else if abs > 512.0 {
-      // Responsive media embeds frequently use percentage padding to establish aspect ratios (e.g.
-      // 56.25% for 16:9). Snapping a ~550px-wide probe to an 8px grid can shift the resulting
-      // height by a couple of pixels, which is visually obvious. Keep this range at 2px
-      // granularity while still allowing coarser snapping at very large sizes.
-      2.0
-    } else if abs > 256.0 {
-      4.0
+    let quantized = if abs <= 1024.0 {
+      (val * 1000.0).round() / 1000.0
     } else {
-      // Avoid coarse snapping for small items: shifting the probe by ~1px can flip text wrapping
-      // decisions (e.g. "My Visit" in the si.edu header). Keep <=256px probes at subpixel
-      // granularity so cache coalescing merges float noise without materially changing layout.
-      0.5
+      let step = if abs > 32768.0 {
+        512.0
+      } else if abs > 16384.0 {
+        256.0
+      } else if abs > 8192.0 {
+        128.0
+      } else if abs > 4096.0 {
+        64.0
+      } else if abs > 2048.0 {
+        32.0
+      } else {
+        16.0
+      };
+      (val / step).round() * step
     };
-    let quantized = (val / step).round() * step;
     if quantized == 0.0 {
       0.0
     } else {
@@ -15021,8 +15027,8 @@ mod tests {
     let key_a = super::measure_cache_key(
       &known,
       &taffy::geometry::Size {
-        width: AvailableSpace::Definite(300.3),
-        height: AvailableSpace::Definite(150.7),
+        width: AvailableSpace::Definite(300.3002),
+        height: AvailableSpace::Definite(150.7002),
       },
       viewport,
       false,
@@ -15031,8 +15037,8 @@ mod tests {
     let key_b = super::measure_cache_key(
       &known,
       &taffy::geometry::Size {
-        width: AvailableSpace::Definite(300.6),
-        height: AvailableSpace::Definite(150.4),
+        width: AvailableSpace::Definite(300.3004),
+        height: AvailableSpace::Definite(150.7004),
       },
       viewport,
       false,
@@ -15047,7 +15053,7 @@ mod tests {
     let key_c = super::measure_cache_key(
       &known,
       &taffy::geometry::Size {
-        width: AvailableSpace::Definite(300.0),
+        width: AvailableSpace::Definite(300.2999),
         height: AvailableSpace::Definite(151.0),
       },
       viewport,
@@ -15087,8 +15093,8 @@ mod tests {
     let (key_a, snapped_known_a, snapped_avail_a) = super::measure_cache_key_and_snap(
       &known,
       &taffy::geometry::Size {
-        width: AvailableSpace::Definite(250.3),
-        height: AvailableSpace::Definite(150.7),
+        width: AvailableSpace::Definite(250.3002),
+        height: AvailableSpace::Definite(150.7002),
       },
       viewport,
       false,
@@ -15097,8 +15103,8 @@ mod tests {
     let (key_b, snapped_known_b, snapped_avail_b) = super::measure_cache_key_and_snap(
       &known,
       &taffy::geometry::Size {
-        width: AvailableSpace::Definite(250.6),
-        height: AvailableSpace::Definite(150.4),
+        width: AvailableSpace::Definite(250.3004),
+        height: AvailableSpace::Definite(150.7004),
       },
       viewport,
       false,
@@ -15137,7 +15143,7 @@ mod tests {
 
     let (key_a, snapped_known_a, snapped_avail_a) = super::measure_cache_key_and_snap(
       &taffy::geometry::Size {
-        width: Some(250.3),
+        width: Some(250.3002),
         height: None,
       },
       &avail,
@@ -15147,7 +15153,7 @@ mod tests {
 
     let (key_b, snapped_known_b, snapped_avail_b) = super::measure_cache_key_and_snap(
       &taffy::geometry::Size {
-        width: Some(250.6),
+        width: Some(250.3004),
         height: None,
       },
       &avail,

@@ -15603,11 +15603,25 @@ impl DisplayListRenderer {
       quality: item.filter_quality.into(),
     };
 
-    let scale_x = dest_rect.width() / pixmap.width() as f32;
-    let scale_y = dest_rect.height() / pixmap.height() as f32;
+    let src_rect = item.src_rect.unwrap_or_else(|| {
+      Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    });
+    if src_rect.width() <= 0.0 || src_rect.height() <= 0.0 {
+      return Ok(());
+    }
 
-    let transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, dest_rect.x(), dest_rect.y())
-      .post_concat(self.canvas.transform());
+    let scale_x = dest_rect.width() / src_rect.width();
+    let scale_y = dest_rect.height() / src_rect.height();
+    if !scale_x.is_finite() || !scale_y.is_finite() {
+      return Ok(());
+    }
+
+    // Map the source rect into the destination rect. This keeps fractional source offsets (from
+    // e.g. `background-size: cover`) intact so bilinear filtering matches browser behavior.
+    let tx = dest_rect.x() - src_rect.x() * scale_x;
+    let ty = dest_rect.y() - src_rect.y() * scale_y;
+
+    let transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty).post_concat(self.canvas.transform());
     let clip_mask = self.canvas.clip_mask().cloned();
     let pixmap_ref = pixmap.as_ref();
     self.canvas.with_mirrored_pixmap_mut(|dest| {
@@ -16052,58 +16066,12 @@ impl DisplayListRenderer {
       return Ok(None);
     };
 
-    if let Some(src) = item.src_rect {
-      let crop_diag = self.image_pixmap_diagnostics.as_ref();
-      let crop_timer = crop_diag.map(|_| Instant::now());
-      let src_x = src.x().max(0.0).floor() as u32;
-      let src_y = src.y().max(0.0).floor() as u32;
-      let src_w = src.width().ceil() as u32;
-      let src_h = src.height().ceil() as u32;
-      if src_w == 0 || src_h == 0 {
-        return Ok(None);
-      }
-      let max_x = item.image.width.saturating_sub(src_x);
-      let max_y = item.image.height.saturating_sub(src_y);
-      let crop_w = src_w.min(max_x);
-      let crop_h = src_h.min(max_y);
-      if crop_w == 0 || crop_h == 0 {
-        return Ok(None);
-      }
-      if src_x == 0 && src_y == 0 && crop_w == item.image.width && crop_h == item.image.height {
-        return Ok(Some(full));
-      }
-
-      let key = ImageCropKey {
-        image: ImageKey::new(&item.image),
-        src_x,
-        src_y,
-        crop_w,
-        crop_h,
-      };
-      if let Some(cached) = self.cropped_image_cache.get(&key) {
-        return Ok(Some(cached.clone()));
-      }
-      check_active(RenderStage::Paint)?;
-      let Some(mut cropped) = new_pixmap(crop_w, crop_h) else {
-        return Ok(None);
-      };
-      let mut deadline_counter = 0usize;
-      for row in 0..crop_h {
-        check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
-        let src_index = ((src_y + row) * item.image.width + src_x) as usize * 4;
-        let dst_index = (row * crop_w) as usize * 4;
-        cropped.data_mut()[dst_index..dst_index + (crop_w as usize * 4)]
-          .copy_from_slice(&full.data()[src_index..src_index + (crop_w as usize * 4)]);
-      }
-      if let (Some(diag), Some(start)) = (crop_diag, crop_timer) {
-        diag.record_duration(start.elapsed());
-      }
-      let cropped = Arc::new(cropped);
-      self.cropped_image_cache.put(key, cropped.clone());
-      Ok(Some(cropped))
-    } else {
-      Ok(Some(full))
-    }
+    // `ImageItem::src_rect` represents a source rectangle in the image's pixel coordinate space.
+    // Cropping this to integer pixel bounds loses the fractional offset needed for spec-correct
+    // `drawImage`-style mapping (notably for `background-size: cover/contain`, which often yields
+    // fractional source coordinates). Keep the full pixmap and let `render_image` apply the
+    // source-rect transform so filtering can take the subpixel offsets into account.
+    Ok(Some(full))
   }
 
   #[inline]
@@ -16127,17 +16095,23 @@ impl DisplayListRenderer {
     if src_width == 0 || src_height == 0 || target_width == 0 || target_height == 0 {
       return false;
     }
-    if target_width >= src_width || target_height >= src_height {
+    if target_width == src_width && target_height == src_height {
       return false;
     }
 
     let src_pixels = u64::from(src_width).saturating_mul(u64::from(src_height));
     let target_pixels = u64::from(target_width).saturating_mul(u64::from(target_height));
 
-    // Bilinear downscaling reads 4 source pixels per destination pixel. Only use the scaled pixmap
-    // path when the destination is meaningfully smaller than the intrinsic image so we don't
-    // regress on "slightly downscaled" renders.
-    target_pixels.saturating_mul(4) <= src_pixels
+    // We pre-scale some images into a dedicated pixmap so we can use our own sampling path when
+    // scaling would otherwise be handled by tiny-skia. This is both:
+    //  - a perf win for large downscales (avoid sampling 4 source pixels per output pixel every
+    //    time the image is drawn), and
+    //  - a fidelity win for very large scales where tiny-skia's sampling diverges from
+    //    Chrome/Skia, causing pervasive pixel drift (notably full-viewport background images).
+    //
+    // Only do this when the scale factor is "large enough" to matter; otherwise let tiny-skia
+    // handle the common case.
+    target_pixels.saturating_mul(4) <= src_pixels || target_pixels >= src_pixels.saturating_mul(4)
   }
 
   fn image_data_to_pixmap_at_size(
@@ -16191,9 +16165,16 @@ impl DisplayListRenderer {
               diag.record_miss();
             }
             let timer = diag.as_ref().map(|_| Instant::now());
-            let Some(pixmap) =
-              image_data_to_scaled_pixmap_inner(image, target_width, target_height, quality)?
-            else {
+            let pixmap = match image_data_to_scaled_pixmap_inner(
+              image,
+              target_width,
+              target_height,
+              quality,
+            )? {
+              Some(pixmap) => Some(pixmap),
+              None => image_data_to_pixmap_inner(image)?,
+            };
+            let Some(pixmap) = pixmap else {
               return Ok(None);
             };
             let pixmap = Arc::new(pixmap);
@@ -16218,7 +16199,7 @@ impl DisplayListRenderer {
     let Some(pixmap) =
       image_data_to_scaled_pixmap_inner(image, target_width, target_height, quality)?
     else {
-      return Ok(None);
+      return self.image_data_to_pixmap(image);
     };
     let pixmap = Arc::new(pixmap);
     if let (Some(diag), Some(start)) = (diag, timer) {
@@ -16358,7 +16339,7 @@ fn image_data_to_scaled_pixmap_inner(
   if src_w == 0 || src_h == 0 {
     return Ok(None);
   }
-  if target_width >= src_w || target_height >= src_h {
+  if target_width == src_w && target_height == src_h {
     return image_data_to_pixmap_inner(image);
   }
   if quality != ImageFilterQuality::Linear {
