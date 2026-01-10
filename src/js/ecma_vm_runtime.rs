@@ -240,6 +240,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
       .map_err(|err| Error::Other(format!("JS parse error: {err}")))?;
 
     let global_this = self.global_this();
+    let intrinsics = *self.realm.intrinsics();
     // `vm-js` Promise built-ins require a host hook implementation to enqueue jobs. We use a small
     // adapter that forwards to `EcmaVmRuntime` while keeping the VM/heap borrowable.
     let host_ptr: *mut EcmaVmRuntime<State> = self;
@@ -249,6 +250,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
       env: &mut self.env,
       hooks: &mut hooks,
       global_this,
+      intrinsics,
     };
 
     for stmt in &top.stx.body {
@@ -270,6 +272,7 @@ struct Evaluator<'a> {
   env: &'a mut Env,
   hooks: &'a mut dyn VmHostHooks,
   global_this: Value,
+  intrinsics: vm_js::Intrinsics,
 }
 
 impl Evaluator<'_> {
@@ -325,6 +328,7 @@ impl Evaluator<'_> {
         let s = scope.alloc_string(&node.stx.value)?;
         Ok(Value::String(s))
       }
+      Expr::LitArr(node) => self.eval_array_literal(scope, &node.stx),
       Expr::Id(node) => {
         if let Some(value) = self.env.get(scope.heap(), &node.stx.name) {
           return Ok(value);
@@ -358,6 +362,54 @@ impl Evaluator<'_> {
       Expr::Call(node) => self.eval_call_expr(scope, &node.stx),
       _ => Err(VmError::Unimplemented("expression type")),
     }
+  }
+
+  fn eval_array_literal(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &parse_js::ast::expr::lit::LitArrExpr,
+  ) -> std::result::Result<Value, VmError> {
+    let len = expr.elements.len();
+    let arr = scope.alloc_array(len)?;
+    scope.push_root(Value::Object(arr))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(arr, Some(self.intrinsics.array_prototype()))?;
+
+    for (idx, elem) in expr.elements.iter().enumerate() {
+      match elem {
+        parse_js::ast::expr::lit::LitArrElem::Empty => {}
+        parse_js::ast::expr::lit::LitArrElem::Single(value) => {
+          let mut child = scope.reborrow();
+          child.push_root(Value::Object(arr))?;
+
+          let v = self.eval_expr(&mut child, value)?;
+          child.push_root(v)?;
+
+          let key_s = child.alloc_string(&idx.to_string())?;
+          child.push_root(Value::String(key_s))?;
+          let key = vm_js::PropertyKey::from_string(key_s);
+
+          child.define_property(
+            arr,
+            key,
+            vm_js::PropertyDescriptor {
+              enumerable: true,
+              configurable: true,
+              kind: vm_js::PropertyKind::Data {
+                value: v,
+                writable: true,
+              },
+            },
+          )?;
+        }
+        parse_js::ast::expr::lit::LitArrElem::Rest(_) => {
+          return Err(VmError::Unimplemented("array literal spread"));
+        }
+      }
+    }
+
+    Ok(Value::Object(arr))
   }
 
   fn eval_member_expr(
@@ -1248,6 +1300,28 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn log_number_arg(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let tag = match value {
+      Value::Number(n) if n == 1.0 => "1",
+      Value::Number(n) if n == 2.0 => "2",
+      Value::Undefined => "undefined",
+      _ => "other",
+    };
+    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+      (*host_ptr).state.log.push(tag);
+    });
+    Ok(Value::Undefined)
+  }
+
   fn thenable_then(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1319,6 +1393,26 @@ mod tests {
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(host.state.log, vec!["sync", "micro"]);
+    Ok(())
+  }
+
+  #[test]
+  fn promise_any_accepts_array_literal_iterable() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+
+    host.define_global_native_function("__log", 1, log_number_arg)?;
+
+    host.execute_classic_script(
+      "Promise.any([1, 2]).then(__log);",
+      &classic_spec(),
+      &mut event_loop,
+    )?;
+    assert_eq!(host.state.log, Vec::<&'static str>::new());
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(host.state.log, vec!["1"]);
     Ok(())
   }
 
