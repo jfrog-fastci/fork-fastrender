@@ -2117,6 +2117,35 @@ mod tests {
   }
 
   #[test]
+  fn onrejectionhandled_handler_runs() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "this.__called = false;\n\
+         this.__reason = undefined;\n\
+         this.onrejectionhandled = function (e) {\n\
+           this.__called = true;\n\
+           this.__reason = e.reason;\n\
+         };\n\
+         var p = Promise.reject('x');\n\
+         setTimeout(function () { p.catch(function () {}); }, 0);\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(matches!(get_global_prop(&mut host, "__called"), Value::Bool(true)));
+    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    Ok(())
+  }
+
+  #[test]
   fn promise_rejection_events_use_promise_rejection_event_and_are_read_only() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
