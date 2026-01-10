@@ -44,6 +44,15 @@ fn in_operator_walks_prototype_chain() {
 }
 
 #[test]
+fn in_operator_treats_string_indices_as_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"'0' in new String("abc") && !('3' in new String("abc"))"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn for_in_restores_lexical_env_on_uncatchable_error() {
   let mut rt = new_runtime();
   let err = rt

@@ -349,11 +349,7 @@ impl RuntimeEnv {
 
     // Distinguish between a missing property (unbound identifier) and a present property whose
     // value is actually `undefined`.
-    if key_scope
-      .heap()
-      .get_property_with_tick(global_object, &key, || vm.tick())?
-      .is_none()
-    {
+    if !key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())? {
       return Ok(None);
     }
 
@@ -396,10 +392,7 @@ impl RuntimeEnv {
     key_scope.push_root(value)?;
     let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
-    let has_binding = key_scope
-      .heap()
-      .get_property_with_tick(global_object, &key, || vm.tick())?
-      .is_some();
+    let has_binding = key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())?;
     if !has_binding {
       if strict {
         let msg = format!("{name} is not defined");
@@ -4279,11 +4272,7 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if key_scope
-            .heap()
-            .get_property_with_tick(global_object, &key, || self.tick())?
-            .is_none()
-          {
+          if !key_scope.ordinary_has_property_with_tick(global_object, key, || self.tick())? {
             return Ok(Value::Bool(true));
           }
 
@@ -4319,11 +4308,7 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          if key_scope
-            .heap()
-            .get_property_with_tick(global_object, &key, || self.tick())?
-            .is_none()
-          {
+          if !key_scope.ordinary_has_property_with_tick(global_object, key, || self.tick())? {
             return Ok(Value::Bool(true));
           }
 
@@ -4877,10 +4862,7 @@ impl<'a> Evaluator<'a> {
         rhs_scope.push_root(Value::Object(obj))?;
         let key = self.to_property_key_operator(&mut rhs_scope, left)?;
         Ok(Value::Bool(
-          rhs_scope
-            .heap()
-            .get_property_with_tick(obj, &key, || self.tick())?
-            .is_some(),
+          rhs_scope.ordinary_has_property_with_tick(obj, key, || self.tick())?,
         ))
       }
       OperatorName::Instanceof => {

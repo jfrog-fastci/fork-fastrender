@@ -44,7 +44,7 @@ impl<'a> Scope<'a> {
       return Ok(Some(desc));
     }
 
-    let Some((_string_data, _index)) = self.string_object_in_range_index(obj, &key)? else {
+    let Some((_string_data, _index)) = self.string_object_in_range_index_with_tick(obj, &key, &mut tick)? else {
       return Ok(None);
     };
 
@@ -121,7 +121,10 @@ impl<'a> Scope<'a> {
   ) -> Result<bool, VmError> {
     if self.heap().object_is_array(obj)? {
       self.array_define_own_property_with_tick(obj, key, desc, &mut tick)
-    } else if self.string_object_in_range_index(obj, &key)?.is_some() {
+    } else if self
+      .string_object_in_range_index_with_tick(obj, &key, &mut tick)?
+      .is_some()
+    {
       self.string_define_own_property_index(obj, key, desc)
     } else {
       self.ordinary_define_own_property(obj, key, desc)
@@ -177,10 +180,27 @@ impl<'a> Scope<'a> {
 
   /// ECMAScript `[[HasProperty]]` for ordinary objects.
   pub fn ordinary_has_property(&self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
-    if self.heap().has_property(obj, &key)? {
+    self.ordinary_has_property_with_tick(obj, key, || Ok(()))
+  }
+
+  pub fn ordinary_has_property_with_tick(
+    &self,
+    obj: GcObject,
+    key: PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
+    if self
+      .heap()
+      .get_property_with_tick(obj, &key, &mut tick)?
+      .is_some()
+    {
       return Ok(true);
     }
-    Ok(self.string_object_in_range_index(obj, &key)?.is_some())
+    Ok(
+      self
+        .string_object_in_range_index_with_tick(obj, &key, &mut tick)?
+        .is_some(),
+    )
   }
 
   /// ECMAScript `[[Get]]` for ordinary objects.
@@ -214,7 +234,7 @@ impl<'a> Scope<'a> {
       };
     }
 
-    if let Some(value) = self.string_object_get_index_value(obj, &key)? {
+    if let Some(value) = self.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
       return Ok(value);
     }
 
@@ -287,7 +307,7 @@ impl<'a> Scope<'a> {
       };
     }
 
-    if let Some(value) = scope.string_object_get_index_value(obj, &key)? {
+    if let Some(value) = scope.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
       return Ok(value);
     }
 
@@ -603,7 +623,7 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Vec<PropertyKey>, VmError> {
-    if let Some(string_data) = self.string_object_data(obj)? {
+    if let Some(string_data) = self.string_object_data_with_tick(obj, &mut tick)? {
       self.push_root(Value::Object(obj))?;
       self.push_root(Value::String(string_data))?;
 
@@ -935,15 +955,30 @@ impl<'a> Scope<'a> {
   }
 
   fn string_object_data(&self, obj: GcObject) -> Result<Option<GcString>, VmError> {
+    let mut tick = || Ok(());
+    self.string_object_data_with_tick(obj, &mut tick)
+  }
+
+  fn string_object_data_with_tick(
+    &self,
+    obj: GcObject,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<GcString>, VmError> {
     let Some(marker_sym) = self.heap().internal_string_data_symbol() else {
       return Ok(None);
     };
     let marker_key = PropertyKey::from_symbol(marker_sym);
-    match self
+    let Some(desc) = self
       .heap()
-      .object_get_own_data_property_value(obj, &marker_key)?
-    {
-      Some(Value::String(s)) => Ok(Some(s)),
+      .object_get_own_property_with_tick(obj, &marker_key, &mut *tick)?
+    else {
+      return Ok(None);
+    };
+    match desc.kind {
+      PropertyKind::Data {
+        value: Value::String(s),
+        ..
+      } => Ok(Some(s)),
       _ => Ok(None),
     }
   }
@@ -953,10 +988,21 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<(GcString, u32)>, VmError> {
-    let Some(string_data) = self.string_object_data(obj)? else {
+    let mut tick = || Ok(());
+    self.string_object_in_range_index_with_tick(obj, key, &mut tick)
+  }
+
+  fn string_object_in_range_index_with_tick(
+    &self,
+    obj: GcObject,
+    key: &PropertyKey,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<(GcString, u32)>, VmError> {
+    // Only string-index properties are special; for other keys avoid scanning for string data.
+    let Some(index) = self.heap().array_index(key) else {
       return Ok(None);
     };
-    let Some(index) = self.heap().array_index(key) else {
+    let Some(string_data) = self.string_object_data_with_tick(obj, tick)? else {
       return Ok(None);
     };
     let len = self.heap().get_string(string_data)?.len_code_units();
@@ -971,7 +1017,18 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     key: &PropertyKey,
   ) -> Result<Option<Value>, VmError> {
-    let Some((string_data, index)) = self.string_object_in_range_index(obj, key)? else {
+    self.string_object_get_index_value_with_tick(obj, key, || Ok(()))
+  }
+
+  fn string_object_get_index_value_with_tick(
+    &mut self,
+    obj: GcObject,
+    key: &PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<Value>, VmError> {
+    let Some((string_data, index)) =
+      self.string_object_in_range_index_with_tick(obj, key, &mut tick)?
+    else {
       return Ok(None);
     };
     let idx = index as usize;

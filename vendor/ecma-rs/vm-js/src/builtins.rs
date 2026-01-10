@@ -4152,7 +4152,7 @@ pub fn array_prototype_for_each(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4205,7 +4205,7 @@ pub fn array_prototype_index_of(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4342,7 +4342,7 @@ pub fn array_prototype_filter(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
 
@@ -4423,7 +4423,7 @@ pub fn array_prototype_reduce(
       let mut iter_scope = scope.reborrow();
       let key_s = iter_scope.alloc_string(&k.to_string())?;
       let key = PropertyKey::from_string(key_s);
-      if iter_scope.ordinary_has_property(obj, key)? {
+      if iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
         accumulator =
           iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
         k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
@@ -4449,7 +4449,7 @@ pub fn array_prototype_reduce(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&idx.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
 
@@ -4519,7 +4519,7 @@ pub fn array_prototype_some(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4573,7 +4573,7 @@ pub fn array_prototype_every(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4627,7 +4627,7 @@ pub fn array_prototype_find(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4681,7 +4681,7 @@ pub fn array_prototype_find_index(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
       continue;
     }
     let value =
@@ -4746,7 +4746,7 @@ pub fn array_prototype_concat(
 
           let key_s = iter_scope.alloc_string(&k.to_string())?;
           let key = PropertyKey::from_string(key_s);
-          if iter_scope.ordinary_has_property(source_obj, key)? {
+          if iter_scope.ordinary_has_property_with_tick(source_obj, key, || vm.tick())? {
             let value = iter_scope.ordinary_get_with_host_and_hooks(
               vm,
               host,
@@ -4839,8 +4839,8 @@ pub fn array_prototype_reverse(
     let lower_key = PropertyKey::from_string(lower_s);
     let upper_key = PropertyKey::from_string(upper_s);
 
-    let lower_exists = iter_scope.ordinary_has_property(obj, lower_key)?;
-    let upper_exists = iter_scope.ordinary_has_property(obj, upper_key)?;
+    let lower_exists = iter_scope.ordinary_has_property_with_tick(obj, lower_key, || vm.tick())?;
+    let upper_exists = iter_scope.ordinary_has_property_with_tick(obj, upper_key, || vm.tick())?;
 
     let lower_value = if lower_exists {
       Some(iter_scope.ordinary_get_with_host_and_hooks(
@@ -5053,7 +5053,7 @@ pub fn array_prototype_slice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !iter_scope.ordinary_has_property(obj, from_key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
       continue;
     }
 
@@ -5249,7 +5249,7 @@ pub fn array_prototype_shift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.ordinary_has_property(obj, from_key)? {
+    if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
       let value =
         iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
       let ok = iter_scope.ordinary_set_with_host_and_hooks(
@@ -5350,7 +5350,7 @@ pub fn array_prototype_unshift(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if iter_scope.ordinary_has_property(obj, from_key)? {
+    if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
       let value =
         iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
       let ok = iter_scope.ordinary_set_with_host_and_hooks(
@@ -5493,7 +5493,7 @@ pub fn array_prototype_splice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !iter_scope.ordinary_has_property(obj, from_key)? {
+    if !iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
       continue;
     }
     let value = iter_scope.ordinary_get_with_host_and_hooks(
@@ -5531,7 +5531,7 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.ordinary_has_property(obj, from_key)? {
+      if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
         let value = iter_scope.ordinary_get_with_host_and_hooks(
           vm,
           host,
@@ -5603,7 +5603,7 @@ pub fn array_prototype_splice(
       let from_key = PropertyKey::from_string(from_s);
       let to_key = PropertyKey::from_string(to_s);
 
-      if iter_scope.ordinary_has_property(obj, from_key)? {
+      if iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
         let value = iter_scope.ordinary_get_with_host_and_hooks(
           vm,
           host,
