@@ -86,6 +86,19 @@ pub trait WebIdlBindingsHost: 'static {
     overload: usize,
     args: &[Value],
   ) -> Result<Value, VmError>;
+
+  /// Dispatch a WebIDL constructor into the embedding.
+  ///
+  /// `new_target` is the JavaScript `new.target` value from the construct call.
+  fn call_constructor(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    interface: &'static str,
+    overload: usize,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError>;
 }
 
 /// Sized container used for exposing a `dyn WebIdlBindingsHost` through `VmHostHooks::as_any_mut`.

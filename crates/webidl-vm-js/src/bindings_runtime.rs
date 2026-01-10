@@ -19,6 +19,8 @@ use vm_js::{
   PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
 };
 
+use crate::WebIdlBindingsHost;
+
 /// A minimally-typed value container used by generated binding shims when crossing into the host.
 ///
 /// This is intentionally **not** a full JS value model.
@@ -167,6 +169,47 @@ impl BindingsHost {
     // SAFETY: `inner` is created from `&mut dyn WebHostBindingsVm` in `new` and is only used while
     // the embedding guarantees the pointee outlives the call.
     unsafe { &mut *self.inner }
+  }
+}
+
+impl WebIdlBindingsHost for BindingsHost {
+  fn call_operation(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let args = args
+      .iter()
+      .copied()
+      .map(BindingValue::from_js)
+      .collect::<Vec<_>>();
+    let result = self
+      .bindings_mut()
+      .call_operation(receiver, interface, operation, overload, args)?;
+    binding_value_to_js(vm, scope, result)
+  }
+
+  fn call_constructor(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    interface: &'static str,
+    overload: usize,
+    args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    let args = args
+      .iter()
+      .copied()
+      .map(BindingValue::from_js)
+      .collect::<Vec<_>>();
+    let result = self.bindings_mut().call_constructor(interface, overload, args)?;
+    binding_value_to_js(vm, scope, result)
   }
 }
 

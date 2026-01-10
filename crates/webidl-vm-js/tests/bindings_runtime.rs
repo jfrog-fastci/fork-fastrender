@@ -1,15 +1,33 @@
+use std::any::Any;
 use std::collections::BTreeMap;
-
-use vm_js::{GcObject, Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions};
-
+ 
+use vm_js::{
+  GcObject, Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+};
+ 
 use webidl_vm_js::bindings_runtime::{
   BindingValue, BindingsHost, BindingsRuntime, DataPropertyAttributes, WebHostBindingsVm,
 };
-
-struct NoHooks;
-
-impl VmHostHooks for NoHooks {
+use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost, WebIdlBindingsHostSlot};
+ 
+struct HooksWithBindingsHost {
+  slot: WebIdlBindingsHostSlot,
+}
+ 
+impl HooksWithBindingsHost {
+  fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
+    Self {
+      slot: WebIdlBindingsHostSlot::new(host),
+    }
+  }
+}
+  
+impl VmHostHooks for HooksWithBindingsHost {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    Some(&mut self.slot)
+  }
 }
 
 #[derive(Default)]
@@ -59,28 +77,14 @@ impl WebHostBindingsVm for TestHost {
 fn generated_like_call_handler(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Use a nested `BindingsRuntime` so all rooting is scoped to this native call.
-  let mut cx = BindingsRuntime::from_scope(vm, scope.reborrow());
-
-  let bindings_host = cx.require_bindings_host(host)?;
-
-  let converted_args = args.iter().copied().map(BindingValue::from_js).collect();
-  let result = bindings_host.bindings_mut().call_operation(
-    Some(this),
-    "TestInterface",
-    "testOperation",
-    0,
-    converted_args,
-  )?;
-
-  // Convert back to JS for the VM to observe.
-  cx.binding_value_to_js(result)
+  let host = host_from_hooks(hooks)?;
+  host.call_operation(vm, scope, Some(this), "TestInterface", "testOperation", 0, args)
 }
 
 #[test]
@@ -106,7 +110,7 @@ fn can_install_and_call_generated_like_operation() -> Result<(), VmError> {
   // Call it.
   let mut host_impl = TestHost::default();
   let mut bindings_host = BindingsHost::new(&mut host_impl);
-  let mut hooks = NoHooks;
+  let mut hooks = HooksWithBindingsHost::new(&mut bindings_host);
 
   let mut scope = heap.scope();
   scope.push_root(Value::Object(global))?;
@@ -129,15 +133,8 @@ fn can_install_and_call_generated_like_operation() -> Result<(), VmError> {
   scope.push_root(Value::String(arg1_s))?;
   let arg1 = Value::String(arg1_s);
 
-  let out = vm.call_with_host_and_hooks(
-    &mut bindings_host,
-    &mut scope,
-    &mut hooks,
-    callee,
-    this,
-    &[arg0, arg1],
-  )?;
-
+  let out = vm.call_with_host(&mut scope, &mut hooks, callee, this, &[arg0, arg1])?;
+ 
   // Drop the host wrapper before inspecting `host_impl`.
   drop(bindings_host);
 

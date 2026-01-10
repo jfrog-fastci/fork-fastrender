@@ -283,6 +283,20 @@ impl<State: WebIdlBindingsHost + 'static> WebIdlBindingsHost for EcmaVmRuntime<S
       .state
       .call_operation(vm, scope, receiver, interface, operation, overload, args)
   }
+
+  fn call_constructor(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    interface: &'static str,
+    overload: usize,
+    args: &[Value],
+    new_target: Value,
+  ) -> std::result::Result<Value, VmError> {
+    self
+      .state
+      .call_constructor(vm, scope, interface, overload, args, new_target)
+  }
 }
 
 struct Evaluator<'a> {
@@ -1271,6 +1285,18 @@ mod tests {
     ) -> std::result::Result<Value, VmError> {
       self.log.push("downcast");
       Ok(Value::Undefined)
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> std::result::Result<Value, VmError> {
+      Err(VmError::Unimplemented("WebIDL bindings host not implemented for TestState"))
     }
   }
 

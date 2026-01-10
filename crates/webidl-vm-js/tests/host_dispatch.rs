@@ -31,6 +31,18 @@ impl WebIdlBindingsHost for TestBindingsHost {
     self.calls += 1;
     Ok(Value::Number(args.len() as f64))
   }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("constructor dispatch not used in this test"))
+  }
 }
 
 struct HostHooksWithBindingsHost {
