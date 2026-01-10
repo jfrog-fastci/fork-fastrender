@@ -179,7 +179,7 @@ through `VmHostHooks`, but they execute with a **dummy** `VmHost` (`()`), so nat
 downcast the embedder host context to reach embedding state (document/window/tab/etc.). This makes
 them unsuitable for real Web API bindings.
 
-`vm-js` now provides **host+hooks** entry points:
+`vm-js` now provides **host+hooks** entry points on `vm_js::JsRuntime`:
 `exec_script_with_host_and_hooks(...)` / `exec_script_source_with_host_and_hooks(...)`.
 These take both:
 
@@ -187,8 +187,7 @@ These take both:
 - a hook implementation (`&mut dyn VmHostHooks`) so Promise jobs are enqueued onto the embedding’s
   microtask queue.
 
-FastRender embeddings should prefer the host+hooks APIs (wired through
-`WindowRealm::{exec_script_with_host_and_hooks, exec_script_source_with_host_and_hooks}`) so:
+FastRender embeddings should prefer the host+hooks APIs so:
 
 - scripts run with correct microtask semantics (HTML-style microtask queue), **and**
 - Web API native bindings can access embedder state via `VmHost` without global registries.
@@ -196,6 +195,11 @@ FastRender embeddings should prefer the host+hooks APIs (wired through
 Migration strategy: thread a single “host context” object (e.g. `WindowHostState` /
 `BrowserTabHost`) through **both** script execution *and* Promise-job execution contexts so that
 native callbacks invoked later (from microtasks/timers/etc.) still see the same embedder state.
+
+Concretely, this means host-side script execution entry points (e.g. `WindowHost::exec_script`,
+`WindowHostState::{exec_script_in_event_loop, exec_script_with_name_in_event_loop}`, and the
+event-loop’s Promise job runner) should eventually call `vm-js` with the same host context object
+instead of the hook-only `exec_script_*_with_hooks(...)` path.
 
 > **Why not TLS?** FastRender historically used thread-local registries/stacks to smuggle embedding
 > state into native bindings (e.g. `DOM_SOURCES` in `src/js/window_realm.rs` and `EVENT_LOOP_STACK`
