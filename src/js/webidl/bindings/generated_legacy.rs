@@ -464,6 +464,24 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1004,6 +1022,35 @@ pub mod window {
       )?;
       binding_value_to_js::<Host, R>(rt, result)
     }
+  }
+
+  #[allow(dead_code)]
+  fn window_alert<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    // WebIDL overloads:
+    // - `undefined alert();`
+    // - `undefined alert(DOMString message);`
+    //
+    // Extra arguments are ignored per the WebIDL operation invocation algorithm.
+    let overload = if args.is_empty() { 0 } else { 1 };
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    if overload == 1 {
+      let v0 = args[0];
+      converted_args.push({
+        let s = rt.to_string(v0)?;
+        BindingValue::String(rt.js_string_to_rust_string(s)?)
+      });
+    }
+    let result = host.call_operation(rt, None, "Window", "alert", overload, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -1900,6 +1947,24 @@ pub mod worker {
       return Err(rt.throw_type_error("Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "URL", "href")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
