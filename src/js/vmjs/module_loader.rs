@@ -429,14 +429,17 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       };
       return match resolved {
         Ok(url) => Ok(url.to_string()),
-        Err(err) => {
-          let msg = match err {
-            ImportMapError::TypeError(msg) => msg,
-            ImportMapError::Json(err) => err.to_string(),
-            ImportMapError::LimitExceeded(detail) => format!("import map limit exceeded: {detail}"),
-          };
-          Err(self.throw_type_error(vm, scope, msg.as_str()))
-        }
+        Err(err) => match err {
+          ImportMapError::TypeError(msg) => Err(self.throw_type_error(vm, scope, msg.as_str())),
+          ImportMapError::Json(err) => {
+            let msg = err.to_string();
+            Err(self.throw_syntax_error(vm, scope, msg.as_str()))
+          }
+          ImportMapError::LimitExceeded(detail) => {
+            let msg = format!("import map limit exceeded: {detail}");
+            Err(self.throw_type_error(vm, scope, msg.as_str()))
+          }
+        },
       };
     }
 
@@ -470,6 +473,18 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       );
     };
     match vm_js::new_type_error_object(scope, &intr, message) {
+      Ok(value) => VmError::Throw(value),
+      Err(err) => err,
+    }
+  }
+
+  fn throw_syntax_error(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> VmError {
+    let Some(intr) = vm.intrinsics() else {
+      return VmError::Unimplemented(
+        "module loading requires intrinsics (create a Realm first before evaluating modules)",
+      );
+    };
+    match vm_js::new_syntax_error_object(scope, &intr, message) {
       Ok(value) => VmError::Throw(value),
       Err(err) => err,
     }
