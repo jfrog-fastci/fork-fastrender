@@ -1,8 +1,15 @@
 # CLI tools
 
-FastRender ships a few small binaries/examples intended for internal debugging and regression work. Prefer `--help` output for the source of truth. Shared flag schemas for viewport/DPR, media type and preferences, output formats, timeouts, and base URL overrides live in [`src/bin/common/args.rs`](../src/bin/common/args.rs).
+FastRender ships a few small binaries/examples intended for internal debugging and regression work.
+Prefer `--help` output for the source of truth. Shared flag schemas for viewport/DPR, media type
+and preferences, output formats, timeouts, and base URL overrides live in
+[`src/cli_utils/args.rs`](../src/cli_utils/args.rs).
 
-Compatibility toggles are **opt-in** across the render CLIs. Pass `--compat-profile site` to enable site-specific hacks and `--dom-compat compat` to apply DOM class flips; both default to spec-only behavior. `bash scripts/cargo_agent.sh xtask pageset` and the shell wrappers leave these off unless you explicitly provide the flags so pageset triage can choose when to enable them.
+Compatibility toggles are **opt-in** across the render CLIs. Pass `--compat-profile site` to enable
+site-specific hacks and `--dom-compat compat` to apply generic DOM compatibility mutations (class
+flips + common lazy-load `data-*` → `src`/`srcset`/`poster` lifting); both default to spec-only
+behavior. `bash scripts/cargo_agent.sh xtask pageset` and the shell wrappers leave these off unless
+you explicitly provide the flags so pageset triage can choose when to enable them.
 
 ## Convenience scripts (terminal-friendly)
 
@@ -586,8 +593,9 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Typical: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5`
   - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
   - Compatibility (opt-in only): `--compat-profile site` enables site-specific hacks and
-    `--dom-compat compat` applies DOM class flips. Defaults stay spec-only; `bash scripts/cargo_agent.sh xtask
-    pageset` forwards the flags only when you provide them.
+    `--dom-compat compat` applies generic DOM compatibility mutations (see
+    [`docs/notes/dom-compatibility.md`](notes/dom-compatibility.md)). Defaults stay spec-only;
+    `bash scripts/cargo_agent.sh xtask pageset` forwards the flags only when you provide them.
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Fonts: pass `--bundled-fonts` to skip system font discovery (pageset wrappers default to bundled fonts for deterministic timing; use `--system-fonts` on the wrappers when comparing `--accuracy` diffs against Chrome) or
   `--font-dir <path>` to load fonts from a specific directory without hitting host fonts.

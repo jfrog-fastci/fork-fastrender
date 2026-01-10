@@ -268,7 +268,10 @@ FastRender can emit the computed accessibility tree so semantics can be validate
 
 ## DOM compatibility mode
 
-`DomCompatibilityMode` controls whether FastRender applies small, JS-era DOM mutations while parsing. The default (`Standard`) leaves the parsed DOM untouched; `Compatibility` applies class flips used by some sites that gate content on “JS enabled” markers (see `docs/notes/dom-compatibility.md`).
+`DomCompatibilityMode` controls whether FastRender applies a small set of **opt-in**, JS-era DOM
+bootstrap mutations while parsing. The default (`Standard`) leaves the parsed DOM untouched;
+`Compatibility` mirrors common “JS enabled” class flips and lifts lazy-load URLs from `data-*`
+attributes into real `src`/`srcset`/`poster` attributes (see `docs/notes/dom-compatibility.md`).
 
 Configure it when building a renderer:
 

@@ -30,7 +30,17 @@ For the most accurate view of the current flow, follow `FastRender::render_html_
 
 ## Compatibility toggles
 
-HTML parsing runs in a spec-only mode by default; FastRender does not inject JS-era bootstrap classes or other mutations. When a static render needs those compatibility shims, set `FastRenderConfig::with_dom_compat_mode(DomCompatibilityMode::Compatibility)` (or `DomParseOptions::compatibility()` for lower-level parsing). The current compatibility mode mirrors common JS-driven class flips like turning `no-js` into `js-enabled` and adding `jsl10n-visible` on `html/body`—see `docs/notes/dom-compatibility.md` for details.
+HTML parsing runs in a spec-only mode by default; FastRender does not inject JS-era bootstrap
+classes or other mutations.
+
+When a static render needs those compatibility shims, set
+`FastRenderConfig::with_dom_compat_mode(DomCompatibilityMode::Compatibility)` (or
+`DomParseOptions::compatibility()` for lower-level parsing).
+
+The current compatibility mode mirrors common JS bootstrap behavior (generic class flips like
+turning `no-js` into `js js-enabled`, adding `jsl10n-visible`, and lifting lazy-load URLs from `data-*`
+attributes into real `src`/`srcset`/`poster` attributes). See
+[`docs/notes/dom-compatibility.md`](notes/dom-compatibility.md) for details.
 
 ## Accessibility output
 
