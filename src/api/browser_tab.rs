@@ -22,7 +22,7 @@ use crate::css::parser::parse_stylesheet_with_media;
 use crate::css::types::CssImportLoader;
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
-use crate::style::media::{MediaContext, MediaQueryCache, MediaType};
+use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::events::{Event, EventInit, EventTargetId};
 
@@ -471,6 +471,21 @@ impl BrowserTabHost {
     // Cached query results depend on the context fingerprint, so clear on updates.
     self.stylesheet_media_query_cache = MediaQueryCache::default();
   }
+
+  fn stylesheet_media_matches_link(&mut self, dom: &Document, link: NodeId) -> bool {
+    let NodeKind::Element { attributes, .. } = &dom.node(link).kind else {
+      return true;
+    };
+    let media_attr = attributes
+      .iter()
+      .find(|(name, _)| name.eq_ignore_ascii_case("media"))
+      .map(|(_, value)| value.as_str())
+      .unwrap_or_default();
+    let queries = MediaQuery::parse_list(media_attr).unwrap_or_default();
+    self
+      .stylesheet_media_context
+      .evaluate_list_with_cache(&queries, Some(&mut self.stylesheet_media_query_cache))
+  }
   fn load_stylesheet_and_imports(&mut self, url: &str) -> Result<()> {
     let fetcher = self.document.fetcher();
     let mut req = FetchRequest::new(url, FetchDestination::Style);
@@ -793,8 +808,22 @@ impl BrowserTabHost {
         let yield_result = state.parser.pump()?;
 
         // Start fetching any script-blocking stylesheet links discovered during this parse step.
-        for (node_id, url) in state.parser.take_pending_stylesheet_links() {
-          self.start_script_blocking_stylesheet_load(node_id, url, event_loop)?;
+        //
+        // Per HTML, a stylesheet only blocks parser-inserted scripts when it applies to the
+        // document. In particular, non-matching `media=` stylesheets must not block scripts and can
+        // be skipped entirely for now.
+        let pending_stylesheet_links = state.parser.take_pending_stylesheet_links();
+        if !pending_stylesheet_links.is_empty() {
+          if let Some(doc) = state.parser.document() {
+            for (node_id, url) in pending_stylesheet_links {
+              if self.stylesheet_media_matches_link(&doc, node_id) {
+                self.start_script_blocking_stylesheet_load(node_id, url, event_loop)?;
+              }
+            }
+          } else {
+            // Streaming parser should always have an active document sink, but be defensive and
+            // avoid deadlocking parser-blocking scripts by treating stylesheets as non-blocking.
+          }
         }
 
         match yield_result {
@@ -1200,6 +1229,7 @@ impl BrowserTabHost {
 
             if tag_name.eq_ignore_ascii_case("script")
               && is_html_namespace(namespace)
+              && !node.script_parser_document
               && !node.script_already_started
               && !self.scheduled_script_nodes.contains(&id)
             {

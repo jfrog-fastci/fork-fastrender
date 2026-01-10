@@ -29,6 +29,7 @@ use crate::style::grid::parse_grid_template_shorthand;
 use crate::style::grid::parse_grid_tracks_with_names;
 use crate::style::grid::parse_subgrid_line_names;
 use crate::style::grid::parse_track_list;
+use crate::style::grid::normalize_ms_grid_track_list;
 use crate::style::grid::ParsedGridTemplate;
 use crate::style::grid::ParsedTracks;
 use crate::style::inline_axis_is_horizontal;
@@ -11892,6 +11893,18 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
+    "-ms-grid-row-align" => {
+      // Legacy IE/MS Grid alignment property emitted by Autoprefixer.
+      // Map it to modern `align-self` so grid item fallbacks keep working when the unprefixed
+      // property is absent.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.align_self = None;
+        } else if let Some(value) = parse_align_keyword(kw) {
+          styles.align_self = Some(value);
+        }
+      }
+    }
     "justify-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
@@ -11956,6 +11969,17 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "justify-self" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.justify_self = None;
+        } else if let Some(value) = parse_align_keyword(kw) {
+          styles.justify_self = Some(value);
+        }
+      }
+    }
+    "-ms-grid-column-align" => {
+      // Legacy IE/MS Grid alignment property emitted by Autoprefixer.
+      // Map it to modern `justify-self`.
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("auto") {
           styles.justify_self = None;
@@ -12066,6 +12090,76 @@ fn apply_declaration_with_base_internal_with_order(
     }
 
     // Grid
+    "-ms-grid-columns" => {
+      // Legacy IE/MS Grid track list syntax. Autoprefixer often emits `-ms-grid-columns` using the
+      // old `(pattern)[count]` repeat syntax (e.g. `(1fr)[2]`), so normalize it to a modern track
+      // list before parsing.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        let normalized = match normalize_ms_grid_track_list(kw) {
+          Some(value) => value,
+          None => return,
+        };
+
+        if normalized.eq_ignore_ascii_case("none") {
+          styles.grid_template_columns.clear();
+          styles.grid_column_line_names = vec![Vec::new()];
+          styles.grid_column_names.clear();
+          styles.grid_column_subgrid = false;
+          styles.subgrid_column_line_names.clear();
+        } else if let Some(line_names) = parse_subgrid_line_names(&normalized) {
+          styles.grid_column_subgrid = true;
+          styles.subgrid_column_line_names = line_names.clone();
+          styles.grid_template_columns.clear();
+          styles.grid_column_line_names = line_names;
+          styles.grid_column_names.clear();
+        } else {
+          let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(&normalized);
+          if tracks.is_empty() {
+            // Invalid track list; ignore the declaration.
+            return;
+          }
+          styles.grid_template_columns = tracks;
+          styles.grid_column_names = named_lines;
+          styles.grid_column_line_names = line_names;
+          styles.grid_column_subgrid = false;
+          styles.subgrid_column_line_names.clear();
+        }
+        synthesize_area_line_names(styles);
+      }
+    }
+    "-ms-grid-rows" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        let normalized = match normalize_ms_grid_track_list(kw) {
+          Some(value) => value,
+          None => return,
+        };
+
+        if normalized.eq_ignore_ascii_case("none") {
+          styles.grid_template_rows.clear();
+          styles.grid_row_line_names = vec![Vec::new()];
+          styles.grid_row_names.clear();
+          styles.grid_row_subgrid = false;
+          styles.subgrid_row_line_names.clear();
+        } else if let Some(line_names) = parse_subgrid_line_names(&normalized) {
+          styles.grid_row_subgrid = true;
+          styles.subgrid_row_line_names = line_names.clone();
+          styles.grid_template_rows.clear();
+          styles.grid_row_line_names = line_names;
+          styles.grid_row_names.clear();
+        } else {
+          let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(&normalized);
+          if tracks.is_empty() {
+            return;
+          }
+          styles.grid_template_rows = tracks;
+          styles.grid_row_names = named_lines;
+          styles.grid_row_line_names = line_names;
+          styles.grid_row_subgrid = false;
+          styles.subgrid_row_line_names.clear();
+        }
+        synthesize_area_line_names(styles);
+      }
+    }
     "grid-template-columns" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("none") {
@@ -12260,14 +12354,14 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
-    "grid-auto-flow" => {
+    "grid-auto-flow" | "-ms-grid-auto-flow" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Some(flow) = parse_grid_auto_flow_value(kw) {
           styles.grid_auto_flow = flow;
         }
       }
     }
-    "grid-gap" | "gap" => {
+    "-ms-grid-gap" | "grid-gap" | "gap" => {
       if let Some((row, column)) = parse_gap_lengths(resolved_value) {
         styles.grid_gap = row.resolved_length();
         styles.grid_row_gap = row.resolved_length();
@@ -12281,13 +12375,13 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
-    "grid-row-gap" | "row-gap" => {
+    "-ms-grid-row-gap" | "grid-row-gap" | "row-gap" => {
       if let Some(value) = parse_single_gap_length(resolved_value) {
         styles.grid_row_gap = value.resolved_length();
         styles.grid_row_gap_is_normal = value.is_normal();
       }
     }
-    "grid-column-gap" | "column-gap" => {
+    "-ms-grid-column-gap" | "grid-column-gap" | "column-gap" => {
       if let Some(value) = parse_single_gap_length(resolved_value) {
         styles.grid_column_gap = value.resolved_length();
         styles.grid_column_gap_is_normal = value.is_normal();
@@ -12484,14 +12578,29 @@ fn apply_declaration_with_base_internal_with_order(
       // We translate this into modern `grid-column` placement by wiring it into `grid_column_raw`.
       // This keeps authored fallback grids functional even when the unprefixed `grid-column` is
       // missing.
-      let line = match resolved_value {
-        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
-        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
-        _ => 0,
+      let start = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => {
+          let line = *n as i32;
+          if line <= 0 || line > i32::from(i16::MAX) {
+            return;
+          }
+          line.to_string()
+        }
+        PropertyValue::Keyword(kw) => {
+          if let Ok(line) = kw.parse::<i32>() {
+            if line <= 0 || line > i32::from(i16::MAX) {
+              return;
+            }
+            line.to_string()
+          } else {
+            // Some real-world stylesheets incorrectly emit values like `span 2` (mirroring modern
+            // grid syntax). Preserve the raw token so the deferred grid-line parser can attempt to
+            // resolve it.
+            kw.clone()
+          }
+        }
+        _ => return,
       };
-      if line <= 0 || line > i32::from(i16::MAX) {
-        return;
-      }
 
       let current_end = styles
         .grid_column_raw
@@ -12499,9 +12608,9 @@ fn apply_declaration_with_base_internal_with_order(
         .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
         .unwrap_or("auto");
       if current_end.eq_ignore_ascii_case("auto") {
-        styles.grid_column_raw = Some(line.to_string());
+        styles.grid_column_raw = Some(start);
       } else {
-        styles.grid_column_raw = Some(format!("{line} / {current_end}"));
+        styles.grid_column_raw = Some(format!("{start} / {current_end}"));
       }
     }
     "-ms-grid-column-span" => {
@@ -12541,14 +12650,26 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "-ms-grid-row" => {
       // Legacy IE/MS Grid placement property emitted by Autoprefixer.
-      let line = match resolved_value {
-        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => *n as i32,
-        PropertyValue::Keyword(kw) => kw.parse::<i32>().ok().unwrap_or(0),
-        _ => 0,
+      let start = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && *n == n.round() => {
+          let line = *n as i32;
+          if line <= 0 || line > i32::from(i16::MAX) {
+            return;
+          }
+          line.to_string()
+        }
+        PropertyValue::Keyword(kw) => {
+          if let Ok(line) = kw.parse::<i32>() {
+            if line <= 0 || line > i32::from(i16::MAX) {
+              return;
+            }
+            line.to_string()
+          } else {
+            kw.clone()
+          }
+        }
+        _ => return,
       };
-      if line <= 0 || line > i32::from(i16::MAX) {
-        return;
-      }
 
       let current_end = styles
         .grid_row_raw
@@ -12556,9 +12677,9 @@ fn apply_declaration_with_base_internal_with_order(
         .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
         .unwrap_or("auto");
       if current_end.eq_ignore_ascii_case("auto") {
-        styles.grid_row_raw = Some(line.to_string());
+        styles.grid_row_raw = Some(start);
       } else {
-        styles.grid_row_raw = Some(format!("{line} / {current_end}"));
+        styles.grid_row_raw = Some(format!("{start} / {current_end}"));
       }
     }
     "-ms-grid-row-span" => {
@@ -24140,6 +24261,95 @@ mod tests {
       !styles.display_is_webkit_box,
       "-ms-inline-flexbox is a prefixed flex keyword, not a legacy `*-box` display"
     );
+  }
+
+  #[test]
+  fn display_ms_grid_parses_as_grid() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    let decl = Declaration {
+      property: "display".into(),
+      value: PropertyValue::Keyword("-ms-grid".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.display, Display::Grid);
+    assert!(
+      !styles.display_is_webkit_box,
+      "-ms-grid is a prefixed grid keyword, not a legacy `*-box` display"
+    );
+  }
+
+  #[test]
+  fn ms_grid_columns_repeat_syntax_sets_grid_template_columns() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    let decl = Declaration {
+      property: "-ms-grid-columns".into(),
+      value: PropertyValue::Keyword("(1fr)[2]".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.grid_template_columns,
+      vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]
+    );
+  }
+
+  #[test]
+  fn ms_grid_gap_and_alignment_properties_map_to_modern_grid() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "-ms-grid-gap".into(),
+        value: PropertyValue::Keyword("10px 20px".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &parent,
+      16.0,
+      16.0,
+    );
+    assert_eq!(styles.grid_row_gap, Length::px(10.0));
+    assert_eq!(styles.grid_column_gap, Length::px(20.0));
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "-ms-grid-row-align".into(),
+        value: PropertyValue::Keyword("center".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &parent,
+      16.0,
+      16.0,
+    );
+    assert_eq!(styles.align_self, Some(AlignItems::Center));
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "-ms-grid-column-align".into(),
+        value: PropertyValue::Keyword("end".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &parent,
+      16.0,
+      16.0,
+    );
+    assert_eq!(styles.justify_self, Some(AlignItems::End));
   }
 
   #[test]

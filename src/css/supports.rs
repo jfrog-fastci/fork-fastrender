@@ -211,6 +211,12 @@ mod tests {
   }
 
   #[test]
+  fn supports_vendor_prefixed_grid_display_values() {
+    assert!(supports_declaration("display", "-ms-grid"));
+    assert!(supports_declaration("display", "-ms-inline-grid"));
+  }
+
+  #[test]
   fn supports_webkit_box_orient_keywords_only() {
     assert!(supports_declaration("-webkit-box-orient", "horizontal"));
     assert!(supports_declaration("-webkit-box-orient", "vertical"));

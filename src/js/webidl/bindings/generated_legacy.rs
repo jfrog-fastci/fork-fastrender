@@ -999,6 +999,34 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn window_alert<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    // `Window.alert` is defined as `void alert(optional DOMString message = "")`.
+    //
+    // The legacy `webidl-js-runtime` bindings keep overloads as separate host operations, so we
+    // dispatch based on argument count.
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let overload = if args.is_empty() { 0 } else { 1 };
+    if overload == 1 {
+      let v0 = args[0];
+      converted_args.push({
+        let s = rt.to_string(v0)?;
+        BindingValue::String(rt.js_string_to_rust_string(s)?)
+      });
+    }
+    let result = host.call_operation(rt, None, "Window", "alert", overload, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn window_set_interval<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1217,6 +1245,8 @@ pub mod window {
     rt.define_method(global, "clearInterval", func)?;
     let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
     rt.define_method(global, "clearTimeout", func)?;
+    let func = rt.create_function("alert", 0, window_alert::<Host, R>)?;
+    rt.define_method(global, "alert", func)?;
     let func = rt.create_function("queueMicrotask", 1, window_queue_microtask::<Host, R>)?;
     rt.define_method(global, "queueMicrotask", func)?;
     let func = rt.create_function("setInterval", 1, window_set_interval::<Host, R>)?;

@@ -583,6 +583,14 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "-ms-grid-column-span",
   "-ms-grid-row",
   "-ms-grid-row-span",
+  "-ms-grid-columns",
+  "-ms-grid-rows",
+  "-ms-grid-gap",
+  "-ms-grid-row-gap",
+  "-ms-grid-column-gap",
+  "-ms-grid-auto-flow",
+  "-ms-grid-row-align",
+  "-ms-grid-column-align",
   "-webkit-box-orient",
   "-webkit-line-clamp",
 ];
@@ -1677,6 +1685,8 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
     "grid-template-areas"
       | "grid-template-columns"
       | "grid-template-rows"
+      | "-ms-grid-columns"
+      | "-ms-grid-rows"
       | "grid-auto-columns"
       | "grid-auto-rows"
   ) {
@@ -5695,6 +5705,15 @@ mod tests {
       0,
       "simple properties should not allocate token vectors"
     );
+  }
+
+  #[test]
+  fn parse_property_value_preserves_ms_grid_track_lists_as_keywords() {
+    let parsed = parse_property_value("-ms-grid-columns", "100%").expect("parsed");
+    assert!(matches!(parsed, PropertyValue::Keyword(ref kw) if kw == "100%"));
+
+    let parsed = parse_property_value("-ms-grid-rows", "100%").expect("parsed");
+    assert!(matches!(parsed, PropertyValue::Keyword(ref kw) if kw == "100%"));
   }
 
   #[test]

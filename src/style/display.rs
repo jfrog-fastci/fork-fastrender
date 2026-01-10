@@ -493,8 +493,8 @@ impl Display {
       "-webkit-flex" | "-ms-flexbox" => Ok(Display::Flex),
       "inline-flex" => Ok(Display::InlineFlex),
       "-webkit-inline-flex" | "-ms-inline-flexbox" => Ok(Display::InlineFlex),
-      "grid" => Ok(Display::Grid),
-      "inline-grid" => Ok(Display::InlineGrid),
+      "grid" | "-ms-grid" => Ok(Display::Grid),
+      "inline-grid" | "-ms-inline-grid" => Ok(Display::InlineGrid),
       "table" => Ok(Display::Table),
       "inline-table" => Ok(Display::InlineTable),
       "table-row" => Ok(Display::TableRow),
@@ -667,6 +667,12 @@ mod tests {
       Display::parse("-webkit-inline-flex").unwrap(),
       Display::InlineFlex
     );
+  }
+
+  #[test]
+  fn test_parse_vendor_prefixed_grid_aliases() {
+    assert_eq!(Display::parse("-ms-grid").unwrap(), Display::Grid);
+    assert_eq!(Display::parse("-ms-inline-grid").unwrap(), Display::InlineGrid);
   }
 
   #[test]

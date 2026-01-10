@@ -31,6 +31,222 @@ fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
     .filter(|part| !part.is_empty())
 }
 
+fn tokenize_ms_grid_track_list(value: &str) -> Vec<&str> {
+  let bytes = value.as_bytes();
+  let mut tokens: Vec<&str> = Vec::new();
+  let mut token_start: Option<usize> = None;
+  let mut paren = 0i32;
+  let mut bracket = 0i32;
+  let mut brace = 0i32;
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
+
+  let mut idx = 0usize;
+  while idx < bytes.len() {
+    let b = bytes[idx];
+
+    if escape {
+      escape = false;
+      idx += 1;
+      continue;
+    }
+
+    if b == b'\\' {
+      token_start.get_or_insert(idx);
+      escape = true;
+      idx += 1;
+      continue;
+    }
+
+    if let Some(q) = in_string {
+      token_start.get_or_insert(idx);
+      if b == q {
+        in_string = None;
+      }
+      idx += 1;
+      continue;
+    }
+
+    // Treat CSS comments as whitespace at the top-level so tokens like `1fr/*x*/1fr` are not
+    // concatenated.
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      if paren == 0 && bracket == 0 && brace == 0 {
+        if let Some(start) = token_start.take() {
+          let slice = trim_ascii_whitespace(&value[start..idx]);
+          if !slice.is_empty() {
+            tokens.push(slice);
+          }
+        }
+      } else {
+        token_start.get_or_insert(idx);
+      }
+
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
+      continue;
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        token_start.get_or_insert(idx);
+        in_string = Some(b);
+      }
+      b'(' => {
+        token_start.get_or_insert(idx);
+        paren += 1;
+      }
+      b')' => {
+        token_start.get_or_insert(idx);
+        paren -= 1;
+      }
+      b'[' => {
+        token_start.get_or_insert(idx);
+        bracket += 1;
+      }
+      b']' => {
+        token_start.get_or_insert(idx);
+        bracket -= 1;
+      }
+      b'{' => {
+        token_start.get_or_insert(idx);
+        brace += 1;
+      }
+      b'}' => {
+        token_start.get_or_insert(idx);
+        brace -= 1;
+      }
+      b if b.is_ascii_whitespace() && paren == 0 && bracket == 0 && brace == 0 => {
+        if let Some(start) = token_start.take() {
+          let slice = trim_ascii_whitespace(&value[start..idx]);
+          if !slice.is_empty() {
+            tokens.push(slice);
+          }
+        }
+      }
+      _ => {
+        token_start.get_or_insert(idx);
+      }
+    }
+
+    idx += 1;
+  }
+
+  if let Some(start) = token_start.take() {
+    let slice = trim_ascii_whitespace(&value[start..]);
+    if !slice.is_empty() {
+      tokens.push(slice);
+    }
+  }
+
+  tokens
+}
+
+fn try_parse_ms_grid_repeat_token(token: &str) -> Option<(String, usize)> {
+  let token = trim_ascii_whitespace(token);
+  if !token.starts_with('(') {
+    return None;
+  }
+
+  // Find the matching `)` for the opening `(`, accounting for nested parentheses inside functions
+  // like `calc()`/`minmax()`.
+  let mut depth = 0i32;
+  let mut in_string: Option<char> = None;
+  let mut escape = false;
+  let mut end_paren: Option<usize> = None;
+  for (idx, ch) in token.char_indices() {
+    if escape {
+      escape = false;
+      continue;
+    }
+    if ch == '\\' {
+      escape = true;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if ch == q {
+        in_string = None;
+      }
+      continue;
+    }
+    if ch == '"' || ch == '\'' {
+      in_string = Some(ch);
+      continue;
+    }
+
+    match ch {
+      '(' => depth += 1,
+      ')' => {
+        depth -= 1;
+        if depth == 0 {
+          end_paren = Some(idx);
+          break;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  let end_paren = end_paren?;
+  let pattern = trim_ascii_whitespace(&token[1..end_paren]);
+  if pattern.is_empty() {
+    return None;
+  }
+
+  let rest = trim_ascii_whitespace(&token[end_paren + ')'.len_utf8()..]);
+  if !(rest.starts_with('[') && rest.ends_with(']')) {
+    return None;
+  }
+  let count_str = trim_ascii_whitespace(&rest[1..rest.len() - ']'.len_utf8()]);
+  if count_str.is_empty() || !count_str.chars().all(|c| c.is_ascii_digit()) {
+    return None;
+  }
+  let count: usize = count_str.parse().ok()?;
+  if count == 0 {
+    return None;
+  }
+
+  Some((pattern.to_string(), count))
+}
+
+/// Normalize legacy IE `-ms-grid-columns`/`-ms-grid-rows` track lists into a modern track list
+/// syntax that FastRender can parse.
+///
+/// Autoprefixer (and some authoring tools) emit IE10/11 grid track repeats using the old
+/// `(pattern)[count]` syntax (e.g. `(1fr)[2]`). CSS Grid Level 1 uses `repeat(count, pattern)`
+/// instead. FastRender's track parser implements the modern syntax only, so we expand the legacy
+/// repeat syntax into an equivalent explicit list.
+pub(crate) fn normalize_ms_grid_track_list(value: &str) -> Option<String> {
+  let value = trim_ascii_whitespace(value);
+  if value.is_empty() {
+    return None;
+  }
+
+  let tokens = tokenize_ms_grid_track_list(value);
+  if tokens.is_empty() {
+    return None;
+  }
+
+  let mut out_parts: Vec<String> = Vec::new();
+  for token in tokens {
+    if let Some((pattern, count)) = try_parse_ms_grid_repeat_token(token) {
+      for _ in 0..count {
+        out_parts.push(pattern.clone());
+      }
+    } else {
+      out_parts.push(token.to_string());
+    }
+  }
+
+  if out_parts.is_empty() {
+    return None;
+  }
+
+  Some(out_parts.join(" "))
+}
+
 /// Parse grid-template-columns/rows into track list with named lines
 ///
 /// Handles syntax like: `[text-start] 1fr [text-end sidebar-start] 300px [sidebar-end]`
@@ -1225,6 +1441,22 @@ mod tests {
     }
     assert!(matches!(tracks[1], GridTrack::MaxContent));
     assert!(matches!(tracks[2], GridTrack::MinContent));
+  }
+
+  #[test]
+  fn ms_grid_track_repeat_syntax_expands() {
+    assert_eq!(
+      normalize_ms_grid_track_list("(1fr)[2]").as_deref(),
+      Some("1fr 1fr")
+    );
+    assert_eq!(
+      normalize_ms_grid_track_list("(1fr 32px)[2]").as_deref(),
+      Some("1fr 32px 1fr 32px")
+    );
+    assert_eq!(
+      normalize_ms_grid_track_list("1fr (32px)[3] 2fr").as_deref(),
+      Some("1fr 32px 32px 32px 2fr")
+    );
   }
 
   #[test]
