@@ -3812,15 +3812,6 @@ fn get_array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result
   })
 }
 
-fn define_array_length(scope: &mut Scope<'_>, obj: GcObject, len: usize) -> Result<(), VmError> {
-  let length_key = string_key(scope, "length")?;
-  scope.define_property(
-    obj,
-    length_key,
-    data_desc(Value::Number(len as f64), true, false, false),
-  )
-}
-
 /// `Array.prototype.map` (minimal).
 pub fn array_prototype_map(
   vm: &mut Vm,
@@ -3831,36 +3822,53 @@ pub fn array_prototype_map(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => return Err(VmError::Unimplemented("Array.prototype.map on non-object")),
-  };
+  let mut scope = scope.reborrow();
 
-  let len = get_array_length(vm, scope, this_obj)?;
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
 
-  let callback = args.first().copied().unwrap_or(Value::Undefined);
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.map callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
 
   let intr = require_intrinsics(vm)?;
-  let out = scope.alloc_object()?;
+  let out = scope.alloc_array(len)?;
   scope.push_root(Value::Object(out))?;
   scope
     .heap_mut()
     .object_set_prototype(out, Some(intr.array_prototype()))?;
-  define_array_length(scope, out, len)?;
 
-  for i in 0..len {
-    vm.tick()?;
-    let key = PropertyKey::from_string(scope.alloc_string(&i.to_string())?);
-    let Some(value) = get_data_property_value(vm, scope, this_obj, &key)? else {
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    if !iter_scope.ordinary_has_property(obj, key)? {
       continue;
-    };
+    }
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     // callback(value, index, array)
-    let call_args = [value, Value::Number(i as f64), Value::Object(this_obj)];
-    let mapped = vm.call_with_host_and_hooks(host, scope, hooks, callback, this_arg, &call_args)?;
-
-    scope.define_property(out, key, data_desc(mapped, true, true, true))?;
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let mapped =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
+    iter_scope.create_data_property_or_throw(out, key, mapped)?;
   }
 
   Ok(Value::Object(out))

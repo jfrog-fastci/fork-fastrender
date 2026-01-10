@@ -135,6 +135,22 @@ fn array_prototype_for_each_binds_this_arg() {
 }
 
 #[test]
+fn array_prototype_map_returns_array_and_preserves_holes() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2]; var b=a.map(function(x){ return x+1; });
+         var c=[]; c.length=2; c[1]=5; var d=c.map(function(x){ return x; });
+         var s = Array.prototype.map.call("ab", function(x){ return x; });
+         Array.isArray(b) && b.length===2 && b[0]===2 && b[1]===3
+           && Array.isArray(d) && d.length===2 && !d.hasOwnProperty("0") && d[1]===5
+           && Array.isArray(s) && s.length===2 && s[0]==="a" && s[1]==="b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_index_of_works() {
   let mut rt = new_runtime();
   let value = rt
