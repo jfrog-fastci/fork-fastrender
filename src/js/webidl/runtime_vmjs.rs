@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
+use crate::js::bindings::DomExceptionClassVmJs;
 use vm_js::{
   GcObject, HostSlots, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm,
   VmError, VmHost, VmHostHooks,

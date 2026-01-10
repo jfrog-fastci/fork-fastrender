@@ -3149,8 +3149,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Err(err) => {
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let mut host_ctx = host.vm_js_host_context();
+          let window_realm = host.window_realm();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3163,9 +3164,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
               let type_error =
-                create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                create_type_error(&mut vm, &mut scope, &mut host_ctx, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
-                &mut *vm_host,
+                &mut host_ctx,
                 &mut scope,
                 &mut hooks,
                 reject,
@@ -3231,8 +3232,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
       if aborted.unwrap_or(false) {
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let mut host_ctx = host.vm_js_host_context();
+          let window_realm = host.window_realm();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3255,13 +3257,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 _ => Value::Undefined,
               };
               vm.call_with_host_and_hooks(
-                &mut *vm_host,
+                &mut host_ctx,
                 &mut scope,
                 &mut hooks,
                 reject,
                 Value::Undefined,
                 &[reason],
-                )?;
+              )?;
               Ok(())
             });
 
@@ -3316,8 +3318,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           Err(err) => {
             let message = format!("fetch failed: {err}");
             let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-              let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-              let (vm_host, window_realm) = host.vm_host_and_window_realm();
+              let mut host_ctx = host.vm_js_host_context();
+              let window_realm = host.window_realm();
+              let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
               window_realm.reset_interrupt();
               let budget = window_realm.vm_budget_now();
               let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3330,9 +3333,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                     .ok_or_else(|| VmError::invalid_handle())?;
                   let mut scope = heap.scope();
                   let type_error =
-                    create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                    create_type_error(&mut vm, &mut scope, &mut host_ctx, &mut hooks, &message)?;
                   vm.call_with_host_and_hooks(
-                    &mut *vm_host,
+                    &mut host_ctx,
                     &mut scope,
                     &mut hooks,
                     reject,
@@ -3375,8 +3378,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           // Resolve the promise with a JS Response wrapper.
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let mut host_ctx = host.vm_js_host_context();
+          let window_realm = host.window_realm();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3396,7 +3400,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
               // EventLoop microtask queue.
               vm.call_with_host_and_hooks(
-                &mut *vm_host,
+                &mut host_ctx,
                 &mut scope,
                 &mut hooks,
                 resolve,
@@ -3442,8 +3446,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Err(err) => {
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          let mut host_ctx = host.vm_js_host_context();
+          let window_realm = host.window_realm();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3456,9 +3461,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 .ok_or_else(|| VmError::invalid_handle())?;
               let mut scope = heap.scope();
               let type_error =
-                create_type_error(&mut vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                create_type_error(&mut vm, &mut scope, &mut host_ctx, &mut hooks, &message)?;
               vm.call_with_host_and_hooks(
-                &mut *vm_host,
+                &mut host_ctx,
                 &mut scope,
                 &mut hooks,
                 reject,

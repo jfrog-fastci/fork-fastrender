@@ -65,6 +65,7 @@ pub(crate) mod sri;
 pub mod time;
 pub mod url;
 pub mod url_resolve;
+pub mod vm_host_context;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
@@ -184,6 +185,7 @@ pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
+pub use vm_host_context::VmJsHostContext;
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_resolve::{resolve_url, UrlResolveError};

@@ -636,6 +636,16 @@ pub trait WindowRealmHost {
     let (host, _) = self.vm_host_and_window_realm();
     host
   }
+
+  /// Create a fresh `vm-js` host context for a single JS call turn.
+  ///
+  /// Embeddings that have a real `dom2::Document` (and other per-window state) should override this
+  /// to populate [`crate::js::VmJsHostContext`]. The default implementation returns an empty host
+  /// context.
+  #[inline]
+  fn vm_js_host_context(&mut self) -> crate::js::VmJsHostContext {
+    crate::js::VmJsHostContext::default()
+  }
 }
 
 impl Drop for WindowRealm {
@@ -6824,10 +6834,10 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
   }
 }
 
-struct VmJsDomEventInvoker<'a, 'host, 'hooks> {
+struct VmJsDomEventInvoker<'a, 'hooks> {
   vm: *mut Vm,
   scope: *mut Scope<'a>,
-  vm_host: *mut (dyn VmHost + 'host),
+  vm_host: *mut dyn VmHost,
   hooks: *mut (dyn VmHostHooks + 'hooks),
   window_obj: GcObject,
   document_obj: GcObject,
@@ -6838,7 +6848,7 @@ struct VmJsDomEventInvoker<'a, 'host, 'hooks> {
   registry: *const web_events::EventListenerRegistry,
 }
 
-impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
+impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
   fn opaque_target_obj_for_id(&mut self, id: u64) -> Option<GcObject> {
     let scope = unsafe { &mut *self.scope };
     let registry = unsafe { &*self.registry };
@@ -6976,7 +6986,7 @@ impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
   }
 }
 
-impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
+impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
   fn invoke(
     &mut self,
     listener_id: web_events::ListenerId,

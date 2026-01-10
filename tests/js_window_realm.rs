@@ -2,8 +2,9 @@ use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::{
-  EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
-  VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator,
+  ScriptType, TaskSource, VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm,
+  WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::resource::{
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
@@ -30,6 +31,36 @@ fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &m
   }
 
   event_loop.set_microtask_checkpoint_hook(Some(drain::<Host>));
+}
+
+fn js_opts_for_test() -> JsExecutionOptions {
+  // `vm-js` budgets are based on wall-clock time. The library default is intentionally aggressive,
+  // but under parallel `cargo test` the OS can deschedule a test thread long enough for the VM to
+  // observe a false-positive deadline exceed. Use a generous limit to keep integration tests
+  // deterministic while still bounding infinite loops.
+  let mut opts = JsExecutionOptions::default();
+  opts.event_loop_run_limits.max_wall_time = Some(std::time::Duration::from_secs(5));
+  opts
+}
+
+fn host_state_from_renderer_dom(
+  renderer_dom: &fastrender::dom::DomNode,
+  document_url: impl Into<String>,
+) -> Result<WindowHostState> {
+  WindowHostState::new_with_fetcher_and_options(
+    Dom2Document::from_renderer_dom(renderer_dom),
+    document_url,
+    Arc::new(InMemoryFetcher::default()),
+    js_opts_for_test(),
+  )
+}
+
+fn host_state_with_fetcher(
+  dom: Dom2Document,
+  document_url: impl Into<String>,
+  fetcher: Arc<dyn ResourceFetcher>,
+) -> Result<WindowHostState> {
+  WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher, js_opts_for_test())
 }
 
 fn get_string(heap: &Heap, value: Value) -> String {
@@ -216,7 +247,8 @@ fn get_wrapper_node_id(
 #[test]
 fn window_self_and_document_url_are_exposed() -> Result<()> {
   let url = "https://example.com/";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+    .map_err(|e| Error::Other(e.to_string()))?;
 
   let global = realm.global_object();
   let (_vm, heap) = realm.vm_and_heap_mut();
@@ -332,7 +364,7 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><script></script><script></script>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let scripts = find_script_elements(host.dom());
   assert_eq!(scripts.len(), 2);
 
@@ -406,7 +438,8 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
 #[test]
 fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = {
@@ -462,7 +495,8 @@ fn location_href_setter_requests_navigation_and_interrupts() -> Result<()> {
 
 #[test]
 fn location_assign_and_replace_request_navigation() -> Result<()> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = realm
@@ -497,7 +531,8 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
 
 #[test]
 fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let err = realm
@@ -568,7 +603,7 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
 #[test]
 fn js_execution_can_observe_window_globals() -> Result<()> {
   let url = "https://example.com/path";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
+  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
@@ -591,7 +626,7 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 #[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 "use strict";
@@ -613,7 +648,7 @@ globalThis.__strict_this_ok = (this === window) && (this === globalThis);
 #[test]
 fn promise_jobs_and_queue_microtask_preserve_fifo_order() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__log = "";
@@ -650,7 +685,12 @@ Promise.resolve().then(() => { globalThis.__log += "p2,"; });
 #[test]
 fn named_scripts_route_promise_jobs_through_event_loop_microtasks() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHostState::new(dom, "https://example.com/")?;
+  let mut host = WindowHostState::new_with_fetcher_and_options(
+    dom,
+    "https://example.com/",
+    Arc::new(InMemoryFetcher::default()),
+    js_opts_for_test(),
+  )?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_with_name_in_event_loop(
@@ -692,7 +732,7 @@ Promise.resolve().then(() => { globalThis.__log += "p2,"; });
 fn promise_jobs_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -724,7 +764,7 @@ Promise.resolve().then(() => {
 fn queue_microtask_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -794,7 +834,7 @@ target.setAttribute('data-x', '1');
 fn set_timeout_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -915,7 +955,7 @@ clearInterval(id);
 fn set_timeout_callbacks_can_schedule_microtasks_that_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -1005,7 +1045,7 @@ const id = setInterval(() => {
 fn event_listener_callbacks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -1211,7 +1251,7 @@ try {
 fn request_animation_frame_callbacks_can_access_dom_shims() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -1321,7 +1361,7 @@ document.body.dispatchEvent(new Event('y'));
 #[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__ran = false;
@@ -1354,7 +1394,7 @@ Promise.resolve().then(() => { globalThis.__ran = true; });
 #[test]
 fn promise_any_resolves_first_fulfilled_value() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__result = "";
@@ -1392,7 +1432,7 @@ Promise.any(["a", "b"]).then(
 #[test]
 fn promise_any_rejects_with_aggregate_error_when_all_reject() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__err_name = "";
@@ -1427,7 +1467,7 @@ Promise.any([Promise.reject("x"), Promise.reject("y")]).then(
 #[test]
 fn promise_all_settled_reports_fulfilled_and_rejected_entries() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__status0 = "";
@@ -1472,7 +1512,7 @@ Promise.allSettled([Promise.resolve("a"), Promise.reject("b")]).then(function (r
 #[test]
 fn promise_all_resolves_values_in_input_order() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -1510,7 +1550,7 @@ Promise.all([Promise.resolve("a"), "b"]).then(
 #[test]
 fn promise_all_rejects_with_first_rejection_reason() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -1538,7 +1578,7 @@ Promise.all([Promise.reject("x"), Promise.resolve("y")]).then(
 #[test]
 fn promise_race_resolves_first_settled_value() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -1566,7 +1606,7 @@ Promise.race([Promise.resolve("a"), Promise.resolve("b")]).then(
 #[test]
 fn promise_race_rejects_first_rejection_reason() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -1594,7 +1634,7 @@ Promise.race([Promise.reject("x"), Promise.resolve("y")]).then(
 #[test]
 fn promise_all_resolves_empty_iterable() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__ok = false;
@@ -1618,7 +1658,7 @@ Promise.all([]).then(function (res) { globalThis.__ok = res.length === 0; });
 #[test]
 fn promise_all_rejects_non_iterable_argument() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -1646,7 +1686,7 @@ Promise.all(1).then(
 #[test]
 fn promise_all_settled_resolves_empty_iterable() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__ok = false;
@@ -1670,7 +1710,7 @@ Promise.allSettled([]).then(function (res) { globalThis.__ok = res.length === 0;
 #[test]
 fn promise_any_rejects_empty_iterable_with_aggregate_error() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__name = "";
@@ -1704,7 +1744,7 @@ Promise.any([]).then(
 #[test]
 fn promise_race_empty_iterable_remains_pending() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
   host.exec_script(
     r#"
 globalThis.__out = "init";
@@ -1732,7 +1772,7 @@ Promise.race([]).then(
 #[test]
 fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let url = "https://example.com:8080/path/to/page?query=1#hash";
-  let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
+  let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let value = realm
@@ -1752,7 +1792,7 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head id=h></head><body id=b></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
   {
     let realm = host.window_mut();
@@ -1811,7 +1851,7 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head></head><body><div id=x></div></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
   {
     let realm = host.window_mut();
@@ -1881,7 +1921,7 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head></head><body><div class=x id=a></div></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
   {
     let realm = host.window_mut();
@@ -1941,12 +1981,12 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
   // This test exercises multiple selector queries (including `:scope` and invalid selectors).
   // The default per-spin JS wall-time budget is intentionally conservative for hostile scripts,
   // so relax it here to focus on correctness of selector APIs.
-  let mut opts = fastrender::js::JsExecutionOptions::default();
+  let mut opts = js_opts_for_test();
   opts.event_loop_run_limits.max_wall_time = Some(std::time::Duration::from_secs(2));
   let mut host = WindowHostState::new_with_fetcher_and_options(
     Dom2Document::from_renderer_dom(&renderer_dom),
     "https://example.com/",
-    Arc::new(fastrender::resource::HttpFetcher::new()),
+    Arc::new(InMemoryFetcher::default()),
     opts,
   )?;
 
@@ -2070,7 +2110,7 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
 fn document_create_element_and_append_child_update_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
   {
     let realm = host.window_mut();
@@ -2185,7 +2225,7 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
 
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><script></script><script></script>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let scripts = find_script_elements(host.dom());
   assert_eq!(scripts.len(), 2);
 
@@ -2451,7 +2491,7 @@ fn fetch_resolves_relative_url_against_document_base_href() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
     InMemoryFetcher::new().with_response("https://ex/base/a", b"ok", 200),
   );
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://ex/doc.html",
     fetcher.clone(),
@@ -2534,7 +2574,7 @@ fn fetch_base_url_updates_between_scripts() -> Result<()> {
       .with_response("https://ex/a", b"ok1", 200)
       .with_response("https://ex/base/a", b"ok2", 200),
   );
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://ex/doc.html",
     fetcher.clone(),
@@ -2572,7 +2612,7 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher,
@@ -2631,7 +2671,7 @@ fn window_fetch_forwards_request_headers() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2675,7 +2715,7 @@ fn window_fetch_accepts_request_object_input() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2719,7 +2759,7 @@ fn window_request_constructor_clones_request_input() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2765,7 +2805,7 @@ fn window_fetch_forwards_request_body() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2806,7 +2846,7 @@ fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2848,7 +2888,7 @@ fn window_fetch_forwards_request_credentials_mode() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2889,7 +2929,7 @@ fn window_fetch_forwards_request_credentials_mode_from_request_object() -> Resul
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -2932,7 +2972,7 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher,
@@ -2981,7 +3021,7 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher,
@@ -3129,7 +3169,7 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher,
@@ -3194,7 +3234,8 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
 
 #[test]
 fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let res = realm.exec_script(
@@ -3361,7 +3402,7 @@ fn window_fetch_rejects_on_cors_failure() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://client.example/",
     fetcher,
@@ -3414,8 +3455,11 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
 
   let document_url = "https://client.example/";
-  let mut window =
-    WindowRealm::new(WindowRealmConfig::new(document_url)).map_err(|e| Error::Other(e.to_string()))?;
+  let mut window = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new(document_url),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
   let limits = WebFetchLimits {
     max_response_body_bytes: 3,
     ..WebFetchLimits::default()
@@ -3490,7 +3534,7 @@ fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher,
@@ -3560,7 +3604,7 @@ fn window_fetch_accepts_request_object() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
@@ -3602,7 +3646,7 @@ fn window_response_clone_duplicates_body() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     Arc::new(InMemoryFetcher::new()),
@@ -3654,7 +3698,7 @@ fn window_response_clone_throws_when_body_used() -> Result<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
   install_vm_js_microtask_checkpoint_hook(&mut event_loop);
-  let mut host = WindowHostState::new_with_fetcher(
+  let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     Arc::new(InMemoryFetcher::new()),

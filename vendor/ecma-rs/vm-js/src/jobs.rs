@@ -39,7 +39,7 @@ use std::sync::Mutex;
 ///
 /// This is intentionally minimal and primarily exists so embeddings can thread arbitrary state
 /// through VM-to-host call boundaries without using globals.
-pub trait VmHost {
+pub trait VmHost: Any {
   /// Returns `self` as [`Any`] for embedder-side downcasting.
   fn as_any(&self) -> &dyn Any;
 

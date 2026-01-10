@@ -415,7 +415,7 @@ fn abort_signal_static_abort_native(
 fn abort_signal_static_timeout_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  host_ctx: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -469,7 +469,7 @@ fn abort_signal_static_timeout_native(
 
   // Call setTimeout(callback, ms).
   let _ = vm.call_with_host_and_hooks(
-    host,
+    host_ctx,
     scope,
     host_hooks,
     set_timeout,
@@ -483,7 +483,7 @@ fn abort_signal_static_timeout_native(
 fn abort_timeout_callback_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  host_ctx: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -502,7 +502,7 @@ fn abort_timeout_callback_native(
   abort_signal(
     vm,
     scope,
-    host,
+    host_ctx,
     host_hooks,
     signal_obj,
     reason,
@@ -514,7 +514,7 @@ fn abort_timeout_callback_native(
 fn abort_signal_static_any_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  host_ctx: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -562,7 +562,7 @@ fn abort_signal_static_any_native(
       abort_signal(
         vm,
         scope,
-        host,
+        host_ctx,
         host_hooks,
         signal,
         reason,
@@ -594,7 +594,7 @@ fn abort_signal_static_any_native(
       let type_s = scope.alloc_string("abort")?;
       scope.push_root(Value::String(type_s))?;
       let _ = vm.call_with_host_and_hooks(
-        host,
+        host_ctx,
         scope,
         host_hooks,
         add,
@@ -610,7 +610,7 @@ fn abort_signal_static_any_native(
 fn abort_any_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
+  host_ctx: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -631,7 +631,7 @@ fn abort_any_listener_native(
   abort_signal(
     vm,
     scope,
-    host,
+    host_ctx,
     host_hooks,
     composite_obj,
     reason,
