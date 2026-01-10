@@ -112,7 +112,11 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
   };
 
   let mut scope = heap.scope();
-  let _ = scope.push_root(Value::Object(obj));
+  if scope.push_root(Value::Object(obj)).is_err() {
+    // If we cannot grow the scope root stack, avoid any further heap allocations that might trigger
+    // GC and invalidate the unrooted object handle.
+    return Some("[object]".to_string());
+  }
 
   let mut get_prop_str = |name: &str| -> Option<String> {
     let key_s = scope.alloc_string(name).ok()?;
