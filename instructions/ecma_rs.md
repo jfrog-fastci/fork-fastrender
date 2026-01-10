@@ -1,4 +1,4 @@
-# `ecma-rs` integration + submodule workflow
+# `ecma-rs` integration (vendored)
 
 ---
 
@@ -23,144 +23,39 @@ If you do not understand these rules, re-read AGENTS.md. There are no exceptions
 FastRender uses `ecma-rs` as the JS/TS language implementation and will evolve it as needed for
 browser-grade JavaScript execution.
 
-`ecma-rs` is a **git submodule** at:
+`ecma-rs` is **vendored** at:
 
-- `engines/ecma-rs/` (`https://github.com/wilsonzlin/ecma-rs.git`)
+- `vendor/ecma-rs/` (originally from `https://github.com/wilsonzlin/ecma-rs.git`)
 
-CI uses HTTPS so it can fetch the submodule without SSH credentials. If you prefer SSH locally, use
-a Git URL rewrite:
+The vendored copy is part of the FastRender repository and can be modified directly.
 
-```bash
-git config --global url."git@github.com:".insteadOf "https://github.com/"
-```
+## Test data submodules
 
-If you already initialized the submodule before the HTTPS switch, sync the stored URL:
+`ecma-rs` has test corpora that are tracked as git submodules in the FastRender repo:
 
-```bash
-git submodule sync -- engines/ecma-rs
-```
+- `vendor/ecma-rs/test262/data` — tc39/test262-parser-tests (parser conformance)
+- `vendor/ecma-rs/test262-semantic/data` — tc39/test262 (semantic conformance)
+- `vendor/ecma-rs/parse-js/tests/TypeScript` — microsoft/TypeScript (TypeScript parsing tests)
 
-## Initializing the submodule
-
-From the FastRender repo root:
+Initialize them when needed:
 
 ```bash
-git submodule update --init engines/ecma-rs
+# All test data submodules:
+git submodule update --init vendor/ecma-rs/test262/data vendor/ecma-rs/test262-semantic/data vendor/ecma-rs/parse-js/tests/TypeScript
+
+# Or individually:
+git submodule update --init vendor/ecma-rs/test262-semantic/data
 ```
 
-## Keeping the submodule in sync after pulling FastRender
+## Making changes to `ecma-rs`
 
-`git pull` updates the recorded gitlink SHA for `engines/ecma-rs`, but your working tree will
-continue using whatever commit is currently checked out inside the submodule directory until you
-explicitly update it.
+Since `ecma-rs` is vendored, changes are made directly in `vendor/ecma-rs/` and committed to the
+FastRender repository:
 
-If `git submodule status` shows a leading `+` for `engines/ecma-rs`, your checkout is out-of-sync
-with the parent repo and you should update it:
+1. Edit files in `vendor/ecma-rs/`
+2. Commit changes as part of your FastRender commit
 
-```bash
-git submodule update --init engines/ecma-rs
-```
-
-### Resolving `git pull --rebase` submodule conflicts
-
-Sometimes `origin/main` advances the `engines/ecma-rs` gitlink while you also have a local commit
-that bumps it. When you `git pull --rebase`, Git may stop with a message like:
-
-```
-Failed to merge submodule engines/ecma-rs (commits don't follow merge-base)
-CONFLICT (submodule): Merge conflict in engines/ecma-rs
-```
-
-To resolve:
-
-1. Inspect the two candidate SHAs:
-
-   ```bash
-   git diff --submodule
-   ```
-
-2. Decide which `ecma-rs` commit should win (or rebase/cherry-pick in the submodule if you need a
-   combined commit), then check it out inside the submodule:
-
-   ```bash
-   git -C engines/ecma-rs checkout <sha>
-   ```
-
-3. Record the resolved gitlink in FastRender and continue the rebase:
-
-   ```bash
-   git add engines/ecma-rs
-   git rebase --continue
-   ```
-
-Tip: FastRender sometimes pins to `ecma-rs` commits that live on non-`master` branches (hotfix
-branches/tags). That is fine as long as the SHA is reachable from the `ecma-rs` remote (otherwise CI
-will fail with `upload-pack: not our ref <sha>`).
-
-Note: `ecma-rs` itself contains optional nested submodules (large test corpora). Only initialize
-those when you intend to run those conformance suites:
-
-```bash
-git -C engines/ecma-rs submodule update --init --recursive
-```
-
-## Making changes in `ecma-rs` (and updating the pointer here)
-
-Work happens in two repos:
-
-1. **Commit + push inside `ecma-rs`**
-2. **Update the submodule pointer in FastRender**
-
-### 1) Edit + commit in `ecma-rs`
-
-Inside the submodule, make your change, commit it, and push it to GitHub.
-
-CI clones `ecma-rs` from GitHub and checks out the recorded gitlink SHA. If you bump FastRender to a
-SHA that exists only locally (or is otherwise unreachable from any ref in the remote), CI will fail
-with an error like `upload-pack: not our ref <sha>`. Always **push `ecma-rs` first** before
-committing the pointer bump in FastRender.
-
-Policy:
-
-- Prefer **rebase**, not merge, when syncing with upstream.
-- Keep commits small and reviewable.
-- Run focused checks/tests where possible (but always under resource caps; see below).
-
-### 2) Update the parent pointer (FastRender)
-
-After pushing in `ecma-rs`, the FastRender repo will show `engines/ecma-rs` as “modified” (the
-checked-out SHA changed). Record that pointer update by committing it in FastRender:
-
-```bash
-git add engines/ecma-rs
-git commit -m "chore(js): bump ecma-rs"
-```
-
-## CI sanity check before landing an `ecma-rs` bump (required)
-
-FastRender CI always runs:
-
-1. `git submodule update --init engines/ecma-rs`
-2. a full `--all-features` build + test suite
-
-Before landing a submodule pointer bump, validate the same way **from a clean submodule checkout**
-(this catches “not our ref” issues and integration compile breaks):
-
-```bash
-# Simulate a clean clone (safe after you've committed + pushed any ecma-rs changes).
-git submodule deinit -f engines/ecma-rs
-rm -rf engines/ecma-rs
-git submodule update --init engines/ecma-rs
-
-# FastRender integration checks (scoped; use the agent wrapper).
-bash scripts/cargo_agent.sh check --all-features -p fastrender
-bash scripts/cargo_agent.sh build --all-features --bin browser
-bash scripts/cargo_agent.sh test --all-features -p fastrender --test browser_integration_tests
-```
-
-If `git submodule update` fails with `not our ref`, the recorded SHA is not fetchable from the
-submodule remote. Fix by pushing the `ecma-rs` commit (or tagging/branching it) and then bumping the
-pointer again.
+No submodule pointer updates needed—the code is directly part of the repo.
 
 ## Common integration gotcha: `vm-js` host ABI changes
 
@@ -178,17 +73,17 @@ pointer again.
   approach (`*_without_host` or explicit host threading) and avoid referencing removed internal APIs
   (for example older `Heap::get_function_call_id`/`get_function_construct_id` helpers).
 
-If a submodule bump breaks compilation with errors around `Vm::call` arity or native call handler
-signatures, update both FastRender's native handlers and any engine-internal callers like
+If changes to `vendor/ecma-rs` break compilation with errors around `Vm::call` arity or native call
+handler signatures, update both FastRender's native handlers and any engine-internal callers like
 `webidl-vm-js`.
 
 ## Common integration gotcha: `vm-js` Promise job / microtask GC safety (FastRender requirement)
 
-FastRender’s HTML-shaped `EventLoop` owns the microtask queue. That queue is **not traced** by the
+FastRender's HTML-shaped `EventLoop` owns the microtask queue. That queue is **not traced** by the
 `vm-js` GC, so queued Promise jobs must be GC-safe: any `vm_js::Value` captured by a queued job must
 be kept alive until the job runs (or is discarded).
 
-When bumping `engines/ecma-rs`, ensure the pinned `vm-js` commit includes **both**:
+Ensure the `vm-js` code includes **both**:
 
 1. **GC-safe jobs** (persistent roots):
    - `vm_js::Job` supports owning persistent roots (e.g. `Job::add_root`, `Job::run`, `Job::discard`),
@@ -205,23 +100,20 @@ FastRender encodes this expectation via:
   - `src/js/ecma_microtasks.rs`: `vm_js_promise_jobs_root_captured_values_until_run`
   - `tests/vm_js_promise_job_rooting.rs`
 
-Before landing an `ecma-rs` bump, run those tests; they intentionally force GC between enqueue and
-the microtask checkpoint to catch stale-handle regressions.
-
 ## Running `ecma-rs` commands safely (resource limits)
 
 JS conformance workloads can be pathological. Use OS caps from the FastRender repo when running
-Cargo commands inside the submodule.
+Cargo commands for ecma-rs crates.
 
 Example pattern:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash -lc 'cd engines/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
+bash scripts/run_limited.sh --as 64G -- bash -lc 'cd vendor/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
 ```
 
 For builds/tests, avoid multi-agent cargo stampedes (same principle as FastRender):
 
-- Don’t run unscoped `cargo test` across the entire workspace unless necessary.
+- Don't run unscoped `cargo test` across the entire workspace unless necessary.
 - Prefer scoping: `-p <crate>`, `--test <name>`, `--example <name>`.
 
 ## Where engine work should live
