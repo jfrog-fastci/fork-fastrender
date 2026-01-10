@@ -9,6 +9,14 @@ struct MapFetcher {
   mime: String,
 }
 
+struct PanicFetcher;
+
+impl ResourceFetcher for PanicFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    panic!("unexpected url fetch: {url}");
+  }
+}
+
 impl ResourceFetcher for MapFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     let bytes = self
@@ -108,7 +116,7 @@ fn img_decoding_async_defers_only_for_large_destinations() {
 }
 
 #[test]
-fn img_loading_lazy_keeps_image_transparent() {
+fn img_loading_lazy_paints_when_in_viewport() {
   let png = png_with_dimensions_and_color(100, 100, [255, 0, 0, 255]);
   let resources = HashMap::from([("test://img.png".to_string(), png)]);
   let fetcher = Arc::new(MapFetcher {
@@ -128,8 +136,8 @@ fn img_loading_lazy_keeps_image_transparent() {
   let px = pixmap_lazy.pixel(50, 50).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
-    (0, 255, 0),
-    "expected loading=lazy image to remain transparent (show background)"
+    (255, 0, 0),
+    "expected loading=lazy image to paint when it intersects the viewport"
   );
 
   let html_eager = r#"
@@ -147,5 +155,30 @@ fn img_loading_lazy_keeps_image_transparent() {
     (px.red(), px.green(), px.blue()),
     (255, 0, 0),
     "expected loading=eager image to paint"
+  );
+}
+
+#[test]
+fn img_loading_lazy_defers_when_outside_viewport() {
+  let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+
+  let html_lazy = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 255, 0); }
+        .spacer { height: 200px; }
+        img { display: block; width: 100px; height: 100px; }
+      </style>
+      <div class="spacer"></div>
+      <img loading="lazy" src="test://img.png">
+    "#;
+
+  // Rendering should not fetch the image since it is fully below the viewport.
+  let pixmap_lazy = render_single_img(html_lazy, fetcher, 100, 100).expect("render lazy");
+  let px = pixmap_lazy.pixel(50, 50).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (0, 255, 0),
+    "expected offscreen loading=lazy image to remain transparent (show background)"
   );
 }

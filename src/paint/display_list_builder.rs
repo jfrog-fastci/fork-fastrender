@@ -6213,11 +6213,18 @@ impl DisplayListBuilder {
           let mut deferred_async = false;
           let decoded = sources.first().and_then(|source| {
             if loading == ImageLoadingAttribute::Lazy {
-              // `loading="lazy"` images are typically fetched/decoded after initial page load and do
-              // not block headless Chrome `--screenshot` baselines. Keep the image transparent so
-              // author-supplied placeholders (e.g. background-image blur SVGs) remain visible.
-              deferred_async = true;
-              return None;
+              // `loading="lazy"` is a *hint*; browsers still load images that intersect the
+              // viewport. Only defer decoding when the destination rect is fully outside the
+              // viewport, matching typical lazy-loading behavior and avoiding blank above-the-fold
+              // imagery (e.g. Walmart's 404 illustration).
+              let intersects_viewport = self
+                .viewport
+                .map(|(w, h)| slot_rect.intersects(Rect::from_xywh(0.0, 0.0, w, h)))
+                .unwrap_or(true);
+              if !intersects_viewport {
+                deferred_async = true;
+                return None;
+              }
             }
             if decoding == ImageDecodingAttribute::Async
               && self.should_defer_async_image_decode(
