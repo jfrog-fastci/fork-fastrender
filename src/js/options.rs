@@ -37,6 +37,21 @@ pub struct JsExecutionOptions {
   /// parser-blocking script execution.
   pub max_pending_blocking_stylesheets: usize,
 
+  /// Maximum number of bytes accepted for a single `document.write(...)`/`document.writeln(...)`
+  /// call.
+  ///
+  /// This is a hard cap on the concatenated string that is injected into the streaming HTML parser
+  /// input stream.
+  pub max_document_write_bytes_per_call: usize,
+
+  /// Maximum cumulative bytes accepted across all `document.write(...)`/`document.writeln(...)`
+  /// calls within a single navigation.
+  pub max_document_write_bytes_total: usize,
+
+  /// Maximum number of `document.write(...)`/`document.writeln(...)` calls within a single
+  /// navigation.
+  pub max_document_write_calls: usize,
+
   /// VM budget: maximum number of VM instructions that may be executed before the VM is interrupted.
   ///
   /// For the `vm-js` backend, this is mapped to [`vm_js::Budget::fuel`].
@@ -143,6 +158,16 @@ impl Default for JsExecutionOptions {
       // 2 MiB per script mirrors the stylesheet inlining default and keeps per-script allocations
       // bounded. Embedders can raise this when targeting real-world pages.
       max_script_bytes: 2 * 1024 * 1024,
+
+      // `document.write` budgets (hostile-input hard caps).
+      //
+      // Keep per-call writes smaller than typical full HTML pages while still allowing common uses
+      // like small markup injections and sync script loaders.
+      max_document_write_bytes_per_call: 256 * 1024,
+      // Total budget roughly matches `max_script_bytes` to keep the combined "JS + injected HTML"
+      // surface bounded.
+      max_document_write_bytes_total: 2 * 1024 * 1024,
+      max_document_write_calls: 1024,
 
       // Bound how many external stylesheets can block parser-inserted scripts.
       max_pending_blocking_stylesheets: 1024,

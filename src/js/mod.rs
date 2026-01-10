@@ -50,6 +50,7 @@ pub mod import_maps;
 pub mod module_scripts;
 pub mod script_encoding;
 pub mod options;
+pub mod document_write;
 pub mod orchestrator;
 pub mod browser_tab;
 pub mod page_load;
@@ -113,9 +114,10 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
-// NOTE: `dom_integration` is declared above to keep the stable `crate::js::dom_integration` path.
-// It provides HTML "prepare the script element" helpers for dynamically inserted `<script>`
-// elements and is still referenced by some integration tests. Do not re-declare it here.
+// NOTE: `dom_integration` lives under `legacy/` but is declared above to keep the stable
+// `crate::js::dom_integration` path. It provides HTML "prepare the script element" helpers for
+// dynamically inserted `<script>` elements, and is still referenced by integration tests and
+// DOM-mutation plumbing. Do not re-declare it here.
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
@@ -141,6 +143,7 @@ pub use event_loop::{
   Task, TaskSource, TimerId,
 };
 pub use options::JsExecutionOptions;
+pub use document_write::{DocumentWriteLimitError, DocumentWriteState, with_document_write_state};
 pub use host_document::{DocumentHostState, HostDocumentState};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,

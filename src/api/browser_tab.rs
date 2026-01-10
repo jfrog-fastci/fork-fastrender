@@ -11,8 +11,9 @@ use crate::resource::ResourceFetcher;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
-  JsDomEvents, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec,
-  ScriptId, LocationNavigationRequest, ScriptBlockingStyleSheetSet, ScriptOrchestrator,
+  DocumentWriteState, JsDomEvents, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
+  ScriptElementSpec, ScriptId, LocationNavigationRequest, ScriptBlockingStyleSheetSet,
+  ScriptOrchestrator,
   ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::js::runtime::with_event_loop;
@@ -225,6 +226,7 @@ pub struct BrowserTabHost {
   stylesheet_media_context: MediaContext,
   stylesheet_media_query_cache: MediaQueryCache,
   js_execution_options: JsExecutionOptions,
+  document_write_state: DocumentWriteState,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
   last_dynamic_script_discovery_generation: u64,
@@ -246,6 +248,8 @@ impl BrowserTabHost {
       .event_listener_invoker()
       .unwrap_or_else(|| Box::new(NoopEventInvoker));
     let current_script = CurrentScriptStateHandle::default();
+    let mut document_write_state = DocumentWriteState::default();
+    document_write_state.update_limits(js_execution_options);
     Ok(Self {
       trace,
       document: Box::new(document),
@@ -274,6 +278,7 @@ impl BrowserTabHost {
       stylesheet_media_context: MediaContext::default(),
       stylesheet_media_query_cache: MediaQueryCache::default(),
       js_execution_options,
+      document_write_state,
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
       last_dynamic_script_discovery_generation: 0,
@@ -376,6 +381,8 @@ impl BrowserTabHost {
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
     self.last_dynamic_script_discovery_generation = 0;
+    self.document_write_state.reset_for_navigation();
+    self.document_write_state.update_limits(self.js_execution_options);
     self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
     self.stylesheet_keys_by_node.clear();
     self.next_stylesheet_key = 0;
@@ -613,6 +620,16 @@ impl BrowserTabHost {
 
     let outcome = (|| -> Result<Outcome> {
       loop {
+        // Flush any `document.write` / `document.writeln` data that was buffered during script
+        // execution (or tasks) into the parser input stream before continuing.
+        //
+        // Note: `StreamingHtmlParser::push_front_str` injects text before any buffered "remaining
+        // input", matching HTML's `document.write` insertion semantics.
+        let pending = self.document_write_state.take_pending_html();
+        if !pending.is_empty() {
+          state.parser.push_front_str(&pending);
+        }
+
         // If a parser-blocking script was delayed because there were pending script-blocking
         // stylesheets, retry execution now that we are resuming parsing.
         if let Some(pending) = self.pending_parser_blocking_script.take() {
@@ -842,6 +859,10 @@ impl BrowserTabHost {
               // Parsing is blocked (either on a stylesheet-blocking script, or another parser
               // block). Sync any microtask mutations back into the streaming parser's live DOM so
               // parsing resumes with an up-to-date tree once unblocked.
+              let pending = self.document_write_state.take_pending_html();
+              if !pending.is_empty() {
+                state.parser.push_front_str(&pending);
+              }
               let updated = self.dom().clone_with_events();
               {
                 let Some(mut doc) = state.parser.document_mut() else {
@@ -867,6 +888,10 @@ impl BrowserTabHost {
             }
           }
           StreamingParserYield::Finished { document } => {
+            // Parsing has completed; any subsequent scripts (deferred/async) should treat
+            // `document.write` as a deterministic no-op instead of implicitly rewriting the
+            // document.
+            self.document_write_state.set_parsing_active(false);
             let final_base_url = state.parser.current_base_url();
             // Persist the final base URL after parsing completes so any later JS-visible URL
             // resolution uses the post-parse `<base href>` result.
@@ -905,10 +930,12 @@ impl BrowserTabHost {
       }
       Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
         self.streaming_parse_active = false;
+        self.document_write_state.set_parsing_active(false);
         Ok(())
       }
       Err(err) => {
         self.streaming_parse_active = false;
+        self.document_write_state.set_parsing_active(false);
         Err(err)
       }
     }
@@ -1608,25 +1635,34 @@ impl BrowserTabHost {
         span.arg_bool("parser_inserted", self.spec.parser_inserted);
 
         let current_script = host.current_script_node();
-        let result = match script_type {
-          ScriptType::Classic => host.executor.execute_classic_script(
+        // Split the host borrow so we can install a JS-visible `DocumentWriteState` while still
+        // calling into the executor.
+        let BrowserTabHost {
+          executor,
+          document,
+          pending_navigation,
+          document_write_state,
+          ..
+        } = host;
+        let result = crate::js::with_document_write_state(document_write_state, || match script_type {
+          ScriptType::Classic => executor.execute_classic_script(
             self.source_text,
             self.spec,
             current_script,
-            &mut host.document,
+            document.as_mut(),
             self.event_loop,
           ),
-          ScriptType::Module => host.executor.execute_module_script(
+          ScriptType::Module => executor.execute_module_script(
             self.source_text,
             self.spec,
             current_script,
-            &mut host.document,
+            document.as_mut(),
             self.event_loop,
           ),
           ScriptType::ImportMap | ScriptType::Unknown => Ok(()),
-        };
-        if let Some(req) = host.executor.take_navigation_request() {
-          host.pending_navigation = Some(req);
+        });
+        if let Some(req) = executor.take_navigation_request() {
+          *pending_navigation = Some(req);
         }
         result
       }
@@ -2097,6 +2133,7 @@ impl BrowserTab {
       parse_task_scheduled: false,
     });
     self.host.streaming_parse_active = true;
+    self.host.document_write_state.set_parsing_active(true);
 
     self.host.parse_until_blocked(&mut self.event_loop)?;
     let base_url = if let Some(state) = self.host.streaming_parse.as_ref() {
@@ -2789,6 +2826,7 @@ impl BrowserTab {
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
     self.host.js_execution_options = options;
     self.host.scheduler.set_options(options);
+    self.host.document_write_state.update_limits(options);
     self.event_loop.set_queue_limits(options.event_loop_queue_limits);
   }
 
@@ -4719,6 +4757,129 @@ html, body { margin: 0; padding: 0; }
 
     let pixmap = tab.render_frame()?;
     assert_eq!(rgba_at(&pixmap, 32, 32), [255, 0, 0, 255]);
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_write_preserves_call_order_across_multiple_calls() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let html = r#"<!doctype html><html><body><script>
+document.write('<div id="a"></div>');
+document.write('<div id="b"></div>');
+</script><div id="after"></div></body></html>"#;
+    let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
+
+    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+
+    let doc = tab.dom();
+    let body = doc.body().expect("missing <body>");
+    let a = doc
+      .get_element_by_id("a")
+      .expect("expected #a element inserted by document.write");
+    let b = doc
+      .get_element_by_id("b")
+      .expect("expected #b element inserted by document.write");
+    let after = doc
+      .get_element_by_id("after")
+      .expect("expected #after element");
+
+    let element_children: Vec<NodeId> = doc
+      .node(body)
+      .children
+      .iter()
+      .copied()
+      .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. }))
+      .collect();
+    assert_eq!(element_children.len(), 4, "expected 4 element children in <body>");
+    assert_eq!(element_children[1], a, "expected #a to be first injected element");
+    assert_eq!(element_children[2], b, "expected #b to be second injected element");
+    assert_eq!(
+      element_children[3], after,
+      "expected following markup to appear after injected elements"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_writeln_appends_newline_and_parses_markup() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let html = r#"<!doctype html><html><body><script>
+document.writeln('<div id="x"></div>');
+</script><div id="after"></div></body></html>"#;
+    let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
+
+    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+
+    let doc = tab.dom();
+    let body = doc.body().expect("missing <body>");
+    let injected = doc
+      .get_element_by_id("x")
+      .expect("expected element inserted by document.writeln");
+    let after = doc
+      .get_element_by_id("after")
+      .expect("expected #after element");
+
+    let element_children: Vec<NodeId> = doc
+      .node(body)
+      .children
+      .iter()
+      .copied()
+      .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. }))
+      .collect();
+    assert_eq!(element_children.len(), 3, "expected 3 element children in <body>");
+    assert_eq!(element_children[1], injected);
+    assert_eq!(element_children[2], after);
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_write_injected_scripts_execute_before_later_scripts() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let html = r#"<!doctype html><html><body><script>document.write('<script>window.__injected = 1;<\/script>');</script><script>window.__after = window.__injected;</script></body></html>"#;
+    let _tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        r"script:document.write('<script>window.__injected = 1;<\/script>');".to_string(),
+        "script:window.__injected = 1;".to_string(),
+        "script:window.__after = window.__injected;".to_string(),
+      ],
+      "expected injected <script> to execute before later scripts"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_write_budget_enforced_and_does_not_mutate_dom() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let js_options = JsExecutionOptions {
+      max_document_write_bytes_per_call: 4,
+      ..JsExecutionOptions::default()
+    };
+    let html = r#"<!doctype html><html><body><script>
+document.write('<div id="x"></div>');
+</script><div id="after"></div></body></html>"#;
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::default(),
+      executor,
+      js_options,
+    )?;
+
+    assert_eq!(log.borrow().len(), 1, "expected the script to execute once");
+    assert!(
+      tab.dom().get_element_by_id("x").is_none(),
+      "expected injected markup to be rejected when over budget"
+    );
+    assert!(
+      tab.dom().get_element_by_id("after").is_some(),
+      "expected parsing to continue after document.write budget error"
+    );
     Ok(())
   }
 

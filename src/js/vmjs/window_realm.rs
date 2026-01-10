@@ -6,6 +6,7 @@ use crate::js::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::time::{TimeBindings, WebTime};
+use crate::js::document_write::{current_document_write_state_mut, DocumentWriteLimitError};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
@@ -3356,68 +3357,6 @@ fn document_body_get_native(
   };
 
   get_or_create_node_wrapper(vm, scope, document_obj, node_id)
-}
-
-fn document_write_native(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  // HTML: concatenate arguments after applying ToString.
-  let mut out = String::new();
-  for &arg in args {
-    let value = scope.heap_mut().to_string(arg)?;
-    let s = scope
-      .heap()
-      .get_string(value)
-      .map(|s| s.to_utf8_lossy())
-      .unwrap_or_default();
-    out.push_str(&s);
-  }
-
-  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
-    // Re-entrant parsing subset: inject before any buffered remainder, parsed after the current
-    // parser-blocking script returns.
-    parser.push_front_str(&out);
-  } else {
-    // Deterministic subset of HTML's ignore-destructive-writes behavior:
-    // when no streaming parser is active, treat `document.write()` as a no-op instead of
-    // implicitly calling `document.open()` and clearing the document.
-  }
-
-  Ok(Value::Undefined)
-}
-
-fn document_writeln_native(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let mut out = String::new();
-  for &arg in args {
-    let value = scope.heap_mut().to_string(arg)?;
-    let s = scope
-      .heap()
-      .get_string(value)
-      .map(|s| s.to_utf8_lossy())
-      .unwrap_or_default();
-    out.push_str(&s);
-  }
-  out.push('\n');
-
-  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
-    parser.push_front_str(&out);
-  }
-
-  Ok(Value::Undefined)
 }
 
 fn document_get_element_by_id_native(
@@ -9812,6 +9751,123 @@ fn document_text_content_set_native(
   Ok(Value::Undefined)
 }
 
+fn throw_document_write_range_error(vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> VmError {
+  if let Some(intr) = vm.intrinsics() {
+    match vm_js::new_range_error(scope, intr, message) {
+      Ok(value) => VmError::Throw(value),
+      Err(err) => err,
+    }
+  } else {
+    VmError::TypeError("RangeError")
+  }
+}
+
+fn document_write_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  document_write_impl(vm, scope, args, false)
+}
+
+fn document_writeln_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  document_write_impl(vm, scope, args, true)
+}
+
+fn document_write_impl(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  args: &[Value],
+  append_newline: bool,
+) -> Result<Value, VmError> {
+  let max_bytes_per_call = match current_document_write_state_mut() {
+    Some(state) if state.parsing_active() => state.max_bytes_per_call(),
+    _ => {
+      // Deterministic subset of HTML's ignore-destructive-writes behavior:
+      // when no streaming parser is active, treat `document.write()` as a no-op instead of
+      // implicitly calling `document.open()` and clearing the document.
+      return Ok(Value::Undefined);
+    }
+  };
+
+  let mut out = String::new();
+  for &arg in args {
+    let s_handle = match arg {
+      Value::String(s) => s,
+      other => scope.heap_mut().to_string(other)?,
+    };
+    let s = scope.heap().get_string(s_handle)?;
+    if s.as_code_units().len() > max_bytes_per_call.saturating_sub(out.len()) {
+      return Err(throw_document_write_range_error(
+        vm,
+        scope,
+        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
+      ));
+    }
+    out.push_str(&s.to_utf8_lossy());
+    if out.len() > max_bytes_per_call {
+      return Err(throw_document_write_range_error(
+        vm,
+        scope,
+        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
+      ));
+    }
+  }
+
+  if append_newline {
+    if out.len() >= max_bytes_per_call {
+      return Err(throw_document_write_range_error(
+        vm,
+        scope,
+        &format!("document.write exceeded max bytes per call (limit={max_bytes_per_call})"),
+      ));
+    }
+    out.push('\n');
+  }
+
+  let Some(state) = current_document_write_state_mut() else {
+    return Ok(Value::Undefined);
+  };
+
+  match state.try_enqueue(&out) {
+    Ok(()) => Ok(Value::Undefined),
+    Err(DocumentWriteLimitError::NotParsing) => Ok(Value::Undefined),
+    Err(DocumentWriteLimitError::TooManyCalls { limit }) => Err(throw_document_write_range_error(
+      vm,
+      scope,
+      &format!("document.write exceeded max call count (limit={limit})"),
+    )),
+    Err(DocumentWriteLimitError::PerCallBytesExceeded { len, limit }) => Err(
+      throw_document_write_range_error(
+        vm,
+        scope,
+        &format!("document.write exceeded max bytes per call (len={len}, limit={limit})"),
+      ),
+    ),
+    Err(DocumentWriteLimitError::TotalBytesExceeded { current, add, limit }) => Err(
+      throw_document_write_range_error(
+        vm,
+        scope,
+        &format!(
+          "document.write exceeded max cumulative bytes (current={current}, add={add}, limit={limit})"
+        ),
+      ),
+    ),
+  }
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -10285,6 +10341,35 @@ fn init_window_globals(
         writable: false,
       },
     },
+  )?;
+
+  // document.write / document.writeln
+  let write_key = alloc_key(&mut scope, "write")?;
+  let write_call_id = vm.register_native_call(document_write_native)?;
+  let write_name = scope.alloc_string("write")?;
+  scope.push_root(Value::String(write_name))?;
+  let write_func = scope.alloc_native_function(write_call_id, None, write_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    write_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(write_func))?;
+  scope.define_property(document_obj, write_key, data_desc(Value::Object(write_func)))?;
+
+  let writeln_key = alloc_key(&mut scope, "writeln")?;
+  let writeln_call_id = vm.register_native_call(document_writeln_native)?;
+  let writeln_name = scope.alloc_string("writeln")?;
+  scope.push_root(Value::String(writeln_name))?;
+  let writeln_func = scope.alloc_native_function(writeln_call_id, None, writeln_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    writeln_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(writeln_func))?;
+  scope.define_property(
+    document_obj,
+    writeln_key,
+    data_desc(Value::Object(writeln_func)),
   )?;
 
   // document.currentScript
