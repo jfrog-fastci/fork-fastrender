@@ -94,6 +94,7 @@ mod ui_worker_zoom;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
+mod ui_worker_hover_cursor;
 mod ui_worker_interaction;
 mod ui_worker_form_submit;
 mod ui_worker_focus_scroll;

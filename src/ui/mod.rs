@@ -32,8 +32,8 @@ pub mod chrome;
 pub mod session;
 
 pub use messages::{
-  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
-  WorkerToUi,
+  CursorKind, NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId,
+  UiToWorker, WorkerToUi,
 };
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the

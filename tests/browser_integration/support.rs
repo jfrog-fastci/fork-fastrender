@@ -276,6 +276,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::ContextMenu { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::HoverChanged { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   None
 }
 
@@ -440,6 +443,20 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         &mut out,
         "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?})",
         tab_id.0
+      );
+      continue;
+    }
+    if let WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url,
+      cursor,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?})",
+        tab_id.0,
+        hovered_url.as_deref()
       );
       continue;
     }

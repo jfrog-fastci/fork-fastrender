@@ -167,6 +167,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       WorkerToUi::ScrollStateUpdated { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::DebugLog { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::RequestOpenInNewTab { tab_id: t, .. } => *t == tab_id,
+      WorkerToUi::HoverChanged { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::Favicon { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::SetClipboardText { tab_id: t, .. } => *t == tab_id,
     })

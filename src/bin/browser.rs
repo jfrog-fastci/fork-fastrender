@@ -683,6 +683,7 @@ struct App {
   captured_button: fastrender::ui::PointerButton,
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
+  page_cursor_override: Option<fastrender::ui::CursorKind>,
   /// Latest pending pointer-move message.
   ///
   /// Pointer move events can arrive at very high frequency. We coalesce them so the UI worker sees
@@ -837,6 +838,7 @@ impl App {
       captured_button: fastrender::ui::PointerButton::None,
       last_cursor_pos_points: None,
       cursor_in_page: false,
+      page_cursor_override: None,
       pending_pointer_move: None,
       hover_sync_pending: false,
       pending_context_menu_request: None,
@@ -1091,6 +1093,44 @@ impl App {
       }
     }
     self.send_worker_msg(msg);
+  }
+
+  fn apply_page_cursor_icon(&mut self) {
+    use fastrender::ui::CursorKind;
+    use winit::window::CursorIcon;
+
+    let overlay_intercepts = self.last_cursor_pos_points.is_some_and(|pos| {
+      self
+        .open_select_dropdown_rect
+        .is_some_and(|rect| rect.contains(pos))
+        || self.open_context_menu_rect.is_some_and(|rect| rect.contains(pos))
+    });
+
+    if !self.cursor_in_page || overlay_intercepts {
+      self.page_cursor_override = None;
+      return;
+    }
+
+    let kind = self
+      .browser_state
+      .active_tab()
+      .map(|tab| tab.cursor)
+      .unwrap_or(CursorKind::Default);
+    if self.page_cursor_override == Some(kind) {
+      return;
+    }
+    self.page_cursor_override = Some(kind);
+
+    let icon = match kind {
+      CursorKind::Default => CursorIcon::Default,
+      CursorKind::Pointer => CursorIcon::Hand,
+      CursorKind::Text => CursorIcon::Text,
+      CursorKind::Crosshair => CursorIcon::Crosshair,
+      CursorKind::NotAllowed => CursorIcon::NotAllowed,
+      CursorKind::Grab => CursorIcon::Grab,
+      CursorKind::Grabbing => CursorIcon::Grabbing,
+    };
+    self.window.set_cursor_icon(icon);
   }
 
   fn update_open_select_dropdown_selection_for_key(
@@ -2998,6 +3038,9 @@ impl App {
       &self.egui_ctx,
       full_output.platform_output,
     );
+    // Egui sets cursor icons as part of platform output. Override it for page content hover
+    // semantics (links, text inputs) when the cursor is inside the rendered page image.
+    self.apply_page_cursor_icon();
 
     let paint_jobs = self.egui_ctx.tessellate(full_output.shapes);
 

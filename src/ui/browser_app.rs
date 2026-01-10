@@ -3,7 +3,7 @@ use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
-  NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  CursorKind, NavigationReason, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{normalize_user_url, validate_user_navigation_url_scheme};
 use std::collections::VecDeque;
@@ -125,6 +125,8 @@ pub struct BrowserTabState {
   /// - higher zoom → fewer CSS pixels in the viewport + higher DPR
   /// - lower zoom → more CSS pixels in the viewport + lower DPR
   pub zoom: f32,
+  pub hovered_url: Option<String>,
+  pub cursor: CursorKind,
   pub scroll_state: ScrollState,
   pub scroll_metrics: Option<ScrollMetrics>,
   pub latest_frame_meta: Option<LatestFrameMeta>,
@@ -149,6 +151,8 @@ impl BrowserTabState {
       can_go_back: false,
       can_go_forward: false,
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
+      hovered_url: None,
+      cursor: CursorKind::Default,
       scroll_state: ScrollState::default(),
       scroll_metrics: None,
       latest_frame_meta: None,
@@ -391,6 +395,10 @@ impl BrowserAppState {
     // user was typing, cancel that edit rather than carrying the partially typed URL across tabs.
     self.chrome.address_bar_editing = false;
     self.sync_address_bar_to_active();
+    if let Some(tab) = self.tab_mut(tab_id) {
+      tab.hovered_url = None;
+      tab.cursor = CursorKind::Default;
+    }
     true
   }
 
@@ -621,6 +629,8 @@ impl BrowserAppState {
           tab.error = None;
           tab.stage = None;
           tab.favicon_meta = None;
+          tab.hovered_url = None;
+          tab.cursor = CursorKind::Default;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -645,6 +655,8 @@ impl BrowserAppState {
           tab.stage = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
+          tab.hovered_url = None;
+          tab.cursor = CursorKind::Default;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -667,6 +679,8 @@ impl BrowserAppState {
           tab.can_go_forward = can_go_forward;
           tab.title = None;
           tab.favicon_meta = None;
+          tab.hovered_url = None;
+          tab.cursor = CursorKind::Default;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -727,9 +741,21 @@ impl BrowserAppState {
         // the shared tab model, but it should trigger a redraw so UIs can react immediately.
         update.request_redraw = true;
       }
+      WorkerToUi::HoverChanged {
+        tab_id,
+        hovered_url,
+        cursor,
+      } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.hovered_url = hovered_url;
+          tab.cursor = cursor;
+        }
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
+      }
       WorkerToUi::SetClipboardText { .. } => {
         // Clipboard is handled by the front-end (e.g. `src/bin/browser.rs`); the shared app state
         // model does not store clipboard contents.
+        update.request_redraw = true;
       }
     }
 

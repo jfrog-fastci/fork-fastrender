@@ -3,6 +3,8 @@ use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 
 use url::Url;
 
+use super::resolve_url;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormSubmissionMethod {
   Get,
@@ -68,32 +70,6 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   // treat all Unicode whitespace as ignorable. Use an explicit trim to avoid incorrectly dropping
   // characters like NBSP (U+00A0).
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-}
-
-fn resolve_url(base_url: &str, href: &str) -> Option<String> {
-  let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return None;
-  }
-  if href
-    .as_bytes()
-    .get(.."javascript:".len())
-    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
-  {
-    return None;
-  }
-
-  if let Ok(base) = Url::parse(base_url) {
-    if let Ok(joined) = base.join(href) {
-      if joined.scheme().eq_ignore_ascii_case("javascript") {
-        return None;
-      }
-      return Some(joined.to_string());
-    }
-  }
-
-  let absolute = Url::parse(href).ok()?;
-  (!absolute.scheme().eq_ignore_ascii_case("javascript")).then(|| absolute.to_string())
 }
 
 struct DomIndex<'a> {

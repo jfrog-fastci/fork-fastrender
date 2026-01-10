@@ -3,7 +3,7 @@
 use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
-use fastrender::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{CursorKind, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
@@ -53,6 +53,11 @@ pub enum WorkerToUiEvent {
     pos_css: (f32, f32),
     link_url: Option<String>,
   },
+  HoverChanged {
+    tab_id: TabId,
+    hovered_url: Option<String>,
+    cursor: CursorKind,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +77,7 @@ pub enum WorkerEventKind {
   DebugLog,
   SelectDropdownClosed,
   ContextMenu,
+  HoverChanged,
 }
 
 impl WorkerToUiEvent {
@@ -92,6 +98,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
+      WorkerToUiEvent::HoverChanged { .. } => WorkerEventKind::HoverChanged,
     }
   }
 }
@@ -207,6 +214,18 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::SetClipboardText { tab_id, text } => {
       (WorkerToUiEvent::SetClipboardText { tab_id, text }, None)
     }
+    WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url,
+      cursor,
+    } => (
+      WorkerToUiEvent::HoverChanged {
+        tab_id,
+        hovered_url,
+        cursor,
+      },
+      None,
+    ),
   }
 }
 

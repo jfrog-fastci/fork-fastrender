@@ -24,6 +24,7 @@ use super::fragment_geometry::content_rect_for_border_rect;
 use super::form_submit::{form_submission, FormSubmission, FormSubmissionMethod};
 use super::hit_test::hit_test_dom;
 use super::image_maps;
+use super::resolve_url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModality {
@@ -717,32 +718,6 @@ fn node_is_readonly(index: &DomIndexMut, node_id: usize) -> bool {
     .node(node_id)
     .and_then(|node| node.get_attribute_ref("readonly"))
     .is_some()
-}
-
-fn resolve_url(base_url: &str, href: &str) -> Option<String> {
-  let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return None;
-  }
-  if href
-    .as_bytes()
-    .get(.."javascript:".len())
-    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
-  {
-    return None;
-  }
-
-  if let Ok(base) = Url::parse(base_url) {
-    if let Ok(joined) = base.join(href) {
-      if joined.scheme().eq_ignore_ascii_case("javascript") {
-        return None;
-      }
-      return Some(joined.to_string());
-    }
-  }
-
-  let absolute = Url::parse(href).ok()?;
-  (!absolute.scheme().eq_ignore_ascii_case("javascript")).then(|| absolute.to_string())
 }
 
 fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option<usize> {

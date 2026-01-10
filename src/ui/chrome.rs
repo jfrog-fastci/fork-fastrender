@@ -433,6 +433,21 @@ pub fn chrome_ui(
     });
   });
 
+  if let Some(url) = app
+    .active_tab()
+    .and_then(|t| t.hovered_url.as_deref())
+    .filter(|u| !u.trim().is_empty())
+  {
+    let url = url.to_string();
+    egui::TopBottomPanel::bottom("status_bar")
+      .resizable(false)
+      .show(ctx, |ui| {
+        ui.horizontal(|ui| {
+          ui.label(egui::RichText::new(url).small());
+        });
+      });
+  }
+
   actions
 }
 

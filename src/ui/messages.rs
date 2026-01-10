@@ -132,6 +132,27 @@ pub struct ScrollMetrics {
   pub content_css: (f32, f32),
 }
 
+/// High-level pointer cursor semantics reported by the render worker.
+///
+/// This intentionally mirrors a small subset of common browser cursor types so UIs can map them to
+/// platform cursor icons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CursorKind {
+  Default,
+  Pointer,
+  Text,
+  Crosshair,
+  NotAllowed,
+  Grab,
+  Grabbing,
+}
+
+impl Default for CursorKind {
+  fn default() -> Self {
+    CursorKind::Default
+  }
+}
+
 /// An owned rendered frame produced by the render worker.
 ///
 /// This owns the underlying pixel buffer (`tiny_skia::Pixmap`) and is expected to be sent to the
@@ -497,6 +518,15 @@ pub enum WorkerToUi {
     pos_css: (f32, f32),
     /// Fully-resolved link URL under the cursor, if any.
     link_url: Option<String>,
+  },
+  /// Hover metadata changed for a tab (cursor semantics and hovered link URL).
+  ///
+  /// Workers should only emit this message when the hover state actually changes (deduped) to keep
+  /// the protocol lightweight on high-frequency pointer move streams.
+  HoverChanged {
+    tab_id: TabId,
+    hovered_url: Option<String>,
+    cursor: CursorKind,
   },
   /// Request that the UI set the OS clipboard text.
   ///

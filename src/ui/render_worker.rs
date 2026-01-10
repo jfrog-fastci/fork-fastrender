@@ -24,7 +24,8 @@ use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  CursorKind, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
+  WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use image::imageops::FilterType;
@@ -135,6 +136,10 @@ struct TabState {
   last_committed_url: Option<String>,
   last_base_url: Option<String>,
 
+  last_pointer_pos_css: Option<(f32, f32)>,
+  last_hovered_url: Option<String>,
+  last_cursor: CursorKind,
+
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
   force_repaint: bool,
@@ -157,6 +162,9 @@ impl TabState {
       cancel,
       last_committed_url: None,
       last_base_url: None,
+      last_pointer_pos_css: None,
+      last_hovered_url: None,
+      last_cursor: CursorKind::Default,
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
@@ -858,6 +866,7 @@ impl BrowserRuntime {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
+        tab.last_pointer_pos_css = None;
 
         let dom_changed = if let Some(doc) = tab.document.as_mut() {
           doc.mutate_dom(|dom| tab.interaction.clear_pointer_state(dom))
@@ -869,6 +878,10 @@ impl BrowserRuntime {
           tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
+
+        // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
+        // sends the next pointer position for this tab.
+        Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
       }
       UiToWorker::Navigate {
         tab_id,
@@ -1383,6 +1396,11 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+
+    // Navigations replace the document (or at least its URL/scroll state); clear any stale hover
+    // metadata until the next pointer move re-establishes it.
+    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
+
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
     let url = request.url.clone();
@@ -1552,31 +1570,80 @@ impl BrowserRuntime {
     tab.needs_repaint = true;
   }
 
+  fn maybe_emit_hover_changed(
+    ui_tx: &Sender<WorkerToUi>,
+    tab_id: TabId,
+    tab: &mut TabState,
+    hovered_url: Option<String>,
+    cursor: CursorKind,
+  ) {
+    if tab.last_cursor == cursor && tab.last_hovered_url.as_deref() == hovered_url.as_deref() {
+      return;
+    }
+    tab.last_cursor = cursor;
+    tab.last_hovered_url = hovered_url.clone();
+    let _ = ui_tx.send(WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url,
+      cursor,
+    });
+  }
+
   fn handle_pointer_move(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
+    let pointer_in_page =
+      pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0;
+    tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let engine = &mut tab.interaction;
+    let base_url = base_url_for_links(tab).to_string();
 
-    let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
-      (changed, changed)
-    }) {
-      Ok(changed) => changed,
-      Err(_) => return,
+    let (changed, hovered_url, cursor) = {
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+      let engine = &mut tab.interaction;
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled =
+          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
+        let (hovered_url, cursor) = if !pointer_in_page {
+          (None, CursorKind::Default)
+        } else {
+          let page_point = viewport_point.translate(scroll.viewport);
+          match hit_test_dom(dom, box_tree, fragment_tree, page_point) {
+            Some(hit) => match hit.kind {
+              HitTestKind::Link => {
+                let resolved = hit
+                  .href
+                  .as_deref()
+                  .and_then(|href| resolve_link_url(&base_url, href));
+                match resolved {
+                  Some(url) => (Some(url), CursorKind::Pointer),
+                  None => (None, CursorKind::Default),
+                }
+              }
+              HitTestKind::FormControl => (None, CursorKind::Text),
+              _ => (None, CursorKind::Default),
+            },
+            None => (None, CursorKind::Default),
+          }
+        };
+        (changed, (changed, hovered_url, cursor))
+      }) {
+        Ok(changed) => changed,
+        Err(_) => return,
+      }
     };
     if changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
+
+    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor);
   }
 
   fn handle_pointer_down(
