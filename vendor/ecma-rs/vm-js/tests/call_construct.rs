@@ -35,6 +35,7 @@ fn call_native_function_returns_value() -> Result<(), VmError> {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -63,6 +64,7 @@ fn call_non_callable_returns_type_error_placeholder() -> Result<(), VmError> {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -96,6 +98,7 @@ fn call_ticks_budget_and_reports_stack_on_termination() -> Result<(), VmError> {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget {
     fuel: Some(0),

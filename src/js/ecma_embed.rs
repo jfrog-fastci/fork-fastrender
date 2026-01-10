@@ -241,6 +241,7 @@ impl VmJsScriptRealm {
       default_deadline: options.default_deadline,
       check_time_every: options.check_time_every,
       interrupt_flag: Some(Arc::clone(&interrupt_flag)),
+      external_interrupt_flag: None,
     });
     let interrupt_handle = vm.interrupt_handle();
     let mut heap = Heap::new(options.heap_limits);

@@ -6,6 +6,7 @@ use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
 use crate::js::CurrentScriptStateHandle;
+use crate::render_control;
 use crate::resource::ResourceFetcher;
 use crate::style::media::MediaContext;
 use base64::engine::general_purpose;
@@ -123,6 +124,7 @@ pub struct WindowRealm {
   current_script_source_id: Option<u64>,
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
+  interrupt_flag: Arc<AtomicBool>,
 }
 
 struct WindowRealmUserData {
@@ -159,8 +161,12 @@ impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm_options = VmOptions::default();
     // Window realms should be interruptible even before full script execution is wired up.
-    // This is separate from the renderer-level interrupt flag; callers can wire it up as needed.
-    vm_options.interrupt_flag = Some(Arc::new(AtomicBool::new(false)));
+    // This is separate from the renderer-level interrupt flag: it's resettable per realm.
+    let interrupt_flag = Arc::new(AtomicBool::new(false));
+    vm_options.interrupt_flag = Some(Arc::clone(&interrupt_flag));
+    // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
+    // `Vm::tick()`.
+    vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
     let vm = Vm::new(vm_options);
     let heap = Heap::new(config.heap_limits);
 
@@ -188,11 +194,12 @@ impl WindowRealm {
       current_script_source_id,
       match_media_env_id,
       time_bindings: Some(time_bindings),
+      interrupt_flag,
     })
   }
 
   pub fn reset_interrupt(&self) {
-    self.runtime.vm.reset_interrupt();
+    self.interrupt_flag.store(false, Ordering::Relaxed);
   }
 
   pub fn heap(&self) -> &Heap {
@@ -9718,10 +9725,17 @@ mod tests {
         add('x', () => {});\n\
       })()",
     );
-    assert!(matches!(
-      unbound_error,
-      Err(VmError::TypeError(msg)) if msg == "Illegal invocation"
-    ));
+    {
+      let err = unbound_error.expect_err("expected unbound addEventListener to throw");
+      let obj = unwrap_thrown_object(err);
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj))?;
+      let name = get_prop(&mut scope, obj, "name");
+      assert_eq!(get_string(scope.heap(), name), "TypeError");
+      let message = get_prop(&mut scope, obj, "message");
+      assert_eq!(get_string(scope.heap(), message), "Illegal invocation");
+    }
 
     Ok(())
   }
@@ -10602,6 +10616,45 @@ mod tests {
       scope.push_root(Value::Object(obj))?;
       let name = get_prop(&mut scope, obj, "name");
       assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn external_interrupt_flag_interrupts_window_realm_and_is_not_reset() -> Result<(), VmError> {
+    struct RestoreFlag {
+      flag: Arc<AtomicBool>,
+      prev: bool,
+    }
+
+    impl Drop for RestoreFlag {
+      fn drop(&mut self) {
+        self.flag.store(self.prev, Ordering::Relaxed);
+      }
+    }
+
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let flag = crate::render_control::interrupt_flag();
+    let _guard = RestoreFlag {
+      prev: flag.swap(true, Ordering::Relaxed),
+      flag: Arc::clone(&flag),
+    };
+
+    let err = realm.exec_script("1 + 2").unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, vm_js::TerminationReason::Interrupted),
+      other => panic!("expected interrupted termination, got {other:?}"),
+    }
+
+    realm.reset_interrupt();
+    assert!(flag.load(Ordering::Relaxed));
+
+    let err = realm.exec_script("1 + 2").unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, vm_js::TerminationReason::Interrupted),
+      other => panic!("expected interrupted termination, got {other:?}"),
     }
 
     Ok(())

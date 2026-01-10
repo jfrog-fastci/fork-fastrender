@@ -18,6 +18,7 @@ fn fuel_exhaustion_triggers_out_of_fuel_after_exact_tick_count() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
 
   vm.set_budget(Budget {
@@ -45,6 +46,7 @@ fn deadline_exhaustion_triggers_deadline_exceeded() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
 
   vm.set_budget(Budget {
@@ -68,6 +70,7 @@ fn interrupt_token_triggers_interrupted() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -90,6 +93,7 @@ fn shared_interrupt_flag_triggers_interrupted() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: Some(flag.clone()),
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -111,6 +115,7 @@ fn shared_interrupt_flag_is_toggled_by_vm_interrupt_handle() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: Some(flag.clone()),
+    external_interrupt_flag: None,
   });
 
   vm.interrupt_handle().interrupt();
@@ -125,6 +130,7 @@ fn interrupt_handle_can_be_reset_to_reuse_vm() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -150,6 +156,7 @@ fn vm_reset_interrupt_clears_shared_interrupt_flag() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: Some(flag.clone()),
+    external_interrupt_flag: None,
   });
   vm.set_budget(Budget::unlimited(1));
 
@@ -174,6 +181,7 @@ fn reset_budget_to_default_recomputes_deadline_relative_to_now() {
     default_deadline: Some(Duration::from_millis(50)),
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
 
   thread::sleep(Duration::from_millis(100));
@@ -196,6 +204,7 @@ fn budget_guard_restores_previous_budget_state() {
     default_deadline: None,
     check_time_every: 1,
     interrupt_flag: None,
+    external_interrupt_flag: None,
   });
 
   vm.set_budget(Budget::unlimited(1));

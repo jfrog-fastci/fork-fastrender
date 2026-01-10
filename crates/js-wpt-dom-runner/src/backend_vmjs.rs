@@ -853,6 +853,7 @@ impl JsWptRuntime {
       default_deadline: None,
       check_time_every: 1,
       interrupt_flag: None,
+      external_interrupt_flag: None,
     });
     vm.set_budget(vm_js::Budget {
       fuel: Some(50_000_000),

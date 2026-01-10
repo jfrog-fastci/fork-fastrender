@@ -32,7 +32,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -111,6 +111,12 @@ pub struct VmOptions {
   /// If provided, the VM will use this flag for its interrupt token so hosts can cancel execution
   /// by setting the flag to `true`.
   pub interrupt_flag: Option<Arc<AtomicBool>>,
+  /// Optional additional interrupt flag observed for cooperative cancellation.
+  ///
+  /// This is intended for *embedding-wide* cancellation tokens (for example a renderer-level
+  /// cancellation flag) that should interrupt JS execution but must **not** be cleared by
+  /// [`Vm::reset_interrupt`].
+  pub external_interrupt_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Default for VmOptions {
@@ -121,6 +127,7 @@ impl Default for VmOptions {
       default_deadline: None,
       check_time_every: 100,
       interrupt_flag: None,
+      external_interrupt_flag: None,
     }
   }
 }
@@ -1140,7 +1147,13 @@ impl Vm {
 
     self.budget.ticks = self.budget.ticks.wrapping_add(1);
 
-    if self.interrupt.is_interrupted() {
+    if self.interrupt.is_interrupted()
+      || self
+        .options
+        .external_interrupt_flag
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
       return Err(self.terminate(TerminationReason::Interrupted));
     }
 
