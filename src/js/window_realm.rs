@@ -3,6 +3,7 @@ use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptStateHandle;
 use crate::js::window_env::{install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv};
 use crate::style::media::MediaContext;
+use crate::resource::ResourceFetcher;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -86,14 +87,27 @@ pub struct WindowRealm {
   match_media_env_id: Option<u64>,
 }
 
-#[derive(Debug, Default)]
 struct WindowRealmUserData {
+  document_url: String,
+  cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
 }
 
+impl std::fmt::Debug for WindowRealmUserData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WindowRealmUserData")
+      .field("document_url", &self.document_url)
+      .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
+      .field("cookie_jar", &self.cookie_jar)
+      .finish()
+  }
+}
+
 impl WindowRealmUserData {
-  fn new() -> Self {
+  fn new(document_url: String) -> Self {
     Self {
+      document_url,
+      cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
     }
   }
@@ -109,7 +123,9 @@ impl WindowRealm {
     let heap = Heap::new(config.heap_limits);
 
     let mut runtime = VmJsRuntime::new(vm, heap)?;
-    runtime.vm.set_user_data(WindowRealmUserData::new());
+    runtime
+      .vm
+      .set_user_data(WindowRealmUserData::new(config.document_url.clone()));
     let realm_id = runtime.realm().id();
 
     // `vm-js::JsRuntime` does not expose a borrow-splitting accessor for `(vm, realm, heap)`. Use a
@@ -187,6 +203,12 @@ impl WindowRealm {
       self.runtime.realm().id(),
       &mut self.runtime.heap,
     );
+  }
+
+  pub fn set_cookie_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {
+    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.cookie_fetcher = Some(fetcher);
+    }
   }
 
   /// Execute a classic script in this window realm.
@@ -3877,10 +3899,17 @@ fn document_cookie_get_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let cookie = vm
-    .user_data::<WindowRealmUserData>()
-    .map(|data| data.cookie_jar.cookie_string())
-    .unwrap_or_default();
+  let cookie = match vm.user_data_mut::<WindowRealmUserData>() {
+    Some(data) => {
+      if let Some(fetcher) = data.cookie_fetcher.as_ref() {
+        if let Some(header) = fetcher.cookie_header_value(&data.document_url) {
+          data.cookie_jar.replace_from_cookie_header(&header);
+        }
+      }
+      data.cookie_jar.cookie_string()
+    }
+    None => String::new(),
+  };
   Ok(Value::String(scope.alloc_string(&cookie)?))
 }
 
@@ -3909,6 +3938,9 @@ fn document_cookie_set_native(
   }
 
   let cookie_string = s.to_utf8_lossy();
+  if let Some(fetcher) = data.cookie_fetcher.as_ref() {
+    fetcher.store_cookie_from_document(&data.document_url, &cookie_string);
+  }
   data.cookie_jar.set_cookie_string(&cookie_string);
   Ok(Value::Undefined)
 }

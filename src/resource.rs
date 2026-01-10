@@ -3304,6 +3304,28 @@ pub trait ResourceFetcher: Send + Sync {
     None
   }
 
+  /// Returns the `Cookie` header value that this fetcher would send for `url`, if known.
+  ///
+  /// This is primarily intended for `document.cookie` integration so JavaScript can observe cookies
+  /// that were stored by the underlying HTTP client (via `Set-Cookie` headers).
+  ///
+  /// The default implementation returns `None` to indicate that the fetcher does not expose cookie
+  /// state.
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    let _ = url;
+    None
+  }
+
+  /// Store a cookie string as if it were set via `document.cookie` for `url`.
+  ///
+  /// Implementations should treat `cookie_string` as a RFC6265-style cookie string (the same
+  /// format used for `Set-Cookie`), applying whatever cookie semantics they support.
+  ///
+  /// The default implementation is a no-op.
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    let _ = (url, cookie_string);
+  }
+
   /// Fetch a resource with contextual request metadata and optional validators.
   ///
   /// This is primarily used by caching wrappers so they can issue conditional
@@ -3553,6 +3575,14 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
 
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
     (**self).request_header_value(req, header_name)
+  }
+
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    (**self).cookie_header_value(url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    (**self).store_cookie_from_document(url, cookie_string)
   }
 
   fn fetch_with_request_and_validation(
@@ -7827,6 +7857,23 @@ impl ResourceFetcher for HttpFetcher {
     None
   }
 
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    HttpFetcher::cookie_header_value(self, url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    // Match the common browser-ish per-cookie size limit to keep host callers bounded.
+    // (This is intentionally conservative and does not attempt to fully implement RFC6265.)
+    const MAX_COOKIE_BYTES: usize = 4096;
+    if cookie_string.len() > MAX_COOKIE_BYTES {
+      return;
+    }
+    let Ok(parsed) = Url::parse(url) else {
+      return;
+    };
+    self.cookie_jar.add_cookie_str(cookie_string, &parsed);
+  }
+
   fn fetch_with_request_and_validation(
     &self,
     req: FetchRequest<'_>,
@@ -10474,6 +10521,14 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
     self.inner.request_header_value(req, header_name)
+  }
+
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    self.inner.cookie_header_value(url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    self.inner.store_cookie_from_document(url, cookie_string)
   }
 
   fn fetch_partial(&self, url: &str, max_bytes: usize) -> Result<FetchedResource> {

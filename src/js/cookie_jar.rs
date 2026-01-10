@@ -26,6 +26,14 @@ impl CookieJar {
     Self::default()
   }
 
+  pub(crate) fn replace_from_cookie_header(&mut self, cookie_header: &str) {
+    self.cookies.clear();
+    self.cookie_string_len = 0;
+    for part in cookie_header.split(';') {
+      self.set_cookie_string(part);
+    }
+  }
+
   pub(crate) fn cookie_string(&self) -> String {
     if self.cookies.is_empty() {
       return String::new();
@@ -133,4 +141,3 @@ mod tests {
     assert_eq!(jar.cookies.len(), MAX_COOKIES_PER_DOCUMENT);
   }
 }
-

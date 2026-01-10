@@ -154,6 +154,7 @@ impl WindowHostState {
         return Err(Error::Other(err.to_string()));
       }
     };
+    window.set_cookie_fetcher(fetcher.clone());
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
@@ -269,7 +270,9 @@ impl WindowRealmHost for WindowHostState {
 mod tests {
   use super::*;
 
+  use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
+  use std::sync::Mutex;
   use vm_js::{PropertyKey, Value};
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
@@ -304,6 +307,74 @@ mod tests {
           .to_utf8_lossy(),
       ),
       _ => None,
+    }
+  }
+
+  fn value_to_string(host: &WindowHost, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected a string, got {value:?}");
+    };
+    host
+      .host()
+      .window()
+      .heap()
+      .get_string(s)
+      .expect("heap should contain string")
+      .to_utf8_lossy()
+  }
+
+  #[derive(Default)]
+  struct CookieRecordingFetcher {
+    cookies: Mutex<Vec<(String, String)>>,
+  }
+
+  impl CookieRecordingFetcher {
+    fn cookie_header(&self) -> Option<String> {
+      let lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if lock.is_empty() {
+        return None;
+      }
+      Some(
+        lock
+          .iter()
+          .map(|(name, value)| format!("{name}={value}"))
+          .collect::<Vec<_>>()
+          .join("; "),
+      )
+    }
+  }
+
+  impl ResourceFetcher for CookieRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "CookieRecordingFetcher does not support fetch: {url}"
+      )))
+    }
+
+    fn cookie_header_value(&self, _url: &str) -> Option<String> {
+      self.cookie_header()
+    }
+
+    fn store_cookie_from_document(&self, _url: &str, cookie_string: &str) {
+      let first = cookie_string
+        .split_once(';')
+        .map(|(a, _)| a)
+        .unwrap_or(cookie_string);
+      let first = first.trim_matches(|c: char| c.is_ascii_whitespace());
+      let Some((name, value)) = first.split_once('=') else {
+        return;
+      };
+      let name = name.trim_matches(|c: char| c.is_ascii_whitespace());
+      if name.is_empty() {
+        return;
+      }
+
+      let mut lock = self.cookies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if let Some(existing) = lock.iter_mut().find(|(n, _)| n == name) {
+        existing.1 = value.to_string();
+      } else {
+        lock.push((name.to_string(), value.to_string()));
+      }
     }
   }
 
@@ -371,17 +442,31 @@ mod tests {
     host.exec_script("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
 
     let cookie = host.exec_script("document.cookie")?;
-    let Value::String(cookie_str) = cookie else {
-      panic!("expected document.cookie to return a string, got {cookie:?}");
-    };
-    let got = host
-      .host()
-      .window()
-      .heap()
-      .get_string(cookie_str)
-      .expect("heap should contain cookie string")
-      .to_utf8_lossy();
-    assert_eq!(got, "a=b; b=c");
+    assert_eq!(value_to_string(&host, cookie), "a=b; b=c");
+    Ok(())
+  }
+
+  #[test]
+  fn document_cookie_syncs_with_fetcher_cookie_store() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(CookieRecordingFetcher::default());
+    fetcher.store_cookie_from_document("https://example.invalid/", "z=1");
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher.clone())?;
+
+    let cookie = host.exec_script("document.cookie")?;
+    assert_eq!(value_to_string(&host, cookie), "z=1");
+
+    host.exec_script("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
+
+    assert_eq!(
+      fetcher
+        .cookie_header_value("https://example.invalid/")
+        .unwrap_or_default(),
+      "z=1; b=c; a=b"
+    );
+
+    let cookie = host.exec_script("document.cookie")?;
+    assert_eq!(value_to_string(&host, cookie), "a=b; b=c; z=1");
     Ok(())
   }
 

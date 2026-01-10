@@ -3930,6 +3930,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     self.memory.inner.request_header_value(req, header_name)
   }
 
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    self.memory.inner.cookie_header_value(url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    self.memory.inner.store_cookie_from_document(url, cookie_string)
+  }
+
   fn fetch_partial(&self, url: &str, max_bytes: usize) -> Result<FetchedResource> {
     self.fetch_partial_with_context(FetchContextKind::Other, url, max_bytes)
   }
