@@ -162,9 +162,9 @@ pub use orchestrator::{
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
 };
 pub use import_maps::{
-  ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
-  ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap, ScopesMap,
-  SpecifierAsUrlKind, SpecifierResolutionRecord,
+  ImportMap, ImportMapError, ImportMapLimits, ImportMapParseResult, ImportMapState, ImportMapWarning,
+  ImportMapWarningKind, ModuleIntegrityMap, ModuleResolutionError, ModuleSpecifierMap, ResolvedModuleSet, ScopeMap,
+  ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use dom_bindings::DomJsRealm;

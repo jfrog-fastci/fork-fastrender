@@ -436,6 +436,22 @@ impl WindowHostState {
     Ok(warnings)
   }
 
+  pub fn register_import_map_string_with_limits(
+    &mut self,
+    json: &str,
+    base_url: &::url::Url,
+    limits: &crate::js::import_maps::ImportMapLimits,
+  ) -> std::result::Result<
+    Vec<crate::js::import_maps::ImportMapWarning>,
+    crate::js::import_maps::ImportMapError,
+  > {
+    let mut parse_result =
+      crate::js::import_maps::create_import_map_parse_result_with_limits(json, base_url, limits);
+    let warnings = std::mem::take(&mut parse_result.warnings);
+    crate::js::import_maps::register_import_map_with_limits(&mut self.import_map_state, parse_result, limits)?;
+    Ok(warnings)
+  }
+
   pub fn resolve_module_specifier_with_import_maps(
     &mut self,
     specifier: &str,
