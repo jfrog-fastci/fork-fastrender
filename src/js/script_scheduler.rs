@@ -760,12 +760,22 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
           return Ok(DiscoveredScript { id, actions });
         }
 
-        // Module scripts execute asynchronously (as tasks) and are deferred-by-default (unless
-        // `async` is set or the script is dynamically inserted).
-        let mode = if !element.parser_inserted || element.async_attr {
+        // Module scripts execute asynchronously (as tasks). For ordering, HTML treats module scripts
+        // as async-like when either:
+        // - the `async` attribute is present, or
+        // - the element's internal "force async" flag is set (default for dynamically created
+        //   scripts).
+        //
+        // When a module script is not async-like:
+        // - parser-inserted module scripts are deferred by default
+        // - dynamically inserted module scripts execute in insertion order as soon as possible.
+        let is_async = element.async_attr || element.force_async;
+        let mode = if is_async {
           ExternalMode::Async
-        } else {
+        } else if element.parser_inserted {
           ExternalMode::Defer
+        } else {
+          ExternalMode::InOrderAsap
         };
 
         if element.src_attr_present {
@@ -782,6 +792,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
           if mode == ExternalMode::Defer {
             self.defer_queue.push(id);
+          }
+          if mode == ExternalMode::InOrderAsap {
+            self.in_order_queue.push(id);
           }
 
           self.scripts.insert(
@@ -821,8 +834,15 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             source_text: element.inline_text,
           });
         } else {
-          // Inline module scripts are deferred-by-default for parser-inserted scripts.
-          self.defer_queue.push(id);
+          if mode == ExternalMode::Defer {
+            // Inline module scripts are deferred-by-default for parser-inserted scripts.
+            self.defer_queue.push(id);
+          } else {
+            // Non-parser-inserted module scripts without async-like behavior should execute in
+            // insertion order as soon as possible.
+            debug_assert_eq!(mode, ExternalMode::InOrderAsap);
+            self.in_order_queue.push(id);
+          }
           self.scripts.insert(
             id,
             ExternalScriptEntry {
@@ -838,8 +858,16 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
               queued_for_execution: false,
             },
           );
-          if self.parsing_completed {
-            actions.extend(self.queue_defer_scripts_if_ready()?);
+          match mode {
+            ExternalMode::Defer => {
+              if self.parsing_completed {
+                actions.extend(self.queue_defer_scripts_if_ready()?);
+              }
+            }
+            ExternalMode::InOrderAsap => {
+              actions.extend(self.queue_in_order_scripts_if_ready()?);
+            }
+            ExternalMode::Blocking | ExternalMode::Async => {}
           }
         }
       }
@@ -1858,6 +1886,46 @@ mod state_machine_tests {
     spec
   }
 
+  fn module_external_dynamic(src: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: Some(src.to_string()),
+      src_attr_present: true,
+      inline_text: String::new(),
+      async_attr,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      force_async,
+      node_id: None,
+      script_type: ScriptType::Module,
+    }
+  }
+
+  fn module_inline_dynamic(source: &str, async_attr: bool, force_async: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      src_attr_present: false,
+      inline_text: source.to_string(),
+      async_attr,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: false,
+      force_async,
+      node_id: None,
+      script_type: ScriptType::Module,
+    }
+  }
+
   struct Harness {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
@@ -2100,6 +2168,79 @@ mod state_machine_tests {
         "microtask:B".to_string(),
         "script:A".to_string(),
         "microtask:A".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn in_order_asap_dynamic_module_external_scripts_execute_in_insertion_order() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let a = h.discover_dynamic(module_external_dynamic(
+      "a.js",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+    let b = h.discover_dynamic(module_external_dynamic(
+      "b.js",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+
+    assert!(h.blocked_parser_on.is_none(), "module scripts must not block parsing");
+    assert_eq!(
+      h.started_fetches
+        .iter()
+        .map(|(_id, _node_id, url, _destination, _credentials_mode)| url.as_str())
+        .collect::<Vec<_>>(),
+      vec!["a.js", "b.js"]
+    );
+
+    // Complete out-of-order: B finishes before A.
+    h.fetch_complete(b, "B")?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      Vec::<String>::new(),
+      "in-order-asap module scripts must not run until earlier scripts are ready"
+    );
+
+    h.fetch_complete(a, "A")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "script:B".to_string(),
+        "microtask:B".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn in_order_asap_dynamic_inline_module_script_queues_without_parsing_completed() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    h.discover_dynamic(module_inline_dynamic(
+      "INLINE",
+      /* async_attr */ false,
+      /* force_async */ false,
+    ))?;
+    assert!(h.host.log.is_empty(), "inline module scripts should be queued as tasks");
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:INLINE".to_string(),
+        "microtask:INLINE".to_string(),
       ]
     );
     Ok(())
