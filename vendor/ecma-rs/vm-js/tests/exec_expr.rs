@@ -608,6 +608,25 @@ fn string_prototype_split_works_and_is_generic() {
 }
 
 #[test]
+fn string_prototype_repeat_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var ok = "ab".repeat(3) === "ababab"
+        && "ab".repeat(0) === ""
+        && String.prototype.repeat.call(123, 2) === "123123"
+        && "a".repeat(Number.NaN) === "";
+      var neg = false;
+      try { "a".repeat(-1); } catch(e) { neg = e.name === "RangeError"; }
+      var inf = false;
+      try { "a".repeat(1e999); } catch(e) { inf = e.name === "RangeError"; }
+      ok && neg && inf"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_substr_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt

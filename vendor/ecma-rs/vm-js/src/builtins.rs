@@ -6274,6 +6274,84 @@ pub fn string_prototype_split(
   Ok(Value::Object(array))
 }
 
+/// `String.prototype.repeat(count)` (ECMA-262) (minimal).
+pub fn string_prototype_repeat(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let count_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = scope.to_number(vm, host, hooks, count_val)?;
+  if n.is_nan() {
+    n = 0.0;
+  }
+  if !n.is_finite() {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid count value")?;
+    return Err(VmError::Throw(err));
+  }
+  n = n.trunc();
+  if n < 0.0 {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid count value")?;
+    return Err(VmError::Throw(err));
+  }
+
+  if n == 0.0 {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  // `ToIntegerOrInfinity` yields an integral f64; guard against extremely large counts before
+  // converting to usize.
+  if n > (usize::MAX as f64) {
+    let intr = require_intrinsics(vm)?;
+    let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
+    return Err(VmError::Throw(err));
+  }
+  let count = n as usize;
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units().to_vec()
+  };
+  if units.is_empty() {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let total_len = match units.len().checked_mul(count) {
+    Some(n) => n,
+    None => {
+      let intr = require_intrinsics(vm)?;
+      let err = crate::new_range_error(&mut scope, intr, "Invalid string length")?;
+      return Err(VmError::Throw(err));
+    }
+  };
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for i in 0..count {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    out.extend_from_slice(&units);
+  }
+
+  let out = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,
