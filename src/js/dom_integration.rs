@@ -280,7 +280,7 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::prepare_dynamic_script_on_insertion;
+  use super::{build_non_parser_inserted_script_spec, prepare_dynamic_script_on_insertion};
   use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::{
@@ -532,12 +532,30 @@ mod tests {
       .set_attribute(script, "crossorigin", " \tuse-credentials\t ")
       .expect("set_attribute should succeed");
 
-    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_non_parser_inserted_script_spec(&dom, script);
     assert_eq!(
       spec.crossorigin,
       Some(crate::resource::CorsMode::UseCredentials)
     );
     Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_spec_exposes_force_async_internal_slot() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let script = doc.create_element("script", "");
+    doc.append_child(doc.root(), script).expect("append_child");
+
+    // HTML: for dynamically created scripts, `force async` defaults to true.
+    let spec = build_non_parser_inserted_script_spec(&doc, script);
+    assert!(!spec.parser_inserted);
+    assert!(spec.force_async);
+
+    // If host code toggles the internal slot (e.g. `script.async = false`), the built spec should
+    // reflect that value.
+    doc.node_mut(script).script_force_async = false;
+    let spec2 = build_non_parser_inserted_script_spec(&doc, script);
+    assert!(!spec2.force_async);
   }
 }
 

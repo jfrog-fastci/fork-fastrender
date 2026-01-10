@@ -146,6 +146,7 @@ mod tests {
     assert_eq!(spec.base_url.as_deref(), Some(document_url));
     assert_eq!(spec.src.as_deref(), Some("https://ex/a.js"));
     assert!(spec.parser_inserted);
+    assert!(!spec.force_async, "parser-inserted scripts must have force_async=false");
   }
 
   #[test]

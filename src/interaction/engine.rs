@@ -242,6 +242,34 @@ mod tests {
       .is_some()
   }
 
+  fn set_text_selection_caret(engine: &mut InteractionEngine, dom: &mut DomNode, node_id: usize, caret: usize) {
+    engine.text_edit = Some(TextEditState {
+      node_id,
+      caret,
+      selection_anchor: None,
+      preferred_column: None,
+    });
+    let mut index = DomIndexMut::new(dom);
+    write_text_edit_data_attrs(&mut index, node_id, caret, None);
+  }
+
+  fn set_text_selection_range(
+    engine: &mut InteractionEngine,
+    dom: &mut DomNode,
+    node_id: usize,
+    start: usize,
+    end: usize,
+  ) {
+    engine.text_edit = Some(TextEditState {
+      node_id,
+      caret: end,
+      selection_anchor: Some(start),
+      preferred_column: None,
+    });
+    let mut index = DomIndexMut::new(dom);
+    write_text_edit_data_attrs(&mut index, node_id, end, Some((start, end)));
+  }
+
   #[test]
   fn ime_preedit_sets_composition_without_mutating_value() {
     let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
@@ -404,7 +432,7 @@ mod tests {
     engine.focus_node_id(&mut dom, Some(input_id), true);
 
     // Place the caret between "a" and "あ".
-    engine.set_text_selection_caret(input_id, "a".len());
+    set_text_selection_caret(&mut engine, &mut dom, input_id, "a".len());
 
     let changed = engine.key_action(&mut dom, KeyAction::Delete);
     assert!(changed);
@@ -421,7 +449,7 @@ mod tests {
     engine.focus_node_id(&mut dom, Some(textarea_id), true);
 
     // Delete "ell".
-    engine.set_text_selection_range(textarea_id, 1, 4);
+    set_text_selection_range(&mut engine, &mut dom, textarea_id, 1, 4);
 
     let changed = engine.key_action(&mut dom, KeyAction::Delete);
     assert!(changed);
