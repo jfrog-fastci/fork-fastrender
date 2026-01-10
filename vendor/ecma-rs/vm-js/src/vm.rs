@@ -443,35 +443,63 @@ impl Vm {
   }
 
   /// Performs a microtask checkpoint, draining the VM's microtask queue.
+  ///
+  /// This is a convenience wrapper that uses a dummy host context (`()`), preserving
+  /// source-compatibility with earlier versions of `vm-js`.
+  ///
+  /// Embeddings that need queued Promise jobs to run with access to embedder state should prefer
+  /// [`Vm::perform_microtask_checkpoint_with_host`].
+  #[inline]
   pub fn perform_microtask_checkpoint(&mut self, heap: &mut Heap) -> Result<(), VmError> {
+    let mut dummy_host = ();
+    self.perform_microtask_checkpoint_with_host(&mut dummy_host, heap)
+  }
+
+  /// Performs a microtask checkpoint, draining the VM's microtask queue using an explicit embedder
+  /// host context.
+  ///
+  /// Any calls/constructs performed by queued jobs (for example `Promise.then` callbacks) will be
+  /// executed with the provided `host` and therefore can access embedder state in native call and
+  /// construct handlers.
+  pub fn perform_microtask_checkpoint_with_host(
+    &mut self,
+    host: &mut dyn VmHost,
+    heap: &mut Heap,
+  ) -> Result<(), VmError> {
     struct Ctx<'a> {
       vm: &'a mut Vm,
+      host: &'a mut dyn VmHost,
       heap: &'a mut Heap,
     }
 
     impl VmJobContext for Ctx<'_> {
       fn call(
         &mut self,
-        host: &mut dyn VmHostHooks,
+        hooks: &mut dyn VmHostHooks,
         callee: Value,
         this: Value,
         args: &[Value],
       ) -> Result<Value, VmError> {
         let mut scope = self.heap.scope();
-        self.vm.call_with_host(&mut scope, host, callee, this, args)
+        self.vm.call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
       }
 
       fn construct(
         &mut self,
-        host: &mut dyn VmHostHooks,
+        hooks: &mut dyn VmHostHooks,
         callee: Value,
         args: &[Value],
         new_target: Value,
       ) -> Result<Value, VmError> {
         let mut scope = self.heap.scope();
-        self
-          .vm
-          .construct_with_host(&mut scope, host, callee, args, new_target)
+        self.vm.construct_with_host_and_hooks(
+          &mut *self.host,
+          &mut scope,
+          hooks,
+          callee,
+          args,
+          new_target,
+        )
       }
 
       fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
@@ -539,14 +567,18 @@ impl Vm {
         break;
       };
 
-      let mut ctx = Ctx { vm: self, heap };
-      let mut host = LocalHost::new();
+      let mut ctx = Ctx {
+        vm: self,
+        host,
+        heap,
+      };
+      let mut hooks = LocalHost::new();
 
-      let job_result = job.run(&mut ctx, &mut host);
+      let job_result = job.run(&mut ctx, &mut hooks);
 
       // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
       // microtask queue before proceeding.
-      host.drain_into(&mut ctx.vm.microtasks);
+      hooks.drain_into(&mut ctx.vm.microtasks);
 
       if first_err.is_none() {
         if let Err(e) = job_result {
