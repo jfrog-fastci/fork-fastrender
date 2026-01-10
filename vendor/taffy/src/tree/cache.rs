@@ -392,6 +392,78 @@ mod tests {
   }
 
   #[test]
+  fn compute_size_cache_allows_promotion_for_definite_available_space() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Promotions are still allowed when the cached entry was computed under a definite available
+    // space constraint for that axis.
+    let hit = cache.get(
+      Size {
+        width: Some(100.0),
+        height: None,
+      },
+      Size {
+        width: AvailableSpace::Definite(600.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+    );
+    assert_eq!(
+      hit.map(|o| o.size),
+      Some(Size {
+        width: 100.0,
+        height: 10.0,
+      })
+    );
+  }
+
+  #[test]
+  fn compute_size_cache_promotion_is_gated_per_axis() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Width promotion is allowed (cached available width is Definite), but height promotion is
+    // disallowed (cached available height is intrinsic).
+    let hit = cache.get(
+      Size {
+        width: Some(100.0),
+        height: Some(10.0),
+      },
+      Size {
+        width: AvailableSpace::Definite(600.0),
+        height: AvailableSpace::Definite(600.0),
+      },
+      RunMode::ComputeSize,
+    );
+    assert!(hit.is_none());
+  }
+
+  #[test]
   fn perform_layout_cache_does_not_promote_intrinsic_measurements_to_known_dimensions() {
     let mut cache = Cache::new();
 
