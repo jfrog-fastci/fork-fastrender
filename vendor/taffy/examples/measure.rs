@@ -89,6 +89,7 @@ fn main() -> Result<(), taffy::TaffyError> {
         node_context,
         &font_metrics,
       )
+      .into()
     },
   )?;
   taffy.print_tree(root);

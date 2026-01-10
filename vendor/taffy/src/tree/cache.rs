@@ -144,10 +144,22 @@ impl Cache {
         .final_layout_entry
         .filter(|entry| {
           let cached_size = entry.content.size;
-          (known_dimensions.width == entry.known_dimensions.width
-            || known_dimensions.width == Some(cached_size.width))
-            && (known_dimensions.height == entry.known_dimensions.height
-              || known_dimensions.height == Some(cached_size.height))
+          // We allow reusing an entry computed with `known_dimensions.{axis} == None` when the
+          // caller later provides `known_dimensions.{axis} == Some(cached_size.{axis})` (a
+          // "promotion") *only* if the cached entry was computed under a definite available-space
+          // constraint for that axis.
+          //
+          // Promotions across intrinsic sizing queries (Min/MaxContent) are not safe: leaf measure
+          // functions may return a different cross size once the main size becomes known/definite.
+          let width_matches = known_dimensions.width == entry.known_dimensions.width
+            || (entry.available_space.width.is_definite()
+              && known_dimensions.width == Some(cached_size.width));
+          let height_matches = known_dimensions.height == entry.known_dimensions.height
+            || (entry.available_space.height.is_definite()
+              && known_dimensions.height == Some(cached_size.height));
+
+          width_matches
+            && height_matches
             && (known_dimensions.width.is_some()
               || entry
                 .available_space
@@ -164,10 +176,16 @@ impl Cache {
         let matches = |entry: &CacheEntry<Size<f32>>| {
           let cached_size = entry.content;
 
-          (known_dimensions.width == entry.known_dimensions.width
-            || known_dimensions.width == Some(cached_size.width))
-            && (known_dimensions.height == entry.known_dimensions.height
-              || known_dimensions.height == Some(cached_size.height))
+          // See comment in the PerformLayout cache path.
+          let width_matches = known_dimensions.width == entry.known_dimensions.width
+            || (entry.available_space.width.is_definite()
+              && known_dimensions.width == Some(cached_size.width));
+          let height_matches = known_dimensions.height == entry.known_dimensions.height
+            || (entry.available_space.height.is_definite()
+              && known_dimensions.height == Some(cached_size.height));
+
+          width_matches
+            && height_matches
             && (known_dimensions.width.is_some()
               || entry
                 .available_space
@@ -237,10 +255,17 @@ impl Cache {
 
         let matches = |entry: &CacheEntry<Size<f32>>| {
           let cached_size = entry.content;
-          (known_dimensions.width == entry.known_dimensions.width
-            || known_dimensions.width == Some(cached_size.width))
-            && (known_dimensions.height == entry.known_dimensions.height
-              || known_dimensions.height == Some(cached_size.height))
+
+          // See comment in Cache::get.
+          let width_matches = known_dimensions.width == entry.known_dimensions.width
+            || (entry.available_space.width.is_definite()
+              && known_dimensions.width == Some(cached_size.width));
+          let height_matches = known_dimensions.height == entry.known_dimensions.height
+            || (entry.available_space.height.is_definite()
+              && known_dimensions.height == Some(cached_size.height));
+
+          width_matches
+            && height_matches
             && (known_dimensions.width.is_some()
               || entry
                 .available_space
@@ -325,4 +350,114 @@ pub enum ClearState {
   Cleared,
   /// Everything was already cleared
   AlreadyEmpty,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn compute_size_cache_does_not_promote_intrinsic_measurements_to_known_dimensions() {
+    let mut cache = Cache::new();
+
+    // Store an intrinsic (max-content) measurement with no known dimensions.
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::MaxContent,
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // If the cache incorrectly treats "known == cached_size" as a match across intrinsic queries,
+    // then this would hit and return the cached (100, 10) size. After the fix, this must miss so
+    // that the leaf can be remeasured under the definite constraint.
+    let hit = cache.get(
+      Size {
+        width: Some(100.0),
+        height: None,
+      },
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+    );
+    assert!(hit.is_none());
+  }
+
+  #[test]
+  fn compute_size_cache_store_keeps_intrinsic_and_definite_entries_separate() {
+    let mut cache = Cache::new();
+
+    let intrinsic_key = (
+      Size::NONE,
+      Size {
+        width: AvailableSpace::MaxContent,
+        height: AvailableSpace::MaxContent,
+      },
+    );
+
+    let definite_key = (
+      Size {
+        width: Some(100.0),
+        height: None,
+      },
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+    );
+
+    cache.store(
+      intrinsic_key.0,
+      intrinsic_key.1,
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Storing a later, definite-key measurement should not be considered "equivalent" to the
+    // intrinsic entry (even if the known width equals the intrinsic result). Without this, the
+    // definite entry can clobber the intrinsic one, forcing unnecessary remeasures on later
+    // intrinsic probes.
+    cache.store(
+      definite_key.0,
+      definite_key.1,
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 20.0,
+      }),
+    );
+
+    let intrinsic_hit = cache
+      .get(intrinsic_key.0, intrinsic_key.1, RunMode::ComputeSize)
+      .map(|o| o.size);
+    assert_eq!(
+      intrinsic_hit,
+      Some(Size {
+        width: 100.0,
+        height: 10.0,
+      })
+    );
+
+    let definite_hit = cache
+      .get(definite_key.0, definite_key.1, RunMode::ComputeSize)
+      .map(|o| o.size);
+    assert_eq!(
+      definite_hit,
+      Some(Size {
+        width: 100.0,
+        height: 20.0,
+      })
+    );
+  }
 }

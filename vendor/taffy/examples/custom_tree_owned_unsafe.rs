@@ -204,6 +204,7 @@ impl LayoutPartialTree for StatelessLayoutTree {
               node.text_data.as_ref().unwrap(),
               &font_metrics,
             )
+            .into()
           },
         ),
         NodeKind::Image => compute_leaf_layout(
@@ -211,7 +212,7 @@ impl LayoutPartialTree for StatelessLayoutTree {
           &node.style,
           |val, basis| tree.resolve_calc_value(val, basis),
           |known_dimensions, _available_space| {
-            image_measure_function(known_dimensions, node.image_data.as_ref().unwrap())
+            image_measure_function(known_dimensions, node.image_data.as_ref().unwrap()).into()
           },
         ),
       }
