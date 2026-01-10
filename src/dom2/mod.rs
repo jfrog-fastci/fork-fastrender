@@ -518,6 +518,14 @@ impl Document {
     Ok(())
   }
 
+  pub fn script_already_started(&self, node: NodeId) -> Result<bool, DomError> {
+    let node = self.node_checked(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    Ok(node.script_already_started)
+  }
+
   pub fn nodes(&self) -> &[Node] {
     &self.nodes
   }

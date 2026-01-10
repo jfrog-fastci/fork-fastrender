@@ -467,21 +467,20 @@ pub(crate) fn prepare_script_element_dom2(
     doc.node_mut(script).script_force_async = true;
   }
 
-  // HTML `prepare the script element` early-returns (without setting `already started`) when:
-  // - there is no `src` attribute and the source text is empty; or
-  // - the script block's type string is unsupported (type left as null / unknown).
+  // Whether the caller should hand this script off to the scheduler / execution pipeline.
   //
-  // These are the cases where the spec wants the element to remain eligible to run later after
-  // mutation, using `force async` for async-by-default behavior.
-  let should_run =
-    !(!spec.src_attr_present && spec.inline_text.is_empty()) && spec.script_type != ScriptType::Unknown;
-
-  if should_run && was_parser_inserted {
-    doc.node_mut(script).script_parser_document = true;
-    doc.node_mut(script).script_force_async = false;
+  // NOTE: This is intentionally broader than "will execute":
+  // - External scripts with `src` present but empty/invalid must still be processed so the scheduler
+  //   can queue an `error` event task (HTML: `src` presence suppresses inline fallback).
+  // - Module / import map scripts are not executed everywhere yet, but still participate in error
+  //   event dispatch for invalid `src`.
+  if matches!(spec.script_type, ScriptType::Unknown) {
+    return false;
   }
 
-  should_run
+  // HTML: If there is no `src` attribute and the source text is empty, "prepare a script" returns
+  // early (after clearing parser-document/force-async as above).
+  spec.src_attr_present || !spec.inline_text.is_empty()
 }
 #[cfg(test)]
 mod tests {

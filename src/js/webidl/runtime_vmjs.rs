@@ -1141,23 +1141,41 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       id
     };
 
+    let construct_id = if let Some(id) = self.state.native_construct_id.get() {
+      id
+    } else {
+      let id = self
+        .cx
+        .vm
+        .register_native_construct(dispatch_native_construct::<Host>)?;
+      self.state.native_construct_id.set(Some(id));
+      id
+    };
+
     let intr = self.intrinsics()?;
 
     // Root the name across allocation of the function object.
     let name_s = self.cx.scope.alloc_string(name)?;
     self.cx.scope.push_root(Value::String(name_s))?;
 
+    // `vm-js` distinguishes between `[[Call]]` and `[[Construct]]`. The legacy bindings generator
+    // (which targets this runtime trait) assumes plain functions are constructable (matching
+    // JavaScript's default `Function` semantics) and expects interface objects like `URL` /
+    // `URLSearchParams` / `Node` to support `new`.
+    //
+    // To keep those bindings working while we transition to the `webidl-vm-js` codegen backend, we
+    // install the same Rust callback for both `[[Call]]` and `[[Construct]]`.
     let func = self
       .cx
       .scope
-      .alloc_native_function(call_id, None, name_s, length)?;
+      .alloc_native_function(call_id, Some(construct_id), name_s, length)?;
     self.cx.scope.push_root(Value::Object(func))?;
     self.cx
       .scope
       .heap_mut()
       .object_set_prototype(func, Some(intr.function_prototype()))?;
 
-    let dispatch_ptr = self.state.alloc_dispatch_record(f as usize, 0);
+    let dispatch_ptr = self.state.alloc_dispatch_record(f as usize, f as usize);
     let slots = HostSlots {
       a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
       b: dispatch_ptr as u64,

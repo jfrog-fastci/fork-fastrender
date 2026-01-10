@@ -773,6 +773,18 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         }
       }
       ScriptType::Module => {
+        // Even when module execution is disabled, HTML still requires that an empty/invalid `src`
+        // attribute queues an `error` event task (and the element must not fall back to inline
+        // execution).
+        if element.src_attr_present && element.src.as_deref().filter(|s| !s.is_empty()).is_none() {
+          actions.push(ScriptSchedulerAction::QueueScriptEventTask {
+            script_id: id,
+            node_id,
+            event: ScriptElementEvent::Error,
+          });
+          return Ok(DiscoveredScript { id, actions });
+        }
+
         if !self.options.supports_module_scripts {
           // Treat module scripts as unsupported when the embedding does not enable module execution.
           // This mirrors browser behavior where unsupported `<script type="module">` is ignored.
@@ -798,14 +810,8 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         };
 
         if element.src_attr_present {
-          // HTML: module scripts with `src` present but empty/invalid also queue `error` and do not
-          // fall back to inline execution.
           let Some(url) = element.src.filter(|s| !s.is_empty()) else {
-            actions.push(ScriptSchedulerAction::QueueScriptEventTask {
-              script_id: id,
-              node_id,
-              event: ScriptElementEvent::Error,
-            });
+            // Handled above (before `supports_module_scripts` gating).
             return Ok(DiscoveredScript { id, actions });
           };
 
