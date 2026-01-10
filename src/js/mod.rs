@@ -306,6 +306,7 @@ pub struct ScriptElementSpec {
 
 impl ScriptElementSpec {
   /// Whether this script should be suppressed due to the `nomodule` attribute.
+  #[inline]
   pub fn is_suppressed_by_nomodule(&self, options: &JsExecutionOptions) -> bool {
     options.supports_module_scripts && self.script_type == ScriptType::Classic && self.nomodule_attr
   }

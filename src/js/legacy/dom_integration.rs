@@ -111,12 +111,15 @@ where
     return Ok(());
   };
 
+  // HTML: in "prepare the script element", if the element has a `nomodule` content attribute and
+  // its computed script type is `classic` (and the user agent supports module scripts), the
+  // algorithm returns early (the script is not fetched/executed).
+  if spec.is_suppressed_by_nomodule(&scheduler.options()) {
+    return Ok(());
+  }
+
   match spec.script_type {
     ScriptType::Classic => {
-      if spec.is_suppressed_by_nomodule(&scheduler.options()) {
-        return Ok(());
-      }
-
       // External scripts are handled directly by the scheduler so they start loading immediately.
       // Inline scripts are queued as tasks to keep DOM mutation calls non-reentrant.
       if spec.src_attr_present {
@@ -274,7 +277,7 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{build_non_parser_inserted_script_spec, prepare_dynamic_script_on_insertion};
-  use crate::dom2::Document;
+  use crate::dom2::{parse_html, Document};
   use crate::error::Result;
   use crate::js::{
     ClassicScriptScheduler, DomHost, EventLoop, RunLimits, ScriptElementEvent, ScriptElementSpec,
@@ -549,6 +552,43 @@ mod tests {
     doc.node_mut(script).script_force_async = false;
     let spec2 = build_non_parser_inserted_script_spec(&doc, script);
     assert!(!spec2.force_async);
+  }
+
+  #[test]
+  fn dynamic_inline_nomodule_script_is_ignored() -> Result<()> {
+    let dom =
+      parse_html("<!doctype html><html><body><script id=s nomodule>RUN</script></body></html>")?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.started_loads.is_empty());
+    assert!(host.executed.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_nomodule_script_is_ignored() -> Result<()> {
+    let dom = parse_html(
+      "<!doctype html><html><body><script id=s nomodule src=a.js></script></body></html>",
+    )?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.started_loads.is_empty());
+    assert!(host.executed.is_empty());
+    Ok(())
   }
 }
 

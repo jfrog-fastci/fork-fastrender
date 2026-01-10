@@ -159,7 +159,6 @@ we can land a correct classic-script core first:
   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
     `'sha256-...'`).
   - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
-- The `nomodule` attribute behavior
 - Full HTML `document.write()` / “ignore-destructive-writes counter” semantics
   - FastRender implements a **limited streaming-parse re-entry subset** (`src/html/document_write.rs`):
     `document.write()`/`writeln()` inject into the active streaming parser input stream during

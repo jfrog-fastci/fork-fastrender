@@ -1179,6 +1179,7 @@ impl BrowserTabHost {
     }
 
     let spec_for_table = spec.clone();
+    let nomodule_blocked = spec_for_table.is_suppressed_by_nomodule(&self.js_execution_options);
     let discovered = self
       .scheduler
       .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
@@ -1190,8 +1191,12 @@ impl BrowserTabHost {
       && spec_for_table.src_attr_present
       && spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty())
       && spec_for_table.defer_attr
-      && !spec_for_table.async_attr;
-    if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
+      && !spec_for_table.async_attr
+      && !nomodule_blocked;
+    if spec_for_table.script_type == ScriptType::Classic
+      && !spec_for_table.src_attr_present
+      && !nomodule_blocked
+    {
       self
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;

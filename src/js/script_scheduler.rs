@@ -168,6 +168,12 @@ where
       return Ok(());
     }
 
+    // HTML: When a user agent supports module scripts, classic scripts with the `nomodule`
+    // attribute must be ignored completely (not fetched/executed).
+    if spec.nomodule_attr {
+      return Ok(());
+    }
+
     // Inline scripts execute immediately (async/defer ignored).
     //
     // Note: the HTML script processing model treats the *presence* of the `src` attribute as
@@ -417,7 +423,7 @@ where
 ///
 /// Out of scope (intentionally not modeled here):
 /// - Module scripts (`type="module"`) and import maps.
-/// - CSP, `nomodule`, stylesheet-blocking scripts, and `document.write`.
+/// - CSP, stylesheet-blocking scripts, and `document.write`.
 ///
 /// ## Orchestrator contract
 ///
@@ -1597,6 +1603,11 @@ mod state_machine_tests {
     }
   }
 
+  fn with_nomodule(mut spec: ScriptElementSpec) -> ScriptElementSpec {
+    spec.nomodule_attr = true;
+    spec
+  }
+
   struct Harness {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
@@ -1952,6 +1963,42 @@ mod state_machine_tests {
     );
     assert!(h.host.log.is_empty(), "nomodule scripts must not execute");
     Ok(())
+  }
+
+  #[test]
+  fn nomodule_applies_to_dynamic_inserted_scripts_too_when_module_scripts_supported() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    h.discover_dynamic(with_nomodule(classic_external_dynamic(
+      "dyn.js", false, false, /* force_async */ true,
+    )))?;
+    h.discover_dynamic(with_nomodule(classic_inline_dynamic("INLINE")))?;
+
+    assert!(
+      h.host.log.is_empty(),
+      "nomodule dynamic scripts must not execute"
+    );
+    assert!(
+      h.started_fetches.is_empty(),
+      "nomodule dynamic scripts must not start any fetch"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_does_not_apply_to_module_scripts() {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+
+    let mut module = classic_inline("MODULE");
+    module.script_type = ScriptType::Module;
+    module.nomodule_attr = true;
+    assert!(
+      !module.is_suppressed_by_nomodule(&options),
+      "nomodule must not block module scripts"
+    );
   }
 
   #[test]
