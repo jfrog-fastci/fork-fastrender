@@ -1521,6 +1521,10 @@ impl<'a> Evaluator<'a> {
     // Note: switch/catch share this helper even though their scope isn't a syntactic `{}` block.
     let mut seen = HashSet::<String>::new();
     for stmt in stmts {
+      // Budget statement-list traversal even when it contains only function declarations (which are
+      // instantiated in a later pass). Without this, a block containing many declarations could do
+      // large `O(N)` early-error work without any budget checks.
+      self.tick()?;
       match &*stmt.stx {
         Stmt::VarDecl(var) if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const => {
           for declarator in &var.stx.declarators {
@@ -1564,6 +1568,10 @@ impl<'a> Evaluator<'a> {
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
     for stmt in stmts {
+      // Tick per statement list entry so large blocks of function declarations cannot be
+      // instantiated without consuming fuel (and so we still check termination conditions even if
+      // a prior pass used up all remaining fuel).
+      self.tick()?;
       let Stmt::FunctionDecl(decl) = &*stmt.stx else {
         continue;
       };
