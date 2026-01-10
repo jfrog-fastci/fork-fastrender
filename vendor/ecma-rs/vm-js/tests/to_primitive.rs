@@ -72,3 +72,25 @@ fn to_primitive_throws_when_symbol_to_primitive_is_not_callable() {
     .unwrap();
   assert_eq!(ok, Value::Bool(true));
 }
+
+#[test]
+fn promise_then_native_string_handler_rejects_on_to_primitive_typeerror() {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    "var logged;\n\
+     Promise.resolve({ [Symbol.toPrimitive]: 123 })\n\
+       .then(String)\n\
+       .catch(e => { logged = e.name; });",
+  )
+  .unwrap();
+
+  // Promise jobs should treat implicit TypeErrors from native callbacks as thrown exceptions,
+  // turning them into promise rejections rather than aborting the microtask checkpoint.
+  rt.vm
+    .perform_microtask_checkpoint(&mut rt.heap)
+    .expect("microtask checkpoint");
+
+  let logged = rt.exec_script("logged").unwrap();
+  assert_eq!(value_as_utf8(&rt, logged), "TypeError");
+}

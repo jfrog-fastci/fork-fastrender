@@ -38,6 +38,30 @@ use std::time::Duration;
 use std::time::Instant;
 use std::{mem, ops};
 
+/// Converts internal `VmError` variants that represent spec `ThrowCompletion`s (TypeError, etc.)
+/// into `VmError::Throw` by allocating a minimal `TypeError` instance.
+///
+/// This is primarily needed for non-evaluator call sites (e.g. Promise jobs/microtasks), which
+/// treat only `VmError::Throw*` as catchable exceptions.
+fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
+  let Some(intr) = vm.intrinsics() else {
+    return err;
+  };
+  match err {
+    VmError::TypeError(message) => crate::throw_type_error(scope, intr, message),
+    VmError::NotCallable => crate::throw_type_error(scope, intr, "value is not callable"),
+    VmError::NotConstructable => crate::throw_type_error(scope, intr, "value is not a constructor"),
+    VmError::PrototypeCycle => crate::throw_type_error(scope, intr, "prototype cycle"),
+    VmError::PrototypeChainTooDeep => crate::throw_type_error(scope, intr, "prototype chain too deep"),
+    VmError::InvalidPropertyDescriptorPatch => crate::throw_type_error(
+      scope,
+      intr,
+      "invalid property descriptor patch: cannot mix data and accessor fields",
+    ),
+    other => other,
+  }
+}
+
 /// A native (host-implemented) function call handler.
 pub type NativeCall =
   for<'a> fn(
@@ -1293,7 +1317,7 @@ impl Vm {
 
     let callee_obj = match callee {
       Value::Object(obj) => obj,
-      _ => return Err(VmError::NotCallable),
+      _ => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotCallable)),
     };
     // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward the call to
     // the target with the bound `this` and arguments.
@@ -1326,7 +1350,10 @@ impl Vm {
         );
       }
     }
-    let call_handler = scope.heap().get_function_call_handler(callee_obj)?;
+    let call_handler = match scope.heap().get_function_call_handler(callee_obj) {
+      Ok(h) => h,
+      Err(e) => return Err(coerce_error_to_throw(self, &mut scope, e)),
+    };
 
     let function_name = scope
       .heap()
@@ -1368,6 +1395,11 @@ impl Vm {
     };
 
     // Capture a stack trace for thrown exceptions before the current frame is popped.
+    let result = match result {
+      Err(e) => Err(coerce_error_to_throw(&vm, &mut scope, e)),
+      Ok(v) => Ok(v),
+    };
+
     match result {
       Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
         value,
@@ -1537,7 +1569,7 @@ impl Vm {
 
     let callee_obj = match callee {
       Value::Object(obj) => obj,
-      _ => return Err(VmError::NotConstructable),
+      _ => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable)),
     };
 
     // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward construction to
@@ -1578,10 +1610,11 @@ impl Vm {
         );
       }
     }
-    let construct_handler = scope
-      .heap()
-      .get_function_construct_handler(callee_obj)?
-      .ok_or(VmError::NotConstructable)?;
+    let construct_handler = match scope.heap().get_function_construct_handler(callee_obj) {
+      Ok(Some(h)) => h,
+      Ok(None) => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable)),
+      Err(e) => return Err(coerce_error_to_throw(self, &mut scope, e)),
+    };
 
     let function_name = scope
       .heap()
@@ -1631,6 +1664,11 @@ impl Vm {
     };
 
     // Capture a stack trace for thrown exceptions before the current frame is popped.
+    let result = match result {
+      Err(e) => Err(coerce_error_to_throw(&vm, &mut scope, e)),
+      Ok(v) => Ok(v),
+    };
+
     match result {
       Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
         value,
