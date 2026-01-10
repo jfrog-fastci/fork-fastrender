@@ -245,6 +245,30 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_1_through_9_select_tabs() {
+    for (n, key) in [
+      (1u8, Key::Num1),
+      (2, Key::Num2),
+      (3, Key::Num3),
+      (4, Key::Num4),
+      (5, Key::Num5),
+      (6, Key::Num6),
+      (7, Key::Num7),
+      (8, Key::Num8),
+      (9, Key::Num9),
+    ] {
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(true, false, false, false)),
+          Platform::Other
+        ),
+        Some(ShortcutAction::ActivateTabNumber(n)),
+        "expected Ctrl+{n} to map to ActivateTabNumber({n})"
+      );
+    }
+  }
+
+  #[test]
   fn ctrl_t_new_tab() {
     assert_eq!(
       map_shortcut_with_platform(
@@ -344,6 +368,25 @@ mod tests {
     assert_eq!(
       map_shortcut_with_platform(
         KeyEvent::new(Key::T, Modifiers::new(true, false, true, false)),
+        Platform::Other
+      ),
+      None
+    );
+    // Ensure we don't treat AltGr as chrome-level Ctrl shortcuts.
+    for key in [Key::L, Key::Tab, Key::Num1, Key::Equals, Key::Minus, Key::R] {
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(true, false, true, false)),
+          Platform::Other
+        ),
+        None,
+        "expected Ctrl+Alt+{key:?} to not map to a browser shortcut"
+      );
+    }
+    // Ensure AltGr doesn't trigger Alt+Left/Right history navigation.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Left, Modifiers::new(true, false, true, false)),
         Platform::Other
       ),
       None
