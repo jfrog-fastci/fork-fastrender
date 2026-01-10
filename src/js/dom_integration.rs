@@ -599,7 +599,7 @@ mod tests {
 
     let mut host = TestHost::new(dom);
     let mut options = JsExecutionOptions::default();
-    options.supports_module_scripts = true;
+    options.supports_module_scripts = false;
     let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
@@ -624,7 +624,7 @@ mod tests {
 
     let mut host = TestHost::new(dom);
     let mut options = JsExecutionOptions::default();
-    options.supports_module_scripts = true;
+    options.supports_module_scripts = false;
     let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
