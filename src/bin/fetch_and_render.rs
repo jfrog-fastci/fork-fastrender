@@ -13,8 +13,8 @@ use fastrender::cli_utils as common;
 use clap::{ArgAction, Parser};
 use common::args::{
   AllowPartialArgs, AnimationTimeArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, JsExecutionArgs,
-  LayoutParallelArgs, MediaArgs, MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs,
-  ViewportArgs,
+  LayoutParallelArgs, MediaArgs, MemoryGuardArgs, OutputFormatArgs, RenderParseArgs,
+  ResourceAccessArgs, TimeoutArgs, ViewportArgs,
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
@@ -86,8 +86,8 @@ const DEFAULT_JS_FUEL: u64 = 5_000_000;
 const DEFAULT_JS_CHECK_TIME_EVERY: u32 = 100;
 
 fn js_budget_for_script(run_limits: RunLimits) -> Budget {
-  let render_remaining = fastrender::render_control::root_deadline()
-    .and_then(|deadline| deadline.remaining_timeout());
+  let render_remaining =
+    fastrender::render_control::root_deadline().and_then(|deadline| deadline.remaining_timeout());
 
   let deadline_duration = match (run_limits.max_wall_time, render_remaining) {
     (Some(a), Some(b)) => Some(a.min(b)),
@@ -148,7 +148,10 @@ fn decode_external_classic_script_bytes(
       .into_owned();
   }
 
-  if let Some(label) = charset_attr.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) {
+  if let Some(label) = charset_attr
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+  {
     let label = label.trim_matches('"').trim_matches('\'');
     if let Some(enc) = Encoding::for_label(label.as_bytes()) {
       return enc.decode_with_bom_removal(bytes).0.into_owned();
@@ -277,6 +280,9 @@ struct Args {
 
   #[command(flatten)]
   compat: CompatArgs,
+
+  #[command(flatten)]
+  render_parse: RenderParseArgs,
 
   /// Enable JavaScript execution (experimental)
   #[arg(long = "js", action = ArgAction::SetTrue)]
@@ -890,6 +896,7 @@ fn try_main(args: Args) -> Result<()> {
     scroll_y,
     dpr: args.surface.dpr,
     media_type: args.media.media_type(),
+    render_parse_scripting_enabled: args.render_parse.render_parse_scripting_enabled,
     animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: args.allow_partial.allow_partial,

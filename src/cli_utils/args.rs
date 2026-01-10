@@ -1,4 +1,3 @@
-use clap::{Args, ValueEnum};
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::image_output::OutputFormat;
@@ -7,6 +6,7 @@ use crate::layout::engine::LayoutParallelism;
 use crate::layout::engine::DEFAULT_LAYOUT_MIN_FANOUT;
 use crate::resource::CacheStalePolicy;
 use crate::style::media::MediaType;
+use clap::{Args, ValueEnum};
 use std::time::Duration;
 
 #[allow(dead_code)]
@@ -209,6 +209,24 @@ impl CompatArgs {
   pub fn dom_compat_arg(&self) -> Option<DomCompatArg> {
     self.dom_compat
   }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RenderParseArgs {
+  /// Parse HTML for rendering with "scripting enabled" semantics (affects `<noscript>` parsing).
+  ///
+  /// This controls html5ever's tree-builder scripting flag; it does not execute JavaScript.
+  ///
+  /// Defaults to `true` to match Chrome baselines captured with CSP `script-src` blocked (script
+  /// execution disabled, but HTML parsing semantics still "scripting enabled").
+  #[arg(
+    long = "render-parse-scripting-enabled",
+    default_value_t = true,
+    value_parser = parse_bool_preference,
+    default_missing_value = "true",
+    num_args = 0..=1
+  )]
+  pub render_parse_scripting_enabled: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -531,17 +549,29 @@ pub struct JsExecutionArgs {
   pub max_pending_timers: Option<usize>,
 
   /// Maximum number of tasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
-  #[arg(long = "js-max-tasks", alias = "js-max-tasks-per-spin", value_name = "N")]
+  #[arg(
+    long = "js-max-tasks",
+    alias = "js-max-tasks-per-spin",
+    value_name = "N"
+  )]
   pub max_tasks_per_spin: Option<usize>,
 
   /// Maximum number of microtasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
-  #[arg(long = "js-max-microtasks", alias = "js-max-microtasks-per-spin", value_name = "N")]
+  #[arg(
+    long = "js-max-microtasks",
+    alias = "js-max-microtasks-per-spin",
+    value_name = "N"
+  )]
   pub max_microtasks_per_spin: Option<usize>,
 
   /// Maximum wall-time per `EventLoop::run_until_idle`/`spin_until` "spin" in milliseconds.
   ///
   /// Use `0` to disable the wall-time spin limit (unbounded).
-  #[arg(long = "js-max-wall-ms", alias = "js-max-wall-time-per-spin-ms", value_name = "MS")]
+  #[arg(
+    long = "js-max-wall-ms",
+    alias = "js-max-wall-time-per-spin-ms",
+    value_name = "MS"
+  )]
   pub max_wall_time_per_spin_ms: Option<u64>,
 
   /// Placeholder VM budget: maximum instruction count before VM interrupt.

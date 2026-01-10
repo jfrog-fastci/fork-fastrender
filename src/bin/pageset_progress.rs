@@ -17,8 +17,8 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_shard, AnimationTimeArgs, CompatArgs, CompatProfileArg,
   DiskCacheArgs, DomCompatArg, LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs,
-  ResourceAccessArgs,
-  DEFAULT_DISK_CACHE_MAX_AGE_SECS, DEFAULT_DISK_CACHE_MAX_BYTES,
+  RenderParseArgs, ResourceAccessArgs, DEFAULT_DISK_CACHE_MAX_AGE_SECS,
+  DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
   build_http_fetcher, build_render_configs, compute_soft_timeout_ms, decode_html_resource,
@@ -474,6 +474,9 @@ struct RunArgs {
   #[command(flatten)]
   compat: CompatArgs,
 
+  #[command(flatten)]
+  render_parse: RenderParseArgs,
+
   /// Render only listed pages (comma-separated cache stems)
   #[arg(long, value_delimiter = ',')]
   pages: Option<Vec<String>>,
@@ -780,6 +783,9 @@ struct WorkerArgs {
   /// Device pixel ratio for media queries/srcset
   #[arg(long)]
   dpr: f32,
+
+  #[command(flatten)]
+  render_parse: RenderParseArgs,
 
   #[command(flatten)]
   animation_time: AnimationTimeArgs,
@@ -1235,12 +1241,11 @@ fn cached_html_status_from_auto_notes(note: &str) -> Option<u16> {
   // Prefer the structured `cached_html_status=403` format, but also accept the legacy
   // `cached HTML status: 403` output.
   static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
-  let re = match RE.get_or_init(|| {
-    Regex::new(r"(?:cached_html_status=|cached HTML status:\s*)(\d{3})")
-  }) {
-    Ok(re) => re,
-    Err(_) => return None,
-  };
+  let re =
+    match RE.get_or_init(|| Regex::new(r"(?:cached_html_status=|cached HTML status:\s*)(\d{3})")) {
+      Ok(re) => re,
+      Err(_) => return None,
+    };
   re.captures(note)
     .and_then(|caps| caps.get(1))
     .and_then(|m| m.as_str().parse::<u16>().ok())
@@ -1571,14 +1576,17 @@ impl ProgressAccuracy {
     computed_at_commit: Option<&str>,
   ) -> Self {
     let first_mismatch = diff.statistics.first_mismatch.and_then(|(x, y)| {
-      diff.statistics.first_mismatch_rgba.map(|(rendered_rgba, baseline_rgba)| {
-        ProgressAccuracyFirstMismatch {
-          x,
-          y,
-          rendered_rgba,
-          baseline_rgba,
-        }
-      })
+      diff
+        .statistics
+        .first_mismatch_rgba
+        .map(
+          |(rendered_rgba, baseline_rgba)| ProgressAccuracyFirstMismatch {
+            x,
+            y,
+            rendered_rgba,
+            baseline_rgba,
+          },
+        )
     });
 
     Self {
@@ -2910,7 +2918,9 @@ fn failure_stage_from_fetch_errors(fetch_errors: &[ResourceFetchError]) -> Optio
   None
 }
 
-fn offline_failure_stage_from_fetch_errors(fetch_errors: &[ResourceFetchError]) -> Option<ProgressStage> {
+fn offline_failure_stage_from_fetch_errors(
+  fetch_errors: &[ResourceFetchError],
+) -> Option<ProgressStage> {
   for err in fetch_errors {
     if is_bot_mitigation_fetch_error(err) {
       continue;
@@ -2985,11 +2995,8 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   let started = Instant::now();
   let mut log = String::new();
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(
-    &args.disk_cache,
-    args.disk_cache_stale_policy,
-    args.offline,
-  );
+  let progress_config =
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
 
   let progress_before = read_progress(&args.progress_path);
 
@@ -3180,6 +3187,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     scroll_y: 0.0,
     dpr: args.dpr,
     media_type: fastrender::style::media::MediaType::Screen,
+    render_parse_scripting_enabled: args.render_parse.render_parse_scripting_enabled,
     animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: false,
@@ -3354,8 +3362,10 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       if offline_has_fetch_failures {
         progress.status = ProgressStatus::Error;
         if progress.failure_stage.is_none() {
-          progress.failure_stage = offline_failure_stage_from_fetch_errors(&diagnostics.fetch_errors)
-            .or_else(|| offline_failure_stage_from_fetch_errors(&diagnostics.blocked_fetch_errors));
+          progress.failure_stage =
+            offline_failure_stage_from_fetch_errors(&diagnostics.fetch_errors).or_else(|| {
+              offline_failure_stage_from_fetch_errors(&diagnostics.blocked_fetch_errors)
+            });
         }
         let mut note = String::from("offline cache miss: ");
         let mut parts: Vec<String> = Vec::new();
@@ -3419,7 +3429,10 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       } else {
         None
       };
-      log.push_str(&format!("Status: {}\n", progress.status.as_str().to_ascii_uppercase()));
+      log.push_str(&format!(
+        "Status: {}\n",
+        progress.status.as_str().to_ascii_uppercase()
+      ));
       append_fetch_error_summary(&mut log, &diagnostics);
       append_stage_summary(&mut log, &diagnostics);
       log_layout_parallelism(&diagnostics, |line| {
@@ -3772,8 +3785,7 @@ fn write_pipeline_dumps(
     (dom, styled, box_tree, fragment_tree, display_list)
   {
     have_all = true;
-    let snapshot =
-      snapshot::snapshot_pipeline(dom, styled, box_tree, fragment_tree, display_list);
+    let snapshot = snapshot::snapshot_pipeline(dom, styled, box_tree, fragment_tree, display_list);
     write_json_file(&base_dir.join("snapshot.json"), &snapshot)?;
     wrote_any = true;
   } else {
@@ -8031,6 +8043,8 @@ fn push_worker_args(
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1))
     .arg("--dpr")
     .arg(args.dpr.to_string())
+    .arg("--render-parse-scripting-enabled")
+    .arg(args.render_parse.render_parse_scripting_enabled.to_string())
     .arg("--user-agent")
     .arg(&args.user_agent)
     .arg("--accept-language")
@@ -8231,11 +8245,8 @@ fn run_queue(
   let total_cpus = cpu_budget();
   let rayon_threads_per_worker = default_rayon_threads_per_worker(total_cpus, jobs);
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(
-    &args.disk_cache,
-    args.disk_cache_stale_policy,
-    args.offline,
-  );
+  let progress_config =
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
   let poll_interval = std::env::var("FASTR_TEST_PAGESET_POLL_INTERVAL_MS")
     .ok()
     .and_then(|raw| raw.parse::<u64>().ok())
@@ -8692,7 +8703,10 @@ fn run(mut args: RunArgs) -> io::Result<()> {
       Err(err) => {
         return Err(io::Error::new(
           io::ErrorKind::Other,
-          format!("failed to apply --mem-limit-mb {}: {err}", args.memory.mem_limit_mb),
+          format!(
+            "failed to apply --mem-limit-mb {}: {err}",
+            args.memory.mem_limit_mb
+          ),
         ));
       }
     }
@@ -9358,7 +9372,10 @@ fn worker(args: WorkerArgs) -> io::Result<()> {
       Err(err) => {
         return Err(io::Error::new(
           io::ErrorKind::Other,
-          format!("failed to apply --mem-limit-mb {}: {err}", args.memory.mem_limit_mb),
+          format!(
+            "failed to apply --mem-limit-mb {}: {err}",
+            args.memory.mem_limit_mb
+          ),
         ));
       }
     }
@@ -9402,11 +9419,8 @@ fn worker_on_large_stack(args: WorkerArgs) -> io::Result<()> {
   let verbose = args.verbose;
   let started = Instant::now();
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(
-    &args.disk_cache,
-    args.disk_cache_stale_policy,
-    args.offline,
-  );
+  let progress_config =
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
 
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_worker(args)));
   match result {
@@ -10056,6 +10070,9 @@ mod tests {
         layout_parallel_auto_min_nodes: None,
       },
       compat: CompatArgs::default(),
+      render_parse: RenderParseArgs {
+        render_parse_scripting_enabled: true,
+      },
       pages: None,
       shard: None,
       selection: ProgressSelectionArgs::default(),
@@ -10204,8 +10221,11 @@ mod tests {
       writeback_under_deadline: false,
     };
 
-    let config =
-      current_progress_config(&disk_cache, DiskCacheStalePolicyArg::UseStaleWhenDeadline, false);
+    let config = current_progress_config(
+      &disk_cache,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      false,
+    );
     assert_eq!(
       config.disk_cache_enabled,
       cfg!(feature = "disk_cache"),
@@ -12382,7 +12402,9 @@ mod tests {
     let Some((x, y, rendered_px, baseline_px)) = expected_mismatch else {
       panic!("expected at least one mismatching pixel in fixture");
     };
-    let mismatch = acc.first_mismatch.expect("expected first_mismatch to be populated");
+    let mismatch = acc
+      .first_mismatch
+      .expect("expected first_mismatch to be populated");
     assert_eq!(mismatch.x, x);
     assert_eq!(mismatch.y, y);
     assert_eq!(mismatch.rendered_rgba, rendered_px);

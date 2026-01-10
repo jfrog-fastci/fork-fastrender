@@ -10,7 +10,7 @@ use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_bool_preference, parse_color_scheme, parse_contrast, parse_shard,
   parse_viewport, AnimationTimeArgs, CompatArgs, DiskCacheArgs, DiskCacheStalePolicyArg,
-  LayoutParallelArgs, MemoryGuardArgs, ResourceAccessArgs,
+  LayoutParallelArgs, MemoryGuardArgs, RenderParseArgs, ResourceAccessArgs,
 };
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
@@ -267,6 +267,9 @@ struct Args {
 
   #[command(flatten)]
   compat: CompatArgs,
+
+  #[command(flatten)]
+  render_parse: RenderParseArgs,
 
   /// Enable per-stage timing logs
   #[arg(long)]
@@ -898,6 +901,7 @@ fn build_render_shared(
     scroll_y: args.scroll_y,
     dpr: args.dpr,
     media_type: MediaType::Screen,
+    render_parse_scripting_enabled: args.render_parse.render_parse_scripting_enabled,
     animation_time_ms: args.animation_time.animation_time_ms(),
     css_limit: args.css_limit,
     allow_partial: false,
@@ -1331,6 +1335,7 @@ fn build_worker_command(
       memory: &args.memory,
       viewport: args.viewport,
       dpr: args.dpr,
+      render_parse_scripting_enabled: args.render_parse.render_parse_scripting_enabled,
       scroll: Some((args.scroll_x, args.scroll_y)),
       animation_time_ms: args.animation_time.animation_time_ms(),
       user_agent: &args.user_agent,

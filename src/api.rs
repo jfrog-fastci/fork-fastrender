@@ -90,11 +90,11 @@ use crate::error::Result;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
+use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::html::encoding::decode_html_bytes;
+use crate::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
 use crate::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use crate::html::referrer_policy::extract_referrer_policy_from_html;
-use crate::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
-use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::html::viewport::ViewportLength;
 use crate::image_loader::ImageCache;
 use crate::image_output::encode_image;
@@ -148,8 +148,8 @@ use crate::resource::CachingFetcherConfig;
 use crate::resource::{
   cors_enforcement_enabled, ensure_http_success, ensure_stylesheet_mime_sane, origin_from_url,
   validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchDestination,
-  FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
-  ResourceFetcher, ResourcePolicy,
+  FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
+  ResourcePolicy,
 };
 use crate::scroll::ScrollState;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
@@ -180,13 +180,13 @@ use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::CrossOriginAttribute;
+use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
 #[cfg(test)]
 use crate::tree::box_tree::SrcsetCandidate;
 use crate::tree::box_tree::SrcsetDescriptor;
-use crate::tree::box_tree::FormControlKind;
 #[cfg(test)]
 use crate::tree::box_tree::{SelectItem, TextControlKind};
 use crate::tree::fragment_tree::FragmentContent;
@@ -552,6 +552,12 @@ pub struct FastRender {
   /// Queries Level 5 `(scripting: ...)` evaluation unless overridden by runtime toggles.
   dom_scripting_enabled: bool,
 
+  /// Whether `render_html`/`render_url` parse HTML with "scripting enabled" semantics.
+  ///
+  /// This affects html5ever's parsing behavior for elements such as `<noscript>`, but it does **not**
+  /// execute scripts.
+  render_parse_scripting_enabled: bool,
+
   /// Manual fragmentation options when no `@page` rules are present.
   fragmentation: Option<FragmentationOptions>,
 
@@ -588,6 +594,10 @@ impl std::fmt::Debug for FastRender {
       .field("compat_profile", &self.compat_profile)
       .field("dom_compat_mode", &self.dom_compat_mode)
       .field("dom_scripting_enabled", &self.dom_scripting_enabled)
+      .field(
+        "render_parse_scripting_enabled",
+        &self.render_parse_scripting_enabled,
+      )
       .field("fragmentation", &self.fragmentation)
       .field("resource_policy", &self.resource_policy)
       .field("max_iframe_depth", &self.max_iframe_depth)
@@ -661,9 +671,23 @@ pub struct FastRenderConfig {
   /// still does not execute scripts. When enabled, `<noscript>` fallback content is suppressed
   /// to match JS-enabled browser parsing behavior.
   ///
+  /// Note: This controls the public parse APIs (`FastRender::parse_html` / `parse_html_dom2`).
+  /// The render pipeline has separate parsing semantics controlled by
+  /// [`FastRenderConfig::render_parse_scripting_enabled`].
+  ///
   /// This also sets the default value of the Media Queries Level 5 `(scripting: ...)` media
   /// feature during rendering. Runtime toggles (e.g. `FASTR_SCRIPTING`) take precedence.
   pub dom_scripting_enabled: bool,
+
+  /// Whether `render_html`/`render_url` parse the input HTML with "scripting enabled" semantics.
+  ///
+  /// This maps to `DomParseOptions.scripting_enabled` used by FastRender's internal
+  /// `parse_html_for_render` step (and therefore affects `<noscript>` tokenization), but it does
+  /// **not** execute scripts.
+  ///
+  /// Defaults to `true` to match Chrome baselines captured with CSP `script-src` blocked (script
+  /// execution disabled, but HTML parsing semantics still "scripting enabled").
+  pub render_parse_scripting_enabled: bool,
 
   /// Whether to honor `<meta name="viewport">` when computing the layout viewport.
   pub apply_meta_viewport: bool,
@@ -730,6 +754,7 @@ impl Default for FastRenderConfig {
       compat_profile: CompatProfile::default(),
       dom_compat_mode: DomCompatibilityMode::Standard,
       dom_scripting_enabled: false,
+      render_parse_scripting_enabled: true,
       apply_meta_viewport: false,
       apply_meta_color_scheme: false,
       fragmentation: None,
@@ -894,12 +919,24 @@ impl FastRenderBuilder {
     self
   }
 
-  /// Enables or disables JS-enabled HTML parsing semantics (e.g. `<noscript>` handling).
+  /// Enables or disables JS-enabled HTML parsing semantics for the public parse APIs
+  /// (`FastRender::parse_html` / `parse_html_dom2`) (e.g. `<noscript>` handling).
   ///
   /// This also controls the default value of the Media Queries Level 5 `(scripting: ...)` media
   /// feature during rendering. Runtime toggles (e.g. `FASTR_SCRIPTING`) take precedence.
+  ///
+  /// Note: `render_html`/`render_url` parsing semantics are controlled separately via
+  /// [`FastRenderBuilder::render_parse_scripting_enabled`].
   pub fn dom_scripting_enabled(mut self, enabled: bool) -> Self {
     self.config.dom_scripting_enabled = enabled;
+    self
+  }
+
+  /// Controls whether `render_html`/`render_url` parse HTML with "scripting enabled" semantics.
+  ///
+  /// This affects `<noscript>` parsing behavior but does not execute scripts.
+  pub fn render_parse_scripting_enabled(mut self, enabled: bool) -> Self {
+    self.config.render_parse_scripting_enabled = enabled;
     self
   }
 
@@ -3481,11 +3518,23 @@ impl FastRenderConfig {
     self
   }
 
-  /// Enables or disables JS-enabled HTML parsing semantics (e.g. `<noscript>` handling).
+  /// Enables or disables JS-enabled HTML parsing semantics for the public parse APIs
+  /// (`FastRender::parse_html` / `parse_html_dom2`) (e.g. `<noscript>` handling).
   ///
   /// This affects parse-time behavior but does not execute scripts.
+  ///
+  /// Note: `render_html`/`render_url` parsing semantics are controlled separately via
+  /// [`FastRenderConfig::with_render_parse_scripting_enabled`].
   pub fn with_dom_scripting_enabled(mut self, enabled: bool) -> Self {
     self.dom_scripting_enabled = enabled;
+    self
+  }
+
+  /// Controls whether `render_html`/`render_url` parse HTML with "scripting enabled" semantics.
+  ///
+  /// This affects `<noscript>` parsing behavior but does not execute scripts.
+  pub fn with_render_parse_scripting_enabled(mut self, enabled: bool) -> Self {
+    self.render_parse_scripting_enabled = enabled;
     self
   }
 
@@ -4596,7 +4645,11 @@ struct ResolvedViewportScrollbarParams {
 
 fn styled_node_matches_html_tag(node: &StyledNode, tag: &str) -> bool {
   match &node.node.node_type {
-    DomNodeType::Element { tag_name, namespace, .. } => {
+    DomNodeType::Element {
+      tag_name,
+      namespace,
+      ..
+    } => {
       tag_name.eq_ignore_ascii_case(tag)
         && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
     }
@@ -4623,7 +4676,9 @@ fn find_direct_child_element<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a 
     .find(|child| styled_node_matches_html_tag(child, tag))
 }
 
-fn viewport_used_overflow(mut overflow: crate::style::types::Overflow) -> crate::style::types::Overflow {
+fn viewport_used_overflow(
+  mut overflow: crate::style::types::Overflow,
+) -> crate::style::types::Overflow {
   // CSS Overflow Module Level 3: when applying overflow values to the viewport:
   // - `visible` computes to `auto`
   // - `clip` computes to `hidden`
@@ -4681,7 +4736,10 @@ fn viewport_should_reserve_gutter(
   if gutter.stable {
     // `scrollbar-gutter: stable` requests classic (non-overlay) scrollbar gutters (CSS Overflow 3).
     // Reserve space whenever the viewport overflow is a scrollbar-bearing value.
-    matches!(overflow, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+    matches!(
+      overflow,
+      Overflow::Auto | Overflow::Scroll | Overflow::Hidden
+    )
   } else {
     // FastRender does not paint native scrollbars (matching the `--hide-scrollbars` behavior used
     // for our Chrome fixture baselines). Modern headless Chrome also uses overlay scrollbars in
@@ -5134,8 +5192,8 @@ fn paint_fragment_tree_with_state(
   );
   if let Some(bounds) =
     crate::scroll::build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
-    .first()
-    .map(|state| state.bounds)
+      .first()
+      .map(|state| state.bounds)
   {
     scroll_state.viewport = bounds.clamp(scroll_state.viewport);
   }
@@ -5154,8 +5212,16 @@ fn paint_fragment_tree_with_state(
       if let Some(box_id) = node.box_id() {
         if let Some(offset_ref) = scroll_state.elements.get_mut(&box_id) {
           let mut offset = Point::new(
-            if offset_ref.x.is_finite() { offset_ref.x } else { 0.0 },
-            if offset_ref.y.is_finite() { offset_ref.y } else { 0.0 },
+            if offset_ref.x.is_finite() {
+              offset_ref.x
+            } else {
+              0.0
+            },
+            if offset_ref.y.is_finite() {
+              offset_ref.y
+            } else {
+              0.0
+            },
           );
           let mut bounds = crate::scroll::scroll_bounds_for_fragment(
             node,
@@ -5209,19 +5275,30 @@ fn paint_fragment_tree_with_state(
         );
       }
     }
-    clamp_element_offsets(&fragment_tree.root, &mut scroll_state, scrollport_viewport, false);
+    clamp_element_offsets(
+      &fragment_tree.root,
+      &mut scroll_state,
+      scrollport_viewport,
+      false,
+    );
     for root in &fragment_tree.additional_fragments {
       clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false);
     }
-    scroll_state.elements.retain(|_, offset| *offset != Point::ZERO);
+    scroll_state
+      .elements
+      .retain(|_, offset| *offset != Point::ZERO);
   }
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before
   // sampling scroll-driven animations so view timeline progress reflects the element's sticky
   // position (matching Chrome for `position: sticky` + `view-timeline`).
-  let viewport_rect =
-    Rect::from_xywh(0.0, 0.0, scrollport_viewport.width, scrollport_viewport.height);
+  let viewport_rect = Rect::from_xywh(
+    0.0,
+    0.0,
+    scrollport_viewport.width,
+    scrollport_viewport.height,
+  );
   apply_sticky_offsets_to_root(
     font_context,
     &mut fragment_tree.root,
@@ -5244,8 +5321,7 @@ fn paint_fragment_tree_with_state(
     animation::apply_transitions(&mut fragment_tree, time_ms, scrollport_viewport);
   }
   let animation_duration = animation_time_ms_to_duration(animation_time);
-  if let (Some(duration), Some(store)) =
-    (animation_duration, animation_state_store.as_deref_mut())
+  if let (Some(duration), Some(store)) = (animation_duration, animation_state_store.as_deref_mut())
   {
     animation::apply_animations_with_state(&mut fragment_tree, &scroll_state, duration, store);
   } else {
@@ -5461,6 +5537,7 @@ impl FastRender {
       document_url: None,
       dom_compat_mode: config.dom_compat_mode,
       dom_scripting_enabled: config.dom_scripting_enabled,
+      render_parse_scripting_enabled: config.render_parse_scripting_enabled,
       compat_profile: config.compat_profile,
       fragmentation: config.fragmentation,
       resource_policy: ResourceAccessPolicy {
@@ -6065,8 +6142,11 @@ impl FastRender {
         inner: Arc::clone(&diagnostics),
       });
       let initial_csp = crate::html::content_security_policy::extract_csp_from_html(html);
-      let mut inlining_context =
-        self.build_resource_context(self.document_url_hint(), shared_diagnostics.clone(), initial_referrer_policy);
+      let mut inlining_context = self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics.clone(),
+        initial_referrer_policy,
+      );
       inlining_context.csp = initial_csp.clone();
       let mut built = self.build_resource_context(
         self.document_url_hint(),
@@ -6857,21 +6937,21 @@ impl FastRender {
           let base_url = self.base_url.clone();
           let build_display_list_for_root =
             |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
-            let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
-              .with_font_context(self.font_context.clone())
-              .with_svg_filter_defs(svg_filter_defs.clone())
-              .with_svg_id_defs(svg_id_defs.clone())
-              .with_scroll_state(scroll_state.clone())
-              .with_device_pixel_ratio(self.device_pixel_ratio)
-              .with_parallelism(&paint_parallelism)
-              .with_max_iframe_depth(self.max_iframe_depth)
-              .with_viewport_size(viewport.width, viewport.height)
-              .with_culling_viewport_size(target_width as f32, target_height as f32);
-            if let Some(base_url) = base_url.as_ref() {
-              builder.set_base_url(base_url.clone());
-            }
-            builder.build_with_stacking_tree_offset(root, offset)
-          };
+              let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
+                .with_font_context(self.font_context.clone())
+                .with_svg_filter_defs(svg_filter_defs.clone())
+                .with_svg_id_defs(svg_id_defs.clone())
+                .with_scroll_state(scroll_state.clone())
+                .with_device_pixel_ratio(self.device_pixel_ratio)
+                .with_parallelism(&paint_parallelism)
+                .with_max_iframe_depth(self.max_iframe_depth)
+                .with_viewport_size(viewport.width, viewport.height)
+                .with_culling_viewport_size(target_width as f32, target_height as f32);
+              if let Some(base_url) = base_url.as_ref() {
+                builder.set_base_url(base_url.clone());
+              }
+              builder.build_with_stacking_tree_offset(root, offset)
+            };
 
           let mut display_list = build_display_list_for_root(&fragment_tree.root);
           for extra in &fragment_tree.additional_fragments {
@@ -7167,8 +7247,7 @@ impl FastRender {
           }
         }
       }
-      if let Some(meta_csp) =
-        crate::html::content_security_policy::extract_csp_with_deadline(dom)?
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)?
       {
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
@@ -7758,8 +7837,7 @@ impl FastRender {
           }
         }
       }
-      if let Some(meta_csp) =
-        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
       {
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
@@ -7967,11 +8045,13 @@ impl FastRender {
 
     fn scan_head_prefix<'a>(html: &'a str) -> &'a str {
       if html.len() <= MAX_CLIENT_REDIRECT_SCAN_BYTES {
-        if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(html, "body", false)
+        if let Some(pos) =
+          crate::html::find_tag_case_insensitive_outside_templates(html, "body", false)
         {
           return &html[..pos];
         }
-        if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(html, "head", true)
+        if let Some(pos) =
+          crate::html::find_tag_case_insensitive_outside_templates(html, "head", true)
         {
           return &html[..pos];
         }
@@ -8037,7 +8117,10 @@ impl FastRender {
         let mut referrer_policy: Option<ReferrerPolicy> = None;
         let mut redirected = false;
 
-        for kind in [ClientRedirectKind::MetaRefresh, ClientRedirectKind::JsLocation] {
+        for kind in [
+          ClientRedirectKind::MetaRefresh,
+          ClientRedirectKind::JsLocation,
+        ] {
           if kind == ClientRedirectKind::JsLocation && !options.follow_js_location_redirects {
             continue;
           }
@@ -8054,7 +8137,8 @@ impl FastRender {
             continue;
           }
 
-          let base_url = base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
+          let base_url =
+            base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
           let referrer_policy = referrer_policy.get_or_insert_with(|| {
             extract_referrer_policy_from_html(head_scan)
               .or(resource.response_referrer_policy)
@@ -8125,7 +8209,10 @@ impl FastRender {
         let head_scan = scan_head_prefix(&html);
         let mut base_url: Option<String> = None;
 
-        for kind in [ClientRedirectKind::MetaRefresh, ClientRedirectKind::JsLocation] {
+        for kind in [
+          ClientRedirectKind::MetaRefresh,
+          ClientRedirectKind::JsLocation,
+        ] {
           if kind == ClientRedirectKind::JsLocation && !options.follow_js_location_redirects {
             continue;
           }
@@ -8140,7 +8227,8 @@ impl FastRender {
             continue;
           }
 
-          let base_url = base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
+          let base_url =
+            base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
           let Some(target) = resolve_href(base_url, &raw) else {
             continue;
           };
@@ -8384,7 +8472,8 @@ impl FastRender {
         let resource = {
           // Install a root deadline before document fetch so timeouts and cancellation callbacks
           // can bound the fetch phase (especially important for caching fetcher in-flight waits).
-          let fetch_deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+          let fetch_deadline =
+            RenderDeadline::new(options.timeout, options.cancel_callback.clone());
           let _fetch_deadline_guard = DeadlineGuard::install(Some(&fetch_deadline));
           let resource = {
             let _span = trace_handle.span("html_fetch", "network");
@@ -8956,13 +9045,16 @@ impl FastRender {
 
   fn parse_html_for_render(&self, html: &str) -> Result<DomNode> {
     // Chrome baselines are captured with script-src blocked via CSP, which still uses
-    // "scripting enabled" HTML parsing semantics (notably for `<noscript>`). Match that here so
-    // offline fixture diffs do not include large page-wide shifts from head `<noscript>` fallbacks
-    // being moved into the document body.
+    // "scripting enabled" HTML parsing semantics (notably for `<noscript>`). Match that here by
+    // default so offline fixture diffs do not include large page-wide shifts from head `<noscript>`
+    // fallbacks being moved into the document body.
+    //
+    // Callers can force scripting-disabled parsing semantics via
+    // `FastRenderConfig::with_render_parse_scripting_enabled(false)` when desired.
     dom::parse_html_with_options(
       html,
       DomParseOptions {
-        scripting_enabled: true,
+        scripting_enabled: self.render_parse_scripting_enabled,
         compatibility_mode: self.dom_compat_mode,
       },
     )
@@ -9414,12 +9506,9 @@ impl FastRender {
                   .as_ref()
                   .and_then(|ctx| ctx.policy.document_origin.as_ref()),
               ) {
-                if let Err(reason) = validate_cors_allow_origin(
-                  &resource,
-                  &url,
-                  Some(origin),
-                  mode.credentials_mode(),
-                ) {
+                if let Err(reason) =
+                  validate_cors_allow_origin(&resource, &url, Some(origin), mode.credentials_mode())
+                {
                   let err = Error::Resource(ResourceError::new(url.clone(), reason));
                   if let Some(diag) = diagnostics.as_ref() {
                     if let Ok(mut guard) = diag.lock() {
@@ -9785,9 +9874,10 @@ impl FastRender {
                 continue;
               }
               if cors_enforcement_enabled() {
-                if let (Some(mode), Some(origin)) =
-                  (cors_mode, resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()))
-                {
+                if let (Some(mode), Some(origin)) = (
+                  cors_mode,
+                  resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()),
+                ) {
                   if let Err(reason) = validate_cors_allow_origin(
                     &resource,
                     &stylesheet_url,
@@ -9961,7 +10051,8 @@ impl FastRender {
           }
         }
       }
-      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)?
+      {
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
             Some(existing) => existing.extend(meta_csp),
@@ -10031,8 +10122,7 @@ impl FastRender {
           }
         }
       }
-      if let Some(meta_csp) =
-        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
       {
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
@@ -10119,8 +10209,7 @@ impl FastRender {
           }
         }
       }
-      if let Some(meta_csp) =
-        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
       {
         if let Some(mut ctx) = self.resource_context.clone() {
           let changed = match ctx.csp.as_mut() {
@@ -10830,7 +10919,11 @@ impl FastRender {
       let overflows_y = bounds.min_y() < -epsilon || bounds.max_y() > viewport.height + epsilon;
 
       let scrollbar_width_px = params.scrollbar_width_px.max(0.0);
-      let gutter_multiplier = if params.scrollbar_gutter.both_edges { 2.0 } else { 1.0 };
+      let gutter_multiplier = if params.scrollbar_gutter.both_edges {
+        2.0
+      } else {
+        1.0
+      };
       let reserve_vertical = scrollbar_width_px > 0.0
         && viewport_should_reserve_gutter(params.overflow_y, params.scrollbar_gutter, overflows_y);
       let reserve_horizontal = scrollbar_width_px > 0.0
@@ -12595,6 +12688,7 @@ impl FastRender {
       compat_profile: self.compat_profile,
       dom_compat_mode: self.dom_compat_mode,
       dom_scripting_enabled: self.dom_scripting_enabled,
+      render_parse_scripting_enabled: self.render_parse_scripting_enabled,
       apply_meta_viewport: self.apply_meta_viewport,
       apply_meta_color_scheme: self.apply_meta_color_scheme,
       fragmentation: self.fragmentation,
@@ -13209,12 +13303,9 @@ impl FastRender {
           }
           if cors_enforcement_enabled() {
             if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-              if let Err(reason) = validate_cors_allow_origin(
-                &res,
-                &css_url,
-                Some(origin),
-                mode.credentials_mode(),
-              ) {
+              if let Err(reason) =
+                validate_cors_allow_origin(&res, &css_url, Some(origin), mode.credentials_mode())
+              {
                 let err = Error::Resource(ResourceError::new(css_url.clone(), reason));
                 diagnostics.record_error(ResourceKind::Stylesheet, &css_url, &err);
                 continue;
@@ -13254,7 +13345,10 @@ impl FastRender {
                     if resource_ctx.diagnostics.is_none() {
                       diagnostics.record_message(ResourceKind::Stylesheet, u, err.reason.clone());
                     }
-                    return Err(Error::Resource(ResourceError::new(u.to_string(), err.reason)));
+                    return Err(Error::Resource(ResourceError::new(
+                      u.to_string(),
+                      err.reason,
+                    )));
                   }
                 }
 
@@ -13289,7 +13383,10 @@ impl FastRender {
                             err.reason.clone(),
                           );
                         }
-                        return Err(Error::Resource(ResourceError::new(u.to_string(), err.reason)));
+                        return Err(Error::Resource(ResourceError::new(
+                          u.to_string(),
+                          err.reason,
+                        )));
                       }
                     }
                     if let Err(err) = ensure_http_success(&res, u)
@@ -13300,12 +13397,9 @@ impl FastRender {
                     }
                     if cors_enforcement_enabled() {
                       if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-                        if let Err(reason) = validate_cors_allow_origin(
-                          &res,
-                          u,
-                          Some(origin),
-                          mode.credentials_mode(),
-                        ) {
+                        if let Err(reason) =
+                          validate_cors_allow_origin(&res, u, Some(origin), mode.credentials_mode())
+                        {
                           let err = Error::Resource(ResourceError::new(u.to_string(), reason));
                           diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                           return Err(err);
@@ -13952,9 +14046,7 @@ impl FastRender {
       }
     };
 
-    let length_needs_percentage_base = |length: &Length| {
-      length.has_percentage()
-    };
+    let length_needs_percentage_base = |length: &Length| length.has_percentage();
     let width_definite = style
       .width
       .as_ref()
@@ -14400,9 +14492,7 @@ impl FastRender {
           return;
         }
 
-        let length_needs_percentage_base = |length: &Length| {
-          length.has_percentage()
-        };
+        let length_needs_percentage_base = |length: &Length| length.has_percentage();
         let width_definite = style
           .width
           .as_ref()
@@ -15256,12 +15346,9 @@ impl CssImportLoader for CssImportFetcher {
           .as_ref()
           .and_then(|ctx| ctx.policy.document_origin.as_ref()),
       ) {
-        if let Err(reason) = validate_cors_allow_origin(
-          &resource,
-          &resolved,
-          Some(origin),
-          mode.credentials_mode(),
-        ) {
+        if let Err(reason) =
+          validate_cors_allow_origin(&resource, &resolved, Some(origin), mode.credentials_mode())
+        {
           let err = Error::Resource(ResourceError::new(resolved.clone(), reason));
           if let Some(ctx) = &self.resource_context {
             if let Some(diag) = &ctx.diagnostics {
@@ -15912,9 +15999,10 @@ fn hash_color_stop_alpha(
   forced_colors: bool,
   hasher: &mut DefaultHasher,
 ) {
-  let rgba = stop
-    .color
-    .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
+  let rgba =
+    stop
+      .color
+      .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
   hash_f32(rgba.a, hasher);
   match stop.position {
     Some(crate::css::types::ColorStopPosition::Fraction(v)) => {
@@ -16383,8 +16471,8 @@ fn hash_list_style_type(value: &crate::style::types::ListStyleType, hasher: &mut
   use crate::style::types::ListStyleType::LowerRoman;
   use crate::style::types::ListStyleType::None;
   use crate::style::types::ListStyleType::Square;
-  use crate::style::types::ListStyleType::Symbols;
   use crate::style::types::ListStyleType::String;
+  use crate::style::types::ListStyleType::Symbols;
   use crate::style::types::ListStyleType::UpperAlpha;
   use crate::style::types::ListStyleType::UpperRoman;
   match value {
@@ -17441,11 +17529,15 @@ fn collect_fragment_sizes(
     entry.0 = entry.0.max(fragment.bounds.width());
     entry.1 = entry.1.max(fragment.bounds.height());
 
-    let reservation = scrollbars.entry(id).or_insert_with(ScrollbarReservation::default);
+    let reservation = scrollbars
+      .entry(id)
+      .or_insert_with(ScrollbarReservation::default);
     reservation.left = reservation.left.max(fragment.scrollbar_reservation.left);
     reservation.right = reservation.right.max(fragment.scrollbar_reservation.right);
     reservation.top = reservation.top.max(fragment.scrollbar_reservation.top);
-    reservation.bottom = reservation.bottom.max(fragment.scrollbar_reservation.bottom);
+    reservation.bottom = reservation
+      .bottom
+      .max(fragment.scrollbar_reservation.bottom);
   }
 
   match &fragment.content {
@@ -18858,6 +18950,7 @@ pub(crate) fn layout_html_with_shared_resources(
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
     dom_scripting_enabled: false,
+    render_parse_scripting_enabled: true,
     fragmentation: None,
     resource_policy,
     resource_context: resource_context.clone(),
@@ -18941,6 +19034,7 @@ pub(crate) fn render_html_with_shared_resources(
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
     dom_scripting_enabled: false,
+    render_parse_scripting_enabled: true,
     fragmentation: None,
     resource_policy,
     resource_context: resource_context.clone(),
@@ -19000,7 +19094,7 @@ mod tests {
   use crate::render_control::RenderDeadline;
   use crate::resource::{
     origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
-    ResourceAccessPolicy, ReferrerPolicy, ResourceFetcher,
+    ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
   };
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
@@ -19023,6 +19117,68 @@ mod tests {
   use std::io;
   use std::sync::{Arc, Mutex};
   use std::time::Duration;
+
+  fn find_node_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+    if node.get_attribute_ref("id") == Some(id) {
+      return Some(node);
+    }
+    for child in node.children.iter() {
+      if let Some(found) = find_node_by_id(child, id) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn render_pipeline_parses_html_with_scripting_enabled_semantics_by_default() {
+    // `<noscript>` parsing semantics are controlled by html5ever's `scripting_enabled` flag:
+    // - when disabled, child markup is parsed into DOM nodes
+    // - when enabled, child markup is tokenized as raw text
+    //
+    // FastRender's public parse APIs default to scripting-disabled semantics, but the render
+    // pipeline parses with scripting-enabled semantics by default to match Chrome baselines that
+    // block script execution via CSP.
+    let html = "<!doctype html><html><head><noscript><div id=noscript>fallback</div></noscript></head><body></body></html>";
+
+    let config = FastRenderConfig::default()
+      // Avoid inheriting ambient FASTR_* env vars in the test runner.
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    let renderer = FastRender::with_config(config).expect("renderer");
+
+    let dom = renderer.parse_html(html).expect("parse_html");
+    assert!(
+      find_node_by_id(&dom, "noscript").is_some(),
+      "expected parse_html (default scripting disabled) to parse <noscript> children into DOM"
+    );
+
+    let dom_for_render = renderer
+      .parse_html_for_render(html)
+      .expect("parse_html_for_render");
+    assert!(
+      find_node_by_id(&dom_for_render, "noscript").is_none(),
+      "expected render parsing (default scripting enabled) to avoid parsing <noscript> children into DOM"
+    );
+
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled())
+      .with_render_parse_scripting_enabled(false);
+    let renderer =
+      FastRender::with_config(config).expect("renderer (scripting disabled render parse)");
+    let dom_for_render = renderer
+      .parse_html_for_render(html)
+      .expect("parse_html_for_render (scripting disabled)");
+    assert!(
+      find_node_by_id(&dom_for_render, "noscript").is_some(),
+      "expected render parse toggle to enable scripting-disabled <noscript> parsing"
+    );
+  }
 
   #[test]
   fn diff_layout_fields_canonicalizes_negative_zero() {
@@ -28818,16 +28974,23 @@ mod tests {
       .render_html_with_stylesheets_report(
         &html,
         &base_hint,
-        RenderOptions::new().with_viewport(1200, 200).with_runtime_toggles(RuntimeToggles::from_map(
-          HashMap::from([("FASTR_WEB_FONT_WAIT_MS".to_string(), "0".to_string())]),
-        )),
+        RenderOptions::new()
+          .with_viewport(1200, 200)
+          .with_runtime_toggles(RuntimeToggles::from_map(HashMap::from([(
+            "FASTR_WEB_FONT_WAIT_MS".to_string(),
+            "0".to_string(),
+          )]))),
         RenderArtifactRequest {
           fragment_tree: true,
           ..RenderArtifactRequest::default()
         },
       )
       .expect("render without web font wait");
-    let tree = report.artifacts.fragment_tree.as_ref().expect("fragment tree");
+    let tree = report
+      .artifacts
+      .fragment_tree
+      .as_ref()
+      .expect("fragment tree");
     let width_without_wait =
       text_width_for(tree, "HelloHelloHello").expect("text fragment width (no wait)");
 
@@ -28837,20 +29000,25 @@ mod tests {
       .render_html_with_stylesheets_report(
         &html,
         &base_hint,
-        RenderOptions::new().with_viewport(1200, 200).with_runtime_toggles(RuntimeToggles::from_map(
-          HashMap::from([(
+        RenderOptions::new()
+          .with_viewport(1200, 200)
+          .with_runtime_toggles(RuntimeToggles::from_map(HashMap::from([(
             "FASTR_WEB_FONT_WAIT_MS".to_string(),
             "500".to_string(),
-          )]),
-        )),
+          )]))),
         RenderArtifactRequest {
           fragment_tree: true,
           ..RenderArtifactRequest::default()
         },
       )
       .expect("render with web font wait");
-    let tree = report.artifacts.fragment_tree.as_ref().expect("fragment tree");
-    let width_with_wait = text_width_for(tree, "HelloHelloHello").expect("text fragment width (wait)");
+    let tree = report
+      .artifacts
+      .fragment_tree
+      .as_ref()
+      .expect("fragment tree");
+    let width_with_wait =
+      text_width_for(tree, "HelloHelloHello").expect("text fragment width (wait)");
 
     assert!(
       (width_with_wait - width_without_wait).abs() > 0.5,

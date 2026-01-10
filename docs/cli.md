@@ -11,6 +11,12 @@ flips + common lazy-load `data-*` → `src`/`srcset`/`poster` lifting); both def
 behavior. `bash scripts/cargo_agent.sh xtask pageset` and the shell wrappers leave these off unless
 you explicitly provide the flags so pageset triage can choose when to enable them.
 
+HTML parsing has a separate "scripting enabled" flag (html5ever tree-builder semantics) that affects
+how `<noscript>` is tokenized. The render CLIs parse with scripting-enabled semantics by default (to
+match Chrome baselines captured with CSP `script-src` blocked), even though scripts are not executed
+in the static pipeline. Use `--render-parse-scripting-enabled=false` to force scripting-disabled
+parsing semantics when debugging `<noscript>` fallbacks.
+
 ## Convenience scripts (terminal-friendly)
 
 These are optional wrappers for the most common loops:

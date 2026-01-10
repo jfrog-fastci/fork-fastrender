@@ -56,6 +56,7 @@ pub struct RenderSurface {
   pub scroll_y: f32,
   pub dpr: f32,
   pub media_type: MediaType,
+  pub render_parse_scripting_enabled: bool,
   pub animation_time_ms: Option<f32>,
   pub css_limit: Option<usize>,
   pub allow_partial: bool,
@@ -78,6 +79,7 @@ pub fn build_render_configs(surface: &RenderSurface) -> RenderConfigBundle {
     .with_default_viewport(surface.viewport.0, surface.viewport.1)
     .with_device_pixel_ratio(surface.dpr)
     .with_meta_viewport(surface.apply_meta_viewport)
+    .with_render_parse_scripting_enabled(surface.render_parse_scripting_enabled)
     .with_allow_file_from_http(surface.allow_file_from_http)
     .with_block_mixed_content(surface.block_mixed_content)
     .compat_profile(surface.compat_profile)
@@ -1222,6 +1224,7 @@ pub struct WorkerCommonArgs<'a> {
   pub memory: &'a MemoryGuardArgs,
   pub viewport: (u32, u32),
   pub dpr: f32,
+  pub render_parse_scripting_enabled: bool,
   pub scroll: Option<(f32, f32)>,
   pub animation_time_ms: Option<f32>,
   pub user_agent: &'a str,
@@ -1242,6 +1245,8 @@ pub fn apply_worker_common_args(cmd: &mut Command, args: &WorkerCommonArgs<'_>) 
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1))
     .arg("--dpr")
     .arg(args.dpr.to_string())
+    .arg("--render-parse-scripting-enabled")
+    .arg(args.render_parse_scripting_enabled.to_string())
     .arg("--user-agent")
     .arg(args.user_agent)
     .arg("--accept-language")
