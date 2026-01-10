@@ -19,6 +19,17 @@ impl VmHostHooks for NoopHooks {
   }
 }
 
+#[derive(Debug, Default)]
+struct RecordingHooks {
+  jobs: Vec<(Option<RealmId>, Job)>,
+}
+
+impl VmHostHooks for RecordingHooks {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    self.jobs.push((realm, job));
+  }
+}
+
 fn inc_host_counter(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -111,6 +122,39 @@ fn exec_script_source_with_host_and_hooks_threads_host_context_into_native_calls
   )?;
 
   assert_eq!(host.counter, 1);
+  Ok(())
+}
+
+#[test]
+fn exec_script_with_host_and_hooks_threads_host_context_and_records_promise_jobs() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = RecordingHooks::default();
+
+  rt.exec_script_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    r#"
+      inc();
+      Promise.resolve().then(() => {});
+    "#,
+  )?;
+
+  assert_eq!(host.counter, 1);
+  assert!(
+    !hooks.jobs.is_empty(),
+    "Promise.resolve().then(..) should enqueue at least one Promise job via VmHostHooks"
+  );
+
+  // Ensure any persistent roots owned by queued jobs are cleaned up before dropping the runtime.
+  for (_realm, job) in hooks.jobs.drain(..) {
+    job.discard(&mut rt);
+  }
+
   Ok(())
 }
 
