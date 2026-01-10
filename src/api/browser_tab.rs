@@ -32,7 +32,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use selectors::context::QuirksMode;
 use url::Url;
@@ -202,6 +202,79 @@ struct PendingParserBlockingScript {
   source_text: String,
 }
 
+#[derive(Clone)]
+struct ScriptSourceOverrideFetcher {
+  overrides: Arc<Mutex<HashMap<String, String>>>,
+  inner: Arc<dyn ResourceFetcher>,
+}
+
+impl ScriptSourceOverrideFetcher {
+  fn override_bytes(&self, url: &str) -> Option<Vec<u8>> {
+    self
+      .overrides
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(url)
+      .map(|s| s.as_bytes().to_vec())
+  }
+
+  fn override_resource(url: &str, mut bytes: Vec<u8>) -> crate::resource::FetchedResource {
+    let mut res = crate::resource::FetchedResource::new(
+      std::mem::take(&mut bytes),
+      Some("application/javascript".to_string()),
+    );
+    // Mirror HTTP fetches so downstream validations (status/CORS) remain deterministic.
+    res.status = Some(200);
+    res.final_url = Some(url.to_string());
+    // Allow CORS-mode scripts/modules to pass enforcement when enabled.
+    res.access_control_allow_origin = Some("*".to_string());
+    res.access_control_allow_credentials = true;
+    res
+  }
+}
+
+impl ResourceFetcher for ScriptSourceOverrideFetcher {
+  fn fetch(&self, url: &str) -> Result<crate::resource::FetchedResource> {
+    if let Some(bytes) = self.override_bytes(url) {
+      return Ok(Self::override_resource(url, bytes));
+    }
+    self.inner.fetch(url)
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<crate::resource::FetchedResource> {
+    if let Some(bytes) = self.override_bytes(req.url) {
+      return Ok(Self::override_resource(req.url, bytes));
+    }
+    self.inner.fetch_with_request(req)
+  }
+
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<crate::resource::FetchedResource> {
+    if let Some(mut bytes) = self.override_bytes(req.url) {
+      if bytes.len() > max_bytes {
+        bytes.truncate(max_bytes);
+      }
+      return Ok(Self::override_resource(req.url, bytes));
+    }
+    self.inner.fetch_partial_with_request(req, max_bytes)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
+  }
+
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    self.inner.cookie_header_value(url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    self.inner.store_cookie_from_document(url, cookie_string)
+  }
+}
+
 struct StreamingParseState {
   parser: StreamingHtmlParser,
   input: String,
@@ -258,7 +331,7 @@ pub struct BrowserTabHost {
   /// time.
   pending_navigation_deadline: Option<RenderDeadline>,
   html_sources: HashMap<String, String>,
-  external_script_sources: HashMap<String, String>,
+  external_script_sources: Arc<Mutex<HashMap<String, String>>>,
   script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
   stylesheet_keys_by_node: HashMap<NodeId, usize>,
   next_stylesheet_key: usize,
@@ -354,7 +427,7 @@ impl BrowserTabHost {
       pending_navigation: None,
       pending_navigation_deadline: None,
       html_sources: HashMap::new(),
-      external_script_sources: HashMap::new(),
+      external_script_sources: Arc::new(Mutex::new(HashMap::new())),
       script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
       stylesheet_keys_by_node: HashMap::new(),
       next_stylesheet_key: 0,
@@ -390,7 +463,11 @@ impl BrowserTabHost {
   }
 
   fn register_external_script_source(&mut self, url: String, source: String) {
-    self.external_script_sources.insert(url, source);
+    self
+      .external_script_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .insert(url, source);
   }
 
   fn set_event_invoker(&mut self, invoker: Box<dyn crate::web::events::EventListenerInvoker>) {
@@ -1118,7 +1195,11 @@ impl BrowserTabHost {
                   // Avoid eager network fetches during parsing when the script source is not
                   // immediately available. Many tests register in-memory script sources *after*
                   // construction (before running the event loop), so only spin for "fast" sources.
-                  self.external_script_sources.contains_key(src)
+                  self
+                    .external_script_sources
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains_key(src)
                     || Url::parse(src)
                       .ok()
                       .is_some_and(|parsed| parsed.scheme() == "file")
@@ -2269,7 +2350,13 @@ impl BrowserTabHost {
       None
     };
 
-    if let Some(source) = self.external_script_sources.get(url) {
+    let override_source = self
+      .external_script_sources
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .get(url)
+      .cloned();
+    if let Some(source) = override_source {
       span.arg_u64("bytes", source.as_bytes().len() as u64);
       self.js_execution_options.check_script_source_bytes(
         source.as_bytes().len(),
@@ -2280,7 +2367,7 @@ impl BrowserTabHost {
           Error::Other(format!("SRI blocked script {url}: {message}"))
         })?;
       }
-      return Ok(source.clone());
+      return Ok(source);
     }
 
     let fetcher = self.document.fetcher();
@@ -2795,8 +2882,15 @@ impl BrowserTab {
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
       .then(super::SharedRenderDiagnostics::new);
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
+      overrides: Arc::clone(&external_script_sources),
+      inner: inner_fetcher,
+    });
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
+      .fetcher(fetcher)
       .build()?;
     let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
     if let Some(diag) = diagnostics.as_ref() {
@@ -2804,12 +2898,13 @@ impl BrowserTab {
         .renderer_mut()
         .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
     }
-    let host = BrowserTabHost::new(
+    let mut host = BrowserTabHost::new(
       document,
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
     )?;
+    host.external_script_sources = Arc::clone(&external_script_sources);
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
@@ -2969,6 +3064,11 @@ impl BrowserTab {
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
       .then(super::SharedRenderDiagnostics::new);
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
+      overrides: Arc::clone(&external_script_sources),
+      inner: fetcher,
+    });
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
       .fetcher(fetcher)
@@ -2979,12 +3079,13 @@ impl BrowserTab {
         .renderer_mut()
         .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
     }
-    let host = BrowserTabHost::new(
+    let mut host = BrowserTabHost::new(
       document,
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
     )?;
+    host.external_script_sources = Arc::clone(&external_script_sources);
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
@@ -3066,8 +3167,15 @@ impl BrowserTab {
 
     // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
+      overrides: Arc::clone(&external_script_sources),
+      inner: inner_fetcher,
+    });
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
+      .fetcher(fetcher)
       .build()?;
     let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
     if let Some(diag) = diagnostics.as_ref() {
@@ -3075,12 +3183,13 @@ impl BrowserTab {
         .renderer_mut()
         .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
     }
-    let host = BrowserTabHost::new(
+    let mut host = BrowserTabHost::new(
       document,
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
     )?;
+    host.external_script_sources = Arc::clone(&external_script_sources);
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
 
@@ -8401,6 +8510,37 @@ html, body { margin: 0; padding: 0; }
       dom.get_attribute(body, "data-importmap")
         .expect("get_attribute should succeed"),
       Some("123")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_imports_can_load_from_registered_script_sources() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module" src="https://example.com/a.js"></script>
+      </body>"#,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.register_script_source(
+      "https://example.com/a.js",
+      r#"import { value } from "./dep.js";
+         document.body.setAttribute("data-value", String(value));"#,
+    );
+    tab.register_script_source("https://example.com/dep.js", "export const value = 42;");
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-value")
+        .expect("get_attribute should succeed"),
+      Some("42")
     );
     Ok(())
   }

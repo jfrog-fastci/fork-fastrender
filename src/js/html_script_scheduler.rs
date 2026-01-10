@@ -19,7 +19,7 @@
 use crate::error::{Error, Result};
 use crate::resource::{FetchCredentialsMode, FetchDestination};
 
-use super::{ScriptElementSpec, ScriptType};
+use super::{JsExecutionOptions, ScriptElementSpec, ScriptType};
 
 use std::collections::HashMap;
 
@@ -195,6 +195,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
 
   pub fn set_modules_supported(&mut self, modules_supported: bool) {
     self.modules_supported = modules_supported;
+  }
+
+  pub fn set_options(&mut self, options: JsExecutionOptions) {
+    self.set_modules_supported(options.supports_module_scripts);
   }
 
   fn alloc_script_id(&mut self) -> HtmlScriptId {
