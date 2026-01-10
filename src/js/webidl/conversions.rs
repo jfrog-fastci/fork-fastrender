@@ -362,6 +362,44 @@ fn integer_part_modulo_pow2(n: f64, bit_length: u32) -> u128 {
   (1u128 << bit_length) - abs_rem
 }
 
+/// Convert an ECMAScript value to a WebIDL callback function value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-function>
+pub fn to_callback_function<Host, R>(
+  rt: &mut R,
+  value: R::JsValue,
+  legacy_treat_non_object_as_null: bool,
+) -> Result<R::JsValue, R::Error>
+where
+  R: WebIdlBindingsRuntime<Host>,
+{
+  if legacy_treat_non_object_as_null && !rt.is_object(value) {
+    return Ok(rt.js_null());
+  }
+  if rt.is_callable(value) {
+    return Ok(value);
+  }
+  Err(rt.throw_type_error("Value is not a callable callback function"))
+}
+
+/// Convert an ECMAScript value to a WebIDL callback interface value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-interface>
+///
+/// MVP behaviour: validate that `value` is an object and return it.
+pub fn to_callback_interface<Host, R>(
+  rt: &mut R,
+  value: R::JsValue,
+) -> Result<R::JsValue, R::Error>
+where
+  R: WebIdlBindingsRuntime<Host>,
+{
+  if rt.is_object(value) {
+    return Ok(value);
+  }
+  Err(rt.throw_type_error("Value is not a callback interface object"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

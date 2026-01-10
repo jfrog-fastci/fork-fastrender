@@ -36,6 +36,7 @@ mod tests {
     Heap, HeapLimits, MicrotaskQueue, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
     VmOptions, WeakGcObject,
   };
+  use webidl_js_runtime::JsRuntime as _;
 
   #[derive(Default)]
   struct UrlSearchParamsHost {
@@ -536,4 +537,94 @@ mod tests {
     realm.teardown(&mut heap);
     Ok(())
   }
-} 
+
+  #[derive(Default)]
+  struct GeneratedHost {
+    calls: usize,
+  }
+
+  impl WebHostBindings<webidl_js_runtime::VmJsRuntime> for GeneratedHost {
+    fn call_operation(
+      &mut self,
+      _rt: &mut webidl_js_runtime::VmJsRuntime,
+      _receiver: Option<Value>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: Vec<BindingValue<Value>>,
+    ) -> Result<BindingValue<Value>, VmError> {
+      self.calls += 1;
+      Ok(BindingValue::Undefined)
+    }
+  }
+
+  fn thrown_error_name(rt: &mut webidl_js_runtime::VmJsRuntime, err: VmError) -> Result<String, VmError> {
+    let Some(thrown) = err.thrown_value() else {
+      return Err(VmError::TypeError("expected thrown error"));
+    };
+    webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[thrown], |rt| {
+      let name_key: PropertyKey = rt.property_key_from_str("name")?;
+      let name_value = webidl_js_runtime::JsRuntime::get(rt, thrown, name_key)?;
+      webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[name_value], |rt| {
+        let s = webidl_js_runtime::JsRuntime::to_string(rt, name_value)?;
+        rt.string_to_utf8_lossy(s)
+      })
+    })
+  }
+
+  #[test]
+  fn generated_bindings_queue_microtask_rejects_non_callable() -> Result<(), VmError> {
+    let mut rt = webidl_js_runtime::VmJsRuntime::new();
+    let mut host = GeneratedHost::default();
+    install_window_bindings(&mut rt, &mut host)?;
+
+    let global = <webidl_js_runtime::VmJsRuntime as crate::js::webidl_runtime_vmjs::WebIdlBindingsRuntime<
+      GeneratedHost,
+    >>::global_object(&mut rt)?;
+    webidl_js_runtime::JsRuntime::with_stack_roots(&mut rt, &[global], |rt| {
+      let key = rt.property_key_from_str("queueMicrotask")?;
+      let func = webidl_js_runtime::JsRuntime::get(rt, global, key)?;
+      let err = rt
+        .with_host_context(&mut host, |rt| {
+          rt.call(func, webidl_js_runtime::JsRuntime::js_undefined(rt), &[Value::Number(1.0)])
+        })
+        .expect_err("expected queueMicrotask to throw on non-callable");
+      assert_eq!(thrown_error_name(rt, err)?, "TypeError");
+      assert_eq!(host.calls, 0, "host must not be called on conversion failure");
+      Ok(())
+    })
+  }
+
+  #[test]
+  fn generated_bindings_add_event_listener_rejects_non_object_callback_interface() -> Result<(), VmError> {
+    let mut rt = webidl_js_runtime::VmJsRuntime::new();
+    let mut host = GeneratedHost::default();
+    install_window_bindings(&mut rt, &mut host)?;
+
+    let global = <webidl_js_runtime::VmJsRuntime as crate::js::webidl_runtime_vmjs::WebIdlBindingsRuntime<
+      GeneratedHost,
+    >>::global_object(&mut rt)?;
+    webidl_js_runtime::JsRuntime::with_stack_roots(&mut rt, &[global], |rt| {
+      // globalThis.EventTarget.prototype.addEventListener
+      let ctor_key = rt.property_key_from_str("EventTarget")?;
+      let ctor = webidl_js_runtime::JsRuntime::get(rt, global, ctor_key)?;
+      let proto_key = rt.property_key_from_str("prototype")?;
+      let proto = webidl_js_runtime::JsRuntime::get(rt, ctor, proto_key)?;
+      let add_key = rt.property_key_from_str("addEventListener")?;
+      let add = webidl_js_runtime::JsRuntime::get(rt, proto, add_key)?;
+
+      let this_obj = rt.alloc_object_value()?;
+      webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[this_obj, add], |rt| {
+        let type_str = rt.alloc_string_value("x")?;
+        let err = rt
+          .with_host_context(&mut host, |rt| {
+            rt.call(add, this_obj, &[type_str, Value::Number(1.0)])
+          })
+          .expect_err("expected addEventListener to throw on non-object callback");
+        assert_eq!(thrown_error_name(rt, err)?, "TypeError");
+        assert_eq!(host.calls, 0, "host must not be called on conversion failure");
+        Ok(())
+      })
+    })
+  }
+}

@@ -68,6 +68,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn is_undefined(&self, value: Self::JsValue) -> bool;
   fn is_null(&self, value: Self::JsValue) -> bool;
   fn is_object(&self, value: Self::JsValue) -> bool;
+  fn is_callable(&self, value: Self::JsValue) -> bool;
   fn is_boolean(&self, value: Self::JsValue) -> bool;
 
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
@@ -529,6 +530,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
   fn is_object(&self, value: Self::JsValue) -> bool {
     matches!(value, Value::Object(_))
+  }
+
+  fn is_callable(&self, value: Self::JsValue) -> bool {
+    self.cx.scope.heap().is_callable(value).unwrap_or(false)
   }
 
   fn is_boolean(&self, value: Self::JsValue) -> bool {
@@ -1006,6 +1011,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn is_object(&self, value: Self::JsValue) -> bool {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_object(self, value)
+  }
+
+  fn is_callable(&self, value: Self::JsValue) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::is_callable(self, value)
   }
 
   fn is_boolean(&self, value: Self::JsValue) -> bool {

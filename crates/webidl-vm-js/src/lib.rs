@@ -1110,6 +1110,163 @@ impl WebIdlJsRuntime for VmJsWebIdlCx<'_> {
   }
 }
 
+/// Convert an ECMAScript value to a WebIDL callback function value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-function>
+///
+/// # GC / lifetime safety
+///
+/// The returned [`Value`] is **not** automatically rooted. If the embedding intends to store it
+/// beyond the current VM call boundary, it must keep it alive (e.g. via [`Heap::add_root`]) and
+/// store the returned [`vm_js::RootId`].
+pub fn to_callback_function(
+  heap: &Heap,
+  value: Value,
+  legacy_treat_non_object_as_null: bool,
+) -> Result<Value, VmError> {
+  if legacy_treat_non_object_as_null && !matches!(value, Value::Object(_)) {
+    return Ok(Value::Null);
+  }
+  if heap.is_callable(value)? {
+    return Ok(value);
+  }
+  Err(VmError::TypeError(
+    "Value is not a callable callback function",
+  ))
+}
+
+/// Convert an ECMAScript value to a WebIDL callback interface value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-interface>
+///
+/// MVP behaviour: validate that the value is an object and return it.
+///
+/// # GC / lifetime safety
+///
+/// Like [`to_callback_function`], the returned value is not automatically rooted.
+pub fn to_callback_interface(_heap: &Heap, value: Value) -> Result<Value, VmError> {
+  if matches!(value, Value::Object(_)) {
+    return Ok(value);
+  }
+  Err(VmError::TypeError(
+    "Value is not a callback interface object",
+  ))
+}
+
+/// Nullable wrapper for [`to_callback_function`].
+#[inline]
+pub fn to_nullable_callback_function(
+  heap: &Heap,
+  value: Value,
+  legacy_treat_non_object_as_null: bool,
+) -> Result<Value, VmError> {
+  if matches!(value, Value::Undefined | Value::Null) {
+    return Ok(Value::Null);
+  }
+  to_callback_function(heap, value, legacy_treat_non_object_as_null)
+}
+
+/// Nullable wrapper for [`to_callback_interface`].
+#[inline]
+pub fn to_nullable_callback_interface(heap: &Heap, value: Value) -> Result<Value, VmError> {
+  if matches!(value, Value::Undefined | Value::Null) {
+    return Ok(Value::Null);
+  }
+  to_callback_interface(heap, value)
+}
+
+/// Invoke a callback function value, ensuring Promise jobs enqueue via `hooks`.
+///
+/// This uses [`Vm::call_with_host`], which:
+/// - passes a dummy [`VmHost`] context (`()`), and
+/// - installs `hooks` as the active host hooks override so Promise jobs are routed via
+///   [`VmHostHooks::host_enqueue_promise_job`].
+///
+/// Embeddings that need native call handlers to access host state should ensure their bindings use
+/// the `VmHostHooks`-based dispatch plumbing (see [`WebIdlBindingsHostSlot`]) rather than relying on
+/// downcasting the `VmHost` context.
+pub fn invoke_callback_function(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  callback: Value,
+  this_arg: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "Callback function value is not callable",
+    ));
+  }
+  vm.call_with_host(scope, hooks, callback, this_arg, args)
+}
+
+/// Invoke a callback interface value.
+///
+/// Web IDL callback interfaces are "dual" objects: they may be either callable (functions) or
+/// objects with callable members (e.g. `handleEvent` for `EventListener`).
+///
+/// - If `callback` is callable, it is invoked with `this = this_for_callable`.
+/// - Otherwise, `callback.handleEvent(...args)` is invoked with `this = callback`.
+///
+/// Promise jobs enqueued by the callback are routed via `hooks`.
+pub fn invoke_callback_interface(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  callback: Value,
+  this_for_callable: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if scope.heap().is_callable(callback)? {
+    return vm.call_with_host(scope, hooks, callback, this_for_callable, args);
+  }
+  let Value::Object(obj) = callback else {
+    return Err(VmError::TypeError(
+      "Callback interface value is not callable or an object",
+    ));
+  };
+
+  // Root the receiver while allocating the `handleEvent` property key and while invoking accessors.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let key_s = scope.alloc_string("handleEvent")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = VmPropertyKey::from_string(key_s);
+
+  // Implement `GetMethod` in a way that invokes accessor getters via `Vm::call_with_host` so host
+  // hooks overrides are respected.
+  let method = match scope.heap().get_property(obj, &key)? {
+    None => Value::Undefined,
+    Some(desc) => match desc.kind {
+      vm_js::PropertyKind::Data { value, .. } => value,
+      vm_js::PropertyKind::Accessor { get, .. } => {
+        if matches!(get, Value::Undefined) {
+          Value::Undefined
+        } else {
+          if !scope.heap().is_callable(get)? {
+            return Err(VmError::TypeError("accessor getter is not callable"));
+          }
+          vm.call_with_host(&mut scope, hooks, get, Value::Object(obj), &[])?
+        }
+      }
+    },
+  };
+
+  if matches!(method, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Callback interface object is missing a callable handleEvent method",
+    ));
+  }
+  if !scope.heap().is_callable(method)? {
+    return Err(VmError::TypeError(
+      "Callback interface object is missing a callable handleEvent method",
+    ));
+  }
+  vm.call_with_host(&mut scope, hooks, method, Value::Object(obj), args)
+}
+
 #[cfg(test)]
 mod tests {
   use super::VmJsWebIdlCx;

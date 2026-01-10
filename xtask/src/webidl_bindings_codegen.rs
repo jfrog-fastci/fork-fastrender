@@ -3720,8 +3720,17 @@ fn emit_conversion_expr(
           "js_to_dict_{}::<Host, R>(rt, host, {value_ident}, false)?",
           to_snake_ident(name)
         )
-      } else if resolved.callbacks.contains_key(name) {
-        format!("BindingValue::Callback(rt.root_callback_function({value_ident})?)")
+      } else if let Some(cb) = resolved.callbacks.get(name) {
+        let legacy =
+          cb.ext_attrs.iter().any(|a| a.name.as_str() == "LegacyTreatNonObjectAsNull");
+        if legacy {
+          format!(
+            "if !rt.is_object({value_ident}) {{ BindingValue::Null }} else {{ BindingValue::Callback(rt.root_callback_function({value_ident})?) }}",
+            value_ident = value_ident,
+          )
+        } else {
+          format!("BindingValue::Callback(rt.root_callback_function({value_ident})?)")
+        }
       } else if resolved.interfaces.get(name).is_some_and(|i| i.callback) {
         format!("BindingValue::Callback(rt.root_callback_interface({value_ident})?)")
       } else {
@@ -3729,23 +3738,10 @@ fn emit_conversion_expr(
         format!("BindingValue::Object({value_ident})")
       }
     }
-    IdlType::Nullable(inner) => {
-      let converted = emit_conversion_expr(resolved, inner, ext_attrs, value_ident);
-      if type_contains_callback(resolved, inner) {
-        // Callback types accept `null`/`undefined` as "no callback" when nullable.
-        format!(
-          "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {converted} }}",
-          value_ident = value_ident,
-          converted = converted
-        )
-      } else {
-        format!(
-          "if rt.is_null({value_ident}) {{ BindingValue::Null }} else {{ {converted} }}",
-          value_ident = value_ident,
-          converted = converted
-        )
-      }
-    }
+    IdlType::Nullable(inner) => format!(
+      "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::Null }} else {{ {} }}",
+      emit_conversion_expr(resolved, inner, ext_attrs, value_ident)
+    ),
     IdlType::Union(_members) => {
       // Only support the common `({Dictionary} or boolean)` pattern for now (e.g.
       // `AddEventListenerOptions or boolean`).
