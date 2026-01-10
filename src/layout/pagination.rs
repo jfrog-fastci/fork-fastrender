@@ -1185,10 +1185,18 @@ pub fn paginate_fragment_tree(
             remaining,
             root_axes,
           )? {
+            let is_first_fragment = pending.offset <= EPSILON;
+            let is_last_fragment = next >= pending.total_extent - EPSILON;
+            let break_before_forced =
+              !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
+            let break_after_forced =
+              !is_last_fragment && pending.analyzer.is_forced_break_at(next);
             normalize_fragment_margins(
               &mut slice,
-              pending.offset <= EPSILON,
-              next >= pending.total_extent - EPSILON,
+              is_first_fragment,
+              is_last_fragment,
+              break_before_forced,
+              break_after_forced,
               &axis,
             );
             let slice_block = axis.block_size(&slice.bounds).max(0.0);
@@ -1254,10 +1262,17 @@ pub fn paginate_fragment_tree(
       // determine which footnotes are eligible for this page and adjust the end accordingly.
       if let Some(mut provisional) = clipped.take() {
         strip_fixed_fragments(&mut provisional);
+        let is_first_fragment = page_index == 0;
+        let is_last_fragment = end_candidate >= total_height - 0.01;
+        let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
+        let break_after_forced =
+          !is_last_fragment && planner.analyzer.is_forced_break_at(end_candidate);
         normalize_fragment_margins(
           &mut provisional,
-          page_index == 0,
-          end_candidate >= total_height - 0.01,
+          is_first_fragment,
+          is_last_fragment,
+          break_before_forced,
+          break_after_forced,
           &axis,
         );
         let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
@@ -1310,10 +1325,15 @@ pub fn paginate_fragment_tree(
 
       if let Some(mut content) = clipped {
         strip_fixed_fragments(&mut content);
+        let break_before_forced = start > EPSILON && planner.analyzer.is_forced_break_at(start);
+        let is_last_fragment = end >= total_height - 0.01;
+        let break_after_forced = !is_last_fragment && planner.analyzer.is_forced_break_at(end);
         normalize_fragment_margins(
           &mut content,
           page_index == 0,
-          end >= total_height - 0.01,
+          is_last_fragment,
+          break_before_forced,
+          break_after_forced,
           &axis,
         );
         trim_clipped_content_start(&mut content, &axis, &token);
@@ -1381,10 +1401,18 @@ pub fn paginate_fragment_tree(
             available_for_oversize,
             root_axes,
           )? {
+            let is_first_fragment = pending.offset <= EPSILON;
+            let is_last_fragment = next >= pending.total_extent - EPSILON;
+            let break_before_forced =
+              !is_first_fragment && pending.analyzer.is_forced_break_at(pending.offset);
+            let break_after_forced =
+              !is_last_fragment && pending.analyzer.is_forced_break_at(next);
             normalize_fragment_margins(
               &mut slice,
-              pending.offset <= EPSILON,
-              next >= pending.total_extent - EPSILON,
+              is_first_fragment,
+              is_last_fragment,
+              break_before_forced,
+              break_after_forced,
               &axis,
             );
             footnote_slices.push(slice);

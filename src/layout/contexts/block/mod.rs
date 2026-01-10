@@ -6763,6 +6763,8 @@ impl BlockFormattingContext {
           &mut clipped,
           index == 0,
           index + 1 >= fragment_count,
+          index != 0 && analyzer.is_forced_break_at(start),
+          index + 1 != fragment_count && analyzer.is_forced_break_at(end),
           column_height,
           axes,
         );

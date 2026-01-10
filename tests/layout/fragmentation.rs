@@ -137,6 +137,32 @@ fn pagination_without_candidates_uses_fragmentainer_size() {
 }
 
 #[test]
+fn break_opportunity_just_after_fragmentainer_limit_does_not_slice_previous_box() {
+  // Regression: if a between-sibling break opportunity starts just after the fragmentainer limit
+  // (within floating point epsilon), fragmentation should not select a boundary *before* the
+  // opportunity. Otherwise the preceding box gets sliced, producing a near-zero continuation
+  // fragment on the next page/column.
+  let first = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 100.005),
+    1,
+    vec![],
+  );
+  let second = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 150.0, 40.0, 10.0),
+    2,
+    vec![],
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 160.0), vec![first, second]);
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(100.0)).unwrap();
+  assert_eq!(fragments.len(), 2);
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert!(fragments_with_id(&fragments[1], 1).is_empty());
+  assert_eq!(fragments_with_id(&fragments[1], 2).len(), 1);
+}
+
+#[test]
 fn forced_break_before_first_child_does_not_create_leading_empty_fragment() {
   let mut child_style = ComputedStyle::default();
   child_style.break_before = BreakBetween::Page;
@@ -1252,7 +1278,7 @@ fn pagination_keeps_fragment_boundary_margins_separate() {
 }
 
 #[test]
-fn multicolumn_breaks_do_not_carry_collapsed_margins() {
+fn multicolumn_unforced_break_truncates_leading_margins() {
   let mut root_style = ComputedStyle::default();
   root_style.column_count = Some(2);
   root_style.column_gap = Length::px(0.0);
@@ -1300,8 +1326,60 @@ fn multicolumn_breaks_do_not_carry_collapsed_margins() {
   );
   let second_column = block_fragments[1];
   assert!(
+    second_column.bounds.y().abs() < 0.1,
+    "unforced column breaks should truncate the leading margin of the first in-flow block (y={})",
+    second_column.bounds.y()
+  );
+}
+
+#[test]
+fn multicolumn_forced_break_preserves_leading_margins() {
+  let mut root_style = ComputedStyle::default();
+  root_style.column_count = Some(2);
+  root_style.column_gap = Length::px(0.0);
+  root_style.width = Some(Length::px(200.0));
+
+  let mut first_style = ComputedStyle::default();
+  first_style.height = Some(Length::px(20.0));
+
+  let mut second_style = ComputedStyle::default();
+  second_style.height = Some(Length::px(20.0));
+  second_style.margin_top = Some(Length::px(20.0));
+  second_style.break_before = BreakBetween::Column;
+
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![first, second],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let engine = LayoutEngine::with_defaults();
+  let fragments = engine.layout_tree(&box_tree).expect("layout");
+
+  let mut block_fragments: Vec<_> = fragments
+    .root
+    .children
+    .iter()
+    .filter(|c| {
+      matches!(c.content, FragmentContent::Block { .. }) && (c.bounds.height() - 20.0).abs() < 0.1
+    })
+    .collect();
+  block_fragments.sort_by(|a, b| {
+    a.bounds
+      .x()
+      .partial_cmp(&b.bounds.x())
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+
+  assert_eq!(block_fragments.len(), 2, "expected both blocks to render");
+  let second_column = block_fragments[1];
+  assert!(
     (second_column.bounds.y() - 20.0).abs() < 0.1,
-    "second column should restart margin collapsing at the column boundary"
+    "forced column breaks should preserve the leading margin of the next fragment (y={})",
+    second_column.bounds.y()
   );
 }
 

@@ -114,7 +114,14 @@ enum BreakKind {
 
 #[derive(Debug, Clone)]
 struct BreakOpportunity {
+  /// Inclusive block-axis start of the break range.
+  ///
+  /// Most break opportunities are points (`pos == end`). Between-sibling break
+  /// opportunities can span an entire gap (e.g. margin collapses), in which case
+  /// `pos` is the start edge of the gap and `end` is the end edge.
   pos: f32,
+  /// Inclusive block-axis end of the break range.
+  end: f32,
   strength: BreakStrength,
   kind: BreakKind,
 }
@@ -1234,7 +1241,10 @@ impl FragmentationAnalyzer {
         .unwrap_or(std::cmp::Ordering::Equal)
     });
     collection.opportunities.dedup_by(|a, b| {
-      (a.pos - b.pos).abs() < BREAK_EPSILON && a.kind == b.kind && a.strength == b.strength
+      (a.pos - b.pos).abs() < BREAK_EPSILON
+        && (a.end - b.end).abs() < BREAK_EPSILON
+        && a.kind == b.kind
+        && a.strength == b.strength
     });
 
     let content_extent = parallel_flow_content_extent(root, axes, fragmentainer_size_hint, context);
@@ -1268,6 +1278,16 @@ impl FragmentationAnalyzer {
     self.allow_early_sibling_breaks = allow;
   }
 
+  /// Returns true when `pos` matches a forced break opportunity.
+  pub fn is_forced_break_at(&self, pos: f32) -> bool {
+    if !pos.is_finite() {
+      return false;
+    }
+    self.opportunities.iter().any(|o| {
+      matches!(o.strength, BreakStrength::Forced) && (o.pos - pos).abs() < BREAK_EPSILON
+    })
+  }
+
   /// Adds additional forced break positions.
   ///
   /// This is useful for pagination consumers that need to introduce mandatory boundaries that are
@@ -1284,6 +1304,7 @@ impl FragmentationAnalyzer {
     for pos in &added {
       self.opportunities.push(BreakOpportunity {
         pos: *pos,
+        end: *pos,
         strength: BreakStrength::Forced,
         kind: BreakKind::BetweenSiblings,
       });
@@ -1295,7 +1316,10 @@ impl FragmentationAnalyzer {
         .unwrap_or(std::cmp::Ordering::Equal)
     });
     self.opportunities.dedup_by(|a, b| {
-      (a.pos - b.pos).abs() < BREAK_EPSILON && a.kind == b.kind && a.strength == b.strength
+      (a.pos - b.pos).abs() < BREAK_EPSILON
+        && (a.end - b.end).abs() < BREAK_EPSILON
+        && a.kind == b.kind
+        && a.strength == b.strength
     });
 
     // Atomic ranges are derived from the candidate set per fragmentainer size and will be split at
@@ -1734,7 +1758,16 @@ impl FragmentationAnalyzer {
       if opportunity.pos > limit + BREAK_EPSILON {
         break;
       }
-      if pos_is_inside_atomic_for_fragmentainer(opportunity.pos, fragmentainer, atomic) {
+      // Break opportunities can span a range (e.g. between siblings). When the natural limit lands
+      // inside the range, we can break at the limit. However, float rounding can also place the
+      // range start slightly *after* the limit while still within `BREAK_EPSILON`. In that case we
+      // must not break before the opportunity starts, or we'd slice the preceding box and produce a
+      // near-zero continuation fragment.
+      let candidate_pos = opportunity.end.min(limit).max(opportunity.pos);
+      if candidate_pos <= start + BREAK_EPSILON {
+        continue;
+      }
+      if pos_is_inside_atomic_for_fragmentainer(candidate_pos, fragmentainer, atomic) {
         continue;
       }
       if matches!(opportunity.strength, BreakStrength::Forced) {
@@ -1754,7 +1787,7 @@ impl FragmentationAnalyzer {
       };
 
       match best {
-        None => best = Some((constraint_key, strength_penalty, kind_rank, opportunity.pos)),
+        None => best = Some((constraint_key, strength_penalty, kind_rank, candidate_pos)),
         Some((best_key, best_penalty, best_kind, best_pos)) => {
           if constraint_key < best_key
             || (constraint_key == best_key && strength_penalty < best_penalty)
@@ -1764,9 +1797,9 @@ impl FragmentationAnalyzer {
             || (constraint_key == best_key
               && strength_penalty == best_penalty
               && kind_rank == best_kind
-              && opportunity.pos > best_pos + BREAK_EPSILON)
+              && candidate_pos > best_pos + BREAK_EPSILON)
           {
-            best = Some((constraint_key, strength_penalty, kind_rank, opportunity.pos));
+            best = Some((constraint_key, strength_penalty, kind_rank, candidate_pos));
           }
         }
       }
@@ -2047,7 +2080,16 @@ fn fragment_tree_impl(
       options.fragmentainer_size,
       axes,
     )? {
-      normalize_fragment_margins(&mut clipped, index == 0, index + 1 == fragment_count, &axis);
+      let break_before_forced = index != 0 && analyzer.is_forced_break_at(start);
+      let break_after_forced = index + 1 != fragment_count && analyzer.is_forced_break_at(end);
+      normalize_fragment_margins(
+        &mut clipped,
+        index == 0,
+        index + 1 == fragment_count,
+        break_before_forced,
+        break_after_forced,
+        &axis,
+      );
       propagate_fragment_metadata(&mut clipped, index, fragment_count);
 
       // Translate fragments to account for fragmentainer gaps so downstream consumers
@@ -3227,20 +3269,27 @@ pub(crate) fn normalize_fragment_margins(
   fragment: &mut FragmentNode,
   is_first_fragment: bool,
   is_last_fragment: bool,
+  break_before_forced: bool,
+  break_after_forced: bool,
   axis: &FragmentAxis,
 ) {
   const EPSILON: f32 = 0.01;
   let fragment_block_size = axis.block_size(&fragment.bounds);
 
-  // Reset carried collapsed margin from previous fragmentainer by reapplying the fragment's own
-  // top margin to the first block that starts this slice.
+  // CSS Break 3 §Adjoining Margins at Breaks:
+  // - Unforced breaks: margins adjoining the break are truncated to zero.
+  // - Forced breaks: margins *before* the break are truncated, margins *after* are preserved.
+  //
+  // We lay out the fragment tree in continuous space first, then slice it per-fragmentainer.
+  // This normalization step adjusts in-flow block fragment positions/sizes so the sliced output
+  // matches the spec's margin truncation rules.
+
+  // Normalize the start edge (margin-top after the break).
+  //
+  // For continuation fragments, truncate the first in-flow block's top margin to 0 unless the
+  // preceding break was forced, in which case preserve it. Apply the translation to all in-flow
+  // block children to avoid consuming inter-sibling collapsed margins.
   if !is_first_fragment {
-    // Margin restoration should preserve the relative positions of in-flow siblings within the
-    // fragment. Translating only the first child can accidentally "consume" the collapsed margin
-    // between the first and second blocks, shrinking the spacing between them.
-    //
-    // Compute the delta needed to position the first in-flow block at its desired `margin-top`,
-    // then translate all in-flow block children by the same amount.
     let mut min_start: Option<f32> = None;
     for child in fragment
       .children
@@ -3279,7 +3328,8 @@ pub(crate) fn normalize_fragment_margins(
         if meta.clipped_top {
           continue;
         }
-        delta = Some(meta.margin_top - start);
+        let desired = if break_before_forced { meta.margin_top } else { 0.0 };
+        delta = Some(desired - start);
         break;
       }
 
@@ -3297,50 +3347,53 @@ pub(crate) fn normalize_fragment_margins(
     }
   }
 
-  // Include the trailing margin of the last complete block when this slice is not the final one.
-  if !is_last_fragment {
-    if let Some((max_end, meta)) = fragment
+  // Normalize the end edge (margin-bottom before the break).
+  //
+  // CSS Break 3 truncates margins adjoining *unforced* breaks so fragmentainers don't end with an
+  // extra margin that conceptually belongs to the following fragmentainer. Forced breaks keep both
+  // sides' margins separate (they do not collapse across the break), so preserve the trailing
+  // margin in that case.
+  if !is_last_fragment && !break_after_forced {
+    if let Some(max_end) = fragment
       .children
       .iter()
       .filter_map(|c| {
         let block_size = axis.block_size(&c.bounds);
         let start = axis.flow_offset(axis.block_start(&c.bounds), block_size, fragment_block_size);
-        c.block_metadata.as_ref().map(|m| (start + block_size, m))
+        c.block_metadata.as_ref().map(|_| start + block_size)
       })
-      .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+      .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
     {
-      let target_block = if meta.clipped_bottom {
-        max_end
-      } else {
-        max_end + meta.margin_bottom
-      };
-      let new_block_size = fragment_block_size.max(target_block);
-      fragment.bounds = axis.update_block_components(
-        fragment.bounds,
-        axis.block_start(&fragment.bounds),
-        new_block_size,
-      );
-      let mut scroll_overflow = fragment.scroll_overflow;
-      let block_overflow = axis.block_size(&scroll_overflow).max(new_block_size);
-      let inline_overflow = axis
-        .inline_size(&scroll_overflow)
-        .max(axis.inline_size(&fragment.bounds));
-      scroll_overflow = if axis.block_is_horizontal {
-        Rect::from_xywh(
-          scroll_overflow.x(),
-          scroll_overflow.y(),
-          block_overflow,
-          inline_overflow,
-        )
-      } else {
-        Rect::from_xywh(
-          scroll_overflow.x(),
-          scroll_overflow.y(),
-          inline_overflow,
-          block_overflow,
-        )
-      };
-      fragment.scroll_overflow = scroll_overflow;
+      let new_block_size = max_end.max(0.0);
+      if new_block_size.is_finite() && new_block_size + EPSILON < fragment_block_size {
+        fragment.bounds = axis.update_block_components(
+          fragment.bounds,
+          axis.block_start(&fragment.bounds),
+          new_block_size,
+        );
+        // Keep overflow at least as large as the fragment bounds.
+        let mut scroll_overflow = fragment.scroll_overflow;
+        let block_overflow = axis.block_size(&scroll_overflow).max(new_block_size);
+        let inline_overflow = axis
+          .inline_size(&scroll_overflow)
+          .max(axis.inline_size(&fragment.bounds));
+        scroll_overflow = if axis.block_is_horizontal {
+          Rect::from_xywh(
+            scroll_overflow.x(),
+            scroll_overflow.y(),
+            block_overflow,
+            inline_overflow,
+          )
+        } else {
+          Rect::from_xywh(
+            scroll_overflow.x(),
+            scroll_overflow.y(),
+            inline_overflow,
+            block_overflow,
+          )
+        };
+        fragment.scroll_overflow = scroll_overflow;
+      }
     }
   }
 }
@@ -3350,11 +3403,20 @@ pub(crate) fn normalize_fragment_margins_with_axes(
   fragment: &mut FragmentNode,
   is_first_fragment: bool,
   is_last_fragment: bool,
+  break_before_forced: bool,
+  break_after_forced: bool,
   _fragment_block_size: f32,
   axes: FragmentAxes,
 ) {
   let axis = axis_from_fragment_axes(axes);
-  normalize_fragment_margins(fragment, is_first_fragment, is_last_fragment, &axis);
+  normalize_fragment_margins(
+    fragment,
+    is_first_fragment,
+    is_last_fragment,
+    break_before_forced,
+    break_after_forced,
+    &axis,
+  );
 }
 
 fn collect_break_opportunities(
@@ -3490,6 +3552,7 @@ fn collect_break_opportunities(
 
         collection.opportunities.push(BreakOpportunity {
           pos,
+          end: pos,
           strength,
           kind: BreakKind::BetweenSiblings,
         });
@@ -3544,6 +3607,7 @@ fn collect_break_opportunities(
       let first_line_start = flex_lines.lines[0].start;
       collection.opportunities.push(BreakOpportunity {
         pos: first_line_start,
+        end: first_line_start,
         strength: base_strength,
         kind: BreakKind::BetweenSiblings,
       });
@@ -3561,6 +3625,7 @@ fn collect_break_opportunities(
         strength = apply_avoid_penalty(strength, inside_avoid > 0);
         collection.opportunities.push(BreakOpportunity {
           pos: line.end,
+          end: line.end,
           strength,
           kind: BreakKind::BetweenSiblings,
         });
@@ -3571,6 +3636,7 @@ fn collect_break_opportunities(
         let strength = apply_avoid_penalty(start_strength, inside_avoid > 0);
         collection.opportunities.push(BreakOpportunity {
           pos: abs_start,
+          end: abs_start,
           strength,
           kind: BreakKind::BetweenSiblings,
         });
@@ -3580,6 +3646,7 @@ fn collect_break_opportunities(
         let strength = apply_avoid_penalty(end_strength, inside_avoid > 0);
         collection.opportunities.push(BreakOpportunity {
           pos: abs_end,
+          end: abs_end,
           strength,
           kind: BreakKind::BetweenSiblings,
         });
@@ -3666,6 +3733,7 @@ fn collect_break_opportunities(
       }
       collection.opportunities.push(BreakOpportunity {
         pos: line_end,
+        end: line_end,
         strength,
         kind: BreakKind::LineBoundary {
           container_id,
@@ -3701,6 +3769,7 @@ fn collect_break_opportunities(
       };
       collection.opportunities.push(BreakOpportunity {
         pos,
+        end: pos,
         strength,
         kind: BreakKind::BetweenSiblings,
       });
@@ -3764,21 +3833,11 @@ fn collect_break_opportunities(
       strength = BreakStrength::Avoid;
     }
     // Break opportunities between siblings span the entire gap between the end of one fragment and
-    // the start of the next. `child_abs_end` is only the end of the current child itself; when the
-    // next sibling begins later (e.g. due to margins), consumers are still free to break anywhere
-    // inside the gap. Record the boundary at the next sibling's start when available so the
-    // boundary-selection logic can still choose the fragmentainer limit without being biased toward
-    // an early break.
-    let mut boundary_pos = child_abs_end;
-    if !matches!(strength, BreakStrength::Forced) {
-      if let Some(next_start) = next_abs_start {
-        if next_start > boundary_pos {
-          boundary_pos = next_start;
-        }
-      }
-    }
-
-    if matches!(strength, BreakStrength::Forced) {
+    // the start of the next (e.g. due to vertical margins). This allows fragmentation algorithms
+    // (notably column balancing) to choose a boundary inside the gap when the fragmentainer limit
+    // falls there.
+    let (pos, end) = if matches!(strength, BreakStrength::Forced) {
+      let mut boundary = child_abs_end;
       if let Some(meta) = child.block_metadata.as_ref() {
         let mut candidate = child_abs_end + meta.margin_bottom;
         if candidate < child_abs_end {
@@ -3787,16 +3846,24 @@ fn collect_break_opportunities(
         if let Some(next_start) = next_abs_start {
           candidate = candidate.min(next_start);
         }
-        boundary_pos = candidate;
+        boundary = candidate;
       }
       // Forced breaks after the last in-flow child propagate to the end edge of the containing
       // block. This mirrors the `break-before` propagation logic above and prevents fragmentation
       // from creating a trailing slice that contains only the parent's padding/align-content gaps
       // when the last child ends early.
       if next_child.is_none() {
-        boundary_pos = abs_end;
+        boundary = abs_end;
       }
-    }
+      (boundary, boundary)
+    } else {
+      let range_start = child_abs_end;
+      let mut range_end = next_abs_start.unwrap_or(range_start);
+      if range_end < range_start {
+        range_end = range_start;
+      }
+      (range_start, range_end)
+    };
     let include_boundary = if inside_inline > 0 {
       strength != BreakStrength::Auto
     } else {
@@ -3809,7 +3876,8 @@ fn collect_break_opportunities(
     };
     if include_boundary {
       collection.opportunities.push(BreakOpportunity {
-        pos: boundary_pos,
+        pos,
+        end,
         strength,
         kind: BreakKind::BetweenSiblings,
       });
@@ -5008,14 +5076,13 @@ mod tests {
   }
 
   #[test]
-  fn balanced_boundaries_respects_remaining_capacity() {
-    // The balanced boundary selection must not choose a break so early that the remaining content
-    // cannot fit within the remaining fragmentainers capped at `max_fragmentainer_size`.
+  fn balanced_boundaries_can_break_inside_sibling_gaps() {
+    // Between-sibling break opportunities can span a gap (e.g. collapsed margins). When the
+    // fragmentainer limit falls inside that gap, the boundary selection should be able to break at
+    // the limit (truncating the adjoining margin space) instead of picking an earlier break point.
     //
-    // This regression models the MDN multicol example where 4 equal-height blocks with margins
-    // should balance 2-per-column. The ideal height (384/2=192) would pick the first break at 100,
-    // but the remaining 284px cannot fit in one 200px column; the balanced algorithm must choose
-    // the 200px break instead.
+    // This regression models the MDN multicol example where 4 equal-height blocks should balance
+    // 2-per-column. The ideal height (384/2=192) lands inside the gap between blocks 2 and 3.
     let mut style = ComputedStyle::default();
     style.display = Display::Block;
     let style = Arc::new(style);
@@ -5047,11 +5114,48 @@ mod tests {
     let boundaries = analyzer
       .balanced_boundaries(2, 200.0, analyzer.content_extent())
       .expect("balanced boundaries");
-    assert_eq!(boundaries, vec![0.0, 200.0, 384.0]);
+    assert_eq!(boundaries, vec![0.0, 192.0, 384.0]);
   }
 
   #[test]
-  fn normalize_fragment_margins_preserves_in_flow_spacing_in_continuations() {
+  fn sibling_gap_boundary_is_not_selected_before_gap_start_due_to_epsilon() {
+    // Regression: break opportunities that start just after the fragmentainer limit (within
+    // `BREAK_EPSILON`) should snap forward to the opportunity start, not backward to the limit.
+    //
+    // Without this, pagination/columns can end up slicing the preceding box and creating a
+    // near-zero continuation fragment on the next fragmentainer, which then interferes with margin
+    // normalization (as seen in the MDN multicol guide fixture).
+    let first =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.005), 1, vec![]);
+    let second =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 150.0, 100.0, 10.0), 2, vec![]);
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 160.0),
+      vec![first, second],
+    );
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(100.0),
+    );
+    let total_extent = analyzer.content_extent().max(100.0);
+    let boundaries = analyzer.boundaries(100.0, total_extent).unwrap();
+
+    let first_boundary = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_boundary - 100.005).abs() < 0.001,
+      "expected boundary at the sibling gap start (100.005), got {first_boundary} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn normalize_fragment_margins_truncates_leading_margins_after_unforced_break() {
     let axis = axis_from_fragment_axes(default_axes());
     let mut style = ComputedStyle::default();
     style.display = Display::Block;
@@ -5070,6 +5174,45 @@ mod tests {
       node
     }
 
+    // Model a continuation fragment that begins inside the gap before the first in-flow block
+    // (e.g. margin space preceding the first box in the fragment). Unforced breaks truncate this
+    // leading margin, so the first box should start at the origin.
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 284.0),
+      vec![
+        child(&style, 1, 16.0),
+        child(&style, 2, 116.0),
+        child(&style, 3, 216.0),
+      ],
+      style,
+    );
+    normalize_fragment_margins(&mut fragment, false, true, false, false, &axis);
+
+    let positions: Vec<f32> = fragment.children.iter().map(|c| c.bounds.y()).collect();
+    assert_eq!(positions, vec![0.0, 100.0, 200.0]);
+  }
+
+  #[test]
+  fn normalize_fragment_margins_preserves_leading_margins_after_forced_break() {
+    let axis = axis_from_fragment_axes(default_axes());
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    fn child(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
+      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      node.style = Some(style.clone());
+      node.block_metadata = Some(BlockFragmentMetadata {
+        margin_top: 16.0,
+        margin_bottom: 16.0,
+        clipped_top: false,
+        clipped_bottom: false,
+      });
+      node
+    }
+
+    // Forced breaks preserve margins after the break, so continuation fragments should keep the
+    // leading top margin of the first in-flow block.
     let mut fragment = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 100.0, 284.0),
       vec![
@@ -5079,10 +5222,40 @@ mod tests {
       ],
       style,
     );
-    normalize_fragment_margins(&mut fragment, false, true, &axis);
+    normalize_fragment_margins(&mut fragment, false, true, true, false, &axis);
 
     let positions: Vec<f32> = fragment.children.iter().map(|c| c.bounds.y()).collect();
     assert_eq!(positions, vec![16.0, 116.0, 216.0]);
+  }
+
+  #[test]
+  fn normalize_fragment_margins_truncates_trailing_margins_before_break() {
+    let axis = axis_from_fragment_axes(default_axes());
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    let mut child = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 84.0), 1, vec![]);
+    child.style = Some(style.clone());
+    child.block_metadata = Some(BlockFragmentMetadata {
+      margin_top: 16.0,
+      margin_bottom: 16.0,
+      clipped_top: false,
+      clipped_bottom: false,
+    });
+
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      style,
+    );
+    normalize_fragment_margins(&mut fragment, true, false, false, false, &axis);
+
+    assert!(
+      (fragment.bounds.height() - 84.0).abs() < 0.01,
+      "expected trailing margins to be truncated at an unforced break (bounds={:?})",
+      fragment.bounds
+    );
   }
 
   #[test]
