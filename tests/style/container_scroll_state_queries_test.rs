@@ -133,3 +133,115 @@ fn container_scroll_state_scrollable_top_tracks_element_scroll_offset() {
     "expected scrollable: top to match at scroll end"
   );
 }
+
+#[test]
+fn container_scroll_state_scrollable_right_tracks_element_scroll_offset() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: right) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_left = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare left");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared_left.box_tree().root, "scroller").expect("scroller box id");
+
+  let target_left = find_by_id(prepared_left.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_left.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: right to match at scroll start"
+  );
+
+  let prepared_right = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 10_000.0, 0.0),
+    )
+    .expect("prepare right");
+
+  let target_right = find_by_id(prepared_right.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_right.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: right to be false at scroll end"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_left_tracks_element_scroll_offset() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: left) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_left = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare left");
+  let scroller_box_id =
+    box_id_by_element_id(&prepared_left.box_tree().root, "scroller").expect("scroller box id");
+
+  let target_left = find_by_id(prepared_left.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_left.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: left to be false at scroll start"
+  );
+
+  let prepared_right = renderer
+    .prepare_html(
+      html,
+      base_options
+        .clone()
+        .with_element_scroll(scroller_box_id, 10_000.0, 0.0),
+    )
+    .expect("prepare right");
+
+  let target_right = find_by_id(prepared_right.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_right.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: left to match at scroll end"
+  );
+}
