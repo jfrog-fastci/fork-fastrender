@@ -67,6 +67,10 @@ where
 
   match spec.script_type {
     ScriptType::Classic => {
+      if spec.is_suppressed_by_nomodule(&scheduler.options()) {
+        return Ok(());
+      }
+
       // External scripts are handled directly by the scheduler so they start loading immediately.
       // Inline scripts are queued as tasks to keep DOM mutation calls non-reentrant.
       if spec.src_attr_present {
@@ -148,7 +152,6 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
-
   let crossorigin = dom
     .get_attribute(script, "crossorigin")
     .ok()
@@ -460,6 +463,173 @@ mod tests {
     assert_eq!(
       spec.crossorigin,
       Some(crate::resource::CorsMode::UseCredentials)
+    );
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod nomodule_tests {
+  use super::*;
+  use crate::js::{JsExecutionOptions, RunLimits};
+  use selectors::context::QuirksMode;
+
+  struct Host {
+    dom: Document,
+    started_loads: Vec<String>,
+    executed: Vec<String>,
+  }
+
+  impl Default for Host {
+    fn default() -> Self {
+      Self {
+        dom: Document::new(QuirksMode::NoQuirks),
+        started_loads: Vec::new(),
+        executed: Vec::new(),
+      }
+    }
+  }
+
+  impl DomHost for Host {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
+  }
+
+  impl ScriptLoader for Host {
+    type Handle = usize;
+
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: crate::resource::FetchDestination,
+    ) -> Result<String> {
+      self.started_loads.push(url.to_string());
+      Ok(String::new())
+    }
+
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: crate::resource::FetchDestination,
+    ) -> Result<Self::Handle> {
+      self.started_loads.push(url.to_string());
+      Ok(self.started_loads.len())
+    }
+
+    fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+      Ok(None)
+    }
+  }
+
+  impl ScriptExecutor for Host {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push(script_text.to_string());
+      Ok(())
+    }
+  }
+
+  impl ScriptEventDispatcher for Host {
+    fn dispatch_script_event(&mut self, _event: ScriptElementEvent, _spec: &ScriptElementSpec) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  fn build_doc_with_script(
+    attrs: &[(&str, &str)],
+    bool_attrs: &[&str],
+    text: Option<&str>,
+  ) -> (Document, NodeId) {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let html = doc.create_element("html", "");
+    doc.append_child(doc.root(), html).expect("append_child");
+    let script = doc.create_element("script", "");
+    for (k, v) in attrs {
+      doc.set_attribute(script, k, v).expect("set_attribute");
+    }
+    for name in bool_attrs {
+      doc
+        .set_bool_attribute(script, name, true)
+        .expect("set_bool_attribute");
+    }
+    if let Some(text) = text {
+      let t = doc.create_text(text);
+      doc.append_child(script, t).expect("append_child");
+    }
+    doc.append_child(html, script).expect("append_child");
+    (doc, script)
+  }
+
+  #[test]
+  fn dynamic_inline_nomodule_script_is_suppressed_when_module_scripts_supported() -> Result<()> {
+    let (dom, script) = build_doc_with_script(&[], &["nomodule"], Some("RUN"));
+    let mut host = Host {
+      dom,
+      ..Host::default()
+    };
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(host.executed.is_empty(), "expected nomodule script not to execute");
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_inline_script_still_executes_when_module_scripts_supported() -> Result<()> {
+    let (dom, script) = build_doc_with_script(&[], &[], Some("RUN"));
+    let mut host = Host {
+      dom,
+      ..Host::default()
+    };
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.executed, vec!["RUN".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_nomodule_script_does_not_start_fetch_when_module_scripts_supported() -> Result<()> {
+    let (dom, script) = build_doc_with_script(&[("src", "a.js")], &["nomodule"], None);
+    let mut host = Host {
+      dom,
+      ..Host::default()
+    };
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no fetch to be started for nomodule external scripts"
     );
     Ok(())
   }

@@ -22,6 +22,11 @@ pub struct JsExecutionOptions {
   /// Bounds for how much work can be *executed* in a single event loop "spin" (run).
   pub event_loop_run_limits: RunLimits,
 
+  /// Whether the JS runtime supports executing module scripts (`<script type="module">`).
+  ///
+  /// When this is enabled, classic scripts with the `nomodule` attribute must be suppressed.
+  pub supports_module_scripts: bool,
+
   /// Maximum number of bytes accepted for a single script's source text (inline or external).
   pub max_script_bytes: usize,
 
@@ -72,6 +77,8 @@ impl Default for JsExecutionOptions {
         // budget; this is intentionally short to avoid hangs in a single "spin".
         max_wall_time: Some(Duration::from_millis(500)),
       },
+
+      supports_module_scripts: false,
 
       // 2 MiB per script mirrors the stylesheet inlining default and keeps per-script allocations
       // bounded. Embedders can raise this when targeting real-world pages.

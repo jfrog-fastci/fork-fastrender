@@ -164,6 +164,9 @@ where
     if spec.script_type != ScriptType::Classic {
       return Ok(());
     }
+    if spec.is_suppressed_by_nomodule(&self.options) {
+      return Ok(());
+    }
 
     // Inline scripts execute immediately (async/defer ignored).
     //
@@ -532,6 +535,7 @@ struct ExternalScriptEntry<NodeId> {
 }
 
 pub struct ScriptScheduler<NodeId> {
+  options: JsExecutionOptions,
   next_script_id: u64,
   scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>,
   defer_queue: Vec<ScriptId>,
@@ -544,6 +548,7 @@ pub struct ScriptScheduler<NodeId> {
 impl<NodeId> Default for ScriptScheduler<NodeId> {
   fn default() -> Self {
     Self {
+      options: JsExecutionOptions::default(),
       next_script_id: 1,
       scripts: HashMap::new(),
       defer_queue: Vec::new(),
@@ -558,6 +563,18 @@ impl<NodeId> Default for ScriptScheduler<NodeId> {
 impl<NodeId: Clone> ScriptScheduler<NodeId> {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn with_options(options: JsExecutionOptions) -> Self {
+    Self { options, ..Self::default() }
+  }
+
+  pub fn set_options(&mut self, options: JsExecutionOptions) {
+    self.options = options;
+  }
+
+  pub fn options(&self) -> JsExecutionOptions {
+    self.options
   }
 
   pub(crate) fn trace_metadata(&self, script_id: ScriptId) -> Option<ScriptTraceMetadata<'_>> {
@@ -608,6 +625,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   ) -> Result<DiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
 
+    if element.is_suppressed_by_nomodule(&self.options) {
+      return Ok(DiscoveredScript {
+        id,
+        actions: Vec::new(),
+      });
+    }
     let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
 
     match element.script_type {
@@ -1584,8 +1607,12 @@ mod state_machine_tests {
 
   impl Harness {
     fn new() -> Self {
+      Self::new_with_options(JsExecutionOptions::default())
+    }
+
+    fn new_with_options(options: JsExecutionOptions) -> Self {
       Self {
-        scheduler: ScriptScheduler::new(),
+        scheduler: ScriptScheduler::with_options(options),
         event_loop: EventLoop::new(),
         host: Host::default(),
         started_fetches: Vec::new(),
@@ -1883,6 +1910,47 @@ mod state_machine_tests {
       "expected no inline execution when src attribute is present"
     );
     assert!(h.blocked_parser_on.is_none(), "invalid external scripts must not block parsing");
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_inline_script_is_skipped_when_module_scripts_supported() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let mut spec = classic_inline("SKIP");
+    spec.nomodule_attr = true;
+    h.discover(spec)?;
+    assert_eq!(h.host.log, Vec::<String>::new());
+
+    h.discover(classic_inline("RUN"))?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:RUN".to_string(), "microtask:RUN".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_external_script_does_not_start_fetch_when_module_scripts_supported() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let mut spec = classic_external("https://example.com/a.js", false, false);
+    spec.nomodule_attr = true;
+    h.discover(spec)?;
+
+    assert!(
+      h.started_fetches.is_empty(),
+      "expected no fetch to be started for nomodule external scripts"
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "nomodule external scripts must not block parsing"
+    );
+    assert!(h.host.log.is_empty(), "nomodule scripts must not execute");
     Ok(())
   }
 

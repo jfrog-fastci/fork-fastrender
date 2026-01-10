@@ -195,7 +195,7 @@ impl BrowserTabHost {
       event_invoker: Box::new(NoopEventInvoker),
       current_script: CurrentScriptStateHandle::default(),
       orchestrator: ScriptOrchestrator::new(),
-      scheduler: ScriptScheduler::new(),
+      scheduler: ScriptScheduler::with_options(js_execution_options),
       scripts: HashMap::new(),
       scheduled_script_nodes: HashSet::new(),
       deferred_scripts: HashSet::new(),
@@ -281,7 +281,7 @@ impl BrowserTabHost {
   ) -> Result<()> {
     self.current_script.reset();
     self.orchestrator = ScriptOrchestrator::new();
-    self.scheduler = ScriptScheduler::new();
+    self.scheduler = ScriptScheduler::with_options(self.js_execution_options);
     self.scripts.clear();
     self.scheduled_script_nodes.clear();
     self.deferred_scripts.clear();
@@ -938,6 +938,12 @@ impl BrowserTabHost {
     }
 
     let spec_for_table = spec.clone();
+    let discovered = self
+      .scheduler
+      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
+    if discovered.actions.is_empty() {
+      return Ok(discovered.id);
+    }
     let is_deferred = spec_for_table.script_type == ScriptType::Classic
       && spec_for_table.parser_inserted
       && spec_for_table.src_attr_present
@@ -949,9 +955,6 @@ impl BrowserTabHost {
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
     }
-    let discovered = self
-      .scheduler
-      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
     self.scripts.insert(
       discovered.id,
       ScriptEntry {
@@ -2286,6 +2289,7 @@ impl BrowserTab {
 
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
     self.host.js_execution_options = options;
+    self.host.scheduler.set_options(options);
     self.event_loop.set_queue_limits(options.event_loop_queue_limits);
   }
 
@@ -2695,13 +2699,17 @@ mod tests {
     }
   }
 
-  fn build_host(html: &str, log: Rc<RefCell<Vec<String>>>) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
+  fn build_host_with_options(
+    html: &str,
+    log: Rc<RefCell<Vec<String>>>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
     let document = BrowserDocumentDom2::from_html(html, RenderOptions::default())?;
     let mut host = BrowserTabHost::new(
       document,
       Box::new(TestExecutor { log }),
       TraceHandle::default(),
-      JsExecutionOptions::default(),
+      js_execution_options,
     );
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
@@ -2849,6 +2857,10 @@ mod tests {
     );
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     Ok((host, EventLoop::new()))
+  }
+
+  fn build_host(html: &str, log: Rc<RefCell<Vec<String>>>) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
+    build_host_with_options(html, log, JsExecutionOptions::default())
   }
 
   #[derive(Default)]
@@ -4123,6 +4135,31 @@ html, body { margin: 0; padding: 0; }
     assert_eq!(
       &*log.borrow(),
       &["script:OK".to_string(), "microtask:OK".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_inline_script_is_skipped_when_module_scripts_supported() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+    let (mut host, mut event_loop) = build_host_with_options(
+      "<script nomodule>SKIP</script><script>RUN</script>",
+      Rc::clone(&log),
+      js_options,
+    )?;
+
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    for (node_id, spec) in discovered {
+      let base_url_at_discovery = spec.base_url.clone();
+      host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    }
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:RUN".to_string(), "microtask:RUN".to_string()]
     );
     Ok(())
   }

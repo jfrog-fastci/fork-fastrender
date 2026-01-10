@@ -183,8 +183,7 @@ pub struct ScriptElementSpec {
   pub defer_attr: bool,
   /// Whether the `nomodule` boolean attribute is present.
   ///
-  /// HTML uses this to disable classic scripts in module-capable user agents when the attribute is
-  /// present.
+  /// When module scripts are supported, classic scripts with `nomodule` must be skipped.
   pub nomodule_attr: bool,
   /// Parsed `crossorigin` attribute state (CORS settings attribute).
   ///
@@ -227,6 +226,13 @@ pub struct ScriptElementSpec {
   pub node_id: Option<crate::dom2::NodeId>,
   /// The script type (classic/module/importmap/unknown) derived from element attributes.
   pub script_type: ScriptType,
+}
+
+impl ScriptElementSpec {
+  /// Whether this script should be suppressed due to the `nomodule` attribute.
+  pub fn is_suppressed_by_nomodule(&self, options: &JsExecutionOptions) -> bool {
+    options.supports_module_scripts && self.script_type == ScriptType::Classic && self.nomodule_attr
+  }
 }
 
 /// Determine the script type for a `<script>` element based on `type`/`language` attributes.

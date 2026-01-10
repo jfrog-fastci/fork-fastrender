@@ -259,6 +259,20 @@ mod tests {
     assert_eq!(spec.inline_text, "");
   }
 
+  #[test]
+  fn dom2_builder_sets_nomodule_attr_presence() {
+    let mut doc = Dom2Document::new(QuirksMode::NoQuirks);
+    let script = doc.create_element("script", "");
+    doc
+      .set_bool_attribute(script, "nomodule", true)
+      .expect("set_bool_attribute");
+    doc.append_child(doc.root(), script).expect("append_child");
+
+    let base = BaseUrlTracker::new(None);
+    let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
+    assert!(spec.nomodule_attr);
+  }
+
   fn find_first_script_dom2(doc: &Dom2Document) -> NodeId {
     let mut stack = vec![doc.root()];
     while let Some(id) = stack.pop() {

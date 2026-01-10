@@ -255,6 +255,9 @@ where
       self
         .scheduler
         .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
+    if discovered.actions.is_empty() {
+      return Ok(());
+    }
     self.script_nodes.insert(discovered.id, script_node);
     if is_deferred {
       self.lifecycle.register_deferred_script();
