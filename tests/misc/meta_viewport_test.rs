@@ -1,6 +1,8 @@
 use fastrender::api::{FastRender, FastRenderConfig};
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::RenderOptions;
 use tiny_skia::Pixmap;
+use std::collections::HashMap;
 
 fn bounding_box_for_color<F>(pixmap: &Pixmap, predicate: F) -> Option<(u32, u32, u32, u32)>
 where
@@ -163,6 +165,44 @@ fn meta_viewport_drives_vw_vh_and_media_queries() {
       "{label}: expected height {} got {}",
       expected_size.1,
       height
+    );
+  }
+}
+
+#[test]
+fn meta_viewport_width_or_height_derived_zoom_preserves_output_dimensions() {
+  let _lock = super::global_test_lock();
+  let mut renderer =
+    FastRender::with_config(FastRenderConfig::new().with_meta_viewport(true)).unwrap();
+
+  // Ensure environment/runtime toggle overrides (e.g. FASTR_FULL_PAGE) cannot expand the canvas and
+  // invalidate dimension assertions.
+  let runtime_toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FULL_PAGE".to_string(),
+    "0".to_string(),
+  )]));
+
+  // When meta viewport implies a zoom derived from a single axis (width or height), the renderer
+  // should still honor the requested output surface dimensions.
+  let cases = [
+    ("width derived zoom", "width=300"),
+    ("height derived zoom", "height=200"),
+  ];
+
+  for (label, meta) in cases {
+    let html = format!(
+      r#"<html><head><meta name="viewport" content="{meta}"></head><body></body></html>"#
+    );
+    let options = RenderOptions::new()
+      .with_viewport(900, 600)
+      .with_runtime_toggles(runtime_toggles.clone());
+    let pixmap = renderer
+      .render_html_with_options(&html, options)
+      .unwrap_or_else(|err| panic!("{label}: render failed: {err:?}"));
+    assert_eq!(
+      (pixmap.width(), pixmap.height()),
+      (900, 600),
+      "{label}: output dimensions should remain stable"
     );
   }
 }
