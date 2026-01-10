@@ -549,6 +549,37 @@ impl WindowRealmHost for WindowHostState {
   }
 }
 
+impl webidl_vm_js::WebIdlBindingsHost for WindowHostState {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WindowHostState does not implement WebIDL binding dispatch",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WindowHostState does not implement WebIDL binding dispatch",
+    ))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

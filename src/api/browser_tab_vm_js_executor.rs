@@ -480,7 +480,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
       event_loop.clock()
     };
-
+ 
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);

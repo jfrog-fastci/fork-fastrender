@@ -2212,6 +2212,37 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
   }
 }
 
+impl webidl_vm_js::WebIdlBindingsHost for BrowserTabHost {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserTabHost does not implement WebIDL binding dispatch",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserTabHost does not implement WebIDL binding dispatch",
+    ))
+  }
+}
+
 impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost {
   fn dispatch_script_element_event(&mut self, script: NodeId, event_name: &'static str) -> Result<()> {
     // HTML "fire an event" for `<script>` load/error is an element task on the DOM manipulation
