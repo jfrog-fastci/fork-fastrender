@@ -3,7 +3,7 @@ use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::JustifyContent;
+use fastrender::style::types::{BoxSizing, JustifyContent};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -23,11 +23,13 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
   }
 }
 
-#[test]
-fn flex_root_auto_width_fill_available_respects_max_width() {
+fn assert_flex_root_max_width_case(
+  mut style: ComputedStyle,
+  expected_root_border_box_width: f32,
+  expected_child_x: f32,
+) {
   let fc = FlexFormattingContext::with_viewport(Size::new(800.0, 600.0));
 
-  let mut style = ComputedStyle::default();
   style.display = Display::Flex;
   style.justify_content = JustifyContent::FlexEnd;
   style.max_width = Some(Length::px(150.0));
@@ -55,8 +57,8 @@ fn flex_root_auto_width_fill_available_respects_max_width() {
     .expect("layout should succeed");
 
   assert!(
-    (fragment.bounds.width() - 150.0).abs() < 0.5,
-    "expected max-width to clamp fill-available width:auto (got {:.1})",
+    (fragment.bounds.width() - expected_root_border_box_width).abs() < 0.5,
+    "expected max-width to clamp fill-available width:auto to {expected_root_border_box_width:.1}px (got {:.1})",
     fragment.bounds.width()
   );
 
@@ -68,8 +70,8 @@ fn flex_root_auto_width_fill_available_respects_max_width() {
     .find(|f| fragment_box_id(f) == Some(1))
     .expect("expected flex child with id=1");
   assert!(
-    (child_fragment.bounds.x() - 130.0).abs() < 0.5,
-    "expected justify-content:flex-end to place child at x=130px (got {:.1}, root_w={:.1})",
+    (child_fragment.bounds.x() - expected_child_x).abs() < 0.5,
+    "expected justify-content:flex-end child to be placed at x={expected_child_x:.1}px (got {:.1}, root_w={:.1})",
     child_fragment.bounds.x(),
     fragment.bounds.width()
   );
@@ -79,4 +81,30 @@ fn flex_root_auto_width_fill_available_respects_max_width() {
     child_fragment.bounds,
     fragment.bounds
   );
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width() {
+  let style = ComputedStyle::default();
+  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 150.0, /* expected_child_x */ 130.0);
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width_with_padding_content_box() {
+  let mut style = ComputedStyle::default();
+  // Default is `box-sizing: content-box`.
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 150px constrains the *content* width, so the border-box width must include padding.
+  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 170.0, /* expected_child_x */ 140.0);
+}
+
+#[test]
+fn flex_root_auto_width_fill_available_respects_max_width_with_padding_border_box() {
+  let mut style = ComputedStyle::default();
+  style.box_sizing = BoxSizing::BorderBox;
+  style.padding_left = Length::px(10.0);
+  style.padding_right = Length::px(10.0);
+  // max-width: 150px constrains the border box, so the content box shrinks by padding.
+  assert_flex_root_max_width_case(style, /* expected_root_border_box_width */ 150.0, /* expected_child_x */ 120.0);
 }
