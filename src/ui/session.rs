@@ -157,6 +157,38 @@ mod tests {
     assert_eq!(session.tabs[6].zoom, Some(2.0));
     assert_eq!(session.tabs[7].zoom, None);
   }
+
+  #[test]
+  fn from_app_state_includes_non_default_zoom() {
+    use crate::ui::{BrowserAppState, BrowserTabState, TabId};
+
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+
+    let mut a = BrowserTabState::new(tab_a, "about:newtab".to_string());
+    a.zoom = 1.5;
+    let b = BrowserTabState::new(tab_b, "about:blank".to_string());
+
+    app.push_tab(a, true);
+    app.push_tab(b, false);
+
+    let session = BrowserSession::from_app_state(&app);
+    assert_eq!(session.active_tab_index, 0);
+    assert_eq!(
+      session.tabs,
+      vec![
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: Some(1.5),
+        },
+        BrowserSessionTab {
+          url: "about:blank".to_string(),
+          zoom: None,
+        },
+      ]
+    );
+  }
 }
 
 /// Determine the on-disk session file location.
