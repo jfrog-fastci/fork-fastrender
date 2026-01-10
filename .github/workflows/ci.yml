@@ -370,6 +370,59 @@ jobs:
           if-no-files-found: error
 
   # ===========================================================================
+  # Browser UI Headless Smoke - Build browser_ui feature and run headless smoke path (no display/GPU)
+  # ===========================================================================
+  browser_ui_headless_smoke:
+    name: Browser UI headless smoke (Linux stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build browser binary (browser_ui feature)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo_agent.sh build --locked --features browser_ui --bin browser
+
+      - name: Headless smoke (no X11/Wayland display required)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 \
+          FASTR_BROWSER_MEM_LIMIT_MB=4096 \
+            bash scripts/run_limited.sh --as 64G -- \
+              bash scripts/cargo_agent.sh run --locked --features browser_ui --bin browser \
+            | tee "${out}"
+          grep -q "HEADLESS_SMOKE_OK" "${out}"
+
+  # ===========================================================================
   # Chrome Baseline Viewport Smoke - Validate headless window-size padding/crop logic
   # ===========================================================================
   chrome_baseline_viewport:
@@ -912,7 +965,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [lockfile, ecma-rs-sanity, test, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, ecma-rs-sanity, test, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
@@ -920,6 +973,7 @@ jobs:
           if [ "${{ needs.test.result }}" != "success" ] || \
               [ "${{ needs.lockfile.result }}" != "success" ] || \
               [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
+              [ "${{ needs.browser_ui_headless_smoke.result }}" != "success" ] || \
               [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
               [ "${{ needs.msrv.result }}" != "success" ] || \
               [ "${{ needs.msrv-cross.result }}" != "success" ] || \
