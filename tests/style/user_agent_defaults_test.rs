@@ -135,6 +135,35 @@ fn user_agent_lists_tables_and_pre_defaults() {
 }
 
 #[test]
+fn user_agent_center_does_not_center_table_cell_text() {
+  let styled = styled_tree(
+    r#"
+      <!doctype html>
+      <html>
+        <body>
+          <center id="center">
+            <table id="table">
+              <tr>
+                <td id="td">D</td>
+              </tr>
+            </table>
+          </center>
+        </body>
+      </html>
+    "#,
+  );
+
+  let center = find_styled_by_id(&styled, "center").expect("center styled");
+  assert_eq!(center.styles.text_align, TextAlign::Center);
+
+  let table = find_styled_by_id(&styled, "table").expect("table styled");
+  assert_eq!(table.styles.text_align, TextAlign::Center);
+
+  let td = find_styled_by_id(&styled, "td").expect("td styled");
+  assert_eq!(td.styles.text_align, TextAlign::Start);
+}
+
+#[test]
 fn user_agent_details_dialog_popover_and_slot_defaults() {
   let styled = styled_tree(
     r#"
