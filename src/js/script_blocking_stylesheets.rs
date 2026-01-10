@@ -10,6 +10,10 @@ impl ScriptBlockingStyleSheetSet {
     Self::default()
   }
 
+  pub fn len(&self) -> usize {
+    self.keys.len()
+  }
+
   pub fn register_blocking_stylesheet(&mut self, key: usize) {
     self.keys.insert(key);
   }
@@ -22,4 +26,3 @@ impl ScriptBlockingStyleSheetSet {
     !self.keys.is_empty()
   }
 }
-

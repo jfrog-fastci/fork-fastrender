@@ -1,4 +1,5 @@
 use crate::dom::{ShadowRootMode, HTML_NAMESPACE};
+use crate::css::loader::{resolve_href, resolve_href_with_base};
 use crate::html::base_url_tracker::BaseUrlTracker;
 
 use html5ever::tendril::StrTendril;
@@ -50,6 +51,7 @@ impl ElemName for Dom2ElemName {
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
   base_url_tracker: Rc<RefCell<BaseUrlTracker>>,
+  pending_stylesheet_links: RefCell<Vec<(NodeId, String)>>,
   /// Insertion points where an ignored node (comment/doctype/PI) occurred.
   ///
   /// Even though these node types are not materialized, they must still act as boundaries for text
@@ -64,6 +66,7 @@ impl Dom2TreeSink {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
+      pending_stylesheet_links: RefCell::new(Vec::new()),
       ignored_insertion_points: RefCell::new(FxHashSet::default()),
       declarative_shadow_templates: RefCell::new(HashMap::new()),
     }
@@ -87,6 +90,10 @@ impl Dom2TreeSink {
 
   pub fn current_base_url(&self) -> Option<String> {
     self.base_url_tracker.borrow().current_base_url()
+  }
+
+  pub(crate) fn take_pending_stylesheet_links(&self) -> Vec<(NodeId, String)> {
+    std::mem::take(&mut *self.pending_stylesheet_links.borrow_mut())
   }
 
   fn map_quirks_mode(mode: HtmlQuirksMode) -> SelectorQuirksMode {
@@ -371,21 +378,93 @@ impl Dom2TreeSink {
     let Some((tag_name, namespace, attrs)) = Self::element_info(&doc.node(child).kind) else {
       return;
     };
-    if !tag_name.eq_ignore_ascii_case("base") {
+
+    fn is_ascii_whitespace_html(c: char) -> bool {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    }
+
+    fn trim_ascii_whitespace(value: &str) -> &str {
+      value.trim_matches(is_ascii_whitespace_html)
+    }
+
+    fn link_rel_is_stylesheet(rel: &str) -> bool {
+      rel
+        .split(is_ascii_whitespace_html)
+        .filter(|token| !token.is_empty())
+        .any(|token| token.eq_ignore_ascii_case("stylesheet"))
+    }
+
+    fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+      haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
+    }
+
+    let (in_head, in_foreign_namespace, in_template) = if tag_name.eq_ignore_ascii_case("base")
+      || tag_name.eq_ignore_ascii_case("link")
+    {
+      Self::compute_insertion_flags(doc, parent)
+    } else {
+      (false, false, false)
+    };
+
+    if tag_name.eq_ignore_ascii_case("base") {
+      self
+        .base_url_tracker
+        .borrow_mut()
+        .on_element_inserted(
+          tag_name,
+          namespace,
+          attrs,
+          in_head,
+          in_foreign_namespace,
+          in_template,
+        );
       return;
     }
-    let (in_head, in_foreign_namespace, in_template) = Self::compute_insertion_flags(doc, parent);
-    self
-      .base_url_tracker
-      .borrow_mut()
-      .on_element_inserted(
-        tag_name,
-        namespace,
-        attrs,
-        in_head,
-        in_foreign_namespace,
-        in_template,
-      );
+
+    if tag_name.eq_ignore_ascii_case("link") && Self::is_html_namespace(namespace) {
+      if in_template || in_foreign_namespace {
+        return;
+      }
+
+      let rel_value = attrs
+        .iter()
+        .find_map(|(name, value)| name.eq_ignore_ascii_case("rel").then_some(value.as_str()));
+      if !rel_value.is_some_and(link_rel_is_stylesheet) {
+        return;
+      }
+
+      let Some(href_raw) = attrs
+        .iter()
+        .find_map(|(name, value)| name.eq_ignore_ascii_case("href").then_some(value.as_str()))
+      else {
+        return;
+      };
+
+      let href_trimmed = trim_ascii_whitespace(href_raw);
+      if href_trimmed.is_empty() || href_trimmed.starts_with('#') {
+        return;
+      }
+
+      let base_url = self.base_url_tracker.borrow().current_base_url();
+      let resolved = match base_url.as_deref() {
+        Some(base) => resolve_href_with_base(Some(base), href_trimmed),
+        None => {
+          let bytes = href_trimmed.as_bytes();
+          if starts_with_ignore_ascii_case(bytes, b"javascript:")
+            || starts_with_ignore_ascii_case(bytes, b"vbscript:")
+            || starts_with_ignore_ascii_case(bytes, b"mailto:")
+          {
+            return;
+          }
+          // Preserve relative URLs (like `a.css`) when the document base is not yet known.
+          resolve_href("", href_trimmed).or_else(|| Some(href_trimmed.to_string()))
+        }
+      };
+
+      if let Some(url) = resolved {
+        self.pending_stylesheet_links.borrow_mut().push((child, url));
+      }
+    }
   }
 }
 

@@ -18,12 +18,11 @@ use crate::js::{
 use crate::js::runtime::with_event_loop;
 use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::css::encoding::decode_css_bytes_cow;
-use crate::css::loader::resolve_href_with_base;
-use crate::css::parser::{parse_stylesheet_with_media, tokenize_rel_list};
+use crate::css::parser::parse_stylesheet_with_media;
 use crate::css::types::CssImportLoader;
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
-use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
+use crate::style::media::{MediaContext, MediaQueryCache, MediaType};
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 use encoding_rs::{Encoding, UTF_8};
@@ -38,12 +37,6 @@ use selectors::context::QuirksMode;
 use url::Url;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
-
-const SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS: RunLimits = RunLimits {
-  max_tasks: 1024,
-  max_microtasks: 4096,
-  max_wall_time: None,
-};
 
 pub trait BrowserTabJsExecutor {
   fn execute_classic_script(
@@ -159,6 +152,21 @@ impl crate::web::events::EventListenerInvoker for NoopEventInvoker {
   }
 }
 
+#[derive(Debug, Clone)]
+struct PendingParserBlockingScript {
+  script_id: ScriptId,
+  source_text: String,
+}
+
+struct StreamingParseState {
+  parser: StreamingHtmlParser,
+  input: String,
+  input_offset: usize,
+  eof_set: bool,
+  deadline: Option<RenderDeadline>,
+  parse_task_scheduled: bool,
+}
+
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
@@ -198,6 +206,11 @@ pub struct BrowserTabHost {
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
   last_dynamic_script_discovery_generation: u64,
+  /// Whether we are currently running a streaming HTML parse (even if the parser state is
+  /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
+  streaming_parse_active: bool,
+  streaming_parse: Option<StreamingParseState>,
+  pending_parser_blocking_script: Option<PendingParserBlockingScript>,
 }
 
 impl BrowserTabHost {
@@ -238,6 +251,9 @@ impl BrowserTabHost {
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
       last_dynamic_script_discovery_generation: 0,
+      streaming_parse_active: false,
+      streaming_parse: None,
+      pending_parser_blocking_script: None,
     })
   }
 
@@ -338,6 +354,9 @@ impl BrowserTabHost {
     self.stylesheet_keys_by_node.clear();
     self.next_stylesheet_key = 0;
     self.stylesheet_media_query_cache = MediaQueryCache::default();
+    self.streaming_parse_active = false;
+    self.streaming_parse = None;
+    self.pending_parser_blocking_script = None;
     self.executor.reset_for_navigation(
       self.document_url.as_deref(),
       &mut self.document,
@@ -369,151 +388,6 @@ impl BrowserTabHost {
     self.stylesheet_media_context = ctx;
     // Cached query results depend on the context fingerprint, so clear on updates.
     self.stylesheet_media_query_cache = MediaQueryCache::default();
-  }
-
-  fn media_attr_matches_env(
-    media_context: &MediaContext,
-    cache: &mut MediaQueryCache,
-    media: Option<&str>,
-  ) -> bool {
-    let Some(raw) = media.map(str::trim).filter(|v| !v.is_empty()) else {
-      return true;
-    };
-    let queries = match MediaQuery::parse_list(raw) {
-      Ok(queries) => queries,
-      Err(_) => vec![MediaQuery::not_all()],
-    };
-    media_context.evaluate_list_with_cache(&queries, Some(cache))
-  }
-
-  fn discover_and_start_script_blocking_stylesheets(
-    &mut self,
-    event_loop: &mut EventLoop<Self>,
-  ) -> Result<()> {
-    fn is_html_namespace(namespace: &str) -> bool {
-      namespace.is_empty() || namespace == HTML_NAMESPACE
-    }
-
-    let dom = self.document.dom();
-    let mut base_url_tracker = BaseUrlTracker::new(self.document_url.as_deref());
-    let mut stack: Vec<(NodeId, bool, bool, bool)> = Vec::new();
-    stack.push((dom.root(), false, false, false));
-
-    while let Some((id, in_head, in_foreign_namespace, in_template)) = stack.pop() {
-      let node = dom.node(id);
-
-      // Shadow roots are treated as separate trees for script discovery/execution.
-      if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
-        continue;
-      }
-
-      // Be robust against partially-detached nodes that may still appear in a parent's `children`
-      // list.
-      if !dom.is_connected_for_scripting(id) {
-        continue;
-      }
-
-      let mut next_in_head = in_head;
-      let mut next_in_template = in_template;
-      let mut next_in_foreign_namespace = in_foreign_namespace;
-
-      match &node.kind {
-        NodeKind::Element {
-          tag_name,
-          namespace,
-          attributes,
-        } => {
-          base_url_tracker.on_element_inserted(
-            tag_name,
-            namespace,
-            attributes,
-            in_head,
-            in_foreign_namespace,
-            in_template,
-          );
-
-          if tag_name.eq_ignore_ascii_case("link") && is_html_namespace(namespace) {
-            // Skip if we already started (or completed) a load for this node.
-            if !self.stylesheet_keys_by_node.contains_key(&id) {
-              let disabled = dom.has_attribute(id, "disabled").unwrap_or(false);
-              if !disabled {
-                let rel = dom.get_attribute(id, "rel").ok().flatten();
-                let rel_tokens = rel.as_deref().map(tokenize_rel_list).unwrap_or_default();
-                let has_stylesheet = rel_tokens.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"));
-                let has_alternate = rel_tokens.iter().any(|t| t.eq_ignore_ascii_case("alternate"));
-                if has_stylesheet && !has_alternate {
-                  let media = dom.get_attribute(id, "media").ok().flatten();
-                  if Self::media_attr_matches_env(
-                    &self.stylesheet_media_context,
-                    &mut self.stylesheet_media_query_cache,
-                    media.as_deref(),
-                  ) {
-                    let href = dom.get_attribute(id, "href").ok().flatten();
-                    let base_url = base_url_tracker.current_base_url();
-                    let resolved = href
-                      .as_deref()
-                      .and_then(|href| resolve_href_with_base(base_url.as_deref(), href));
-                    if let Some(url) = resolved {
-                      let key = self.next_stylesheet_key;
-                      self.next_stylesheet_key = self.next_stylesheet_key.saturating_add(1);
-                      self.stylesheet_keys_by_node.insert(id, key);
-                      self
-                        .script_blocking_stylesheets
-                        .register_blocking_stylesheet(key);
-
-                      event_loop.queue_task(TaskSource::Networking, move |host, _event_loop| {
-                        let load_result = host.load_stylesheet_and_imports(&url);
-                        host
-                          .script_blocking_stylesheets
-                          .unregister_blocking_stylesheet(key);
-                        match load_result {
-                          Ok(()) => Ok(()),
-                          Err(err @ Error::Render(_)) => Err(err),
-                          Err(_) => Ok(()),
-                        }
-                      })?;
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
-          next_in_head = in_head || is_head;
-          let is_template = tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace);
-          next_in_template = in_template || is_template;
-          next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
-        }
-        NodeKind::Slot {
-          namespace,
-          attributes,
-          ..
-        } => {
-          base_url_tracker.on_element_inserted(
-            "slot",
-            namespace,
-            attributes,
-            in_head,
-            in_foreign_namespace,
-            in_template,
-          );
-          next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
-        }
-        _ => {}
-      }
-
-      // Inert subtrees (template contents) should not be traversed.
-      if node.inert_subtree {
-        continue;
-      }
-
-      for &child in node.children.iter().rev() {
-        stack.push((child, next_in_head, next_in_foreign_namespace, next_in_template));
-      }
-    }
-
-    Ok(())
   }
 
   fn load_stylesheet_and_imports(&mut self, url: &str) -> Result<()> {
@@ -601,7 +475,7 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn script_blocks_on_stylesheets(&self, script_id: ScriptId) -> bool {
+  fn should_delay_parser_blocking_script(&self, script_id: ScriptId) -> bool {
     let Some(entry) = self.scripts.get(&script_id) else {
       return false;
     };
@@ -612,42 +486,381 @@ impl BrowserTabHost {
     if !spec.parser_inserted {
       return false;
     }
-    // Async external scripts do not participate in stylesheet-blocking semantics.
-    if spec.src_attr_present && spec.async_attr {
-      return false;
+    if !spec.src_attr_present {
+      // Inline scripts are always parser-blocking; `async`/`defer` do not apply.
+      return true;
     }
-    true
+    // External scripts block the parser only when neither async nor defer are set.
+    !spec.async_attr && !spec.defer_attr
   }
 
-  fn wait_for_stylesheets_if_needed(
-    &mut self,
-    script_id: ScriptId,
-    event_loop: &mut EventLoop<Self>,
-  ) -> Result<()> {
-    if !self.script_blocks_on_stylesheets(script_id) {
+  fn queue_parse_task(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    let Some(state) = self.streaming_parse.as_mut() else {
+      return Ok(());
+    };
+    if state.parse_task_scheduled {
       return Ok(());
     }
+    state.parse_task_scheduled = true;
 
-    self.discover_and_start_script_blocking_stylesheets(event_loop)?;
-
-    if !self.script_blocking_stylesheets.has_blocking_stylesheet() {
-      return Ok(());
-    }
-
-    let _ = event_loop.spin_until(
-      self,
-      SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS,
-      |host| host.script_blocking_stylesheets.has_blocking_stylesheet(),
-    )?;
-
-    // If we hit a run limit or became idle while stylesheets are still pending, give up
-    // deterministically so scripts are not blocked forever.
-    if self.script_blocking_stylesheets.has_blocking_stylesheet() {
-      self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
+    let queued = event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      let result = host.parse_until_blocked(event_loop);
+      if let Some(state) = host.streaming_parse.as_mut() {
+        state.parse_task_scheduled = false;
+      }
+      result
+    });
+    if let Err(err) = queued {
+      if let Some(state) = self.streaming_parse.as_mut() {
+        state.parse_task_scheduled = false;
+      }
+      return Err(err);
     }
     Ok(())
   }
 
+  fn start_script_blocking_stylesheet_load(
+    &mut self,
+    link_node_id: NodeId,
+    url: String,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    // Skip if we already started (or completed) a load for this node.
+    if self.stylesheet_keys_by_node.contains_key(&link_node_id) {
+      return Ok(());
+    }
+
+    if self.script_blocking_stylesheets.len() >= self.js_execution_options.max_pending_blocking_stylesheets {
+      return Err(Error::Other(format!(
+        "Exceeded max_pending_blocking_stylesheets (len={}, limit={})",
+        self.script_blocking_stylesheets.len(),
+        self.js_execution_options.max_pending_blocking_stylesheets
+      )));
+    }
+
+    let key = self.next_stylesheet_key;
+    self.next_stylesheet_key = self.next_stylesheet_key.wrapping_add(1);
+    self.stylesheet_keys_by_node.insert(link_node_id, key);
+    self.script_blocking_stylesheets.register_blocking_stylesheet(key);
+
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let load_result = host.load_stylesheet_and_imports(&url);
+      host.script_blocking_stylesheets.unregister_blocking_stylesheet(key);
+      if !host.script_blocking_stylesheets.has_blocking_stylesheet() {
+        // Wake parser-blocking scripts/parsing if this was the last blocking stylesheet.
+        if let Err(err) = host.queue_parse_task(event_loop) {
+          // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
+          // deadlocking parser-blocking scripts.
+          let _ = err;
+          host.parse_until_blocked(event_loop)?;
+        }
+      }
+      match load_result {
+        Ok(()) => Ok(()),
+        Err(err @ Error::Render(_)) => Err(err),
+        Err(_) => Ok(()),
+      }
+    })?;
+
+    Ok(())
+  }
+
+  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    const INPUT_CHUNK_BYTES: usize = 8 * 1024;
+
+    let Some(mut state) = self.streaming_parse.take() else {
+      return Ok(());
+    };
+
+    // Ensure any render deadline configured for streaming parsing remains active even when parsing
+    // is resumed via event-loop tasks (e.g. after script-blocking stylesheets load).
+    let _deadline_guard = state
+      .deadline
+      .as_ref()
+      .map(|deadline| DeadlineGuard::install(Some(deadline)));
+
+    enum Outcome {
+      Blocked,
+      Finished,
+      AbortedForNavigation,
+    }
+
+    let outcome = (|| -> Result<Outcome> {
+      loop {
+        // If a parser-blocking script was delayed because there were pending script-blocking
+        // stylesheets, retry execution now that we are resuming parsing.
+        if let Some(pending) = self.pending_parser_blocking_script.take() {
+          if self.script_blocking_stylesheets.has_blocking_stylesheet() {
+            self.pending_parser_blocking_script = Some(pending);
+            return Ok(Outcome::Blocked);
+          }
+
+          with_active_streaming_parser(&state.parser, || -> Result<()> {
+            let PendingParserBlockingScript {
+              script_id,
+              source_text,
+            } = pending;
+
+            let entry = self.scripts.get(&script_id).cloned();
+            let generation_before = self.document.dom_mutation_generation();
+
+            let exec_result = {
+              let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+              self.execute_script(script_id, &source_text, event_loop)
+            };
+            // Ensure parser blocking is cleared even if script execution fails.
+            self.finish_script_execution(script_id, event_loop)?;
+
+            match exec_result {
+              Ok(()) => {
+                if let Some(entry) = entry {
+                  if entry.spec.src_attr_present
+                    && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty())
+                  {
+                    self.dispatch_script_event(entry.node_id, "load")?;
+                  }
+                }
+              }
+              Err(err) => {
+                let Some(entry) = entry else {
+                  return Err(err);
+                };
+                self.dispatch_script_event(entry.node_id, "error")?;
+                if matches!(err, Error::Render(_)) {
+                  return Err(err);
+                }
+              }
+            }
+
+            // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+            // execution context stack is empty. Nested (re-entrant) script execution must not drain
+            // microtasks until the outermost script returns.
+            if self.js_execution_depth.get() == 0 {
+              event_loop.perform_microtask_checkpoint(self)?;
+            }
+
+            if generation_before != self.document.dom_mutation_generation() {
+              self.discover_dynamic_scripts(event_loop)?;
+            }
+            Ok(())
+          })?;
+
+          if self.pending_navigation.is_some() {
+            // Abort the current parse/execution; the caller will commit the navigation.
+            return Ok(Outcome::AbortedForNavigation);
+          }
+
+          // Sync any DOM mutations from the executed script back into the streaming parser's live
+          // DOM before resuming parsing.
+          let updated = self.dom().clone_with_events();
+          {
+            let Some(mut doc) = state.parser.document_mut() else {
+              return Err(Error::Other(
+                "StreamingHtmlParser yielded a script without an active document".to_string(),
+              ));
+            };
+            *doc = updated;
+          }
+          continue;
+        }
+
+        let yield_result = state.parser.pump()?;
+
+        // Start fetching any script-blocking stylesheet links discovered during this parse step.
+        for (node_id, url) in state.parser.take_pending_stylesheet_links() {
+            self.start_script_blocking_stylesheet_load(node_id, url, event_loop)?;
+          }
+
+          match yield_result {
+          StreamingParserYield::NeedMoreInput => {
+            if state.input_offset < state.input.len() {
+              let mut end = (state.input_offset + INPUT_CHUNK_BYTES).min(state.input.len());
+              while end < state.input.len() && !state.input.is_char_boundary(end) {
+                end += 1;
+              }
+              debug_assert!(state.input.is_char_boundary(state.input_offset));
+              debug_assert!(state.input.is_char_boundary(end));
+              state.parser.push_str(&state.input[state.input_offset..end]);
+              state.input_offset = end;
+              continue;
+            }
+
+            if !state.eof_set {
+              state.parser.set_eof();
+              state.eof_set = true;
+              continue;
+            }
+
+            return Err(Error::Other(
+              "StreamingHtmlParser unexpectedly requested more input after EOF".to_string(),
+            ));
+          }
+          StreamingParserYield::Script {
+            script,
+            base_url_at_this_point,
+          } => {
+            let snapshot = {
+              let Some(doc) = state.parser.document() else {
+                return Err(Error::Other(
+                  "StreamingHtmlParser yielded a script without an active document".to_string(),
+                ));
+              };
+              doc.clone_with_events()
+            };
+
+            self.mutate_dom(|dom| {
+              *dom = snapshot;
+              ((), true)
+            });
+
+            // Keep the host's base URL in sync with the parser state so any JS executed at this pause
+            // point (including microtasks drained before script execution) resolves relative URLs
+            // against the correct base.
+            self.base_url = base_url_at_this_point.clone();
+            self
+              .executor
+              .on_document_base_url_updated(self.base_url.as_deref());
+
+            // HTML: before preparing a parser-inserted script at a script end-tag boundary,
+            // perform a microtask checkpoint when the JS execution context stack is empty.
+            //
+            // Microtasks may mutate the document (including removing/detaching this `<script>`
+            // element), so this must occur before we check `is_connected_for_scripting` and build
+            // the final `ScriptElementSpec`.
+            if self.js_execution_depth.get() == 0 {
+              with_active_streaming_parser(&state.parser, || {
+                event_loop.perform_microtask_checkpoint(self)
+              })?;
+            }
+            if self.pending_navigation.is_some() {
+              return Ok(Outcome::AbortedForNavigation);
+            }
+
+            if !self.dom().is_connected_for_scripting(script) {
+              self.mutate_dom(|dom| {
+                if let NodeKind::Element {
+                  tag_name,
+                  namespace,
+                  ..
+                } = &dom.node(script).kind
+                {
+                  if tag_name.eq_ignore_ascii_case("script")
+                    && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+                  {
+                    let parser_document = dom.node(script).script_parser_document;
+                    dom.node_mut(script).script_parser_document = false;
+                    if parser_document && !dom.has_attribute(script, "async").unwrap_or(false) {
+                      dom.node_mut(script).script_force_async = true;
+                    }
+                  }
+                }
+                ((), false)
+              });
+
+              let updated = self.dom().clone_with_events();
+              {
+                let Some(mut doc) = state.parser.document_mut() else {
+                  return Err(Error::Other(
+                    "StreamingHtmlParser yielded a script without an active document".to_string(),
+                  ));
+                };
+                *doc = updated;
+              }
+              continue;
+            }
+
+            let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+              self.dom(),
+              script,
+              &base,
+            );
+            let base_url_at_discovery = spec.base_url.clone();
+
+            with_active_streaming_parser(&state.parser, || {
+              self.register_and_schedule_script(script, spec, base_url_at_discovery, event_loop)
+            })?;
+
+            if self.pending_navigation.is_some() {
+              // Abort the current parse/execution; the caller will commit the navigation.
+              return Ok(Outcome::AbortedForNavigation);
+            }
+
+            if self.pending_parser_blocking_script.is_some() || self.parser_blocked_on.is_some() {
+              // Parsing is blocked (either on a stylesheet-blocking script, or another parser
+              // block). Sync any microtask mutations back into the streaming parser's live DOM so
+              // parsing resumes with an up-to-date tree once unblocked.
+              let updated = self.dom().clone_with_events();
+              {
+                let Some(mut doc) = state.parser.document_mut() else {
+                  return Err(Error::Other(
+                    "StreamingHtmlParser yielded a script without an active document".to_string(),
+                  ));
+                };
+                *doc = updated;
+              }
+              return Ok(Outcome::Blocked);
+            }
+
+            // Sync any DOM mutations from the executed script back into the streaming parser's live
+            // DOM before resuming parsing.
+            let updated = self.dom().clone_with_events();
+            {
+              let Some(mut doc) = state.parser.document_mut() else {
+                return Err(Error::Other(
+                  "StreamingHtmlParser yielded a script without an active document".to_string(),
+                ));
+              };
+              *doc = updated;
+            }
+          }
+          StreamingParserYield::Finished { document } => {
+            let final_base_url = state.parser.current_base_url();
+            // Persist the final base URL after parsing completes so any later JS-visible URL
+            // resolution uses the post-parse `<base href>` result.
+            self.base_url = final_base_url.clone();
+            self
+              .executor
+              .on_document_base_url_updated(self.base_url.as_deref());
+
+            self.mutate_dom(|dom| {
+              *dom = document;
+              ((), true)
+            });
+
+            let actions = self.scheduler.parsing_completed()?;
+            self.apply_scheduler_actions(actions, event_loop)?;
+            self.notify_parsing_completed(event_loop)?;
+
+            // Update the renderer's base URL hint to match the parse-time base URL after processing
+            // the full document.
+            let renderer = self.document.renderer_mut();
+            match final_base_url {
+              Some(url) => renderer.set_base_url(url),
+              None => renderer.clear_base_url(),
+            }
+
+            return Ok(Outcome::Finished);
+          }
+        }
+      }
+    })();
+
+    match outcome {
+      Ok(Outcome::Blocked) => {
+        self.streaming_parse = Some(state);
+        Ok(())
+      }
+      Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
+        self.streaming_parse_active = false;
+        Ok(())
+      }
+      Err(err) => {
+        self.streaming_parse_active = false;
+        Err(err)
+      }
+    }
+  }
   fn fail_external_script_fetch(
     &mut self,
     script_id: ScriptId,
@@ -1103,17 +1316,32 @@ impl BrowserTabHost {
             }
           }
 
-          let wait_result = self.wait_for_stylesheets_if_needed(script_id, event_loop);
-          let (generation_before, exec_result) = match wait_result {
-            Ok(()) => {
-              let generation_before = self.document.dom_mutation_generation();
-              let exec_result = {
-                let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-                self.execute_script(script_id, &source_text, event_loop)
-              };
-              (Some(generation_before), exec_result)
+          if self.streaming_parse_active
+            && self.should_delay_parser_blocking_script(script_id)
+            && self.script_blocking_stylesheets.has_blocking_stylesheet()
+          {
+            // Treat stylesheet-blocking as another reason for a parser-inserted script to stall
+            // synchronous execution/parsing.
+            if self
+              .parser_blocked_on
+              .is_some_and(|existing| existing != script_id)
+            {
+              return Err(Error::Other(
+                "Attempted to delay multiple parser-blocking scripts".to_string(),
+              ));
             }
-            Err(err) => (None, Err(err)),
+            self.parser_blocked_on = Some(script_id);
+            self.pending_parser_blocking_script = Some(PendingParserBlockingScript {
+              script_id,
+              source_text,
+            });
+            return Ok(());
+          }
+
+          let generation_before = self.document.dom_mutation_generation();
+          let exec_result = {
+            let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+            self.execute_script(script_id, &source_text, event_loop)
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
           self.finish_script_execution(script_id, event_loop)?;
@@ -1148,7 +1376,7 @@ impl BrowserTabHost {
           // HTML: scripts inserted by the executed script (or its microtasks) should be prepared
           // once the script finishes running. Avoid O(N) DOM scans when the script did not mutate
           // the DOM.
-          if generation_before.is_some_and(|before| self.document.dom_mutation_generation() != before) {
+          if generation_before != self.document.dom_mutation_generation() {
             self.discover_dynamic_scripts(event_loop)?;
           }
         }
@@ -1197,14 +1425,8 @@ impl BrowserTabHost {
           }
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let entry = host.scripts.get(&script_id).cloned();
-            let wait_result = host.wait_for_stylesheets_if_needed(script_id, event_loop);
-            let result = match wait_result {
-              Ok(()) => {
-                let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
-                host.execute_script(script_id, &source_text, event_loop)
-              }
-              Err(err) => Err(err),
-            };
+            let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
+            let result = host.execute_script(script_id, &source_text, event_loop);
             host.finish_script_execution(script_id, event_loop)?;
             match result {
               Ok(()) => {
@@ -1782,230 +2004,30 @@ impl BrowserTab {
       }
     }
     // `StreamingHtmlParser` cooperatively checks any *active* render deadline via
-    // `check_active_periodic`, but it does not accept `RenderOptions` directly. Install a scoped
-    // deadline so callers can cancel/timeout large HTML parses via `RenderOptions::{timeout,cancel_callback}`.
-    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
-    let _deadline_guard = deadline_enabled.then(|| {
-      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-      DeadlineGuard::install(Some(&deadline))
+    // `check_active_periodic`, but it does not accept `RenderOptions` directly. Store the deadline
+    // in the streaming parse state so it remains active if parsing is resumed via event-loop tasks
+    // (e.g. when parser-blocking scripts are delayed by script-blocking stylesheets).
+    let deadline = (options.timeout.is_some() || options.cancel_callback.is_some()).then(|| {
+      RenderDeadline::new(options.timeout, options.cancel_callback.clone())
     });
-    let mut parser = StreamingHtmlParser::new(document_url);
 
-    // Feed HTML into the streaming parser incrementally so URL navigations can reuse this path by
-    // chunking network bytes. This keeps parsing cancellable (deadline checks happen during each
-    // `pump`) and avoids pushing arbitrarily large strings into html5ever in a single call.
-    const INPUT_CHUNK_BYTES: usize = 8 * 1024;
-    let mut offset = 0usize;
-    while offset < html.len() {
-      let mut end = (offset + INPUT_CHUNK_BYTES).min(html.len());
-      while end < html.len() && !html.is_char_boundary(end) {
-        end += 1;
-      }
-      debug_assert!(html.is_char_boundary(offset));
-      debug_assert!(html.is_char_boundary(end));
-      parser.push_str(&html[offset..end]);
-      offset = end;
+    self.host.streaming_parse = Some(StreamingParseState {
+      parser: StreamingHtmlParser::new(document_url),
+      input: html.to_string(),
+      input_offset: 0,
+      eof_set: false,
+      deadline,
+      parse_task_scheduled: false,
+    });
+    self.host.streaming_parse_active = true;
 
-      loop {
-        match parser.pump()? {
-          StreamingParserYield::Script {
-            script,
-            base_url_at_this_point,
-          } => {
-            let snapshot = {
-              let Some(doc) = parser.document() else {
-                return Err(Error::Other(
-                  "StreamingHtmlParser yielded a script without an active document".to_string(),
-                ));
-              };
-              doc.clone_with_events()
-            };
-
-            self.host.mutate_dom(|dom| {
-              *dom = snapshot;
-              ((), true)
-            });
-
-            // Keep the host's base URL in sync with the parser state so any JS executed at this pause
-            // point (including microtasks drained before script execution) resolves relative URLs
-            // against the correct base.
-            self.host.base_url = base_url_at_this_point.clone();
-            self
-              .host
-              .executor
-              .on_document_base_url_updated(self.host.base_url.as_deref());
-
-            let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-              self.host.dom(),
-              script,
-              &base,
-            );
-            let base_url_at_discovery = spec.base_url.clone();
-            with_active_streaming_parser(&parser, || {
-              self.on_parser_discovered_script(script, spec, base_url_at_discovery)
-            })?;
-
-            if self.host.pending_navigation.is_some() {
-              // Abort the current parse/execution; the caller will commit the navigation.
-              return Ok(parser.current_base_url());
-            }
-
-            // Sync any DOM mutations from the executed script back into the streaming parser's live
-            // DOM before resuming parsing.
-            let updated = self.host.dom().clone_with_events();
-            {
-              let Some(mut doc) = parser.document_mut() else {
-                return Err(Error::Other(
-                  "StreamingHtmlParser yielded a script without an active document".to_string(),
-                ));
-              };
-              *doc = updated;
-            }
-          }
-          StreamingParserYield::NeedMoreInput => break,
-          StreamingParserYield::Finished { .. } => {
-            return Err(Error::Other(
-              "StreamingHtmlParser unexpectedly finished before EOF".to_string(),
-            ))
-          }
-        }
-      }
-    }
-
-    parser.set_eof();
-
-    loop {
-      match parser.pump()? {
-        StreamingParserYield::Script {
-          script,
-          base_url_at_this_point,
-        } => {
-          let snapshot = {
-            let Some(doc) = parser.document() else {
-              return Err(Error::Other(
-                "StreamingHtmlParser yielded a script without an active document".to_string(),
-              ));
-            };
-            doc.clone_with_events()
-          };
-
-          self.host.mutate_dom(|dom| {
-            *dom = snapshot;
-            ((), true)
-          });
-
-          // Keep the host's base URL in sync with the parser state so any JS executed at this pause
-          // point (including microtasks drained before script execution) resolves relative URLs
-          // against the correct base.
-          self.host.base_url = base_url_at_this_point.clone();
-          self
-            .host
-            .executor
-            .on_document_base_url_updated(self.host.base_url.as_deref());
- 
-          // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
-          // microtask checkpoint when the JS execution context stack is empty.
-          //
-          // Parsing may be driven outside the event loop (e.g. parse-time script execution) or
-          // inside event-loop tasks; use explicit JS execution depth tracking rather than
-          // `EventLoop::currently_running_task()`.
-          if self.host.js_execution_depth.get() == 0 {
-            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
-          }
-
-          // HTML: "prepare the script element" returns early when the script element is not
-          // connected. However, it still clears the "parser document" internal slot (and may set
-          // force-async) so that if the script is later inserted into the document it behaves like a
-          // dynamically inserted script.
-          //
-          // This must be checked *after* the pre-script microtask checkpoint, since microtasks may
-          // have removed/detached the script element.
-          if !self.host.dom().is_connected_for_scripting(script) {
-            self.host.mutate_dom(|dom| {
-              if let NodeKind::Element {
-                tag_name,
-                namespace,
-                ..
-              } = &dom.node(script).kind
-              {
-                if tag_name.eq_ignore_ascii_case("script")
-                  && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-                {
-                  let parser_document = dom.node(script).script_parser_document;
-                  dom.node_mut(script).script_parser_document = false;
-                  if parser_document && !dom.has_attribute(script, "async").unwrap_or(false) {
-                    dom.node_mut(script).script_force_async = true;
-                  }
-                }
-              }
-              ((), false)
-            });
-
-            // Sync any DOM mutations (including the internal-slot updates above) back into the
-            // streaming parser's live DOM before resuming parsing.
-            let updated = self.host.dom().clone_with_events();
-            {
-              let Some(mut doc) = parser.document_mut() else {
-                return Err(Error::Other(
-                  "StreamingHtmlParser yielded a script without an active document".to_string(),
-                ));
-              };
-              *doc = updated;
-            }
-            continue;
-          }
-          let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-          let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-            self.host.dom(),
-            script,
-            &base,
-          );
-          let base_url_at_discovery = spec.base_url.clone();
-          with_active_streaming_parser(&parser, || {
-            self.on_parser_discovered_script(script, spec, base_url_at_discovery)
-          })?;
-
-          if self.host.pending_navigation.is_some() {
-            // Abort the current parse/execution; the caller will commit the navigation.
-            return Ok(parser.current_base_url());
-          }
-
-          // Sync any DOM mutations from the executed script back into the streaming parser's live
-          // DOM before resuming parsing.
-          let updated = self.host.dom().clone_with_events();
-          {
-            let Some(mut doc) = parser.document_mut() else {
-              return Err(Error::Other(
-                "StreamingHtmlParser yielded a script without an active document".to_string(),
-              ));
-            };
-            *doc = updated;
-          }
-        }
-        StreamingParserYield::NeedMoreInput => {
-          return Err(Error::Other(
-            "StreamingHtmlParser unexpectedly requested more input after EOF".to_string(),
-          ));
-        }
-        StreamingParserYield::Finished { document } => {
-          let final_base_url = parser.current_base_url();
-          // Persist the final base URL after parsing completes so any later JS-visible URL
-          // resolution uses the post-parse `<base href>` result.
-          self.host.base_url = final_base_url.clone();
-          self
-            .host
-            .executor
-            .on_document_base_url_updated(self.host.base_url.as_deref());
-          self.host.mutate_dom(|dom| {
-            *dom = document;
-            ((), true)
-          });
-          self.on_parsing_completed()?;
-          return Ok(final_base_url);
-        }
-      }
-    }
+    self.host.parse_until_blocked(&mut self.event_loop)?;
+    let base_url = if let Some(state) = self.host.streaming_parse.as_ref() {
+      state.parser.current_base_url()
+    } else {
+      self.host.base_url.clone()
+    };
+    Ok(base_url)
   }
 
   pub fn from_html<E>(html: &str, options: RenderOptions, executor: E) -> Result<Self>
@@ -2083,7 +2105,7 @@ impl BrowserTab {
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
       tab.navigate_to_url(&req.url, options.clone())?;
-    } else {
+    } else if tab.host.streaming_parse.is_none() {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
         Some(url) => renderer.set_base_url(url),
@@ -2236,12 +2258,14 @@ impl BrowserTab {
       return Ok(());
     }
 
-    // Update the renderer's base URL hint to match the parse-time base URL after processing the
-    // full document.
-    let renderer = self.host.document.renderer_mut();
-    match base_url {
-      Some(url) => renderer.set_base_url(url),
-      None => renderer.clear_base_url(),
+    if self.host.streaming_parse.is_none() {
+      // Update the renderer's base URL hint to match the parse-time base URL after processing the
+      // full document.
+      let renderer = self.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
     }
 
     Ok(())
@@ -2368,12 +2392,14 @@ impl BrowserTab {
         continue;
       }
 
-      // Update the renderer's base URL hint to match the parse-time base URL after processing the
-      // full document.
-      let renderer = self.host.document.renderer_mut();
-      match base_url {
-        Some(url) => renderer.set_base_url(url),
-        None => renderer.clear_base_url(),
+      if self.host.streaming_parse.is_none() {
+        // Update the renderer's base URL hint to match the parse-time base URL after processing the
+        // full document.
+        let renderer = self.host.document.renderer_mut();
+        match base_url {
+          Some(url) => renderer.set_base_url(url),
+          None => renderer.clear_base_url(),
+        }
       }
 
       return Ok(());
@@ -4017,6 +4043,7 @@ html, body { margin: 0; padding: 0; }
       <script src="script.js"></script>
     "#;
     tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+    let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
     let entries = log
       .lock()
@@ -4033,6 +4060,186 @@ html, body { margin: 0; padding: 0; }
     assert!(
       imported_idx < exec_idx,
       "expected imported.css fetch before exec; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_inline_script_waits_for_script_blocking_stylesheet() -> Result<()> {
+    let temp = tempdir().map_err(Error::Io)?;
+    std::fs::write(temp.path().join("style.css"), "body { color: red; }").map_err(Error::Io)?;
+
+    let document_url = Url::from_file_path(temp.path().join("index.html"))
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher = Arc::new(LoggingFileFetcher {
+      log: Arc::clone(&log),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(LoggingExecutor {
+        log: Arc::clone(&log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      diagnostics: None,
+      host,
+      event_loop: EventLoop::new(),
+      pending_frame: None,
+    };
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.clone()), ReferrerPolicy::default())?;
+
+    let html = r#"<!doctype html>
+      <link rel="stylesheet" href="style.css">
+      <script>INLINE</script>
+    "#;
+    tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+
+    let entries_before = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      log_index(&entries_before, "exec:INLINE").is_none(),
+      "expected inline script to be delayed until stylesheet load; log={entries_before:?}"
+    );
+
+    let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let entries = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let exec_idx = log_index(&entries, "exec:INLINE").expect("expected script execution");
+    let style_idx = log_index(&entries, "style.css").expect("expected stylesheet fetch");
+    assert!(
+      style_idx < exec_idx,
+      "expected style.css fetch before exec; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn async_script_executes_even_with_pending_script_blocking_stylesheet() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script async src=\"https://example.com/a.js\"></script>", Rc::clone(&log))?;
+
+    // Simulate a streaming parse context so any accidental stylesheet-gating logic that only
+    // applies while parsing would be exercised here.
+    host.streaming_parse = Some(StreamingParseState {
+      parser: StreamingHtmlParser::new(None),
+      input: String::new(),
+      input_offset: 0,
+      eof_set: false,
+      deadline: None,
+      parse_task_scheduled: false,
+    });
+
+    // Simulate a pending script-blocking stylesheet. Async scripts must not be delayed by this.
+    host.script_blocking_stylesheets.register_blocking_stylesheet(0);
+
+    host.register_external_script_source("https://example.com/a.js".to_string(), "ASYNC".to_string());
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    let _ = event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    assert!(
+      log.borrow().iter().any(|line| line == "script:ASYNC"),
+      "expected async script to execute even with pending stylesheet; log={:?}",
+      &*log.borrow()
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn template_contents_do_not_register_script_blocking_stylesheets_or_scripts() -> Result<()> {
+    let temp = tempdir().map_err(Error::Io)?;
+    std::fs::write(temp.path().join("style.css"), "body { color: red; }").map_err(Error::Io)?;
+
+    let document_url = Url::from_file_path(temp.path().join("index.html"))
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher = Arc::new(LoggingFileFetcher {
+      log: Arc::clone(&log),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(LoggingExecutor {
+        log: Arc::clone(&log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      diagnostics: None,
+      host,
+      event_loop: EventLoop::new(),
+      pending_frame: None,
+    };
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.clone()), ReferrerPolicy::default())?;
+
+    let html = r#"<!doctype html>
+      <template>
+        <link rel="stylesheet" href="style.css">
+        <script>TEMPLATE</script>
+      </template>
+      <script>MAIN</script>
+    "#;
+    tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+
+    let entries = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      log_index(&entries, "exec:MAIN").is_some(),
+      "expected main script execution; log={entries:?}"
+    );
+    assert!(
+      log_index(&entries, "exec:TEMPLATE").is_none(),
+      "expected template-contained script to be inert; log={entries:?}"
+    );
+
+    let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let entries = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      log_index(&entries, "style.css").is_none(),
+      "expected template-contained stylesheet link to be ignored; log={entries:?}"
     );
     Ok(())
   }

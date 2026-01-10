@@ -189,6 +189,17 @@ impl StreamingHtmlParser {
     self.parser.sink().map(|sink| sink.document_mut())
   }
 
+  /// Take any `<link rel=stylesheet href=...>` candidates discovered since the last call.
+  ///
+  /// This is an MVP hook used by script scheduling to implement stylesheet-blocking scripts.
+  pub(crate) fn take_pending_stylesheet_links(&self) -> Vec<(NodeId, String)> {
+    self
+      .parser
+      .sink()
+      .map(|sink| sink.take_pending_stylesheet_links())
+      .unwrap_or_default()
+  }
+
   /// Returns the current parse-time base URL.
   ///
   /// This remains available after the parser has finished.

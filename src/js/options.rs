@@ -30,6 +30,10 @@ pub struct JsExecutionOptions {
   /// Maximum number of bytes accepted for a single script's source text (inline or external).
   pub max_script_bytes: usize,
 
+  /// Maximum number of simultaneously pending render-blocking stylesheets that can block
+  /// parser-blocking script execution.
+  pub max_pending_blocking_stylesheets: usize,
+
   /// VM budget: maximum number of VM instructions that may be executed before the VM is interrupted.
   ///
   /// For the `vm-js` backend, this is enforced as a per-run fuel budget.
@@ -86,6 +90,9 @@ impl Default for JsExecutionOptions {
       // 2 MiB per script mirrors the stylesheet inlining default and keeps per-script allocations
       // bounded. Embedders can raise this when targeting real-world pages.
       max_script_bytes: 2 * 1024 * 1024,
+
+      // Bound how many external stylesheets can block parser-inserted scripts.
+      max_pending_blocking_stylesheets: 1024,
 
       // VM budgets (enforced by the `vm-js` backend).
       max_instruction_count: Some(50_000_000),
