@@ -7191,21 +7191,29 @@ impl BlockFormattingContext {
     } else {
       vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
     };
-    if let Some(specified) = style.width.as_ref() {
-      let resolved = resolve_length_for_width(
-        *specified,
-        0.0,
-        style,
-        &self.font_context,
-        self.viewport_size,
-      );
-      if resolved > 0.0 {
-        let result = border_size_from_box_sizing(resolved, edges, style.box_sizing);
-        if allow_cache {
-          intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
-          intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+    let specified_inline = if inline_is_horizontal {
+      style.width.as_ref()
+    } else {
+      style.height.as_ref()
+    };
+    if let Some(specified) = specified_inline {
+      if !specified.has_percentage() {
+        let resolved = resolve_length_for_width(
+          *specified,
+          0.0,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        );
+        if resolved.is_finite() {
+          let result =
+            border_size_from_box_sizing(resolved.max(0.0), edges, style.box_sizing).max(0.0);
+          if allow_cache {
+            intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
+            intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+          }
+          return Ok((result, result));
         }
-        return Ok((result, result));
       }
     }
 
@@ -7244,25 +7252,64 @@ impl BlockFormattingContext {
     }
 
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
-      let min_size = compute_replaced_size(
-        style,
-        replaced_box,
-        Some(Size::new(0.0, 0.0)),
-        self.viewport_size,
-      );
-      let (min_inline, max_inline) = if inline_is_horizontal {
-        (min_size.width, max_size.width)
+      let percentage_base0 = Some(Size::new(0.0, 0.0));
+      let width_has_percentage = style
+        .width
+        .map(|width| width.has_percentage())
+        .unwrap_or(false);
+      let height_has_percentage = style
+        .height
+        .map(|height| height.has_percentage())
+        .unwrap_or(false);
+      let max_width_has_percentage = style
+        .max_width
+        .map(|max_width| max_width.has_percentage())
+        .unwrap_or(false);
+      let max_height_has_percentage = style
+        .max_height
+        .map(|max_height| max_height.has_percentage())
+        .unwrap_or(false);
+
+      let min_size = compute_replaced_size(style, replaced_box, percentage_base0, self.viewport_size);
+      let max_size = if !(width_has_percentage
+        || height_has_percentage
+        || max_width_has_percentage
+        || max_height_has_percentage)
+      {
+        min_size
       } else {
-        (min_size.height, max_size.height)
+        let mut max_style = style.as_ref().clone();
+        if width_has_percentage {
+          max_style.width = None;
+          max_style.width_keyword = None;
+        }
+        if height_has_percentage {
+          max_style.height = None;
+          max_style.height_keyword = None;
+        }
+        if max_width_has_percentage {
+          max_style.max_width = None;
+          max_style.max_width_keyword = None;
+        }
+        if max_height_has_percentage {
+          max_style.max_height = None;
+          max_style.max_height_keyword = None;
+        }
+        compute_replaced_size(&max_style, replaced_box, percentage_base0, self.viewport_size)
       };
-      let edges = if inline_is_horizontal {
-        horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+
+      let min_inline = if inline_is_horizontal {
+        min_size.width
       } else {
-        vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+        min_size.height
       };
-      let min_result = min_inline + edges;
-      let max_result = max_inline + edges;
+      let max_inline = if inline_is_horizontal {
+        max_size.width
+      } else {
+        max_size.height
+      };
+      let min_result = (min_inline + edges).max(0.0);
+      let max_result = (max_inline + edges).max(0.0);
       if allow_cache {
         intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
         intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
@@ -9800,19 +9847,20 @@ impl FormattingContext for BlockFormattingContext {
       style.height.as_ref()
     };
     if let Some(specified) = specified_inline {
-      let resolved = resolve_length_for_width(
-        *specified,
-        0.0,
-        style,
-        &self.font_context,
-        self.viewport_size,
-      );
-      // Ignore auto/relative cases that resolve to 0.0.
-      if resolved > 0.0 {
-        let result = border_size_from_box_sizing(resolved, edges, style.box_sizing);
-        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
-        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
-        return Ok((result, result));
+      if !specified.has_percentage() {
+        let resolved = resolve_length_for_width(
+          *specified,
+          0.0,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        );
+        if resolved.is_finite() {
+          let result = border_size_from_box_sizing(resolved.max(0.0), edges, style.box_sizing);
+          intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
+          intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+          return Ok((result, result));
+        }
       }
     }
 
@@ -9851,26 +9899,65 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
-      let min_size = compute_replaced_size(
-        style,
-        replaced_box,
-        Some(Size::new(0.0, 0.0)),
-        self.viewport_size,
-      );
-      let (min_inline, max_inline) = if inline_is_horizontal {
-        (min_size.width, max_size.width)
+      let percentage_base0 = Some(Size::new(0.0, 0.0));
+      let width_has_percentage = style
+        .width
+        .map(|width| width.has_percentage())
+        .unwrap_or(false);
+      let height_has_percentage = style
+        .height
+        .map(|height| height.has_percentage())
+        .unwrap_or(false);
+      let max_width_has_percentage = style
+        .max_width
+        .map(|max_width| max_width.has_percentage())
+        .unwrap_or(false);
+      let max_height_has_percentage = style
+        .max_height
+        .map(|max_height| max_height.has_percentage())
+        .unwrap_or(false);
+
+      let min_size = compute_replaced_size(style, replaced_box, percentage_base0, self.viewport_size);
+      let max_size = if !(width_has_percentage
+        || height_has_percentage
+        || max_width_has_percentage
+        || max_height_has_percentage)
+      {
+        min_size
       } else {
-        (min_size.height, max_size.height)
+        let mut max_style = style.as_ref().clone();
+        if width_has_percentage {
+          max_style.width = None;
+          max_style.width_keyword = None;
+        }
+        if height_has_percentage {
+          max_style.height = None;
+          max_style.height_keyword = None;
+        }
+        if max_width_has_percentage {
+          max_style.max_width = None;
+          max_style.max_width_keyword = None;
+        }
+        if max_height_has_percentage {
+          max_style.max_height = None;
+          max_style.max_height_keyword = None;
+        }
+        compute_replaced_size(&max_style, replaced_box, percentage_base0, self.viewport_size)
       };
 
-      let edges = if inline_is_horizontal {
-        horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+      let min_inline_size = if inline_is_horizontal {
+        min_size.width
       } else {
-        vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+        min_size.height
       };
-      let max_result = (max_inline + edges).max(0.0);
-      let mut min_result = (min_inline + edges).max(0.0).min(max_result);
+      let max_inline_size = if inline_is_horizontal {
+        max_size.width
+      } else {
+        max_size.height
+      };
+
+      let max_result = (max_inline_size + edges).max(0.0);
+      let mut min_result = (min_inline_size + edges).max(0.0).min(max_result);
       if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced_box.replaced_type
       {
         use crate::tree::box_tree::FormControlKind;

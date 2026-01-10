@@ -163,6 +163,7 @@ mod grid_abspos_auto_static_position;
 mod grid_auto_placement_dense;
 mod grid_auto_placement_column_dense;
 mod grid_auto_min_size_compressible_replaced;
+mod grid_cyclic_percentage_replaced_min_content;
 mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
 mod grid_calc_percentage_padding;
