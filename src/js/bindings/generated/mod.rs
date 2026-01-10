@@ -197,9 +197,17 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        BindingValue::Dictionary(BTreeMap::new())
+        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
       } else {
-        BindingValue::Object(v2)
+        {
+          if rt.is_null(v2) || rt.is_undefined(v2) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+          } else if rt.is_object(v2) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, false)?
+          } else {
+            BindingValue::Bool(rt.to_boolean(v2)?)
+          }
+        }
       });
       let result = host.call_operation(
         rt,
@@ -282,9 +290,17 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        BindingValue::Dictionary(BTreeMap::new())
+        js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
       } else {
-        BindingValue::Object(v2)
+        {
+          if rt.is_null(v2) || rt.is_undefined(v2) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+          } else if rt.is_object(v2) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, false)?
+          } else {
+            BindingValue::Bool(rt.to_boolean(v2)?)
+          }
+        }
       });
       let result = host.call_operation(
         rt,
@@ -1396,9 +1412,17 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        BindingValue::Dictionary(BTreeMap::new())
+        js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
       } else {
-        BindingValue::Object(v2)
+        {
+          if rt.is_null(v2) || rt.is_undefined(v2) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, true)?
+          } else if rt.is_object(v2) {
+            js_to_dict_add_event_listener_options::<Host, R>(rt, host, v2, false)?
+          } else {
+            BindingValue::Bool(rt.to_boolean(v2)?)
+          }
+        }
       });
       let result = host.call_operation(
         rt,
@@ -1481,9 +1505,17 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push(if rt.is_undefined(v2) {
-        BindingValue::Dictionary(BTreeMap::new())
+        js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
       } else {
-        BindingValue::Object(v2)
+        {
+          if rt.is_null(v2) || rt.is_undefined(v2) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, true)?
+          } else if rt.is_object(v2) {
+            js_to_dict_event_listener_options::<Host, R>(rt, host, v2, false)?
+          } else {
+            BindingValue::Bool(rt.to_boolean(v2)?)
+          }
+        }
       });
       let result = host.call_operation(
         rt,

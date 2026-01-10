@@ -3493,6 +3493,25 @@ fn emit_conversion_expr_for_optional(
     }
   }
 
+  // Optional/defaulted union arguments that default to `{}` and include a dictionary type: treat an
+  // `undefined` argument as the empty dictionary *value* (with defaults applied).
+  if matches!(arg.default, Some(IdlLiteral::EmptyObject)) {
+    if let IdlType::Union(members) = &arg.type_ {
+      if let Some(dict_name) = members.iter().find_map(|m| match m {
+        IdlType::Named(name) if resolved.dictionaries.contains_key(name) => Some(name),
+        _ => None,
+      }) {
+        let converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
+        return format!(
+          "if rt.is_undefined({value}) {{ js_to_dict_{dict}::<Host, R>(rt, host, {value}, true)? }} else {{ {converted} }}",
+          value = value_ident,
+          dict = to_snake_ident(dict_name),
+          converted = converted
+        );
+      }
+    }
+  }
+
   // If the argument is missing or `undefined`, use the default if present, otherwise `undefined`.
   let default_expr = arg
     .default
@@ -3728,7 +3747,32 @@ fn emit_conversion_expr(
       }
     }
     IdlType::Union(_members) => {
-      // Union conversion is non-trivial; for MVP treat as opaque.
+      // Only support the common `({Dictionary} or boolean)` pattern for now (e.g.
+      // `AddEventListenerOptions or boolean`).
+      //
+      // Spec: https://webidl.spec.whatwg.org/#es-union
+      if let IdlType::Union(members) = ty {
+        if members.len() == 2 {
+          let mut dict: Option<&String> = None;
+          let mut has_boolean = false;
+          for m in members {
+            match m {
+              IdlType::Named(name) if resolved.dictionaries.contains_key(name) => dict = Some(name),
+              IdlType::Builtin(BuiltinType::Boolean) => has_boolean = true,
+              _ => {}
+            }
+          }
+          if let (Some(dict_name), true) = (dict, has_boolean) {
+            return format!(
+              "{{\n  if rt.is_null({v}) || rt.is_undefined({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v}, true)?\n  }} else if rt.is_object({v}) {{\n    js_to_dict_{dict}::<Host, R>(rt, host, {v}, false)?\n  }} else {{\n    BindingValue::Bool(rt.to_boolean({v})?)\n  }}\n}}",
+              v = value_ident,
+              dict = to_snake_ident(dict_name),
+            );
+          }
+        }
+      }
+
+      // Fallback: treat as opaque.
       format!("BindingValue::Object({value_ident})")
     }
     IdlType::Sequence(elem) => emit_iterable_list_conversion_expr(
