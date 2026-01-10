@@ -172,10 +172,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     .flatten()
     .and_then(crate::resource::ReferrerPolicy::from_attribute);
 
-  let raw_src = dom
-    .get_attribute(script, "src")
-    .ok()
-    .flatten();
+  let raw_src = dom.get_attribute(script, "src").ok().flatten();
   let src_attr_present = raw_src.is_some();
   let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(None, raw));
 
@@ -237,7 +234,7 @@ mod tests {
   use crate::dom2::{parse_html, Document};
   use crate::error::Result;
   use crate::js::{
-    ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent, ScriptElementSpec,
+    ClassicScriptScheduler, DomHost, EventLoop, RunLimits, ScriptElementEvent, ScriptElementSpec,
     ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
   use crate::resource::FetchDestination;
@@ -382,6 +379,7 @@ mod tests {
     let mut event_loop = EventLoop::<TestHost>::new();
 
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
       host.started_loads.is_empty(),
@@ -391,6 +389,23 @@ mod tests {
       host.executed.is_empty(),
       "expected no inline execution when src attribute is present"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_src_trims_ascii_whitespace() -> Result<()> {
+    let dom = parse_html(
+      "<!doctype html><html><body><script id=s src=\"&#9;https://example.com/a.js&#10;\"></script></body></html>",
+    )?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+
+    assert_eq!(host.started_loads, vec!["https://example.com/a.js".to_string()]);
     Ok(())
   }
 
@@ -407,6 +422,30 @@ mod tests {
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
 
     assert_eq!(host.started_loads, vec!["a.js".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_empty_src_suppresses_inline_fallback() -> Result<()> {
+    let dom =
+      parse_html("<!doctype html><html><body><script id=s src=\"\">INLINE</script></body></html>")?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no fetch for empty src"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no inline execution when src attribute is present"
+    );
     Ok(())
   }
 
