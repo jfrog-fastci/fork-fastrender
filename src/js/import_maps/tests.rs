@@ -1,6 +1,6 @@
 use super::{
   create_import_map_parse_result, merge_existing_and_new_import_maps, register_import_map, resolve_module_specifier,
-  ImportMap, ImportMapState,
+  ImportMap, ImportMapError, ImportMapState, SpecifierAsUrlKind,
 };
 
 use url::Url;
@@ -326,3 +326,165 @@ fn integrity_merge_ignores_duplicates() {
   );
 }
 
+#[test]
+fn url_like_specifier_resolves_without_import_map() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  let resolved = resolve_module_specifier(&mut state, "./dep.js", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://example.com/app/dep.js");
+
+  assert_eq!(state.resolved_module_set.len(), 1);
+  let record = state.resolved_module_set.last().unwrap();
+  assert_eq!(record.serialized_base_url.as_deref(), Some(base.as_str()));
+  assert_eq!(record.specifier, "https://example.com/app/dep.js");
+  assert_eq!(record.as_url_kind, SpecifierAsUrlKind::Special);
+}
+
+#[test]
+fn bare_specifier_with_no_mapping_errors() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  let err = resolve_module_specifier(&mut state, "lodash", &base).unwrap_err();
+  assert!(matches!(err, ImportMapError::TypeError(_)), "{err:?}");
+  assert!(state.resolved_module_set.is_empty());
+}
+
+#[test]
+fn exact_match_mapping_works() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "lodash": "https://cdn.example/lodash.js"
+      }
+    }"#,
+    &base,
+  );
+
+  let resolved = resolve_module_specifier(&mut state, "lodash", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://cdn.example/lodash.js");
+
+  let record = state.resolved_module_set.last().unwrap();
+  assert_eq!(record.serialized_base_url.as_deref(), Some(base.as_str()));
+  assert_eq!(record.specifier, "lodash");
+  assert_eq!(record.as_url_kind, SpecifierAsUrlKind::NotUrl);
+}
+
+#[test]
+fn prefix_mapping_chooses_longest_prefix() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "pkg/": "https://cdn.example/pkg/",
+        "pkg/sub/": "https://cdn.example/pkg-sub/"
+      }
+    }"#,
+    &base,
+  );
+
+  let resolved = resolve_module_specifier(&mut state, "pkg/sub/mod.js", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://cdn.example/pkg-sub/mod.js");
+
+  let record = state.resolved_module_set.last().unwrap();
+  assert_eq!(record.specifier, "pkg/sub/mod.js");
+  assert_eq!(record.as_url_kind, SpecifierAsUrlKind::NotUrl);
+}
+
+#[test]
+fn prefix_mapping_backtracking_throws() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "pkg/": "https://cdn.example/pkg/"
+      }
+    }"#,
+    &base,
+  );
+
+  let err = resolve_module_specifier(&mut state, "pkg/../evil.js", &base).unwrap_err();
+  assert!(matches!(err, ImportMapError::TypeError(_)), "{err:?}");
+  assert!(state.resolved_module_set.is_empty());
+}
+
+#[test]
+fn null_entries_throw_and_prevent_fallback() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  // The null address blocks resolution (the resolver must throw and not fall back to the URL-like
+  // specifier's direct URL).
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "./dep.js": null
+      }
+    }"#,
+    &base,
+  );
+
+  let err = resolve_module_specifier(&mut state, "./dep.js", &base).unwrap_err();
+  assert!(matches!(err, ImportMapError::TypeError(_)), "{err:?}");
+  assert!(state.resolved_module_set.is_empty());
+}
+
+#[test]
+fn scopes_override_imports_when_base_url_matches() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "foo": "/imports/foo.js"
+      },
+      "scopes": {
+        "/app/": {
+          "foo": "/scopes/foo.js"
+        }
+      }
+    }"#,
+    &base,
+  );
+
+  let resolved = resolve_module_specifier(&mut state, "foo", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://example.com/scopes/foo.js");
+}
+
+#[test]
+fn as_url_non_special_disables_prefix_mapping() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "blob:https://example.com/": "https://cdn.example/blob/"
+      }
+    }"#,
+    &base,
+  );
+
+  let specifier = "blob:https://example.com/uuid";
+  let resolved = resolve_module_specifier(&mut state, specifier, &base).unwrap();
+  assert_eq!(resolved.as_str(), specifier);
+
+  let record = state.resolved_module_set.last().unwrap();
+  assert_eq!(record.specifier, Url::parse(specifier).unwrap().to_string());
+  assert_eq!(record.as_url_kind, SpecifierAsUrlKind::NonSpecial);
+}

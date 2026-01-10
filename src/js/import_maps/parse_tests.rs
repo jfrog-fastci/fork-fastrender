@@ -241,8 +241,8 @@ fn url_serialization_must_not_create_prefix_keys_with_non_slash_addresses() {
   // Most importantly: resolution must not hit the prefix invariant debug-assert.
   let specifier = "https://example.com/foo.js";
   let as_url = Url::parse(specifier).unwrap();
-  let result = resolve_imports_match(specifier, Some(&as_url), &map.imports);
-  assert_eq!(result, Some(None));
+  let err = resolve_imports_match(specifier, Some(&as_url), &map.imports).unwrap_err();
+  assert!(matches!(err, ImportMapError::TypeError(_)), "{err:?}");
 }
 
 #[test]

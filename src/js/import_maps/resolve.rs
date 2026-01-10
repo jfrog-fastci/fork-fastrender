@@ -64,19 +64,12 @@ fn resolve_imports_match_impl(
 }
 
 /// WHATWG HTML: "resolve an imports match".
-///
-/// This is a helper for testing and debugging. Unlike the spec algorithm, it does not throw; if a
-/// match is found but would have thrown (e.g. null entry or backtracking), this returns `Some(None)`.
 pub fn resolve_imports_match(
   normalized_specifier: &str,
   as_url: Option<&Url>,
   specifier_map: &ModuleSpecifierMap,
-) -> Option<Option<Url>> {
-  match resolve_imports_match_impl(normalized_specifier, as_url, specifier_map) {
-    Ok(Some(url)) => Some(Some(url)),
-    Ok(None) => None,
-    Err(_) => Some(None),
-  }
+) -> Result<Option<Url>, ImportMapError> {
+  resolve_imports_match_impl(normalized_specifier, as_url, specifier_map)
 }
 
 /// WHATWG HTML: "add module to resolved module set".
@@ -157,4 +150,3 @@ pub fn resolve_module_specifier(
     "{specifier} was a bare specifier, but was not remapped to anything by the import map."
   )))
 }
-
