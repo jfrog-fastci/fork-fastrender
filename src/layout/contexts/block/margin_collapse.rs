@@ -356,6 +356,12 @@ pub fn is_margin_collapsible_through(style: &ComputedStyle) -> bool {
   // Modern CSS adds `aspect-ratio`, which can give a box a non-zero used size even when
   // `height:auto` and there is no in-flow content (the common "aspect-ratio placeholder" pattern).
   // Such boxes must not be treated as collapsible-through.
+  //
+  // Boxes that establish a new block formatting context also do not allow margin-collapsing
+  // chains to pass through them.
+  if establishes_bfc(style) {
+    return false;
+  }
   if !matches!(style.aspect_ratio, crate::style::types::AspectRatio::Auto) {
     return false;
   }
@@ -449,6 +455,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::float::Float;
   use crate::style::types::BorderStyle;
+  use crate::style::types::Overflow;
   use crate::style::values::Length;
 
   // ==========================================================================
@@ -694,6 +701,17 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.height = Some(Length::px(50.0));
     style.height_keyword = None;
+    assert!(!is_margin_collapsible_through(&style));
+  }
+
+  #[test]
+  fn test_is_margin_collapsible_through_establishes_bfc() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    assert!(
+      establishes_bfc(&style),
+      "expected overflow != visible to establish a BFC"
+    );
     assert!(!is_margin_collapsible_through(&style));
   }
 
