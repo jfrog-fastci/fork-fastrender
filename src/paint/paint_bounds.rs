@@ -282,7 +282,9 @@ fn box_shadow_bounds(
       viewport,
     )
     .max(-1e6);
-    let blur_pad = box_shadow_blur_radius_to_sigma(blur) * 3.0;
+    // Match the renderer's gaussian blur kernel radius (`ceil(3σ)`) so paint bounds remain
+    // conservative and effects don't get clipped when allocating intermediate layers.
+    let blur_pad = (box_shadow_blur_radius_to_sigma(blur) * 3.0).ceil();
     let left = blur_pad + spread - offset_x.min(0.0);
     let right = blur_pad + spread + offset_x.max(0.0);
     let top = blur_pad + spread - offset_y.min(0.0);

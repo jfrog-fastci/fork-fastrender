@@ -18,6 +18,7 @@ mod fieldset_legend_border_gap;
 mod rounded_border_solid;
 mod box_shadow_outset_transparent_interior;
 mod box_shadow_blur_radius_to_sigma;
+mod box_shadow_paint;
 mod canvas_background_propagation_test;
 mod viewport_scrollbar_gutter_test;
 mod canvas_test;

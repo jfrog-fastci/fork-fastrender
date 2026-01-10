@@ -10396,7 +10396,9 @@ impl Painter {
           let percentage_base = rect.width().max(0.0);
           let device_rect = painter.device_rect(rect);
           let device_radii = painter.device_radii(radii);
-          for shadow in &style.box_shadow {
+          // CSS Backgrounds and Borders: box-shadow lists are ordered front-to-back (first is on
+          // top), but we paint back-to-front so later shadows don't cover earlier ones.
+          for shadow in style.box_shadow.iter().rev() {
             if shadow.inset {
               continue;
             }

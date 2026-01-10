@@ -8732,7 +8732,9 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     inset: bool,
   ) {
-    for shadow in &style.box_shadow {
+    // CSS Backgrounds and Borders: box-shadow lists are ordered front-to-back (first is on top),
+    // but we paint back-to-front so later shadows don't cover earlier ones.
+    for shadow in style.box_shadow.iter().rev() {
       if shadow.inset != inset {
         continue;
       }

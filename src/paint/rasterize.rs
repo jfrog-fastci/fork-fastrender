@@ -1753,51 +1753,66 @@ fn render_inset_shadow(
   }
   crate::render_control::check_active(RenderStage::Paint)?;
 
-  // Clip to the outer box to keep inset shadows inside
+  // Clip to the outer (padding-box) shape to keep inset shadows inside, respecting border-radius.
+  //
+  // Note: clipping to the axis-aligned bounds is insufficient for rounded corners; it allows blur
+  // to leak into the corner cutouts. We instead apply an AA mask of the outer rounded-rect.
   check_active(RenderStage::Paint)?;
-  let width_px = tmp.width() as usize;
-  let height_px = tmp.height() as usize;
-  let x_start = outer_x.ceil() as i32;
-  let x_end = (outer_x + outer_w).floor() as i32;
-  let y_start = outer_y.ceil() as i32;
-  let y_end = (outer_y + outer_h).floor() as i32;
+  if outer_w > 0.0 && outer_h > 0.0 {
+    if let Some(path) = build_rounded_rect_path(outer_x, outer_y, outer_w, outer_h, radii) {
+      // `Mask::new` can fail under memory pressure; fall back to the old rectangular clip in that
+      // case rather than dropping the shadow entirely.
+      if let Some(mut clip_mask) = Mask::new(tmp.width(), tmp.height()) {
+        clip_mask.data_mut().fill(0);
+        clip_mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        tmp.apply_mask(&clip_mask);
+      } else {
+        let width_px = tmp.width() as usize;
+        let height_px = tmp.height() as usize;
+        let x_start = outer_x.ceil() as i32;
+        let x_end = (outer_x + outer_w).floor() as i32;
+        let y_start = outer_y.ceil() as i32;
+        let y_end = (outer_y + outer_h).floor() as i32;
 
-  let x_start = x_start.clamp(0, width_px as i32);
-  let x_end = x_end.clamp(-1, width_px as i32 - 1);
-  let y_start = y_start.clamp(0, height_px as i32);
-  let y_end = y_end.clamp(-1, height_px as i32 - 1);
+        let x_start = x_start.clamp(0, width_px as i32);
+        let x_end = x_end.clamp(-1, width_px as i32 - 1);
+        let y_start = y_start.clamp(0, height_px as i32);
+        let y_end = y_end.clamp(-1, height_px as i32 - 1);
 
-  let pixels = tmp.pixels_mut();
-  let transparent = PremultipliedColorU8::TRANSPARENT;
-  let deadline_row_stride = (DEADLINE_STRIDE / width_px).max(1);
-  let mut deadline_counter = 0usize;
-  for y_idx in 0..height_px {
-    check_active_periodic(
-      &mut deadline_counter,
-      deadline_row_stride,
-      RenderStage::Paint,
-    )?;
-    let row_base = y_idx * width_px;
-    let row = &mut pixels[row_base..row_base + width_px];
+        let pixels = tmp.pixels_mut();
+        let transparent = PremultipliedColorU8::TRANSPARENT;
+        let deadline_row_stride = (DEADLINE_STRIDE / width_px).max(1);
+        let mut deadline_counter = 0usize;
+        for y_idx in 0..height_px {
+          check_active_periodic(
+            &mut deadline_counter,
+            deadline_row_stride,
+            RenderStage::Paint,
+          )?;
+          let row_base = y_idx * width_px;
+          let row = &mut pixels[row_base..row_base + width_px];
 
-    let y_coord = y_idx as i32;
-    if y_coord < y_start || y_coord > y_end {
-      row.fill(transparent);
-      continue;
-    }
+          let y_coord = y_idx as i32;
+          if y_coord < y_start || y_coord > y_end {
+            row.fill(transparent);
+            continue;
+          }
 
-    if x_start > x_end {
-      row.fill(transparent);
-      continue;
-    }
+          if x_start > x_end {
+            row.fill(transparent);
+            continue;
+          }
 
-    if x_start > 0 {
-      row[..x_start as usize].fill(transparent);
-    }
+          if x_start > 0 {
+            row[..x_start as usize].fill(transparent);
+          }
 
-    let right_start = (x_end + 1) as usize;
-    if right_start < width_px {
-      row[right_start..].fill(transparent);
+          let right_start = (x_end + 1) as usize;
+          if right_start < width_px {
+            row[right_start..].fill(transparent);
+          }
+        }
+      }
     }
   }
   crate::render_control::check_active(RenderStage::Paint)?;
