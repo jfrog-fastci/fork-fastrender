@@ -7331,6 +7331,18 @@ mod tests {
   }
 
   #[test]
+  fn nested_functions_are_not_truncated_in_declaration_values() {
+    let decls = parse_declarations("padding: calc(max(0px)); color: red;");
+    assert_eq!(
+      decls.len(),
+      2,
+      "expected both declarations to parse, got {decls:?}"
+    );
+    assert_eq!(decls[0].property.as_str(), "padding");
+    assert_eq!(decls[1].property.as_str(), "color");
+  }
+
+  #[test]
   fn important_with_whitespace_is_recognized() {
     let decls = parse_declarations("color: red ! important;");
     assert_eq!(decls.len(), 1);
