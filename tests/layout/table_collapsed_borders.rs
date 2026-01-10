@@ -499,7 +499,10 @@ fn collapsed_table_borders_align_with_repeated_headers_in_multicol() {
       .collect::<Vec<_>>()
   );
 
-  let list = DisplayListBuilder::new().build(&tree.root);
+  // Disable viewport-based culling so we also validate offscreen column sets.
+  let list = DisplayListBuilder::new()
+    .with_culling_viewport_size(10_000.0, 10_000.0)
+    .build(&tree.root);
   let collapsed_items: Vec<_> = list
     .items()
     .iter()
@@ -573,13 +576,7 @@ fn collapsed_table_borders_align_with_repeated_footers_in_multicol() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(&html).unwrap();
-  let viewport_width: u32 = 320;
-  let viewport_height: u32 = 400;
-  let viewport_width_f = viewport_width as f32;
-  let viewport_height_f = viewport_height as f32;
-  let tree = renderer
-    .layout_document(&dom, viewport_width, viewport_height)
-    .unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
 
   let mut table_fragments = Vec::new();
   collect_table_fragments(&tree.root, Point::ZERO, &mut table_fragments);
@@ -588,20 +585,9 @@ fn collapsed_table_borders_align_with_repeated_footers_in_multicol() {
     "expected to find table fragments with collapsed border metadata"
   );
 
-  let intersects_viewport = |rect: Rect| {
-    rect.origin.x < viewport_width_f
-      && rect.origin.x + rect.width() > 0.0
-      && rect.origin.y < viewport_height_f
-      && rect.origin.y + rect.height() > 0.0
-  };
-
   let continuation_non_last_fragments: Vec<_> = table_fragments
     .iter()
-    .filter(|(node, rect)| {
-      node.slice_info.slice_offset > EPSILON
-        && !node.slice_info.is_last
-        && intersects_viewport(*rect)
-    })
+    .filter(|(node, _)| node.slice_info.slice_offset > EPSILON && !node.slice_info.is_last)
     .collect();
   assert!(
     !continuation_non_last_fragments.is_empty(),
@@ -620,7 +606,10 @@ fn collapsed_table_borders_align_with_repeated_footers_in_multicol() {
       .collect::<Vec<_>>()
   );
 
-  let list = DisplayListBuilder::new().build(&tree.root);
+  // Disable viewport-based culling so we also validate offscreen column sets.
+  let list = DisplayListBuilder::new()
+    .with_culling_viewport_size(10_000.0, 10_000.0)
+    .build(&tree.root);
   let collapsed_items: Vec<_> = list
     .items()
     .iter()
@@ -696,13 +685,7 @@ fn collapsed_table_borders_align_with_repeated_headers_and_footers_in_multicol()
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(&html).unwrap();
-  let viewport_width: u32 = 320;
-  let viewport_height: u32 = 400;
-  let viewport_width_f = viewport_width as f32;
-  let viewport_height_f = viewport_height as f32;
-  let tree = renderer
-    .layout_document(&dom, viewport_width, viewport_height)
-    .unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
 
   let mut table_fragments = Vec::new();
   collect_table_fragments(&tree.root, Point::ZERO, &mut table_fragments);
@@ -711,20 +694,12 @@ fn collapsed_table_borders_align_with_repeated_headers_and_footers_in_multicol()
     "expected to find table fragments with collapsed border metadata"
   );
 
-  let intersects_viewport = |rect: Rect| {
-    rect.origin.x < viewport_width_f
-      && rect.origin.x + rect.width() > 0.0
-      && rect.origin.y < viewport_height_f
-      && rect.origin.y + rect.height() > 0.0
-  };
-
   let middle_fragments: Vec<_> = table_fragments
     .iter()
-    .filter(|(node, rect)| {
+    .filter(|(node, _)| {
       !node.slice_info.is_first
         && !node.slice_info.is_last
         && node.slice_info.slice_offset > EPSILON
-        && intersects_viewport(*rect)
     })
     .collect();
   assert!(
@@ -745,7 +720,10 @@ fn collapsed_table_borders_align_with_repeated_headers_and_footers_in_multicol()
       .collect::<Vec<_>>()
   );
 
-  let list = DisplayListBuilder::new().build(&tree.root);
+  // Disable viewport-based culling so we also validate offscreen column sets.
+  let list = DisplayListBuilder::new()
+    .with_culling_viewport_size(10_000.0, 10_000.0)
+    .build(&tree.root);
   let collapsed_items: Vec<_> = list
     .items()
     .iter()
