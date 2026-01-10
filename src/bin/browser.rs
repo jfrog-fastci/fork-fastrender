@@ -3143,7 +3143,19 @@ error: {err}",
         .events
         .iter()
         .filter_map(|event| match event {
-          egui::Event::MouseWheel { unit, delta, .. } => Some((*unit, *delta)),
+          egui::Event::MouseWheel {
+            unit,
+            delta,
+            modifiers,
+          } => {
+            // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
+            // to the page scroll pipeline.
+            if modifiers.command {
+              None
+            } else {
+              Some((*unit, *delta))
+            }
+          }
           _ => None,
         })
         .collect::<Vec<_>>();

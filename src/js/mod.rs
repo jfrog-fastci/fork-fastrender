@@ -118,8 +118,9 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 //
-// NOTE: `dom_integration` is declared above (it is used by tests and DOM-mutation plumbing). Do not
-// re-declare it here.
+// NOTE: `dom_integration` is declared above (it is used by tests and DOM-mutation plumbing, and
+// historically lived under `legacy/`). Keep the stable `crate::js::dom_integration` module path and
+// do not re-declare it here.
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;

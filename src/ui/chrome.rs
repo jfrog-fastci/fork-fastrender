@@ -184,6 +184,41 @@ pub fn chrome_ui(
     )
   });
 
+  // -----------------------------------------------------------------------------
+  // Ctrl/Cmd+mouse wheel zoom
+  // -----------------------------------------------------------------------------
+  //
+  // Many browsers map Ctrl/Cmd+wheel to page zoom. Handle this at the chrome level so it works
+  // regardless of where the cursor is (page area or chrome), and so windowed front-ends can filter
+  // these wheel events out of the page scroll path.
+  //
+  // Note: we intentionally keep the mapping simple: any positive wheel delta zooms in, any negative
+  // delta zooms out, and a frame may apply multiple steps if multiple wheel events are queued.
+  ctx.input(|i| {
+    for event in &i.events {
+      let egui::Event::MouseWheel { delta, modifiers, .. } = event else {
+        continue;
+      };
+      if !modifiers.command {
+        continue;
+      }
+      let mut wheel = delta.y;
+      if wheel == 0.0 {
+        wheel = delta.x;
+      }
+      if !wheel.is_finite() || wheel == 0.0 {
+        continue;
+      }
+      if let Some(tab) = app.active_tab_mut() {
+        tab.zoom = if wheel > 0.0 {
+          zoom::zoom_in(tab.zoom)
+        } else {
+          zoom::zoom_out(tab.zoom)
+        };
+      }
+    }
+  });
+
   if focus_address_bar {
     actions.push(ChromeAction::FocusAddressBar);
     // Apply the focus/select changes immediately (this frame) so the address bar widget can
@@ -1075,5 +1110,50 @@ mod tests {
       !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
       "expected middle-click not to close the last remaining tab, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn ctrl_wheel_zooms_active_tab() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = egui::Context::default();
+
+    // Wheel up with Ctrl/Cmd => zoom in.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 10.0),
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      }],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    let zoom_after_in = app.active_tab().unwrap().zoom;
+    assert!(zoom_after_in > crate::ui::zoom::DEFAULT_ZOOM);
+
+    // Wheel down with Ctrl/Cmd => zoom out.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -10.0),
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      }],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    let zoom_after_out = app.active_tab().unwrap().zoom;
+    assert!(zoom_after_out < zoom_after_in, "expected zoom to decrease");
   }
 }
