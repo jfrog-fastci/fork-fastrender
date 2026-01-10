@@ -202,7 +202,10 @@ pub mod window {
                   Ok(BindingValue::Number(conversions::to_long(
                     rt,
                     next,
-                    conversions::IntegerConversionAttrs::default(),
+                    conversions::IntegerConversionAttrs {
+                      clamp: false,
+                      enforce_range: true,
+                    },
                   )? as f64))
                 })?;
                 values.push(converted);
@@ -258,7 +261,10 @@ pub mod window {
                   Ok(BindingValue::Number(conversions::to_long(
                     rt,
                     next,
-                    conversions::IntegerConversionAttrs::default(),
+                    conversions::IntegerConversionAttrs {
+                      clamp: true,
+                      enforce_range: false,
+                    },
                   )? as f64))
                 })?;
                 values.push(converted);

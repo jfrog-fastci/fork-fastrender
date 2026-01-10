@@ -23,8 +23,8 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
       undefined baz(DOMString s);
       undefined baz(long x);
       undefined qux(optional FooOptions options);
-      undefined takesSequence(sequence<long> values);
-      undefined takesFrozenArray(FrozenArray<long> values);
+      undefined takesSequence([Clamp] sequence<long> values);
+      undefined takesFrozenArray([EnforceRange] FrozenArray<long> values);
     };
 
     dictionary FooOptions {
