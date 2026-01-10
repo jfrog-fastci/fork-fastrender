@@ -117,6 +117,18 @@ pub trait BrowserTabJsExecutor {
   fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
     None
   }
+
+  /// Optional DOM event listener invoker.
+  ///
+  /// When the executor exposes `EventTarget.addEventListener`/`removeEventListener` shims and stores
+  /// listener registrations in the document's [`crate::web::events::EventListenerRegistry`], it
+  /// should also provide an [`crate::web::events::EventListenerInvoker`] so Rust-driven event
+  /// dispatch (e.g. user interaction) can call the corresponding JS callbacks.
+  fn event_listener_invoker(
+    &self,
+  ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
+    None
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -230,12 +242,15 @@ impl BrowserTabHost {
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
+    let event_invoker = executor
+      .event_listener_invoker()
+      .unwrap_or_else(|| Box::new(NoopEventInvoker));
     let current_script = CurrentScriptStateHandle::default();
     Ok(Self {
       trace,
       document: Box::new(document),
       executor,
-      event_invoker: Box::new(NoopEventInvoker),
+      event_invoker,
       js_events: JsDomEvents::new()?,
       current_script,
       orchestrator: ScriptOrchestrator::new(),
@@ -280,7 +295,7 @@ impl BrowserTabHost {
     self.event_invoker = invoker;
   }
 
-  fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<()> {
+  fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<bool> {
     let dom: &crate::dom2::Document = self.document.dom();
     crate::web::events::dispatch_event(
       target,
@@ -289,7 +304,6 @@ impl BrowserTabHost {
       dom.events(),
       self.event_invoker.as_mut(),
     )
-    .map(|_default_not_prevented| ())
     .map_err(|err| Error::Other(err.to_string()))
   }
 
@@ -303,7 +317,8 @@ impl BrowserTabHost {
       },
     );
     event.is_trusted = true;
-    self.dispatch_dom_event(EventTargetId::Node(script_node_id), event)
+    let _default_not_prevented = self.dispatch_dom_event(EventTargetId::Node(script_node_id), event)?;
+    Ok(())
   }
 
   fn dispatch_script_error_event(&mut self, script_node_id: NodeId) -> Result<()> {
@@ -1943,7 +1958,9 @@ impl DocumentLifecycleHost for BrowserTabHost {
       }
       // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
       // `load`/`error` events queued by the script scheduler).
-      EventTargetId::Node(_) | EventTargetId::Opaque(_) => return self.dispatch_dom_event(target, event),
+      EventTargetId::Node(_) | EventTargetId::Opaque(_) => {
+        return self.dispatch_dom_event(target, event).map(|_| ());
+      }
     };
     if let Some(req) = self.executor.take_navigation_request() {
       self.pending_navigation = Some(req);
@@ -1986,20 +2003,6 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
 
 impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost {
   fn dispatch_script_element_event(&mut self, script: NodeId, event_name: &'static str) -> Result<()> {
-    use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
-
-    struct NoopInvoker;
-
-    impl EventListenerInvoker for NoopInvoker {
-      fn invoke(
-        &mut self,
-        _listener_id: ListenerId,
-        _event: &mut crate::web::events::Event,
-      ) -> std::result::Result<(), DomError> {
-        Ok(())
-      }
-    }
-
     // HTML "fire an event" for `<script>` load/error is an element task on the DOM manipulation
     // task source. The task itself performs event dispatch synchronously.
     let mut event = Event::new(
@@ -2011,12 +2014,8 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
       },
     );
     event.is_trusted = true;
-
-    let dom: &crate::dom2::Document = self.document.dom();
-    let mut invoker = NoopInvoker;
-    dispatch_event(EventTargetId::Node(script), &mut event, dom, dom.events(), &mut invoker)
-      .map(|_default_not_prevented| ())
-      .map_err(|err| Error::Other(err.to_string()))
+    let _default_not_prevented = self.dispatch_dom_event(EventTargetId::Node(script).normalize(), event)?;
+    Ok(())
   }
 }
 
@@ -2618,6 +2617,112 @@ impl BrowserTab {
         Ok(())
       },
     )
+  }
+
+  /// Dispatch a trusted `click` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_click_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "click",
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    self
+      .host
+      .dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
+  }
+
+  /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
+  /// element's default click action should navigate.
+  ///
+  /// This:
+  /// - dispatches a trusted, bubbling, cancelable `"click"` event at `node_id`, and
+  /// - if the click is on (or inside) an `<a href=...>` element, returns the resolved `href` **only
+  ///   when** the click event's default was not prevented.
+  pub fn resolve_navigation_for_click(&mut self, node_id: NodeId) -> Result<Option<String>> {
+    fn trim_ascii_whitespace(value: &str) -> &str {
+      value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    }
+
+    fn is_javascript_url(href: &str) -> bool {
+      href
+        .as_bytes()
+        .get(.."javascript:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+    }
+
+    fn link_href_for_click(dom: &Document, mut current: NodeId) -> Option<String> {
+      loop {
+        let node = dom.node(current);
+        if let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        {
+          if tag_name.eq_ignore_ascii_case("a") && (namespace.is_empty() || namespace == HTML_NAMESPACE) {
+            if let Ok(Some(href)) = dom.get_attribute(current, "href") {
+              let href = trim_ascii_whitespace(&href);
+              if !href.is_empty() && !is_javascript_url(href) {
+                return Some(href.to_string());
+              }
+            }
+          }
+        }
+
+        match node.parent {
+          Some(parent) => current = parent,
+          None => return None,
+        }
+      }
+    }
+
+    fn resolve_href(document_url: Option<&str>, href: &str) -> Option<String> {
+      let href = trim_ascii_whitespace(href);
+      if href.is_empty() {
+        return None;
+      }
+
+      if let Ok(url) = url::Url::parse(href) {
+        if url.scheme().eq_ignore_ascii_case("javascript") {
+          return None;
+        }
+        return Some(url.to_string());
+      }
+
+      let base = document_url.and_then(|u| url::Url::parse(u).ok())?;
+      let joined = base.join(href).ok()?;
+      if joined.scheme().eq_ignore_ascii_case("javascript") {
+        return None;
+      }
+      Some(joined.to_string())
+    }
+
+    let href = link_href_for_click(self.dom(), node_id);
+    let default_allowed = self.dispatch_click_event(node_id)?;
+    if !default_allowed {
+      return Ok(None);
+    }
+    let Some(href) = href else {
+      return Ok(None);
+    };
+    Ok(resolve_href(self.host.base_url.as_deref(), &href))
+  }
+
+  /// Dispatch a user `click` event and, if not canceled, navigate to the clicked link's target.
+  ///
+  /// Returns `true` if the click triggered a navigation.
+  pub fn dispatch_click_and_follow_link(&mut self, node_id: NodeId, options: RenderOptions) -> Result<bool> {
+    let Some(url) = self.resolve_navigation_for_click(node_id)? else {
+      return Ok(false);
+    };
+    self.navigate_to_url(&url, options)?;
+    Ok(true)
   }
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {

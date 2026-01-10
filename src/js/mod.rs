@@ -123,7 +123,6 @@ pub mod url_bindings;
 // `crate::js::dom_integration` path. It provides HTML "prepare the script element" helpers for
 // dynamically inserted `<script>` elements, and is still referenced by some integration tests.
 // Do not re-declare it here.
-
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;

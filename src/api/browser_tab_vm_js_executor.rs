@@ -87,8 +87,18 @@ impl Drop for VmJsBrowserTabExecutor {
     self.realm = None;
   }
 }
-
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
+  fn event_listener_invoker(
+    &self,
+  ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
+    // SAFETY: The returned invoker is stored alongside this executor in `BrowserTabHost`, so the
+    // pointer remains valid for the lifetime of the host. All access occurs on the host thread.
+    let realm_ptr = (&self.realm as *const Option<WindowRealm>) as *mut Option<WindowRealm>;
+    Some(Box::new(
+      crate::js::window_realm::WindowRealmDomEventListenerInvoker::new(realm_ptr),
+    ))
+  }
+
   fn on_document_base_url_updated(&mut self, base_url: Option<&str>) {
     let Some(realm) = self.realm.as_mut() else {
       return;
@@ -364,7 +374,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   }
 
   fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
-    self.pending_navigation.take()
+    if let Some(req) = self.pending_navigation.take() {
+      return Some(req);
+    }
+    self
+      .realm
+      .as_mut()
+      .and_then(WindowRealm::take_pending_navigation_request)
   }
 
   fn dispatch_lifecycle_event(
