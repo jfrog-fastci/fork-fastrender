@@ -326,7 +326,25 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     };
 
     let key = Self::to_vm_property_key(key);
-    let value = self.vm.get(&mut self.scope, object, key)?;
+    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call_js` (which
+    // respects `Vm::with_host_hooks_override` / embedder host context), rather than through
+    // `Vm::get` → `Scope::ordinary_get` which currently invokes getters via `call_without_host`.
+    let value = match self.scope.heap().get_property(object, &key)? {
+      None => Value::Undefined,
+      Some(desc) => match desc.kind {
+        vm_js::PropertyKind::Data { value, .. } => value,
+        vm_js::PropertyKind::Accessor { get, .. } => {
+          if matches!(get, Value::Undefined) {
+            Value::Undefined
+          } else {
+            if !self.scope.heap().is_callable(get)? {
+              return Err(VmError::TypeError("accessor getter is not callable"));
+            }
+            self.call_js(get, Value::Object(object), &[])?
+          }
+        }
+      },
+    };
     self.root(value)?;
     Ok(value)
   }
@@ -336,20 +354,18 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     object: Self::Object,
     key: PropertyKey<Self::String, Self::Symbol>,
   ) -> Result<Option<Self::Value>, Self::Error> {
-    self.root(Value::Object(object))?;
-    match key {
-      PropertyKey::String(s) => self.root(Value::String(s))?,
-      PropertyKey::Symbol(s) => self.root(Value::Symbol(s))?,
-    };
-
-    let key = Self::to_vm_property_key(key);
-    let method = self
-      .vm
-      .get_method(&mut self.scope, Value::Object(object), key)?;
-    if let Some(v) = method {
-      self.root(v)?;
+    // ECMAScript `GetMethod(O, P)` where `O` is already known to be an object.
+    //
+    // Like `get`, we avoid `Vm::get_method` so any accessor getters run via `call_js` instead of
+    // `call_without_host`.
+    let value = self.get(object, key)?;
+    if matches!(value, Value::Undefined | Value::Null) {
+      return Ok(None);
     }
-    Ok(method)
+    if !self.scope.heap().is_callable(value)? {
+      return Err(VmError::TypeError("GetMethod: target is not callable"));
+    }
+    Ok(Some(value))
   }
 
   fn own_property_keys(
@@ -1304,6 +1320,7 @@ mod tests {
   #[derive(Default)]
   struct TestHostHooks {
     iterator_calls: usize,
+    getter_calls: usize,
   }
 
   impl VmHostHooks for TestHostHooks {
@@ -1335,6 +1352,35 @@ mod tests {
     let iter_obj = scope.alloc_object()?;
     scope.push_root(Value::Object(iter_obj))?;
     Ok(Value::Object(iter_obj))
+  }
+
+  fn iterator_getter_observes_host_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.getter_calls += 1;
+      }
+    }
+
+    let Value::Object(obj) = this else {
+      return Err(VmError::TypeError("iterator getter this is not object"));
+    };
+
+    // Return this.fn.
+    let fn_key = VmPropertyKey::from_string(scope.alloc_string("fn")?);
+    Ok(
+      scope
+        .heap()
+        .object_get_own_data_property_value(obj, &fn_key)?
+        .unwrap_or(Value::Undefined),
+    )
   }
 
   #[test]
@@ -1378,6 +1424,76 @@ mod tests {
       Ok(())
     })?;
 
+    assert_eq!(host_hooks.iterator_calls, 1);
+    assert_eq!(host_hooks.getter_calls, 0);
+    Ok(())
+  }
+
+  #[test]
+  fn iterator_get_method_propagates_embedder_host_hooks_override() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_hooks = TestHostHooks::default();
+
+    vm.with_host_hooks_override(&mut host_hooks, |vm| -> Result<(), VmError> {
+      let mut cx = VmJsWebIdlCx::new(vm, &mut heap, limits, &hooks);
+
+      // iterable = { fn: <native iter fn>, get [Symbol.iterator]() { ... } }
+      let iterable = cx.scope.alloc_object()?;
+      cx.scope.push_root(Value::Object(iterable))?;
+
+      let iter_name = cx.scope.alloc_string("iterator")?;
+      let iter_id = cx.vm.register_native_call(iterator_method_observes_host_hooks)?;
+      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      cx.scope.push_root(Value::Object(iter_fn))?;
+
+      // fn = iter_fn
+      let fn_key = VmPropertyKey::from_string(cx.scope.alloc_string("fn")?);
+      cx.scope.define_property(
+        iterable,
+        fn_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(iter_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      // get [Symbol.iterator]() { return this.fn }
+      let getter_name = cx.scope.alloc_string("getIterator")?;
+      let getter_id: NativeFunctionId = cx.vm.register_native_call(iterator_getter_observes_host_hooks)?;
+      let getter_fn = cx
+        .scope
+        .alloc_native_function(getter_id, None, getter_name, 0)?;
+      cx.scope.push_root(Value::Object(getter_fn))?;
+
+      let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
+      let key = VmPropertyKey::from_symbol(sym);
+      cx.scope.define_property(
+        iterable,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(getter_fn),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      let iterator = cx.get_iterator(Value::Object(iterable))?;
+      cx.scope.push_root(Value::Object(iterator))?;
+      Ok(())
+    })?;
+
+    assert_eq!(host_hooks.getter_calls, 1);
     assert_eq!(host_hooks.iterator_calls, 1);
     Ok(())
   }
