@@ -426,18 +426,23 @@ require that the mapped address URL’s serialization also ends in `/`.
 Be careful: URL serialization can add an implicit trailing slash. For example, the URL string
 `"https://example.com"` serializes as `"https://example.com/"`.
 
-HTML’s trailing-slash mismatch check (and FastRender’s current implementation) is based on the
-*original* specifier key string (pre-normalization). This means a mapping like:
+In the HTML spec’s “sort and normalize a module specifier map”, the trailing-slash mismatch check is
+phrased in terms of the *original* JSON `specifierKey` (the raw key string). However, FastRender
+enforces the invariant using the *normalized* key string (`normalizedSpecifierKey`) so URL
+canonicalization cannot accidentally turn a non-prefix key into a prefix key.
+
+This means a mapping like:
 
 ```json
 { "imports": { "https://example.com": "https://cdn.example.com/file.js" } }
 ```
 
-normalizes the key to `"https://example.com/"` (a prefix key), but does **not** currently generate a
-`TrailingSlashMismatch` warning because the input key did not end with `/`.
+normalizes the key to `"https://example.com/"` (a prefix key), generates a `TrailingSlashMismatch`
+warning, and stores a `null` entry (`None`) for that normalized key.
 
-`resolve_imports_match(...)` defensively treats such invalid prefix mappings as blocked (`Some(None)`)
-and emits a debug assertion in debug builds.
+When resolving, `resolve_imports_match(...)` will treat any match against that key as blocked
+(`Some(None)`), and should never hit its prefix-invariant debug assertion for maps produced by
+`parse_import_map_string(...)`.
 
 ---
 
