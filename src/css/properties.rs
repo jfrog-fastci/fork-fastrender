@@ -470,6 +470,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "place-self",
   "position",
   "position-anchor",
+  "position-area",
   "position-try",
   "position-try-fallbacks",
   "position-try-order",

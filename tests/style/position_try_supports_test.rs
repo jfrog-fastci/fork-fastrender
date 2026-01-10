@@ -3,6 +3,7 @@ use fastrender::css::types::PropertyValue;
 use fastrender::dom;
 use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
 use fastrender::style::media::MediaContext;
+use fastrender::style::types::PositionArea;
 use fastrender::style::types::PositionTryOrder;
 use fastrender::style::values::Length;
 use fastrender::Rgba;
@@ -322,6 +323,7 @@ fn position_try_rules_keep_only_positioning_related_properties() {
         /* accepted */
         top: 1px;
         position-anchor: --a;
+        position-area: block-end;
         margin-left: 2px;
         width: 3px;
         /* rejected */
@@ -342,6 +344,21 @@ fn position_try_rules_keep_only_positioning_related_properties() {
   );
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "top"));
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "position-anchor"));
+  assert!(decls.iter().any(|decl| decl.property.as_ref() == "position-area"));
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "margin-left"));
   assert!(decls.iter().any(|decl| decl.property.as_ref() == "width"));
+}
+
+#[test]
+fn position_area_property_is_parsed_and_stored() {
+  let target = styled_target(
+    r#"
+      #t { position-area: block-end; }
+    "#,
+  );
+
+  assert_eq!(
+    target.styles.position_area,
+    PositionArea::parse("block-end").expect("parse position-area")
+  );
 }

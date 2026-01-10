@@ -11,8 +11,16 @@ const DEFAULT_CHARSET: &str = "charset=US-ASCII";
 // RFC 2397 and the HTML "ASCII whitespace" definition both only treat TAB/LF/FF/CR/SPACE as
 // whitespace. Avoid `str::trim()` here because it removes additional Unicode whitespace like NBSP
 // (U+00A0), which should not be treated as ignorable.
+fn is_html_ascii_whitespace_char(value: char) -> bool {
+  matches!(value, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn is_html_ascii_whitespace_byte(value: u8) -> bool {
+  matches!(value, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_matches(is_html_ascii_whitespace_char)
 }
 
 /// Decode a data: URL into bytes and content type following RFC 2397 semantics.
@@ -133,7 +141,7 @@ impl<'a> Read for WhitespaceStrippingReader<'a> {
     while written < buf.len() && self.pos < self.bytes.len() {
       let byte = self.bytes[self.pos];
       self.pos += 1;
-      if byte.is_ascii_whitespace() {
+      if is_html_ascii_whitespace_byte(byte) {
         continue;
       }
       buf[written] = byte;
@@ -408,5 +416,19 @@ mod tests {
     assert_eq!(decoded.bytes, b"aGk=");
     let expected = format!("text/plain;{nbsp}base64");
     assert_eq!(decoded.content_type.as_deref(), Some(expected.as_str()));
+  }
+
+  #[test]
+  fn base64_decoder_does_not_strip_vertical_tab() {
+    // The HTML "ASCII whitespace" definition (used by RFC 2397 data URLs) does not include
+    // vertical tab (U+000B), so it must not be stripped before base64 decoding.
+    let err = decode_data_url("data:text/plain;base64,a\u{000B}Gk=").unwrap_err();
+    match err {
+      Error::Image(ImageError::InvalidDataUrl { reason }) => assert!(
+        reason.contains("Invalid base64"),
+        "expected invalid base64 error, got: {reason}"
+      ),
+      other => panic!("expected invalid data URL error, got: {other:?}"),
+    }
   }
 }
