@@ -88,11 +88,19 @@ impl VmJsBackend {
       let rt = self.rt_mut()?;
       let mut outcome: Result<(), RunError> = Ok(());
 
-      while let Some((cb, this, args)) = rt.event_loop.drain_microtasks() {
+      while !rt.event_loop.microtask_queue.is_empty() {
+        // IMPORTANT: enforce max-microtask limits *before* popping.
+        //
+        // If we pop first and then discover we've exceeded the budget, we'd drop the next queued
+        // microtask and break determinism.
         if executed >= max_microtasks {
           hit_limit_or_timeout = true;
           break;
         }
+        let (cb, this, args) = rt
+          .event_loop
+          .drain_microtasks()
+          .expect("microtask queue should be non-empty");
         executed += 1;
 
         if let Err(err) = rt.call(cb, this, &args) {
@@ -193,10 +201,6 @@ impl Backend for VmJsBackend {
       self.timed_out = true;
       return Ok(false);
     }
-    if self.tasks_executed >= self.max_tasks {
-      self.timed_out = true;
-      return Ok(false);
-    }
 
     let max_tasks = self.max_tasks;
     let mut executed = self.tasks_executed;
@@ -208,26 +212,32 @@ impl Backend for VmJsBackend {
       rt.event_loop.enqueue_due_timers();
       let mut outcome: Result<bool, RunError> = Ok(false);
 
-      match rt.event_loop.pop_next_task() {
-        None => {}
-        Some((cb, this, args)) => {
-          executed += 1;
-          if executed > max_tasks {
+      // IMPORTANT: enforce max-task limits *before* popping.
+      //
+      // Like FastRender's HTML event loop, the WPT runner should not drop queued tasks when a task
+      // budget is exhausted.
+      if rt.event_loop.task_queue.is_empty() {
+        // No task available.
+      } else if executed >= max_tasks {
+        hit_limit_or_timeout = true;
+      } else if let Some((cb, this, args)) = rt.event_loop.pop_next_task() {
+        executed += 1;
+        if let Err(err) = rt.call(cb, this, &args) {
+          if err.is_timeout() {
             hit_limit_or_timeout = true;
-          } else if let Err(err) = rt.call(cb, this, &args) {
-            if err.is_timeout() {
-              hit_limit_or_timeout = true;
-            } else {
-              let msg = err.to_message(rt);
-              if !rt.reported() {
-                rt.set_report_error(&msg);
-              }
-              outcome = Err(RunError::Js(msg));
-            }
           } else {
-            outcome = Ok(true);
+            let msg = err.to_message(rt);
+            if !rt.reported() {
+              rt.set_report_error(&msg);
+            }
+            outcome = Err(RunError::Js(msg));
           }
+        } else {
+          outcome = Ok(true);
         }
+      } else {
+        // A task queue existed but no task was available. This should be unreachable, but avoid
+        // panicking if invariants are violated.
       }
 
       outcome
