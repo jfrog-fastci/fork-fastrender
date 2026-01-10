@@ -11,6 +11,7 @@ use crate::js::{
   install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
   WindowFetchBindings, WindowFetchEnv,
 };
+use crate::js::vm_error_format;
 use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -101,15 +102,16 @@ impl WindowHost {
     with_event_loop(event_loop, || {
       let window = host.window_mut();
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-      let result = window
-        .exec_script_with_host(&mut hooks, source)
-        .map_err(|e| Error::Other(e.to_string()));
+      let result = window.exec_script_with_host(&mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
 
-      result
+      match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+      }
     })
   }
 }
@@ -537,6 +539,33 @@ mod tests {
       Some("NotSupportedError")
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn exec_script_error_includes_stack_trace() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let err = host
+      .exec_script("1;\nthrow \"boom\";")
+      .expect_err("expected script to throw");
+    let Error::Other(msg) = err else {
+      panic!("expected Error::Other, got {err:?}");
+    };
+
+    assert!(
+      msg.contains("boom"),
+      "expected message to include thrown string, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at "),
+      "expected message to include stack trace, got {msg:?}"
+    );
+    assert!(
+      msg.contains(":2:1"),
+      "expected stack trace to include line/col 2:1, got {msg:?}"
+    );
     Ok(())
   }
 }

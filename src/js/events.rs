@@ -7,6 +7,7 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
 use crate::error::{Error, Result};
+use crate::js::vm_error_format;
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
@@ -567,27 +568,12 @@ impl JsDomEvents {
   }
 
   fn vm_error_to_error(&mut self, err: VmError) -> Error {
-    if let Some(value) = err.thrown_value() {
-      const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-      // Best-effort: stringify the thrown value.
-      let message = self
-        .runtime
-        .to_string(value)
-        .ok()
-        .and_then(|v| match v {
-          Value::String(s) => self.runtime.heap().get_string(s).ok().and_then(|s| {
-            if s.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
-              None
-            } else {
-              Some(s.to_utf8_lossy())
-            }
-          }),
-          _ => None,
-        })
-        .unwrap_or_else(|| "uncaught exception".to_string());
+    let is_exception = err.thrown_value().is_some();
+    let message = vm_error_format::vm_error_to_string(self.runtime.heap_mut(), err);
+    if is_exception {
       Error::Other(format!("JS exception: {message}"))
     } else {
-      Error::Other(format!("JS error: {err}"))
+      Error::Other(format!("JS error: {message}"))
     }
   }
 }

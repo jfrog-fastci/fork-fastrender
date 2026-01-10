@@ -7,6 +7,7 @@
 
 use crate::js::event_loop::AnimationFrameId;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
+use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
 use crate::render_control;
 use std::time::Instant;
@@ -115,20 +116,8 @@ fn store_callback(
   Ok(())
 }
 
-fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Error {
-  if let Some(value) = err.thrown_value() {
-    if let Value::String(s) = value {
-      if let Ok(js) = heap.get_string(s) {
-        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-        if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
-          return crate::error::Error::Other(js.to_utf8_lossy());
-        }
-      }
-    }
-    crate::error::Error::Other("uncaught exception".to_string())
-  } else {
-    crate::error::Error::Other(err.to_string())
-  }
+fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> crate::error::Error {
+  vm_error_format::vm_error_to_error(heap, err)
 }
 
 struct HeapRootContext<'a> {
@@ -294,7 +283,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           }
 
           job_result
-            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap(), err))
+            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
             .map(|_| ())
         })
       })
@@ -453,7 +442,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         }
 
         call_result
-          .map_err(|err| vm_error_to_event_loop_error(&*heap, err))
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ())
       });
 
