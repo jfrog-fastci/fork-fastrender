@@ -4804,7 +4804,7 @@ mod tests {
     ) -> Result<()> {
       // These lifecycle tests exercise event dispatch and microtask checkpoints; module-specific
       // semantics are validated by dedicated tests elsewhere. Treat module scripts like classic
-      // scripts here.
+      // scripts here so the executor satisfies the `BrowserTabJsExecutor` contract.
       self.execute_classic_script(script_text, spec, current_script, document, event_loop)
     }
 

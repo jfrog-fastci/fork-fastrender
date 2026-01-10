@@ -148,11 +148,21 @@ pub struct OverlayScrollbars {
 }
 
 fn sanitize_scroll_bounds(bounds: ScrollBounds) -> ScrollBounds {
-  let sanitize_finite = |value: f32| if value.is_finite() { value } else { 0.0 };
-  let min_x = sanitize_finite(bounds.min_x).max(0.0);
-  let min_y = sanitize_finite(bounds.min_y).max(0.0);
-  let max_x = sanitize_finite(bounds.max_x).max(min_x);
-  let max_y = sanitize_finite(bounds.max_y).max(min_y);
+  // Scroll bounds can legitimately be negative: e.g. when content extends above/left of the scroll
+  // origin due to negative positioning/margins.
+  //
+  // Keep negative mins so overlay scrollbar thumbs can represent "scroll further up/left" states.
+  // Only sanitize non-finite values and ensure max >= min.
+  let sanitize_min = |value: f32| if value.is_finite() { value } else { 0.0 };
+  let min_x = sanitize_min(bounds.min_x);
+  let min_y = sanitize_min(bounds.min_y);
+
+  let sanitize_max = |value: f32, min: f32| {
+    let value = if value.is_finite() { value } else { min };
+    value.max(min)
+  };
+  let max_x = sanitize_max(bounds.max_x, min_x);
+  let max_y = sanitize_max(bounds.max_y, min_y);
   ScrollBounds {
     min_x,
     min_y,
@@ -468,5 +478,38 @@ mod tests {
     let page_down = v.page_delta_css_for_track_click(Point::new(95.0, 99.0));
     assert_eq!(page_down, Some(100.0));
   }
-}
 
+  #[test]
+  fn scrollbars_support_negative_min_scroll_bounds() {
+    // Root scroll bounds can be negative when content extends above the scroll origin. Overlay
+    // scrollbars should reflect that by positioning the thumb below the top when scroll=0.
+    let page_rect = Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+    let viewport_css = (100, 100);
+    let scroll_bounds = ScrollBounds {
+      min_x: 0.0,
+      min_y: -100.0,
+      max_x: 0.0,
+      max_y: 900.0,
+    };
+    let scroll_state = ScrollState::with_viewport(Point::new(0.0, 0.0));
+
+    let bars = overlay_scrollbars_for_viewport_with_config(
+      page_rect,
+      viewport_css,
+      &scroll_state,
+      scroll_bounds,
+      test_config(),
+    );
+    let v = bars.vertical.expect("expected vertical scrollbar");
+
+    // With min_y < 0, scroll_y=0 is not the topmost possible scroll position. The thumb should be
+    // offset downward relative to the track top.
+    assert!(v.thumb_rect_points.y() > v.track_rect_points.y());
+    // The expected value is derived from the mapping math:
+    // - range = 1000 (900 - -100)
+    // - content extent = 1100 (viewport 100 + range 1000)
+    // - ratio = 100/1100 => thumb_len=9.0909, travel=90.9091
+    // - scroll=0 => frac=(0 - -100)/1000 = 0.1 => offset=9.0909
+    assert_approx(v.thumb_rect_points.y(), 9.090909);
+  }
+}
